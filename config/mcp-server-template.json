@@ -1,0 +1,9 @@
+{
+  "_comment": "Add this to your ~/.claude.json under the top-level mcpServers key",
+  "_note": "Replace /path/to/memory with the output of 'which memory'",
+  "memory": {
+    "command": "/path/to/memory",
+    "args": ["server"],
+    "env": {}
+  }
+}

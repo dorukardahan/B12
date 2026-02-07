@@ -1,0 +1,35 @@
+# Database files
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Staging and logs (runtime data)
+memory-staging/
+memory-logs/
+
+# ONNX model cache
+onnx_models/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Environment files (may contain secrets)
+.env
+.env.local
+
+# Backup files
+backups/
+consolidation_archive/

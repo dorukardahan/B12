@@ -1,0 +1,40 @@
+{
+  "_comment": "Merge these hooks into your ~/.claude/settings.json or ~/.claude-<setup>/settings.json",
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-session-start.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto|manual",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-precompact.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-session-end.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ]
+  }
+}
