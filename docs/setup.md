@@ -44,8 +44,11 @@ Replace `/path/to/memory` with the output of `which memory`.
 ## Step 3: Install hooks
 
 ```bash
-# Create hooks directory
+# Create required directories
 mkdir -p ~/.claude/hooks
+mkdir -p ~/.claude/memory-staging
+mkdir -p ~/.claude/memory-logs
+mkdir -p ~/.claude/memory-summaries
 
 # Copy hook scripts
 cp hooks/memory-session-start.sh ~/.claude/hooks/
@@ -54,10 +57,6 @@ cp hooks/memory-session-end.sh ~/.claude/hooks/
 
 # Make executable
 chmod +x ~/.claude/hooks/memory-*.sh
-
-# Create required directories
-mkdir -p ~/.claude/memory-staging
-mkdir -p ~/.claude/memory-logs
 ```
 
 ## Step 4: Configure hooks in settings
@@ -101,7 +100,7 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-session-end.sh",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
@@ -110,31 +109,76 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
 }
 ```
 
-**Important**: If you have multiple setups, add the hooks config to each setup's settings.json.
+**Important**: SessionEnd timeout is 15 seconds (not 5) because the v2 hook parses the full transcript with Python. If you have very long sessions (10K+ lines), consider increasing to 20.
 
-## Step 5: Verify
+**Multi-setup**: Add the hooks config to each setup's settings.json.
+
+## Step 5: Create user profile (optional but recommended)
+
+Create your user profile so Claude knows your preferences from the first session:
+
+```bash
+# Find your project memory directory
+# Claude Code uses: ~/.claude/projects/<project-hash>/memory/
+# where project-hash = CWD with / replaced by -
+# Example: /Users/you -> -Users-you
+
+mkdir -p ~/.claude/projects/-Users-$(whoami)/memory
+cp templates/user-profile.md ~/.claude/projects/-Users-$(whoami)/memory/user-profile.md
+```
+
+Edit the profile with your actual preferences. Claude will also update it automatically as it learns about you.
+
+## Step 6: Verify
 
 1. Start a new Claude Code session
-2. You should see the memory system context being loaded (visible in verbose mode with Ctrl+O)
+2. You should see the memory system context being loaded (visible with `Ctrl+Shift+L` for verbose mode)
 3. Ask Claude: "What's in my memory about [topic]?"
 4. Work normally — Claude will silently store important learnings
+5. Close and reopen Claude Code — check if it remembers the last session
 
-## Step 6: Optional — Set up auto-memory
+### Verify session summaries
 
-Add `CLAUDE_CODE_DISABLE_AUTO_MEMORY=0` to your environment to enable Claude Code's native auto-memory alongside B12:
+After your first session ends:
+
+```bash
+# Check if session summary was created
+ls ~/.claude/memory-summaries/
+
+# View the summary
+cat ~/.claude/memory-summaries/<your-project>-latest.md
+```
+
+### Test hooks manually
+
+```bash
+# Test SessionStart
+echo '{"source":"startup","cwd":"/tmp","session_id":"test"}' | ~/.claude/hooks/memory-session-start.sh
+
+# Test SessionEnd (needs a real transcript)
+echo '{"session_id":"test","reason":"test","cwd":"/tmp","transcript_path":"/path/to/transcript.jsonl"}' | ~/.claude/hooks/memory-session-end.sh
+
+# Test PreCompact (needs a real transcript)
+echo '{"session_id":"test","cwd":"/tmp","transcript_path":"/path/to/transcript.jsonl"}' | ~/.claude/hooks/memory-precompact.sh
+```
+
+## Step 7: Optional — Enable native auto-memory
+
+Add `ENABLE_TOOL_SEARCH=true` to your environment for deferred MCP tool loading (~95% token savings per session):
 
 ```json
 // In settings.json
 {
   "env": {
-    "CLAUDE_CODE_DISABLE_AUTO_MEMORY": "0"
+    "ENABLE_TOOL_SEARCH": "true"
   }
 }
 ```
 
-This gives you two layers of persistence:
+This also works alongside Claude Code's native auto-memory (MEMORY.md), giving you two layers of persistence:
 - **MEMORY.md** for stable, high-level project knowledge
 - **mcp-memory-service** for detailed, searchable memories
+- **Session summaries** for short-term continuity
 
 ## Troubleshooting
 
@@ -161,7 +205,23 @@ claude /hooks
 # Test hook manually
 echo '{"source":"startup","cwd":"/tmp","session_id":"test"}' | ~/.claude/hooks/memory-session-start.sh
 
-# Enable verbose mode in Claude Code (Ctrl+O) to see hook execution
+# Enable verbose mode in Claude Code (Ctrl+Shift+L) to see hook execution
+```
+
+### SessionEnd not creating summaries
+
+The most common cause: the heredoc syntax bug. Ensure your hooks use:
+```bash
+# CORRECT:
+python3 - "$ARG" << 'PYEOF'
+
+# NOT:
+python3 << 'PYEOF' "$ARG"
+```
+
+If `transcript_path` is empty in the hook input, Claude Code may not be providing it. Check with:
+```bash
+echo '{"session_id":"test","cwd":"/tmp","transcript_path":""}' | ~/.claude/hooks/memory-session-end.sh 2>&1
 ```
 
 ### No memories being stored

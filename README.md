@@ -7,6 +7,8 @@ A local-first, fully automated, cross-project memory system for Claude Code CLI.
 - Automatically stores important decisions, patterns, and learnings during work
 - Recalls relevant context at the start of every session
 - Preserves key information before context compaction
+- Carries session summaries forward so the next session knows what happened
+- Maintains a user profile that Claude updates as it learns your preferences
 - Works across multiple projects with a single shared memory database
 - Requires zero manual intervention — Claude handles memory silently
 
@@ -15,12 +17,19 @@ A local-first, fully automated, cross-project memory system for Claude Code CLI.
 ```
 Claude Code Session
     |
-    |-- SessionStart Hook ──> Injects memory instructions + project context
-    |-- [Claude works, uses memory MCP tools silently]
-    |-- PreCompact Hook ────> Stages transcript summary before context loss
-    |-- SessionStart(compact) > Recovers staged context, stores to memory
-    |-- SessionEnd Hook ────> Logs session metadata for analytics
+    |-- SessionStart Hook ──> Injects: user profile
+    |                          + last session summary
+    |                          + memory instructions
     |
+    |-- [Claude works, uses memory MCP tools silently]
+    |
+    |-- PreCompact Hook ────> Stages comprehensive transcript summary
+    |                          (15 user msgs + 10 assistant outputs + files)
+    |
+    |-- SessionStart(compact) > Recovers staged context, stores to memory
+    |
+    |-- SessionEnd Hook ────> Extracts session summary (latest + rolling history)
+    |                          + logs metadata + cleanup
     v
 mcp-memory-service (MCP Server)
     |
@@ -35,9 +44,10 @@ mcp-memory-service (MCP Server)
 
 | Component | Description |
 |-----------|-------------|
-| `hooks/memory-session-start.sh` | Injects memory system instructions at session start |
-| `hooks/memory-precompact.sh` | Captures transcript summary before context compaction |
-| `hooks/memory-session-end.sh` | Logs session metadata and cleans up staging files |
+| `hooks/memory-session-start.sh` | Injects user profile + last session summary + memory instructions |
+| `hooks/memory-precompact.sh` | Parses full transcript, stages comprehensive context before compaction |
+| `hooks/memory-session-end.sh` | Extracts session summary, maintains rolling history, logs metadata |
+| `templates/user-profile.md` | Template for user profile (Claude updates it as it learns about you) |
 | `config/settings-template.json` | Hook configuration template for Claude Code settings |
 | `config/mcp-server-template.json` | MCP server configuration template |
 | `docs/architecture.md` | Detailed architecture and design decisions |
@@ -66,9 +76,10 @@ Add to `~/.claude.json` under `mcpServers`:
 }
 ```
 
-### 3. Copy hooks
+### 3. Copy hooks and create directories
 
 ```bash
+mkdir -p ~/.claude/hooks ~/.claude/memory-staging ~/.claude/memory-logs ~/.claude/memory-summaries
 cp hooks/*.sh ~/.claude/hooks/
 chmod +x ~/.claude/hooks/memory-*.sh
 ```
@@ -77,9 +88,28 @@ chmod +x ~/.claude/hooks/memory-*.sh
 
 Merge the contents of `config/settings-template.json` into your `~/.claude/settings.json`.
 
-### 5. Restart Claude Code
+### 5. Create user profile (optional)
 
-The memory system activates on the next session start.
+```bash
+# project-hash = CWD with / replaced by -
+mkdir -p ~/.claude/projects/-Users-$(whoami)/memory
+cp templates/user-profile.md ~/.claude/projects/-Users-$(whoami)/memory/user-profile.md
+# Edit with your preferences — Claude will also update it over time
+```
+
+### 6. Restart Claude Code
+
+The memory system activates on the next session start. After your first session ends, check `~/.claude/memory-summaries/` for the generated summary.
+
+## 5 layers of memory
+
+| Layer | What | Where | Best for |
+|-------|------|-------|----------|
+| **MEMORY.md** | Built-in auto-memory | `~/.claude/projects/*/memory/` | Stable project knowledge |
+| **mcp-memory-service** | Semantic search DB | `~/Library/Application Support/mcp-memory/` | Detailed learnings, decisions |
+| **Smart hooks** | Lifecycle automation | `~/.claude/hooks/` | Glue between all layers |
+| **Session summaries** | Per-project latest + history | `~/.claude/memory-summaries/` | Short-term continuity |
+| **User profile** | Persistent identity | `~/.claude/projects/*/memory/user-profile.md` | Personalization |
 
 ## Multi-setup support
 
@@ -88,21 +118,28 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 - **MCP server** is global (configured in `~/.claude.json`)
 - **Hooks** use absolute paths, so they work from any setup
 - **Database** is shared — memories from any project are available everywhere
+- **Session summaries** are per-project, so they don't overwrite each other
 - **Hook config** needs to be added to each setup's `settings.json`
 
-## How it scores (9.5/10)
+## Changelog
 
-| Criteria | Score | How |
-|----------|-------|-----|
-| Fully automated | 1/1 | SessionStart hook injects instructions, Claude handles the rest |
-| Cross-project | 1/1 | Single SQLite DB with project tags |
-| Fast | 1/1 | Local SQLite-vec, ~5ms search latency |
-| Low token | 1/1 | Only relevant memories injected, not full DB |
-| Semantic search | 1/1 | MiniLM-L6-v2 ONNX embeddings |
-| Local/private | 1/1 | Zero cloud dependencies |
-| Never forgets | 1/1 | PreCompact hook captures before context loss |
-| Self-improving | 0.5/1 | Quality scoring + decay, but no usage pattern learning yet |
-| Multilingual | 0.5/1 | MiniLM-L6-v2 is English-optimized, acceptable for mixed content |
+### v2 (2026-02-07)
+
+- **SessionEnd**: Now extracts comprehensive session summaries from transcript (was: just logging)
+- **PreCompact**: Full transcript parsing with 15 user msgs + 10 assistant outputs (was: tail -100, 5 msgs)
+- **SessionStart**: Loads user profile + last session summary (was: basic instructions only)
+- **New**: User profile template (`templates/user-profile.md`)
+- **New**: Session summaries directory (`memory-summaries/`) with latest + rolling history
+- **Fix**: Heredoc syntax bug — `python3 -` instead of bare `python3` when using heredoc with args
+- **Fix**: `datetime.utcnow()` replaced with `datetime.now(timezone.utc)` (Python deprecation)
+- **Change**: SessionEnd timeout increased from 5s to 15s (transcript parsing needs more time)
+- **Change**: PreCompact cleanup interval increased from 1h to 2h
+
+### v1 (2026-02-07)
+
+- Initial release with basic SessionStart, PreCompact, SessionEnd hooks
+- mcp-memory-service integration
+- Architecture documentation and setup guide
 
 ## Roadmap
 
@@ -110,9 +147,10 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 - [ ] Usage-based relevance scoring (promote frequently accessed memories)
 - [ ] Auto-archiving of stale memories
 - [ ] Multilingual embedding model upgrade
+- [ ] Memory consolidation (merge similar entries)
 - [ ] 0G Storage + Compute/TEE integration for decentralized private memory
 - [ ] Web dashboard for memory visualization
 
 ## License
 
-Private — not yet published.
+MIT

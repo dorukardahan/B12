@@ -31,7 +31,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-session-end.sh",
-            "timeout": 5
+            "timeout": 15
           }
         ]
       }
