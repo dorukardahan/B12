@@ -6,28 +6,35 @@
 #
 # Why this exists: pipx upgrade replaces all site-packages files,
 # reverting any local patches. This script automates re-applying them.
+#
+# Patches applied:
+#   1. response_limiter import fix (memory.py) — upstream bug
+#   2. FTS5 hybrid search (sqlite_vec.py) — B12 patch for keyword + vector
+#
+# Note: FTS5 database schema (table + triggers) persists across upgrades.
+# Only the Python code changes need re-applying.
 
 set -e
 
 echo "=== mcp-memory-service upgrade ==="
 
 # Step 1: Upgrade
-echo "[1/3] Running pipx upgrade..."
+echo "[1/4] Running pipx upgrade..."
 pipx upgrade mcp-memory-service
 
-# Step 2: Find memory.py and apply response_limiter import fix
+# Step 2: Find files to patch
 MEMORY_PY=$(find "$HOME/.local/pipx/venvs/mcp-memory-service" -path "*/server/handlers/memory.py" -type f 2>/dev/null | head -1)
+SQLITE_VEC_PY=$(find "$HOME/.local/pipx/venvs/mcp-memory-service" -path "*/storage/sqlite_vec.py" -type f 2>/dev/null | head -1)
 
 if [ -z "$MEMORY_PY" ]; then
   echo "[ERROR] memory.py not found in venv"
   exit 1
 fi
 
-echo "[2/3] Patching response_limiter import in: $MEMORY_PY"
+echo "[2/4] Patching response_limiter import in: $MEMORY_PY"
 
 # The upstream bug: `from ...utils.response_limiter` (3 dots = grandparent)
 # Correct:          `from ..utils.response_limiter`  (2 dots = parent)
-# Location: inside the `if max_response_chars:` block
 
 if grep -q 'from \.\.\.utils\.response_limiter' "$MEMORY_PY"; then
   sed -i '' '/response_limiter/s/from \.\.\.utils/from ..utils/g' "$MEMORY_PY"
@@ -38,8 +45,27 @@ else
   echo "  [WARN] response_limiter import line not found - check manually"
 fi
 
-# Step 3: Clear Python bytecache
-echo "[3/3] Clearing bytecache..."
+# Step 3: Check FTS5 hybrid search patch
+echo "[3/4] Checking FTS5 hybrid search patch in: $SQLITE_VEC_PY"
+
+if [ -z "$SQLITE_VEC_PY" ]; then
+  echo "  [WARN] sqlite_vec.py not found - skipping FTS5 check"
+else
+  if grep -q '_init_fts5' "$SQLITE_VEC_PY"; then
+    echo "  FTS5 hybrid search patch already applied"
+  else
+    echo "  [WARN] FTS5 hybrid search patch NOT found in sqlite_vec.py"
+    echo "  The FTS5 database schema (table + triggers) is still intact,"
+    echo "  but hybrid search scoring will revert to pure vector search."
+    echo ""
+    echo "  To re-apply the FTS5 hybrid patch, ask Claude to:"
+    echo "    'Re-apply FTS5 hybrid search patch to sqlite_vec.py'"
+    echo "  Or manually apply from B12 repo: ~/Desktop/B12/patches/"
+  fi
+fi
+
+# Step 4: Clear Python bytecache
+echo "[4/4] Clearing bytecache..."
 find "$HOME/.local/pipx/venvs/mcp-memory-service" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 find "$HOME/.local/pipx/venvs/mcp-memory-service" -name "*.pyc" -delete 2>/dev/null || true
 
