@@ -38,7 +38,7 @@
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__memory__memory_store|mcp__memory__memory_search",
+        "matcher": "mcp__memory__memory_store|mcp__memory__memory_search|mcp__memory__memory_quality|mcp__memory__memory_update",
         "hooks": [
           {
             "type": "command",

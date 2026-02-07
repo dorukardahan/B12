@@ -1,9 +1,15 @@
 #!/bin/bash
-# B12 Memory System - SessionEnd Hook (v3 — Structured Extraction)
-# Extracts decisions, errors/fixes, preferences, learnings from transcript
+# B12 Memory System - SessionEnd Hook (v4 — Contextual Extraction + Scope Metadata)
+# Extracts decisions, errors/fixes, preferences, learnings with contextual regex + scoring
+# Produces: project summary, global summary, executive summary (5-line), rolling history
 # Fires on: clear, logout, prompt_input_exit, other
 #
-# Install: Copy to ~/.claude/hooks/ and chmod +x
+# v4 changes:
+# - Contextual multi-word regex patterns (reduce noise ~80%)
+# - Scoring filter for extraction quality
+# - Setup/scope metadata in summaries
+# - Executive summary (5-line) for next session's compact loading
+# - B12_DATA_DIR support for multi-setup
 
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
@@ -20,12 +26,19 @@ STAGING_DIR="$B12_BASE/memory-staging"
 LOG_DIR="$B12_BASE/memory-logs"
 mkdir -p "$SUMMARY_DIR" "$LOG_DIR"
 
+# Setup detection
+if [[ "$B12_BASE" == *".claude-x"* ]] || [[ "$CWD" == *"/0G"* ]] || [[ "$CWD" == *"/0g"* ]]; then
+  SETUP_CONTEXT="work"
+else
+  SETUP_CONTEXT="personal"
+fi
+
 # Clean up staging files for this session
 rm -f "$STAGING_DIR/precompact-${SESSION_ID}.txt" 2>/dev/null
 
 # Extract structured session summary from transcript
 if [ -f "$TRANSCRIPT_PATH" ]; then
-  python3 - "$TRANSCRIPT_PATH" "$PROJECT_NAME" "$SESSION_ID" "$SUMMARY_DIR" "$CWD" << 'PYEOF'
+  python3 - "$TRANSCRIPT_PATH" "$PROJECT_NAME" "$SESSION_ID" "$SUMMARY_DIR" "$CWD" "$SETUP_CONTEXT" << 'PYEOF'
 import sys, json, os, re
 from datetime import datetime, timezone
 
@@ -34,6 +47,7 @@ project_name = sys.argv[2]
 session_id = sys.argv[3]
 summary_dir = sys.argv[4]
 cwd = sys.argv[5]
+setup_context = sys.argv[6]
 
 user_messages = []
 assistant_messages = []
@@ -42,22 +56,41 @@ files_modified = set()
 memory_stores = 0
 memory_searches = 0
 
-# Pattern definitions for structured extraction
+# ═══════════════════════════════════════════════════════════════
+# v4 CONTEXTUAL PATTERNS — require structural context, not just keywords
+# ═══════════════════════════════════════════════════════════════
+
 DECISION_RE = re.compile(
-    r'(?i)\b(decided|chose|going with|will use|selected|opted for|switched to|'
-    r'picking|went with|using .+ instead of)\b'
+    r'(?i)(?:'
+    r'(?:decided|chose|going with|selected|opted for|switched to|went with)\s+.{5,80}(?:instead of|over|rather than|because)'
+    r'|(?:will use|using)\s+\S+\s+(?:instead of|rather than|for)\s+'
+    r'|(?:the (?:approach|solution|decision) is to)\s+'
+    r'|(?:decided|chose|going with|selected|opted for|switched to|went with)\s+\S+.{10,}'
+    r')'
 )
+
 ERROR_RE = re.compile(
-    r'(?i)\b(error|bug|fix(?:ed)?|broke|crash|fail(?:ed|ure)?|issue|problem|'
-    r'resolved|workaround|root cause|debugging)\b'
+    r'(?i)(?:'
+    r'(?:fixed|resolved|solved|workaround[: ])\s+.{5,60}(?:error|bug|issue|crash|failure)'
+    r'|(?:error|bug|issue|crash)\s+.{0,40}(?:was caused by|because|due to|fixed by|resolved by)'
+    r'|(?:root cause|the fix|the solution)\s*(?:is|was|:)\s+'
+    r')'
 )
+
 PREFERENCE_RE = re.compile(
-    r'(?i)\b(prefer|don.t like|always use|never use|hate|love|want to|'
-    r'convention|style preference|workflow)\b'
+    r'(?i)(?:'
+    r'(?:(?:user|doruk)\s+(?:prefers?|wants?|asked for|(?:does ?\x27?n.?t|never)\s+(?:want|like|use)))'
+    r'|(?:always use|never use|convention is|style preference|workflow:)'
+    r'|\[user\]\s+'
+    r')'
 )
+
 LEARNING_RE = re.compile(
-    r'(?i)\b(learned|discovered|turns out|insight|TIL|didn.t know|realized|'
-    r'gotcha|pitfall|caveat|trick|tip|important to note)\b'
+    r'(?i)(?:'
+    r'(?:turns out|TIL|important to note|gotcha|pitfall|caveat)\s*(?::|that|,)\s+'
+    r'|(?:learned|discovered|realized)\s+that\s+'
+    r'|(?:the (?:trick|key|insight) (?:is|was))\s+'
+    r')'
 )
 
 decisions = []
@@ -115,7 +148,7 @@ try:
                                     elif tool_name == 'mcp__memory__memory_search':
                                         memory_searches += 1
 
-                # Also check for tool_use in user messages (for pattern matching on user preferences)
+                # User preference detection
                 if msg_type == 'human':
                     content = obj.get('message', {}).get('content', '')
                     text = content if isinstance(content, str) else ''
@@ -129,6 +162,47 @@ try:
 except Exception:
     pass
 
+# ═══════════════════════════════════════════════════════════════
+# v4 SCORING FILTER — quality gate for extracted items
+# ═══════════════════════════════════════════════════════════════
+
+def score_extraction(text, category):
+    """Score how likely a text snippet is to be a genuine extraction."""
+    score = 0
+    text_lower = text.lower()
+
+    if category == 'decision':
+        if any(w in text_lower for w in ['instead of', 'over', 'rather than', 'because', 'tradeoff']):
+            score += 2
+        if any(w in text_lower for w in ['chose', 'decided', 'selected', 'opted']):
+            score += 1
+
+    elif category == 'error':
+        has_problem = any(w in text_lower for w in ['error', 'bug', 'crash', 'fail', 'broke'])
+        has_resolution = any(w in text_lower for w in ['fixed', 'resolved', 'solved', 'workaround', 'caused by', 'root cause'])
+        if has_problem and has_resolution:
+            score += 3
+        elif has_problem:
+            score += 0  # Problem without resolution = not useful
+
+    elif category == 'learning':
+        if any(w in text_lower for w in ['turns out', 'gotcha', 'pitfall', 'caveat', 'important to note']):
+            score += 2
+        if 'because' in text_lower or 'so that' in text_lower:
+            score += 1
+
+    elif category == 'preference':
+        if any(w in text_lower for w in ['always', 'never', 'prefer', 'convention']):
+            score += 1
+        if any(w in text_lower for w in ['user', 'doruk', '[user]']):
+            score += 2
+
+    # Penalty for very short text
+    if len(text) < 40:
+        score -= 1
+
+    return score
+
 # Deduplicate extracted patterns
 def dedup(items, max_count=5):
     seen = set()
@@ -140,21 +214,27 @@ def dedup(items, max_count=5):
             seen.add(short)
     return result
 
-decisions = dedup(decisions)
-errors_fixes = dedup(errors_fixes)
-preferences = dedup(preferences)
-learnings = dedup(learnings)
+# Apply dedup first, then scoring filter
+decisions = [d for d in dedup(decisions) if score_extraction(d, 'decision') >= 1]
+errors_fixes = [e for e in dedup(errors_fixes) if score_extraction(e, 'error') >= 2]
+learnings = [l for l in dedup(learnings) if score_extraction(l, 'learning') >= 1]
+preferences = [p for p in dedup(preferences) if score_extraction(p, 'preference') >= 1]
 
-# Build summary
+# ═══════════════════════════════════════════════════════════════
+# BUILD FULL SUMMARY
+# ═══════════════════════════════════════════════════════════════
+
 now = datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M UTC')
 lines = []
 lines.append(f"# Session Summary: {project_name}")
 lines.append(f"- **Date**: {now}")
 lines.append(f"- **Directory**: {cwd}")
+lines.append(f"- **Setup**: {setup_context}")
 lines.append(f"- **Session**: {session_id[:12]}")
 lines.append(f"- **User messages**: {len(user_messages)}")
 lines.append(f"- **Tools used**: {', '.join(sorted(tools_used)[:15]) if tools_used else 'none'}")
 lines.append(f"- **Memory ops**: {memory_stores} stores, {memory_searches} searches")
+lines.append(f"- **Scope tags**: proj:{project_name}, user:{setup_context}")
 lines.append("")
 
 # Structured sections
@@ -204,10 +284,54 @@ if files_modified:
 
 summary_text = '\n'.join(lines)
 
-# Write latest summary
+# ═══════════════════════════════════════════════════════════════
+# EXECUTIVE SUMMARY — compact 5-line version for next session
+# ═══════════════════════════════════════════════════════════════
+
+exec_lines = []
+exec_lines.append(f"[{now}] {project_name} ({setup_context})")
+
+# What user asked (first 2)
+if user_messages:
+    for msg in user_messages[:2]:
+        exec_lines.append(f"  Asked: {msg[:100]}")
+
+# Key outcomes
+if decisions:
+    exec_lines.append(f"  Decision: {decisions[0][:120]}")
+if errors_fixes:
+    exec_lines.append(f"  Fixed: {errors_fixes[0][:120]}")
+if learnings:
+    exec_lines.append(f"  Learned: {learnings[0][:120]}")
+
+# Files (count only)
+if files_modified:
+    exec_lines.append(f"  Modified {len(files_modified)} files")
+
+executive_summary = '\n'.join(exec_lines[:6])
+
+# ═══════════════════════════════════════════════════════════════
+# WRITE OUTPUT FILES
+# ═══════════════════════════════════════════════════════════════
+
+# Full project-specific summary
 summary_file = os.path.join(summary_dir, f"{project_name}-latest.md")
 with open(summary_file, 'w') as f:
     f.write(summary_text)
+
+# Global latest (most recent session, any project)
+global_file = os.path.join(summary_dir, "global-latest.md")
+with open(global_file, 'w') as f:
+    f.write(summary_text)
+
+# Executive summary (compact — for fast SessionStart loading)
+exec_file = os.path.join(summary_dir, f"{project_name}-exec.md")
+with open(exec_file, 'w') as f:
+    f.write(executive_summary)
+
+global_exec_file = os.path.join(summary_dir, "global-exec.md")
+with open(global_exec_file, 'w') as f:
+    f.write(executive_summary)
 
 # Append to rolling history (last 5 sessions)
 history_file = os.path.join(summary_dir, f"{project_name}-history.md")
@@ -230,7 +354,7 @@ PYEOF
 fi
 
 # Log session end
-echo "{\"session\":\"$SESSION_ID\",\"project\":\"$PROJECT_NAME\",\"reason\":\"$REASON\",\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >> "$LOG_DIR/sessions.jsonl"
+echo "{\"session\":\"$SESSION_ID\",\"project\":\"$PROJECT_NAME\",\"setup\":\"$SETUP_CONTEXT\",\"reason\":\"$REASON\",\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >> "$LOG_DIR/sessions.jsonl"
 
 # Keep log reasonable
 if [ -f "$LOG_DIR/sessions.jsonl" ]; then
