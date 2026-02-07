@@ -1,0 +1,194 @@
+#!/bin/bash
+# B12 Memory System - Feedback Digest Generator (v1)
+# Parses feedback.jsonl and generates feedback-digest.md
+# Designed to run weekly (via launchd or manually)
+#
+# Output: ~/.claude/memory-logs/feedback-digest.md
+# SessionStart v4 loads the "## Alerts" section from this file
+#
+# Usage:
+#   ./memory-feedback-digest.sh              # Generate digest
+#   ./memory-feedback-digest.sh --quiet      # No stdout output
+
+B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+FEEDBACK_FILE="$B12_BASE/memory-logs/feedback.jsonl"
+DIGEST_FILE="$B12_BASE/memory-logs/feedback-digest.md"
+QUIET=false
+
+if [ "$1" = "--quiet" ]; then
+  QUIET=true
+fi
+
+if [ ! -f "$FEEDBACK_FILE" ]; then
+  [ "$QUIET" = false ] && echo "No feedback file found at $FEEDBACK_FILE"
+  exit 0
+fi
+
+LINE_COUNT=$(wc -l < "$FEEDBACK_FILE" 2>/dev/null | tr -d ' ')
+if [ "$LINE_COUNT" -lt 5 ]; then
+  [ "$QUIET" = false ] && echo "Not enough data yet ($LINE_COUNT entries). Need at least 5."
+  exit 0
+fi
+
+python3 - "$FEEDBACK_FILE" "$DIGEST_FILE" "$QUIET" << 'PYEOF'
+import sys, json, os
+from datetime import datetime, timezone, timedelta
+from collections import defaultdict
+
+feedback_file = sys.argv[1]
+digest_file = sys.argv[2]
+quiet = sys.argv[3] == "true"
+
+# Parse feedback entries
+entries = []
+with open(feedback_file, 'r') as f:
+    for line in f:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            entries.append(json.loads(line))
+        except json.JSONDecodeError:
+            continue
+
+if not entries:
+    if not quiet:
+        print("No valid entries in feedback file")
+    sys.exit(0)
+
+# Time windows
+now = datetime.now(timezone.utc)
+week_ago = now - timedelta(days=7)
+month_ago = now - timedelta(days=30)
+
+def parse_ts(ts_str):
+    try:
+        return datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
+    except (ValueError, TypeError):
+        return None
+
+# Categorize entries by time window
+recent = []  # last 7 days
+monthly = []  # last 30 days
+for e in entries:
+    ts = parse_ts(e.get('ts', ''))
+    if ts:
+        if ts >= week_ago:
+            recent.append(e)
+        if ts >= month_ago:
+            monthly.append(e)
+
+# Use monthly for stats (more representative), recent for alerts
+stats_entries = monthly if monthly else entries[-200:]
+
+# ═══════════════════════════════════════════════════
+# METRICS
+# ═══════════════════════════════════════════════════
+
+total = len(stats_entries)
+stores = [e for e in stats_entries if e.get('action') == 'store']
+searches = [e for e in stats_entries if e.get('action') == 'search']
+updates = [e for e in stats_entries if e.get('action') == 'update']
+quality_checks = [e for e in stats_entries if e.get('action') == 'quality']
+
+# Store quality
+stores_with_metadata = sum(1 for s in stores if s.get('has_metadata'))
+stores_with_tags = sum(1 for s in stores if s.get('has_tags'))
+stores_with_proj_tag = sum(1 for s in stores if s.get('has_proj_tag'))
+stores_with_scope = sum(1 for s in stores if s.get('has_scope'))
+
+# Search quality
+empty_searches = sum(1 for s in searches if s.get('empty_result'))
+
+# Project distribution
+projects = defaultdict(int)
+for e in stats_entries:
+    proj = e.get('project', 'unknown')
+    projects[proj] += 1
+
+# ═══════════════════════════════════════════════════
+# ALERTS (high-priority issues for SessionStart)
+# ═══════════════════════════════════════════════════
+
+alerts = []
+
+# Alert: Low scope compliance
+if stores and len(stores) >= 3:
+    scope_rate = stores_with_scope / len(stores) * 100
+    if scope_rate < 50:
+        alerts.append(f"Low scope compliance: {scope_rate:.0f}% of stores have scope metadata. Always include metadata.scope when storing.")
+
+# Alert: Low project tag usage
+if stores and len(stores) >= 3:
+    proj_rate = stores_with_proj_tag / len(stores) * 100
+    if proj_rate < 50:
+        alerts.append(f"Low project tagging: {proj_rate:.0f}% of stores have proj: tags. Always include proj:<name> tag.")
+
+# Alert: High empty search rate
+if searches and len(searches) >= 5:
+    empty_rate = empty_searches / len(searches) * 100
+    if empty_rate > 40:
+        alerts.append(f"High empty search rate: {empty_rate:.0f}% searches return no results. Try broader queries or check if memories exist.")
+
+# Alert: No quality checks
+if len(stores) >= 10 and len(quality_checks) == 0:
+    alerts.append("No memory_quality checks used. Run memory_quality periodically to maintain DB health.")
+
+# Alert: No updates
+if len(stores) >= 10 and len(updates) == 0:
+    alerts.append("No memory_update calls. Update existing memories instead of creating duplicates.")
+
+# ═══════════════════════════════════════════════════
+# BUILD DIGEST
+# ═══════════════════════════════════════════════════
+
+lines = []
+lines.append(f"# Memory Usage Digest")
+lines.append(f"Generated: {now.strftime('%Y-%m-%d %H:%M UTC')}")
+lines.append(f"Period: last 30 days ({total} operations)")
+lines.append("")
+
+# Alerts section (SessionStart v4 reads this)
+lines.append("## Alerts")
+if alerts:
+    for a in alerts:
+        lines.append(f"- {a}")
+else:
+    lines.append("- No issues detected. Memory usage looks healthy.")
+lines.append("")
+
+# Stats
+lines.append("## Stats")
+lines.append(f"- Stores: {len(stores)}")
+lines.append(f"- Searches: {len(searches)} ({empty_searches} empty)")
+lines.append(f"- Updates: {len(updates)}")
+lines.append(f"- Quality checks: {len(quality_checks)}")
+lines.append("")
+
+# Quality metrics
+if stores:
+    lines.append("## Store Quality")
+    lines.append(f"- With metadata: {stores_with_metadata}/{len(stores)} ({stores_with_metadata/len(stores)*100:.0f}%)")
+    lines.append(f"- With tags: {stores_with_tags}/{len(stores)} ({stores_with_tags/len(stores)*100:.0f}%)")
+    lines.append(f"- With proj: tag: {stores_with_proj_tag}/{len(stores)} ({stores_with_proj_tag/len(stores)*100:.0f}%)")
+    lines.append(f"- With scope metadata: {stores_with_scope}/{len(stores)} ({stores_with_scope/len(stores)*100:.0f}%)")
+    lines.append("")
+
+# Project distribution
+if len(projects) > 1:
+    lines.append("## Projects")
+    for proj, count in sorted(projects.items(), key=lambda x: -x[1])[:10]:
+        lines.append(f"- {proj}: {count} ops")
+    lines.append("")
+
+digest_text = '\n'.join(lines)
+
+with open(digest_file, 'w') as f:
+    f.write(digest_text)
+
+if not quiet:
+    print(digest_text)
+
+PYEOF
+
+exit 0

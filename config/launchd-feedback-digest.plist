@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  B12 Memory Feedback Digest — launchd agent template
+  Runs weekly (Monday 3:00 AM): parses feedback.jsonl, generates digest
+  SessionStart v4 loads alerts from the digest on next session
+
+  Install:
+    1. Copy to ~/Library/LaunchAgents/com.b12.memory-feedback-digest.plist
+    2. Replace /path/to/home with your actual home directory
+    3. launchctl load ~/Library/LaunchAgents/com.b12.memory-feedback-digest.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.b12.memory-feedback-digest</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/path/to/home/.claude/hooks/memory-feedback-digest.sh</string>
+        <string>--quiet</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>1</integer>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/path/to/home/.claude/memory-logs/digest-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/home/.claude/memory-logs/digest-stderr.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

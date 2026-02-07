@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  B12 Memory Consolidation — launchd agent template
+  Runs daily at 2:00 AM: dedup, stale cleanup, cross-project index
+
+  Install:
+    1. Copy to ~/Library/LaunchAgents/com.b12.memory-consolidate.plist
+    2. Replace /path/to/home with your actual home directory
+    3. launchctl load ~/Library/LaunchAgents/com.b12.memory-consolidate.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.b12.memory-consolidate</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/path/to/home/.claude/hooks/memory-consolidate.py</string>
+        <string>--auto</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>2</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/path/to/home/.claude/memory-logs/consolidate-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/home/.claude/memory-logs/consolidate-stderr.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
