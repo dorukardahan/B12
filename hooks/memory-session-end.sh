@@ -470,6 +470,65 @@ try:
             VALUES (?, ?, 0.5, '["temporal","session_sequence"]', ?, ?, 'follows')
         """, (content_hash, prev[0], json.dumps({"project": project_name}), now.timestamp()))
 
+    # ─── Micro-memory extraction (v5.2) ──────────────────────
+    # Store individual decisions/errors/learnings as separate searchable memories
+    import re as _re
+    MICRO_SECTIONS = {
+        '## Decisions Made': ('decision', 1.5),
+        '## Errors & Fixes': ('error_fix', 1.2),
+        '## Key Learnings': ('learning', 1.0),
+    }
+    micro_texts = []
+    micro_meta = []
+
+    for section_hdr, (mem_type, imp) in MICRO_SECTIONS.items():
+        if section_hdr not in content:
+            continue
+        # Extract bullets from section
+        match = _re.search(
+            rf'^{_re.escape(section_hdr)}\n(.*?)(?=\n## |\Z)',
+            content, _re.MULTILINE | _re.DOTALL
+        )
+        if not match:
+            continue
+        bullets = [b.strip().lstrip('- ') for b in match.group(1).strip().split('\n')
+                   if b.strip().startswith('- ') and len(b.strip()) > 30]
+
+        prefix_map = {'decision': 'Decision', 'error_fix': 'Error Fix', 'learning': 'Learning'}
+        for bullet in bullets[:3]:
+            prefixed = f"[{prefix_map[mem_type]}] {bullet}"
+            micro_texts.append(prefixed)
+            micro_meta.append((mem_type, imp))
+
+    if micro_texts:
+        micro_embeddings = model.encode(micro_texts, convert_to_numpy=True)
+        for i, text in enumerate(micro_texts):
+            mem_type, imp = micro_meta[i]
+            m_hash = hashlib.sha256(text.encode()).hexdigest()
+
+            if conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (m_hash,)).fetchone():
+                continue
+
+            m_tags = f"proj:{project_name},user:{setup_context},{mem_type},{now.strftime('%Y-%m')}"
+            m_metadata = json.dumps({
+                "project": project_name, "setup": setup_context,
+                "scope": "project", "type": mem_type,
+                "source_session": session_id[:12],
+                "importance_score": imp
+            })
+            m_emb = micro_embeddings[i].astype(np.float32).tobytes()
+
+            conn.execute("""
+                INSERT INTO memories (content, content_hash, tags, memory_type, metadata,
+                                      created_at, updated_at, created_at_iso, updated_at_iso)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (text, m_hash, m_tags, mem_type, m_metadata,
+                  now.timestamp(), now.timestamp(), now.isoformat(), now.isoformat()))
+
+            m_row = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (m_hash,)).fetchone()[0]
+            conn.execute("INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
+                         (m_row, m_emb))
+
     conn.commit()
     conn.close()
 

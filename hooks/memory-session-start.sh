@@ -1,8 +1,12 @@
 #!/bin/bash
-# B12 Memory System - SessionStart Hook (v4 — Scope-Aware, Token-Efficient)
-# Loads: setup context + compressed instructions + user profile (lazy) + session summary + cross-project hints
+# B12 Memory System - SessionStart Hook (v5 — Memory Pre-fetch)
+# Loads: setup context + compressed instructions + user profile (lazy)
+#        + session summary + cross-project hints + memory pre-fetch
 # Fires on: startup, resume, compact
 #
+# v5 changes (2026-02-08):
+# - FTS5 + tag-based memory pre-fetch (project-relevant + universal)
+# - Direct SQLite queries (no embedding model needed)
 # v4 changes:
 # - Setup detection (personal vs work)
 # - Scope-aware tagging/search instructions
@@ -87,6 +91,59 @@ if [ -f "$DIGEST_FILE" ]; then
 fi
 
 # ═══════════════════════════════════════════════════════════════
+# MEMORY PRE-FETCH — FTS5 + tag-based relevant memory loading
+# ═══════════════════════════════════════════════════════════════
+MEMORY_PREFETCH=""
+DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+
+if [ -f "$DB_PATH" ] && [ "$SOURCE" != "compact" ]; then
+  # Sanitize project name for SQL (alphanumeric + dash/underscore only)
+  SAFE_PROJECT=$(echo "$PROJECT_NAME" | sed 's/[^a-zA-Z0-9_-]//g')
+
+  # Project-relevant memories (tag match OR FTS5 keyword match, exclude session summaries)
+  if [ -n "$SAFE_PROJECT" ] && [ ${#SAFE_PROJECT} -gt 1 ]; then
+    PROJ_MEMS=$(sqlite3 "$DB_PATH" "
+      SELECT '[' || m.memory_type || '] ' || substr(m.content, 1, 200)
+      FROM memories m
+      WHERE m.deleted_at IS NULL
+        AND m.memory_type != 'session_summary'
+        AND m.tags NOT LIKE '%session-summary%'
+        AND (
+          m.tags LIKE '%proj:${SAFE_PROJECT}%'
+          OR m.id IN (
+            SELECT rowid FROM memory_fts
+            WHERE memory_fts MATCH '\"${SAFE_PROJECT}\"'
+          )
+        )
+      ORDER BY m.created_at DESC
+      LIMIT 3
+    " 2>/dev/null)
+
+    if [ -n "$PROJ_MEMS" ]; then
+      MEMORY_PREFETCH="Project memories (${SAFE_PROJECT}):\n${PROJ_MEMS}"
+    fi
+  fi
+
+  # Universal knowledge (cross-project patterns, CLI tricks, lessons)
+  UNIVERSAL_MEMS=$(sqlite3 "$DB_PATH" "
+    SELECT '[' || memory_type || '] ' || substr(content, 1, 200)
+    FROM memories
+    WHERE tags LIKE '%user:universal%'
+      AND deleted_at IS NULL
+    ORDER BY created_at DESC
+    LIMIT 2
+  " 2>/dev/null)
+
+  if [ -n "$UNIVERSAL_MEMS" ]; then
+    if [ -n "$MEMORY_PREFETCH" ]; then
+      MEMORY_PREFETCH="${MEMORY_PREFETCH}\nUniversal knowledge:\n${UNIVERSAL_MEMS}"
+    else
+      MEMORY_PREFETCH="Universal knowledge:\n${UNIVERSAL_MEMS}"
+    fi
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════
 # JSON ESCAPE — single python3 call for all strings
 # ═══════════════════════════════════════════════════════════════
 escape_json() {
@@ -136,6 +193,11 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # Add feedback alerts (if any)
   if [ -n "$FEEDBACK_HINT" ]; then
     CONTEXT="${CONTEXT}\n\n--- MEMORY USAGE FEEDBACK ---\n${FEEDBACK_HINT}\n--- END FEEDBACK ---"
+  fi
+
+  # Add pre-fetched memories (project-relevant + universal)
+  if [ -n "$MEMORY_PREFETCH" ]; then
+    CONTEXT="${CONTEXT}\n\n--- MEMORY PRE-FETCH ---\n${MEMORY_PREFETCH}\n--- END PRE-FETCH ---"
   fi
 
   ESCAPED_CONTEXT=$(echo -e "$CONTEXT" | escape_json)

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  B12 Memory Backup — launchd agent template
+  Runs daily at 1:00 AM: WAL-safe sqlite3 .backup with 7-day rotation
+
+  Install:
+    1. Copy to ~/Library/LaunchAgents/com.b12.memory-backup.plist
+    2. Replace /path/to/home with your actual home directory
+    3. launchctl load ~/Library/LaunchAgents/com.b12.memory-backup.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.b12.memory-backup</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/path/to/home/.claude/hooks/memory-backup.sh</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>1</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/path/to/home/.claude/memory-logs/backup-launchd.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/home/.claude/memory-logs/backup-launchd.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
