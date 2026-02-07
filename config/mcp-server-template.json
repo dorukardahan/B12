@@ -5,6 +5,7 @@
     "command": "/path/to/memory",
     "args": ["server"],
     "env": {
+      "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
       "MCP_QUALITY_BOOST_ENABLED": "true",
       "MCP_QUALITY_BOOST_WEIGHT": "0.3",
       "MCP_CONSOLIDATION_ENABLED": "true",
