@@ -90,14 +90,14 @@ fi
 # JSON ESCAPE — single python3 call for all strings
 # ═══════════════════════════════════════════════════════════════
 escape_json() {
-  python3 -c "import sys,json; print(json.dumps(sys.stdin.read()))" 2>/dev/null | sed 's/^"//;s/"$//'
+  jq -Rs '.' 2>/dev/null | sed 's/^"//;s/"$//'
 }
 
 if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # ═══════════════════════════════════════════════════════════
   # BUILD CONTEXT — scope-aware, token-efficient
   # ═══════════════════════════════════════════════════════════
-  CONTEXT="MEMORY SYSTEM ACTIVE (mcp-memory-service v10.7.0). Setup: ${SETUP_CONTEXT}. Project: ${PROJECT_NAME} (${CWD})."
+  CONTEXT="MEMORY SYSTEM ACTIVE (mcp-memory-service v10.7.2). Setup: ${SETUP_CONTEXT}. Project: ${PROJECT_NAME} (${CWD})."
 
   # --- Compact behavioral instructions (v4 — ~120 tokens vs ~512 in v3) ---
   CONTEXT="${CONTEXT}\n\nMEMORY TOOLS: memory_search (mode=hybrid, max_response_chars=40000), memory_store (always include metadata), memory_update, memory_graph, memory_quality, memory_cleanup."

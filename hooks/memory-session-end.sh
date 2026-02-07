@@ -1,5 +1,5 @@
 #!/bin/bash
-# B12 Memory System - SessionEnd Hook (v4 — Contextual Extraction + Scope Metadata)
+# B12 Memory System - SessionEnd Hook (v5 — MCP Store + Thinking Filter)
 # Extracts decisions, errors/fixes, preferences, learnings with contextual regex + scoring
 # Produces: project summary, global summary, executive summary (5-line), rolling history
 # Fires on: clear, logout, prompt_input_exit, other
@@ -124,6 +124,10 @@ try:
                             if isinstance(block, dict):
                                 if block.get('type') == 'text' and block.get('text', '').strip():
                                     text = block['text']
+                                    # Strip thinking blocks before processing
+                                    text = re.sub(r'<(?:antml:)?thinking>.*?</(?:antml:)?thinking>', '', text, flags=re.DOTALL).strip()
+                                    if not text:
+                                        continue
                                     assistant_messages.append(text[:500])
 
                                     # Pattern matching on assistant text
@@ -363,7 +367,10 @@ SUMMARY_FILE="$SUMMARY_DIR/${PROJECT_NAME}-latest.md"
 VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
 
 if [ -f "$SUMMARY_FILE" ] && [ -x "$VENV_PYTHON" ]; then
-  $VENV_PYTHON - "$SUMMARY_FILE" "$PROJECT_NAME" "$SETUP_CONTEXT" "$SESSION_ID" 2>/dev/null << 'MEMPYEOF'
+  # Write embed script to temp file, run in background
+  # Avoids 9.4s blocking (import: 4.9s + model load: 4.5s + encode: 0.01s)
+  EMBED_SCRIPT="/tmp/b12-embed-${SESSION_ID}.py"
+  cat > "$EMBED_SCRIPT" << 'MEMPYEOF'
 import sys, os, json, hashlib, sqlite3, warnings
 warnings.filterwarnings('ignore')
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -451,6 +458,12 @@ except Exception:
     pass  # Fail silently — session logging is more important than memory storage
 
 MEMPYEOF
+  # Launch in background: subshell runs Python then cleans up temp file
+  (
+    "$VENV_PYTHON" "$EMBED_SCRIPT" "$SUMMARY_FILE" "$PROJECT_NAME" "$SETUP_CONTEXT" "$SESSION_ID"
+    rm -f "$EMBED_SCRIPT"
+  ) > /dev/null 2>&1 &
+  disown 2>/dev/null
 fi
 
 # Log session end
