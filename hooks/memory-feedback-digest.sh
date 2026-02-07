@@ -1,5 +1,5 @@
 #!/bin/bash
-# B12 Memory System - Feedback Digest Generator (v1)
+# B12 Memory System - Feedback Digest Generator (v2 — Retrieval Feedback)
 # Parses feedback.jsonl and generates feedback-digest.md
 # Designed to run weekly (via launchd or manually)
 #
@@ -100,6 +100,33 @@ stores_with_scope = sum(1 for s in stores if s.get('has_scope'))
 # Search quality
 empty_searches = sum(1 for s in searches if s.get('empty_result'))
 
+# Search pattern analysis (v2 — retrieval feedback)
+search_result_counts = [s.get('result_count', 0) for s in searches if 'result_count' in s]
+avg_result_count = sum(search_result_counts) / len(search_result_counts) if search_result_counts else 0
+
+# Search refinement: multiple searches in same session = query refinement
+session_search_counts = defaultdict(int)
+session_search_queries = defaultdict(list)
+for s in searches:
+    sid = s.get('session', '')
+    if sid:
+        session_search_counts[sid] += 1
+        qt = s.get('query_text', '')
+        if qt:
+            session_search_queries[sid].append(qt)
+
+# Sessions with refinement (2+ searches)
+refined_sessions = {sid: cnt for sid, cnt in session_search_counts.items() if cnt >= 2}
+refinement_rate = len(refined_sessions) / len(session_search_counts) * 100 if session_search_counts else 0
+
+# Repeated queries (exact same query in different sessions = important topic)
+all_queries = [s.get('query_text', '') for s in searches if s.get('query_text')]
+query_freq = defaultdict(int)
+for q in all_queries:
+    if q:
+        query_freq[q] += 1
+repeated_queries = {q: c for q, c in query_freq.items() if c >= 2}
+
 # Project distribution
 projects = defaultdict(int)
 for e in stats_entries:
@@ -138,6 +165,14 @@ if len(stores) >= 10 and len(quality_checks) == 0:
 if len(stores) >= 10 and len(updates) == 0:
     alerts.append("No memory_update calls. Update existing memories instead of creating duplicates.")
 
+# Alert: High search refinement rate
+if len(session_search_counts) >= 5 and refinement_rate > 60:
+    alerts.append(f"High search refinement rate: {refinement_rate:.0f}% of sessions refine queries. Consider improving memory content for common searches.")
+
+# Alert: Very low result counts
+if search_result_counts and avg_result_count < 1.5 and len(searches) >= 5:
+    alerts.append(f"Low average results per search ({avg_result_count:.1f}). Memory DB may need more entries.")
+
 # ═══════════════════════════════════════════════════
 # BUILD DIGEST
 # ═══════════════════════════════════════════════════
@@ -160,9 +195,10 @@ lines.append("")
 # Stats
 lines.append("## Stats")
 lines.append(f"- Stores: {len(stores)}")
-lines.append(f"- Searches: {len(searches)} ({empty_searches} empty)")
+lines.append(f"- Searches: {len(searches)} ({empty_searches} empty, avg {avg_result_count:.1f} results)")
 lines.append(f"- Updates: {len(updates)}")
 lines.append(f"- Quality checks: {len(quality_checks)}")
+lines.append(f"- Search sessions: {len(session_search_counts)} ({len(refined_sessions)} with refinement, {refinement_rate:.0f}% rate)")
 lines.append("")
 
 # Quality metrics
@@ -172,6 +208,23 @@ if stores:
     lines.append(f"- With tags: {stores_with_tags}/{len(stores)} ({stores_with_tags/len(stores)*100:.0f}%)")
     lines.append(f"- With proj: tag: {stores_with_proj_tag}/{len(stores)} ({stores_with_proj_tag/len(stores)*100:.0f}%)")
     lines.append(f"- With scope metadata: {stores_with_scope}/{len(stores)} ({stores_with_scope/len(stores)*100:.0f}%)")
+    lines.append("")
+
+# Search patterns (v2)
+if searches and (repeated_queries or refined_sessions):
+    lines.append("## Search Patterns")
+    if repeated_queries:
+        lines.append("### Frequently Searched")
+        for q, c in sorted(repeated_queries.items(), key=lambda x: -x[1])[:5]:
+            lines.append(f"- \"{q[:80]}\" ({c}x)")
+    if refined_sessions:
+        lines.append(f"### Search Refinement")
+        lines.append(f"- {len(refined_sessions)} sessions refined their queries")
+        for sid, cnt in sorted(refined_sessions.items(), key=lambda x: -x[1])[:3]:
+            queries = session_search_queries.get(sid, [])
+            lines.append(f"  - Session {sid[:8]}...: {cnt} searches")
+            for q in queries[:3]:
+                lines.append(f"    - \"{q[:60]}\"")
     lines.append("")
 
 # Project distribution

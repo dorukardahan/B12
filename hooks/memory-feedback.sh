@@ -1,11 +1,15 @@
 #!/bin/bash
-# B12 Memory System - PostToolUse Feedback Hook (v2 — Scope Tracking)
+# B12 Memory System - PostToolUse Feedback Hook (v3 — Retrieval Feedback)
 # Tracks memory tool usage patterns for quality improvement
 #
 # Fires on: mcp__memory__memory_store, mcp__memory__memory_search,
 #           mcp__memory__memory_quality, mcp__memory__memory_update
 # Output: Appends to feedback.jsonl — no additionalContext
 #
+# v3 changes (2026-02-08):
+# - Search entries now include: query_text, result_count, search_seq
+# - Per-session search sequence tracking via temp files
+# - Enables retrieval relevance analysis in weekly digest
 # v2 changes:
 # - Tracks scope compliance (has_proj_tag, has_scope metadata)
 # - Tracks memory_quality and memory_update calls
@@ -47,16 +51,29 @@ if [ "$TOOL_NAME" = "mcp__memory__memory_store" ]; then
   echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"store\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\",\"has_metadata\":$HAS_METADATA,\"has_tags\":$HAS_TAGS,\"content_length\":$CONTENT_LEN,\"has_proj_tag\":$HAS_PROJ_TAG,\"has_scope\":$HAS_SCOPE}" >> "$FEEDBACK_FILE"
 
 elif [ "$TOOL_NAME" = "mcp__memory__memory_search" ]; then
-  # Track search patterns — detect empty results
+  # Track search patterns — query text, result count, sequence, empty detection
   QUERY=$(echo "$INPUT" | jq -r '.tool_input.query // ""' 2>/dev/null)
   QUERY_LEN=${#QUERY}
-  RESULT_SNIPPET=$(echo "$INPUT" | jq -r '.tool_output // "" | tostring | .[0:200]' 2>/dev/null)
+  # Truncated query text for analysis (first 120 chars, sanitized for JSON)
+  QUERY_TEXT=$(printf '%s' "$QUERY" | head -c 120 | jq -Rs '.' 2>/dev/null | sed 's/^"//;s/"$//')
+  RESULT_SNIPPET=$(echo "$INPUT" | jq -r '.tool_output // "" | tostring | .[0:300]' 2>/dev/null)
+
+  # Parse result count from MCP output: "Found N memories"
+  RESULT_COUNT=$(echo "$RESULT_SNIPPET" | grep -oE 'Found [0-9]+ memor' | grep -oE '[0-9]+' | head -1)
+  RESULT_COUNT=${RESULT_COUNT:-0}
+
   IS_EMPTY="false"
-  if echo "$RESULT_SNIPPET" | grep -qi "no results\|no memories\|\[\]"; then
+  if [ "$RESULT_COUNT" -eq 0 ] 2>/dev/null || echo "$RESULT_SNIPPET" | grep -qi "no results\|no memories\|\[\]"; then
     IS_EMPTY="true"
   fi
 
-  echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"search\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\",\"query_length\":$QUERY_LEN,\"empty_result\":$IS_EMPTY}" >> "$FEEDBACK_FILE"
+  # Per-session search sequence tracking
+  SESSION_SEARCH_FILE="$FEEDBACK_DIR/.search-seq-${SESSION_ID}"
+  SEARCH_SEQ=$(cat "$SESSION_SEARCH_FILE" 2>/dev/null || echo "0")
+  SEARCH_SEQ=$((SEARCH_SEQ + 1))
+  echo "$SEARCH_SEQ" > "$SESSION_SEARCH_FILE"
+
+  echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"search\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\",\"query_length\":$QUERY_LEN,\"query_text\":\"$QUERY_TEXT\",\"result_count\":$RESULT_COUNT,\"search_seq\":$SEARCH_SEQ,\"empty_result\":$IS_EMPTY}" >> "$FEEDBACK_FILE"
 
 elif [ "$TOOL_NAME" = "mcp__memory__memory_quality" ]; then
   MEMORY_HASH=$(echo "$INPUT" | jq -r '.tool_input.content_hash // ""' 2>/dev/null)
@@ -74,6 +91,9 @@ if [ -f "$FEEDBACK_FILE" ]; then
     mv "$FEEDBACK_FILE.tmp" "$FEEDBACK_FILE"
   fi
 fi
+
+# Clean up stale search sequence temp files (older than 4 hours)
+find "$FEEDBACK_DIR" -name ".search-seq-*" -mmin +240 -delete 2>/dev/null || true
 
 # Always output empty JSON (PostToolUse doesn't need additionalContext)
 echo '{}'
