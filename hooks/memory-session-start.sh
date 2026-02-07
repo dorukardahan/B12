@@ -1,21 +1,25 @@
 #!/bin/bash
 # B12 Memory System - SessionStart Hook (v3)
-# Loads: user profile + last session summary + cross-project hints + memory instructions
+# Loads: user profile + session summary + cross-project hints + behavioral instructions
 # Fires on: startup, resume, compact
 #
 # Install: Copy to ~/.claude/hooks/ and chmod +x
+# Override data dir: export B12_DATA_DIR=/path/to/data
 
 INPUT=$(cat)
 SOURCE=$(echo "$INPUT" | jq -r '.source // "startup"')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 
+# Central data directory — override with B12_DATA_DIR env var for custom setups
+B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
-SUMMARY_DIR="$HOME/.claude/memory-summaries"
+SUMMARY_DIR="$B12_BASE/memory-summaries"
 
 # Derive project memory directory (same path format as Claude Code uses)
 # /Users/foo/myproject -> -Users-foo-myproject
 PROJECT_HASH=$(echo "$CWD" | sed 's|/|-|g')
-MEMORY_DIR="$HOME/.claude/projects/${PROJECT_HASH}/memory"
+MEMORY_DIR="$B12_BASE/projects/${PROJECT_HASH}/memory"
 
 # Load user profile
 USER_PROFILE=""
@@ -90,7 +94,7 @@ CONTEXT_EOF
 
 elif [ "$SOURCE" = "compact" ]; then
   # After compaction - load staged context
-  STAGING_DIR="$HOME/.claude/memory-staging"
+  STAGING_DIR="$B12_BASE/memory-staging"
   STAGED_CONTEXT=""
 
   if [ -d "$STAGING_DIR" ]; then

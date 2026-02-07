@@ -11,10 +11,13 @@ REASON=$(echo "$INPUT" | jq -r '.reason // "other"')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""')
 
+# Central data directory — override with B12_DATA_DIR env var for custom setups
+B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
-SUMMARY_DIR="$HOME/.claude/memory-summaries"
-STAGING_DIR="$HOME/.claude/memory-staging"
-LOG_DIR="$HOME/.claude/memory-logs"
+SUMMARY_DIR="$B12_BASE/memory-summaries"
+STAGING_DIR="$B12_BASE/memory-staging"
+LOG_DIR="$B12_BASE/memory-logs"
 mkdir -p "$SUMMARY_DIR" "$LOG_DIR"
 
 # Clean up staging files for this session

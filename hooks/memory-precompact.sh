@@ -1,24 +1,21 @@
 #!/bin/bash
-# B12 Memory System - PreCompact Hook (v2)
-# Extracts comprehensive context before compaction and stages it for recovery
-#
+# Memory System - PreCompact Hook (Enhanced)
+# Extracts comprehensive context before compaction
 # Fires on: auto, manual
-# Side effect: Creates staging file in ~/.claude/memory-staging/
-#
-# Install: Copy to ~/.claude/hooks/ and chmod +x
 
 INPUT=$(cat)
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 
+# Central data directory — override with B12_DATA_DIR env var for custom setups
+B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
-STAGING_DIR="$HOME/.claude/memory-staging"
+STAGING_DIR="$B12_BASE/memory-staging"
 mkdir -p "$STAGING_DIR"
 
 if [ -f "$TRANSCRIPT_PATH" ]; then
-  # IMPORTANT: Use `python3 -` to read script from stdin via heredoc.
-  # `python3 << 'EOF' "$ARG"` is WRONG — Python interprets $ARG as the script file.
   python3 - "$TRANSCRIPT_PATH" "$PROJECT_NAME" "$SESSION_ID" "$STAGING_DIR" << 'PYEOF'
 import sys, json, os
 
@@ -29,6 +26,7 @@ staging_dir = sys.argv[4]
 
 user_messages = []
 assistant_messages = []
+decisions = []
 files_modified = set()
 
 try:

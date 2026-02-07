@@ -13,8 +13,11 @@ TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 
+# Central data directory — override with B12_DATA_DIR env var for custom setups
+B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
-FEEDBACK_DIR="$HOME/.claude/memory-logs"
+FEEDBACK_DIR="$B12_BASE/memory-logs"
 FEEDBACK_FILE="$FEEDBACK_DIR/feedback.jsonl"
 TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
