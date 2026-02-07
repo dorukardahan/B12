@@ -35,6 +35,18 @@
           }
         ]
       }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__memory__memory_store|mcp__memory__memory_search",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-feedback.sh",
+            "timeout": 3
+          }
+        ]
+      }
     ]
   }
 }

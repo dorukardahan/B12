@@ -44,9 +44,11 @@ mcp-memory-service (MCP Server)
 
 | Component | Description |
 |-----------|-------------|
-| `hooks/memory-session-start.sh` | Injects user profile + last session summary + memory instructions |
+| `hooks/memory-session-start.sh` | Injects user profile + session summary + cross-project hints + behavioral instructions |
 | `hooks/memory-precompact.sh` | Parses full transcript, stages comprehensive context before compaction |
-| `hooks/memory-session-end.sh` | Extracts session summary, maintains rolling history, logs metadata |
+| `hooks/memory-session-end.sh` | Structured extraction: decisions, errors/fixes, learnings, preferences from transcript |
+| `hooks/memory-feedback.sh` | PostToolUse hook — tracks memory store/search usage patterns |
+| `hooks/memory-consolidate.py` | Dedup, stale detection, cross-project index generation |
 | `templates/user-profile.md` | Template for user profile (Claude updates it as it learns about you) |
 | `config/settings-template.json` | Hook configuration template for Claude Code settings |
 | `config/mcp-server-template.json` | MCP server configuration template |
@@ -123,6 +125,16 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 
 ## Changelog
 
+### v3 (2026-02-07)
+
+- **SessionEnd v3**: Structured extraction — regex-based detection of decisions, errors/fixes, learnings, user preferences
+- **SessionStart v3**: Cross-project topic hints loaded from index, enhanced behavioral instructions with typed memories
+- **New**: PostToolUse feedback hook (`memory-feedback.sh`) — tracks store/search patterns, empty result detection
+- **New**: Consolidation script (`memory-consolidate.py`) — Jaccard dedup, stale detection, cross-project index
+- **New**: MCP server env vars — quality_boost, consolidation, decay, retention, forgetting, clustering, associations
+- **Change**: Behavioral instructions now reference all 6 memory tool types (was: only store + search)
+- **Change**: Memory types defined: architecture, decision, pattern, gotcha, progress, preference
+
 ### v2 (2026-02-07)
 
 - **SessionEnd**: Now extracts comprehensive session summaries from transcript (was: just logging)
@@ -143,11 +155,11 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 
 ## Roadmap
 
-- [ ] PostToolUse hook for tracking search failures (feedback loop)
+- [x] ~~PostToolUse hook for tracking search failures (feedback loop)~~ — Done in v3
+- [x] ~~Memory consolidation (merge similar entries)~~ — Done in v3
 - [ ] Usage-based relevance scoring (promote frequently accessed memories)
 - [ ] Auto-archiving of stale memories
 - [ ] Multilingual embedding model upgrade
-- [ ] Memory consolidation (merge similar entries)
 - [ ] 0G Storage + Compute/TEE integration for decentralized private memory
 - [ ] Web dashboard for memory visualization
 
