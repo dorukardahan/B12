@@ -59,12 +59,35 @@ def get_all_memories(conn):
     return [dict(zip(columns, row)) for row in cursor.fetchall()]
 
 
+def get_project_tag(mem):
+    """Extract project name from proj: tag or metadata."""
+    tags = [t.strip() for t in (mem.get('tags') or '').split(',') if t.strip()]
+    for tag in tags:
+        if tag.startswith('proj:'):
+            return tag[5:]
+    # Fallback to metadata
+    try:
+        meta = mem.get('metadata', '{}')
+        if isinstance(meta, str):
+            meta = json.loads(meta)
+        return meta.get('project', '')
+    except (json.JSONDecodeError, TypeError):
+        return ''
+
+
 def find_duplicates(memories):
-    """Find near-duplicate pairs using Jaccard similarity."""
+    """Find near-duplicate pairs using Jaccard similarity.
+    Only compares memories within the same project scope."""
     duplicates = []
     n = len(memories)
     for i in range(n):
         for j in range(i + 1, n):
+            # Skip cross-project comparisons
+            proj_a = get_project_tag(memories[i])
+            proj_b = get_project_tag(memories[j])
+            if proj_a and proj_b and proj_a != proj_b:
+                continue
+
             sim = jaccard_similarity(memories[i]['content'], memories[j]['content'])
             if sim >= SIMILARITY_THRESHOLD:
                 duplicates.append({
@@ -221,44 +244,66 @@ def print_report(memories, duplicates, stale, short):
 
 
 def build_cross_project_index(memories):
-    """Build topic→projects mapping from memory tags and content."""
-    # Extract project names from tags (common pattern: project name as tag)
+    """Build topic→projects mapping using scope-aware tag namespaces.
+
+    Tag namespaces (v4):
+      proj:<name>     — project-specific
+      user:<setup>    — setup-specific (personal/work)
+      user:universal  — applies everywhere
+      user:pref       — user preferences
+    """
+    # topic → {project_name: count}
     project_topics = defaultdict(lambda: defaultdict(int))
 
     for mem in memories:
         tags = [t.strip() for t in (mem.get('tags') or '').split(',') if t.strip()]
         content = mem.get('content', '')
 
-        # Try to find project references in tags and content
+        # Extract project names from proj: tags
         projects = set()
         for tag in tags:
-            # Tags that look like project names (not generic topics)
-            if tag not in ('note', 'observation', 'decision', 'reference',
-                          'bug', 'fix', 'lesson-learned', 'preference',
-                          'architecture', 'pattern', 'gotcha', 'progress'):
-                projects.add(tag)
+            if tag.startswith('proj:'):
+                projects.add(tag[5:])  # strip "proj:" prefix
 
-        # Extract topics (all tags are topics)
-        topics = set(tags)
+        # If no proj: tag, try metadata
+        if not projects:
+            try:
+                meta = mem.get('metadata', '{}')
+                if isinstance(meta, str):
+                    meta = json.loads(meta)
+                proj = meta.get('project', '')
+                if proj and proj != 'global':
+                    projects.add(proj)
+            except (json.JSONDecodeError, TypeError):
+                pass
 
-        # Also extract key phrases from content (first 200 chars)
-        snippet = content[:200].lower()
-        # Common tech topic patterns
+        # Skip memories with no project association
+        if not projects:
+            continue
+
+        # Extract topics: non-namespace tags + content keywords
+        topics = set()
+        for tag in tags:
+            if not tag.startswith(('proj:', 'user:')):
+                topics.add(tag)
+
+        # Content-based topic extraction
+        snippet = content[:300].lower()
         for keyword in ['docker', 'git', 'ssh', 'python', 'typescript', 'react',
                        'api', 'database', 'sqlite', 'mcp', 'hook', 'memory',
-                       'deploy', 'test', 'auth', 'ci/cd', 'nginx', 'redis']:
+                       'deploy', 'test', 'auth', 'ci/cd', 'nginx', 'redis',
+                       'plugin', 'config', 'migration', 'performance', 'security']:
             if keyword in snippet:
                 topics.add(keyword)
 
         for project in projects:
             for topic in topics:
-                if topic != project:
-                    project_topics[topic][project] += 1
+                project_topics[topic][project] += 1
 
     # Build the index
     index = {}
     for topic, projects_map in sorted(project_topics.items()):
-        if projects_map:
+        if len(projects_map) > 0:
             index[topic] = dict(sorted(projects_map.items(), key=lambda x: -x[1]))
 
     return index
