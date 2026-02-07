@@ -353,6 +353,106 @@ with open(history_file, 'w') as f:
 PYEOF
 fi
 
+# ═══════════════════════════════════════════════════════════════
+# STORE SESSION SUMMARY TO MCP MEMORY (v5 addition)
+# Uses venv Python with SentenceTransformer + sqlite-vec
+# Only stores sessions with meaningful content (decisions/errors/learnings)
+# ═══════════════════════════════════════════════════════════════
+
+SUMMARY_FILE="$SUMMARY_DIR/${PROJECT_NAME}-latest.md"
+VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
+
+if [ -f "$SUMMARY_FILE" ] && [ -x "$VENV_PYTHON" ]; then
+  $VENV_PYTHON - "$SUMMARY_FILE" "$PROJECT_NAME" "$SETUP_CONTEXT" "$SESSION_ID" 2>/dev/null << 'MEMPYEOF'
+import sys, os, json, hashlib, sqlite3, warnings
+warnings.filterwarnings('ignore')
+os.environ['TOKENIZERS_PARALLELISM'] = 'false'
+
+summary_file = sys.argv[1]
+project_name = sys.argv[2]
+setup_context = sys.argv[3]
+session_id = sys.argv[4]
+
+with open(summary_file, 'r') as f:
+    content = f.read().strip()
+
+# Skip trivial sessions (too short or no insights)
+if len(content) < 100:
+    sys.exit(0)
+
+INSIGHT_SECTIONS = ['## Decisions Made', '## Errors & Fixes', '## Key Learnings', '## User Preferences Observed']
+has_insights = any(s in content for s in INSIGHT_SECTIONS)
+if not has_insights:
+    sys.exit(0)
+
+content_hash = hashlib.sha256(content.encode()).hexdigest()
+DB_PATH = os.path.expanduser("~/Library/Application Support/mcp-memory/sqlite_vec.db")
+if not os.path.exists(DB_PATH):
+    sys.exit(0)
+
+try:
+    import sqlite_vec
+    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
+
+    # Skip if already stored (duplicate hash)
+    if conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (content_hash,)).fetchone():
+        conn.close()
+        sys.exit(0)
+
+    from sentence_transformers import SentenceTransformer
+    import numpy as np
+    from datetime import datetime, timezone
+
+    model_name = os.environ.get('MCP_EMBEDDING_MODEL', 'paraphrase-multilingual-MiniLM-L12-v2')
+    model = SentenceTransformer(model_name, device='cpu')
+    embedding = model.encode([content], convert_to_numpy=True)[0]
+    embedding_bytes = embedding.astype(np.float32).tobytes()
+
+    now = datetime.now(timezone.utc)
+    tags = f"proj:{project_name},user:{setup_context},session-summary,{now.strftime('%Y-%m')}"
+
+    # Importance scoring based on content richness
+    importance = 1.0
+    for section in INSIGHT_SECTIONS:
+        if section in content:
+            importance += 0.25
+    importance = min(importance, 2.0)
+
+    metadata = json.dumps({
+        "project": project_name,
+        "setup": setup_context,
+        "scope": "project",
+        "type": "session-summary",
+        "session_id": session_id[:12],
+        "importance_score": importance
+    })
+
+    conn.execute("""
+        INSERT INTO memories (content, content_hash, tags, memory_type, metadata,
+                              created_at, updated_at, created_at_iso, updated_at_iso)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    """, (content, content_hash, tags, 'session_summary', metadata,
+          now.timestamp(), now.timestamp(), now.isoformat(), now.isoformat()))
+
+    row_id = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (content_hash,)).fetchone()[0]
+
+    conn.execute("""
+        INSERT INTO memory_embeddings (rowid, content_embedding)
+        VALUES (?, ?)
+    """, (row_id, embedding_bytes))
+
+    conn.commit()
+    conn.close()
+
+except Exception:
+    pass  # Fail silently — session logging is more important than memory storage
+
+MEMPYEOF
+fi
+
 # Log session end
 echo "{\"session\":\"$SESSION_ID\",\"project\":\"$PROJECT_NAME\",\"setup\":\"$SETUP_CONTEXT\",\"reason\":\"$REASON\",\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >> "$LOG_DIR/sessions.jsonl"
 
