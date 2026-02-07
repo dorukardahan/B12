@@ -367,9 +367,12 @@ SUMMARY_FILE="$SUMMARY_DIR/${PROJECT_NAME}-latest.md"
 VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
 
 if [ -f "$SUMMARY_FILE" ] && [ -x "$VENV_PYTHON" ]; then
-  # Write embed script to temp file, run in background
+  # Clean up any orphaned embed scripts from previous sessions
+  find "$LOG_DIR" -name "embed-*.py" -mmin +30 -delete 2>/dev/null
+
+  # Write embed script to LOG_DIR (not /tmp/ — system cleanup could race)
   # Avoids 9.4s blocking (import: 4.9s + model load: 4.5s + encode: 0.01s)
-  EMBED_SCRIPT="/tmp/b12-embed-${SESSION_ID}.py"
+  EMBED_SCRIPT="$LOG_DIR/embed-${SESSION_ID}.py"
   cat > "$EMBED_SCRIPT" << 'MEMPYEOF'
 import sys, os, json, hashlib, sqlite3, warnings
 warnings.filterwarnings('ignore')
@@ -450,6 +453,22 @@ try:
         INSERT INTO memory_embeddings (rowid, content_embedding)
         VALUES (?, ?)
     """, (row_id, embedding_bytes))
+
+    # Link to previous session summary for this project (temporal chain)
+    prev = conn.execute("""
+        SELECT content_hash FROM memories
+        WHERE memory_type = 'session_summary'
+          AND tags LIKE ?
+          AND content_hash != ?
+        ORDER BY created_at DESC LIMIT 1
+    """, (f'%proj:{project_name}%', content_hash)).fetchone()
+
+    if prev:
+        conn.execute("""
+            INSERT OR IGNORE INTO memory_graph
+            (source_hash, target_hash, similarity, connection_types, metadata, created_at, relationship_type)
+            VALUES (?, ?, 0.5, '["temporal","session_sequence"]', ?, ?, 'follows')
+        """, (content_hash, prev[0], json.dumps({"project": project_name}), now.timestamp()))
 
     conn.commit()
     conn.close()

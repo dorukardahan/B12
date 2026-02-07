@@ -30,8 +30,8 @@ echo "[2/3] Patching response_limiter import in: $MEMORY_PY"
 # Location: inside the `if max_response_chars:` block
 
 if grep -q 'from \.\.\.utils\.response_limiter' "$MEMORY_PY"; then
-  sed -i '' 's/from \.\.\.utils\.response_limiter/from ..utils.response_limiter/g' "$MEMORY_PY"
-  echo "  Fixed: ...utils -> ..utils"
+  sed -i '' '/response_limiter/s/from \.\.\.utils/from ..utils/g' "$MEMORY_PY"
+  echo "  Fixed: ...utils -> ..utils (response_limiter only)"
 elif grep -q 'from \.\.utils\.response_limiter' "$MEMORY_PY"; then
   echo "  Already patched (..utils) - no change needed"
 else
