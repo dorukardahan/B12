@@ -233,13 +233,37 @@ elif [ "$SOURCE" = "compact" ]; then
   # Always include scope context after compaction
   SCOPE_REMINDER="Setup: ${SETUP_CONTEXT} | Project: ${PROJECT_NAME}. Scope tags: proj:${PROJECT_NAME}, user:${SETUP_CONTEXT}."
 
+  # Load working memory (active files, modified files, search patterns)
+  WORKING_MEM=""
+  WM_FILE="$STAGING_DIR/working-memory.json"
+  if [ -f "$WM_FILE" ] && command -v jq &>/dev/null; then
+    WM_AGE=$(( $(date +%s) - $(stat -f %m "$WM_FILE" 2>/dev/null || echo "0") ))
+    # Only use if updated within last 2 hours (same session)
+    if [ "$WM_AGE" -lt 7200 ]; then
+      WM_MODIFIED=$(jq -r '.modified_files // [] | .[0:8] | join(", ")' "$WM_FILE" 2>/dev/null)
+      WM_ACTIVE=$(jq -r '.active_files // [] | .[0:8] | join(", ")' "$WM_FILE" 2>/dev/null)
+      WM_SEARCH=$(jq -r '.search_patterns // [] | .[0:5] | join(", ")' "$WM_FILE" 2>/dev/null)
+      if [ -n "$WM_MODIFIED" ] || [ -n "$WM_ACTIVE" ]; then
+        WORKING_MEM="WORKING MEMORY (conversation momentum):"
+        [ -n "$WM_MODIFIED" ] && WORKING_MEM="${WORKING_MEM}\n  Modified: ${WM_MODIFIED}"
+        [ -n "$WM_ACTIVE" ] && WORKING_MEM="${WORKING_MEM}\n  Active: ${WM_ACTIVE}"
+        [ -n "$WM_SEARCH" ] && WORKING_MEM="${WORKING_MEM}\n  Searched: ${WM_SEARCH}"
+      fi
+    fi
+  fi
+
   if [ -n "$STAGED_CONTEXT" ]; then
     ESCAPED=$(echo "$STAGED_CONTEXT" | escape_json)
+    WM_ESCAPED=""
+    if [ -n "$WORKING_MEM" ]; then
+      WM_ESCAPED=$(printf '%b' "$WORKING_MEM" | escape_json)
+      WM_ESCAPED="\\n${WM_ESCAPED}"
+    fi
     cat <<CONTEXT_EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "MEMORY SYSTEM: Context compacted. ${SCOPE_REMINDER}\nPre-compaction summary:\n${ESCAPED}\n\nStore key learnings to permanent memory. Update user-profile.md if needed. Continue working."
+    "additionalContext": "MEMORY SYSTEM: Context compacted. ${SCOPE_REMINDER}${WM_ESCAPED}\nPre-compaction summary:\n${ESCAPED}\n\nStore key learnings to permanent memory. Update user-profile.md if needed. Continue working."
   }
 }
 CONTEXT_EOF
@@ -253,11 +277,16 @@ CONTEXT_EOF
       FALLBACK="${FALLBACK}LAST SESSION:\n$(echo "$LAST_SESSION" | escape_json)"
     fi
 
+    WM_ESCAPED=""
+    if [ -n "$WORKING_MEM" ]; then
+      WM_ESCAPED=$(printf '%b' "$WORKING_MEM" | escape_json)
+      WM_ESCAPED="\\n${WM_ESCAPED}"
+    fi
     cat <<CONTEXT_EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "MEMORY SYSTEM: Context compacted. ${SCOPE_REMINDER}\nSearch memory for context about current task.\n\n${FALLBACK}\n\nContinue where you left off."
+    "additionalContext": "MEMORY SYSTEM: Context compacted. ${SCOPE_REMINDER}${WM_ESCAPED}\nSearch memory for context about current task.\n\n${FALLBACK}\n\nContinue where you left off."
   }
 }
 CONTEXT_EOF
