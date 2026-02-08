@@ -1,10 +1,11 @@
 #!/bin/bash
-# B12 Memory System - UserPromptSubmit Memory Retrieval Hook (v1)
+# B12 Memory System - UserPromptSubmit Memory Retrieval Hook (v2 — Decay-Aware)
 # Searches memory DB on every user message and injects relevant context
-# Uses FTS5 keyword search (fast, no embedding model needed)
+# Uses FTS5 keyword search + Ebbinghaus decay scoring + strength boost
 #
 # Fires on: every user prompt
 # Output: additionalContext with relevant memories (max 3)
+# Side effect: boosts strength of retrieved memories (spaced repetition)
 # Performance target: <200ms
 
 INPUT=$(cat)
@@ -54,18 +55,42 @@ fi
 # Build FTS5 query: OR between keywords for broader matching
 FTS_QUERY=$(echo "$KEYWORDS" | sed 's/ / OR /g')
 
-# Search memory DB via FTS5 — exclude session summaries, limit to 3
+# Search memory DB via FTS5 + Ebbinghaus decay + importance scoring
+# Combined score = 0.3*decay + 0.3*importance + 0.4*relevance(FTS5 rank)
 RESULTS=$(sqlite3 "$DB_PATH" "
   SELECT '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
   FROM memories m
   JOIN memory_fts f ON m.id = f.rowid
   WHERE f.memory_fts MATCH '${FTS_QUERY}'
     AND m.deleted_at IS NULL
+    AND m.valid_until IS NULL
     AND m.memory_type != 'session_summary'
     AND m.tags NOT LIKE '%session-summary%'
-  ORDER BY f.rank
+  ORDER BY (
+    0.3 * COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / COALESCE(m.strength, 1.0)), 0.5)
+    + 0.3 * COALESCE(json_extract(m.metadata, '$.importance_score'), 1.0) / 2.0
+    + 0.4 * (1.0 / (1.0 + abs(f.rank)))
+  ) DESC
   LIMIT 3
 " 2>/dev/null)
+
+# Boost strength of retrieved memories (spaced repetition effect)
+if [ -n "$RESULTS" ]; then
+  sqlite3 "$DB_PATH" "
+    UPDATE memories
+    SET strength = min(COALESCE(strength, 1.0) + 0.3, 5.0),
+        last_accessed_at = unixepoch('now')
+    WHERE id IN (
+      SELECT m.id FROM memories m
+      JOIN memory_fts f ON m.id = f.rowid
+      WHERE f.memory_fts MATCH '${FTS_QUERY}'
+        AND m.deleted_at IS NULL
+        AND m.valid_until IS NULL
+        AND m.memory_type != 'session_summary'
+      ORDER BY f.rank LIMIT 3
+    )
+  " 2>/dev/null
+fi
 
 # No results — exit silently
 if [ -z "$RESULTS" ]; then
