@@ -5,53 +5,100 @@ A local-first, fully automated, cross-project memory system for Claude Code CLI.
 ## What it does
 
 - Automatically stores important decisions, patterns, and learnings during work
-- Recalls relevant context at the start of every session
+- Recalls relevant context at the start of every session using Ebbinghaus decay scoring
 - Preserves key information before context compaction
 - Carries session summaries forward so the next session knows what happened
 - Maintains a user profile that Claude updates as it learns your preferences
 - Works across multiple projects with a single shared memory database
 - Requires zero manual intervention — Claude handles memory silently
+- Protects against SQL injection in all user-facing inputs
+- Tracks conversation momentum (active/modified files) across compactions
+- Self-improves: unused memories decay, frequently accessed ones strengthen
 
 ## Architecture
 
 ```
 Claude Code Session
     |
-    |-- SessionStart Hook ──> Injects: user profile
-    |                          + last session summary
-    |                          + memory instructions
+    |── SessionStart ────────> Inject: user profile + last session summary
+    |                           + scope instructions + memory pre-fetch
+    |                           + cross-project hints + feedback alerts
     |
-    |-- [Claude works, uses memory MCP tools silently]
+    |── UserPromptSubmit ────> Ebbinghaus decay-aware memory retrieval
+    |                           (FTS5 hybrid: 0.3×decay + 0.3×importance + 0.4×BM25)
     |
-    |-- PreCompact Hook ────> Stages comprehensive transcript summary
-    |                          (15 user msgs + 10 assistant outputs + files)
+    |── PreToolUse ──────────> Auto-inject scope tags on memory_store
+    |                           (proj:<name>, user:<setup>)
     |
-    |-- SessionStart(compact) > Recovers staged context, stores to memory
+    |── [Claude works, uses memory MCP tools silently]
     |
-    |-- SessionEnd Hook ────> Extracts session summary (latest + rolling history)
-    |                          + logs metadata + cleanup
+    |── PostToolUse ─────────> Track memory usage patterns (feedback)
+    |                         + Track active/modified files (Working Memory)
+    |
+    |── PreCompact ──────────> Stage comprehensive transcript summary
+    |                           (priority-weighted, token-budgeted)
+    |
+    |── SessionStart(compact) > Recover staged context + Working Memory
+    |
+    |── SessionEnd ──────────> Extract session summary (latest + rolling)
+    |                           + micro-memory extraction via write-time merge
+    |                           + background embedding generation
     v
 mcp-memory-service (MCP Server)
     |
-    |-- SQLite-vec (local database)
-    |-- MiniLM-L6-v2 ONNX (local embeddings, no API calls)
-    |-- Quality scoring (ONNX ranker)
-    |-- Graph associations
-    |-- Auto-backup
+    |── SQLite-vec (local database)
+    |── FTS5 hybrid search (BM25 keyword + vector cosine, 70/30 weight)
+    |── MiniLM-L12-v2 ONNX (local embeddings, no API calls)
+    |── Ebbinghaus strength decay (spaced repetition)
+    |── Write-time semantic merge (cosine > 0.85 = merge, not duplicate)
+    |── Graph associations
+    |── Auto-backup (daily, 7-day rotation)
 ```
 
 ## Components
 
-| Component | Description |
-|-----------|-------------|
-| `hooks/memory-session-start.sh` | Injects user profile + session summary + cross-project hints + behavioral instructions |
-| `hooks/memory-precompact.sh` | Parses full transcript, stages comprehensive context before compaction |
-| `hooks/memory-session-end.sh` | Structured extraction: decisions, errors/fixes, learnings, preferences from transcript |
-| `hooks/memory-feedback.sh` | PostToolUse hook — tracks memory store/search usage patterns |
-| `hooks/memory-consolidate.py` | Dedup, stale detection, cross-project index generation |
-| `templates/user-profile.md` | Template for user profile (Claude updates it as it learns about you) |
-| `config/settings-template.json` | Hook configuration template for Claude Code settings |
-| `config/mcp-server-template.json` | MCP server configuration template |
+### Hooks (lifecycle automation)
+
+| Hook | Event | Description |
+|------|-------|-------------|
+| `memory-session-start.sh` | SessionStart | Injects user profile, session summary, scope instructions, memory pre-fetch, cross-project hints, feedback alerts. Handles startup, resume, and compact modes |
+| `memory-retrieval.sh` | UserPromptSubmit | Ebbinghaus decay-aware retrieval — extracts keywords, FTS5 hybrid scoring, strength boost for top results |
+| `memory-tag-enforce.sh` | PreToolUse | Auto-injects `proj:<name>` and `user:<setup>` scope tags on `memory_store` calls |
+| `memory-precompact.sh` | PreCompact | Priority-weighted transcript extraction with token budget (~8000 chars). Stages context for post-compaction recovery |
+| `memory-session-end.sh` | SessionEnd | Structured extraction of decisions, errors/fixes, learnings, preferences. Background embedding. Write-time semantic merge for micro-memories |
+| `memory-feedback.sh` | PostToolUse | Tracks memory store/search usage patterns, empty result detection, scope compliance |
+| `memory-working-context.sh` | PostToolUse | Tracks active files, modified files, search patterns during conversation. Persists to working-memory.json for post-compaction recovery |
+| `memory-consolidate.py` | Scheduled | Dedup (Jaccard similarity), stale detection, cross-project index generation |
+| `memory-quality-audit.sh` | Scheduled | Weekly health score — type distribution, scope compliance, strength distribution, orphan detection |
+| `memory-feedback-digest.sh` | Scheduled | Weekly digest — search patterns, refinement detection, self-improving retrieval (strength decay for unused memories) |
+| `memory-backup.sh` | Scheduled | Daily WAL-safe backup with 7-day rotation and integrity check |
+| `memory-upgrade.sh` | Manual | pipx upgrade + FTS5 patch check + bytecache clear |
+| `memory-browse.sh` | Manual | CLI browser — search, stats, CRUD, tag filter. SQL-sanitized inputs |
+
+### Scripts (support modules)
+
+| Script | Description |
+|--------|-------------|
+| `scripts/write-time-merge.py` | Semantic dedup at write time — cosine similarity > 0.85 triggers content merge instead of INSERT. Handles graph hash rewriting and vec0 table upsert |
+| `scripts/ebbinghaus.py` | Ebbinghaus decay scoring utilities — half-life calculation, strength-based retention |
+| `scripts/migrate-ebbinghaus.py` | Migration script — adds `strength` and `last_accessed_at` fields to existing DB |
+
+### Config templates
+
+| File | Description |
+|------|-------------|
+| `config/settings-template.json` | Full hook configuration for `~/.claude/settings.json` — all 7 hook events |
+| `config/mcp-server-template.json` | MCP server configuration for `~/.claude.json` |
+| `config/launchd-backup.plist` | Daily backup agent (1:00 AM) |
+| `config/launchd-consolidate.plist` | Daily consolidation agent (2:00 AM) |
+| `config/launchd-feedback-digest.plist` | Weekly digest agent (Monday 3:00 AM) |
+| `config/launchd-quality-audit.plist` | Weekly quality audit agent (Wednesday 3:00 AM) |
+
+### Other
+
+| File | Description |
+|------|-------------|
+| `templates/user-profile.md` | Template for user profile — Claude updates it as it learns about you |
 | `docs/architecture.md` | Detailed architecture and design decisions |
 | `docs/setup.md` | Step-by-step installation guide |
 
@@ -64,7 +111,17 @@ pipx install mcp-memory-service
 # Verify: memory --version
 ```
 
-### 2. Add MCP server to your Claude Code config
+### 2. Run the installer
+
+```bash
+git clone https://github.com/youruser/B12.git
+cd B12
+chmod +x install.sh
+./install.sh              # Install to ~/.claude (default)
+# or: ./install.sh --all  # Install to all ~/.claude* setups
+```
+
+### 3. Add MCP server to your Claude Code config
 
 Add to `~/.claude.json` under `mcpServers`:
 
@@ -78,40 +135,59 @@ Add to `~/.claude.json` under `mcpServers`:
 }
 ```
 
-### 3. Copy hooks and create directories
+Replace `/path/to/memory` with the output of `which memory`.
 
-```bash
-mkdir -p ~/.claude/hooks ~/.claude/memory-staging ~/.claude/memory-logs ~/.claude/memory-summaries
-cp hooks/*.sh ~/.claude/hooks/
-chmod +x ~/.claude/hooks/memory-*.sh
-```
-
-### 4. Add hooks to settings
-
-Merge the contents of `config/settings-template.json` into your `~/.claude/settings.json`.
-
-### 5. Create user profile (optional)
-
-```bash
-# project-hash = CWD with / replaced by -
-mkdir -p ~/.claude/projects/-Users-$(whoami)/memory
-cp templates/user-profile.md ~/.claude/projects/-Users-$(whoami)/memory/user-profile.md
-# Edit with your preferences — Claude will also update it over time
-```
-
-### 6. Restart Claude Code
+### 4. Restart Claude Code
 
 The memory system activates on the next session start. After your first session ends, check `~/.claude/memory-summaries/` for the generated summary.
 
-## 5 layers of memory
+### 5. Optional — Set up automated tasks
+
+Copy the launchd plists to enable daily backup, consolidation, and weekly quality audits:
+
+```bash
+# Replace /path/to/home with your actual home directory in each plist
+cp config/launchd-*.plist ~/Library/LaunchAgents/
+# Edit each plist to replace /path/to/home
+launchctl load ~/Library/LaunchAgents/com.b12.memory-*.plist
+```
+
+See `docs/setup.md` for the full installation guide.
+
+## Memory layers
 
 | Layer | What | Where | Best for |
 |-------|------|-------|----------|
-| **MEMORY.md** | Built-in auto-memory | `~/.claude/projects/*/memory/` | Stable project knowledge |
-| **mcp-memory-service** | Semantic search DB | `~/Library/Application Support/mcp-memory/` | Detailed learnings, decisions |
+| **MEMORY.md** | Built-in auto-memory | `~/.claude/projects/*/memory/` | Stable project knowledge (current state) |
+| **mcp-memory-service** | Semantic search DB | `~/Library/Application Support/mcp-memory/` | Detailed learnings, decisions (historical) |
 | **Smart hooks** | Lifecycle automation | `~/.claude/hooks/` | Glue between all layers |
 | **Session summaries** | Per-project latest + history | `~/.claude/memory-summaries/` | Short-term continuity |
 | **User profile** | Persistent identity | `~/.claude/projects/*/memory/user-profile.md` | Personalization |
+| **Working Memory** | Conversation momentum | `~/.claude/memory-staging/working-memory.json` | Post-compaction recovery |
+
+## Key features
+
+### Ebbinghaus decay scoring
+Every memory has a `strength` field (0.3–5.0). Frequently retrieved memories get stronger (+0.3 per retrieval, max 5.0). Unused memories decay weekly (-0.05, min 0.3). Retrieval scoring combines: `0.3 × decay + 0.3 × importance + 0.4 × FTS5 relevance`.
+
+### FTS5 hybrid search
+Combines BM25 keyword search with vector cosine similarity (70/30 weight). Auto-synced via SQLite triggers — no manual reindexing needed.
+
+### Write-time semantic merge
+When storing a new memory, if an existing memory has cosine similarity > 0.85, the content is merged instead of creating a duplicate. Handles graph hash rewriting for association integrity.
+
+### Scope system
+4 scopes for organizing memories:
+- **project**: Codebase-specific (architecture, decisions, bugs) — tag: `proj:<name>`
+- **universal**: Applies everywhere (patterns, CLI tricks, lessons) — tag: `user:universal`
+- **preference**: User preferences (always global) — tag: `user:pref`
+- **setup**: Team/workflow specific — tag: `user:<setup-name>`
+
+### Working Memory
+Tracks which files you're reading, editing, and searching during a conversation. After context compaction, this momentum is restored so Claude doesn't lose track of what you were working on.
+
+### SQL injection protection
+All user-facing inputs (search queries, hash prefixes, project names) are sanitized before touching SQLite. Character stripping and type-specific validation at every entry point.
 
 ## Multi-setup support
 
@@ -122,8 +198,41 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 - **Database** is shared — memories from any project are available everywhere
 - **Session summaries** are per-project, so they don't overwrite each other
 - **Hook config** needs to be added to each setup's `settings.json`
+- **Install**: `./install.sh --all` handles multiple setups
 
 ## Changelog
+
+### v7 (2026-02-08)
+
+- **SQL injection protection**: All user inputs sanitized in retrieval, browse, and tag-enforce hooks
+- **Write-time semantic merge**: New `scripts/write-time-merge.py` — cosine > 0.85 triggers merge. Integrated into SessionEnd micro-memory extraction with graceful degradation
+- **Self-improving retrieval**: Weekly strength decay in feedback-digest (-0.05 for memories not accessed in 7 days, min 0.3)
+- **Working Memory**: New PostToolUse hook tracks active/modified files and search patterns. Loaded by SessionStart after compaction
+- **Bug fixes**: CTE alignment for strength boost, printf '%b' POSIX fix, valid_until IS NULL filter, deleted_at IS NULL in quality audit, error logging in PreCompact, narrowed slash command regex
+
+### v6 (2026-02-08)
+
+- **SessionStart v5**: Memory pre-fetch via FTS5 + tag-based queries (project-relevant + universal). No embedding model needed at startup
+- **Ebbinghaus decay integration**: Combined scoring in retrieval (0.3×decay + 0.3×importance + 0.4×FTS5)
+- **Strength boost**: Top 3 retrieved memories get +0.3 strength per access (max 5.0)
+
+### v5 (2026-02-08)
+
+- **FTS5 hybrid search**: `memory_fts` table with 4 auto-sync triggers. BM25 keyword + vector cosine (70/30 weight) in retrieve/recall
+- **New**: `scripts/ebbinghaus.py` — decay scoring utilities
+- **New**: `scripts/migrate-ebbinghaus.py` — adds strength/last_accessed_at fields
+
+### v4 (2026-02-08)
+
+- **Scope system**: 4 scopes (project, universal, preference, setup) with tag namespaces
+- **SessionStart v4**: Setup detection (personal vs work), scope-aware instructions, compressed behavioral instructions (~120 tokens vs ~512 in v3)
+- **New**: PreToolUse tag enforcement hook (`memory-tag-enforce.sh`)
+- **New**: UserPromptSubmit retrieval hook (`memory-retrieval.sh`)
+- **New**: Quality audit hook (`memory-quality-audit.sh`)
+- **New**: Backup hook (`memory-backup.sh`)
+- **New**: Browse CLI (`memory-browse.sh`)
+- **New**: Upgrade script (`memory-upgrade.sh`)
+- **Change**: Dual-layer deconfliction (MEMORY.md = active state, MCP = historical)
 
 ### v3 (2026-02-07)
 
@@ -131,37 +240,30 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 - **SessionStart v3**: Cross-project topic hints loaded from index, enhanced behavioral instructions with typed memories
 - **New**: PostToolUse feedback hook (`memory-feedback.sh`) — tracks store/search patterns, empty result detection
 - **New**: Consolidation script (`memory-consolidate.py`) — Jaccard dedup, stale detection, cross-project index
-- **New**: MCP server env vars — quality_boost, consolidation, decay, retention, forgetting, clustering, associations
-- **Change**: Behavioral instructions now reference all 6 memory tool types (was: only store + search)
-- **Change**: Memory types defined: architecture, decision, pattern, gotcha, progress, preference
 
 ### v2 (2026-02-07)
 
-- **SessionEnd**: Now extracts comprehensive session summaries from transcript (was: just logging)
-- **PreCompact**: Full transcript parsing with 15 user msgs + 10 assistant outputs (was: tail -100, 5 msgs)
-- **SessionStart**: Loads user profile + last session summary (was: basic instructions only)
-- **New**: User profile template (`templates/user-profile.md`)
-- **New**: Session summaries directory (`memory-summaries/`) with latest + rolling history
-- **Fix**: Heredoc syntax bug — `python3 -` instead of bare `python3` when using heredoc with args
-- **Fix**: `datetime.utcnow()` replaced with `datetime.now(timezone.utc)` (Python deprecation)
-- **Change**: SessionEnd timeout increased from 5s to 15s (transcript parsing needs more time)
-- **Change**: PreCompact cleanup interval increased from 1h to 2h
+- **SessionEnd**: Comprehensive session summary extraction from transcript
+- **PreCompact**: Full transcript parsing with 15 user msgs + 10 assistant outputs
+- **SessionStart**: Loads user profile + last session summary
+- **New**: User profile template, session summaries directory
 
 ### v1 (2026-02-07)
 
 - Initial release with basic SessionStart, PreCompact, SessionEnd hooks
 - mcp-memory-service integration
-- Architecture documentation and setup guide
 
 ## Roadmap
 
-- [x] ~~PostToolUse hook for tracking search failures (feedback loop)~~ — Done in v3
+- [x] ~~PostToolUse hook for tracking search failures~~ — Done in v3
 - [x] ~~Memory consolidation (merge similar entries)~~ — Done in v3
-- [ ] Usage-based relevance scoring (promote frequently accessed memories)
-- [ ] Auto-archiving of stale memories
+- [x] ~~Usage-based relevance scoring~~ — Done in v6 (Ebbinghaus)
+- [x] ~~Auto-archiving of stale memories~~ — Done in v7 (strength decay)
+- [ ] Contradiction detection (NLI model)
+- [ ] Graph-based memory traversal and clustering
 - [ ] Multilingual embedding model upgrade
-- [ ] 0G Storage + Compute/TEE integration for decentralized private memory
 - [ ] Web dashboard for memory visualization
+- [ ] 0G Storage + Compute/TEE integration for decentralized private memory
 
 ## License
 

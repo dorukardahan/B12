@@ -8,6 +8,8 @@
 4. **Cross-project**: A single database serves all projects. Tags enable filtering.
 5. **Recoverable**: PreCompact hook preserves context before it's lost to compaction.
 6. **Session-aware**: Each session's summary carries forward to the next one.
+7. **Self-improving**: Unused memories decay, frequently accessed ones strengthen.
+8. **Secure**: All user inputs are sanitized before touching SQLite.
 
 ## System layers
 
@@ -17,16 +19,18 @@ Claude Code's built-in memory system:
 - `MEMORY.md` — first 200 lines loaded into every session's system prompt
 - Topic files — referenced from MEMORY.md, loaded on demand
 - Path: `~/.claude/projects/<project-hash>/memory/`
-- Best for: Stable, high-level project knowledge that should persist permanently
+- Best for: Stable, high-level project knowledge (current state)
 
 ### Layer 2: mcp-memory-service (semantic memory)
 
 External MCP server providing semantic search over stored memories:
 - **Database**: SQLite-vec (local file)
-- **Embeddings**: MiniLM-L6-v2 (ONNX, runs locally, no API)
-- **Quality**: Built-in ONNX ranker for relevance scoring
+- **Embeddings**: multilingual-MiniLM-L12-v2 (ONNX, runs locally, no API)
+- **Search**: FTS5 hybrid — BM25 keyword + vector cosine (70/30 weight)
+- **Scoring**: Ebbinghaus decay-aware — combines retention, importance, and relevance
+- **Dedup**: Write-time semantic merge (cosine > 0.85 = merge, not INSERT)
 - **Graph**: Association-based memory connections
-- **Backup**: Automatic daily backups
+- **Backup**: Daily WAL-safe backups with 7-day rotation
 - **Location**: `~/Library/Application Support/mcp-memory/` (macOS)
 - Best for: Detailed learnings, decisions, patterns that need semantic search
 
@@ -39,21 +43,38 @@ Session lifecycle:
 
 [SessionStart] ─── startup/resume ──> Inject: user profile
        |                                + last session summary
-       |                                + memory instructions
+       |                                + scope instructions
+       |                                + memory pre-fetch (FTS5 + tags)
+       |                                + cross-project hints
+       |                                + feedback alerts
+       v
+[UserPromptSubmit] ─── every prompt ──> Extract keywords
+       |                                 FTS5 hybrid retrieval
+       |                                 Ebbinghaus combined scoring
+       |                                 Strength boost top results
+       v
+[PreToolUse] ─── memory_store ────────> Auto-inject scope tags
+       |                                 (proj:<name>, user:<setup>)
        v
 [Claude works] ─── uses memory MCP ──> Stores/retrieves silently
        |            tools as needed      Updates user-profile.md
        v
-[PreCompact] ──── auto/manual ──────> Stage comprehensive transcript
-       |                               summary (15 user msgs +
-       |                               10 assistant outputs + files)
+[PostToolUse] ─── memory tools ───────> Log usage patterns (feedback)
+       |       ─── file tools ────────> Track active/modified files
+       v                                 (Working Memory)
+[PreCompact] ──── auto/manual ────────> Priority-weighted extraction
+       |                                 Token-budgeted (~8000 chars)
+       |                                 Stages to memory-staging/
        v
-[SessionStart] ─── compact ─────────> Recover staged summary
-       |                               + instruct Claude to store
+[SessionStart] ─── compact ───────────> Recover staged summary
+       |                                 + Working Memory (files, patterns)
        v
-[SessionEnd] ──── any reason ───────> Extract session summary
-                                       + write latest/history
-                                       + log metadata + cleanup
+[SessionEnd] ──── any reason ─────────> Structured extraction:
+                                          decisions, errors/fixes,
+                                          learnings, preferences
+                                        + micro-memory via write-time merge
+                                        + background embedding
+                                        + session metadata logging
 ```
 
 ### Layer 4: Session summaries (continuity bridge)
@@ -61,6 +82,7 @@ Session lifecycle:
 Per-project markdown files that bridge between sessions:
 - `~/.claude/memory-summaries/{project}-latest.md` — last session's summary
 - `~/.claude/memory-summaries/{project}-history.md` — rolling last 5 sessions
+- Separated by `<!-- SESSION_BREAK -->` markers
 - Loaded by SessionStart into the next session's context
 - Best for: Short-term continuity ("what did we do last time?")
 
@@ -70,108 +92,180 @@ A markdown file in the project memory directory:
 - `~/.claude/projects/<project-hash>/memory/user-profile.md`
 - Contains: communication style, preferences, work context, learned patterns
 - Claude updates it proactively when learning new preferences
-- Loaded by SessionStart into every session
+- Loaded by SessionStart if updated within last 7 days (lazy loading)
 - Best for: Personal context that makes Claude feel like a consistent collaborator
+
+### Layer 6: Working Memory (conversation momentum)
+
+Tracks the files and patterns you're actively working with:
+- `~/.claude/memory-staging/working-memory.json`
+- Populated by PostToolUse hook on Read/Edit/Write/Glob/Grep
+- Loaded by SessionStart after context compaction
+- Contains: active files (read), modified files (edited/written), search patterns
+- Resets on session change, expires after 2 hours
+- Best for: Maintaining context about "what was I just doing?" after compaction
 
 ## Hook design details
 
-### SessionStart hook (v2)
+### SessionStart hook (v5)
 
-**Purpose**: Prime Claude with full context — user identity, last session, and memory instructions.
+**Purpose**: Prime Claude with full context — user identity, last session, memory instructions, and pre-fetched relevant memories.
 
 On `startup` or `resume`:
-1. Derives the project memory directory from `$CWD` (same hash format as Claude Code)
-2. Loads `user-profile.md` if it exists (first 60 lines)
-3. Loads `{project}-latest.md` session summary if it exists (first 50 lines)
-4. Combines everything into `additionalContext` JSON
-5. Includes behavioral instructions for silent memory management
+1. Detects setup context (personal vs work) from path patterns
+2. Loads `user-profile.md` if recently updated (within 7 days)
+3. Loads `{project}-latest.md` session summary (or global fallback)
+4. Loads cross-project topic hints from consolidation index
+5. Loads feedback digest alerts (if recent)
+6. Pre-fetches project-relevant + universal memories via FTS5 + tag queries
+7. Combines everything with scope-aware behavioral instructions
+8. Outputs as `additionalContext` JSON
 
 On `compact`:
-1. Checks `~/.claude/memory-staging/` for pre-compaction summaries
-2. If found: injects the summary + tells Claude to store key parts permanently
-3. If not found: falls back to user profile + last session summary
+1. Checks `memory-staging/` for pre-compaction summaries
+2. Loads Working Memory (active/modified files, search patterns)
+3. If staged context found: injects summary + Working Memory
+4. If not: falls back to user profile + last session + scope reminder
 
-**Why this approach**: The SessionStart hook's `additionalContext` is injected into Claude's system context, making it as reliable as CLAUDE.md instructions but dynamic and session-aware.
+**Performance**: Uses `jq` for JSON (no Python startup), `printf '%b'` for POSIX portability, direct SQLite queries for pre-fetch (no embedding model needed).
+
+### UserPromptSubmit hook (v2)
+
+**Purpose**: Proactively retrieve relevant memories before Claude processes each user message.
+
+Process:
+1. Skip slash commands (pattern: `/word`)
+2. Extract keywords from user prompt (stop-word removal, 12-word limit)
+3. Build FTS5 query with OR operators
+4. Run hybrid scoring: `0.3×decay + 0.3×importance + 0.4×FTS5_relevance`
+5. Boost strength of top 3 results (+0.3, max 5.0) via CTE-aligned UPDATE
+6. Return results as `additionalContext`
+
+**SQL injection protection**: All keywords stripped of `'"();{}` characters before SQL interpolation.
+
+### PreToolUse hook (v1)
+
+**Purpose**: Ensure every `memory_store` call has proper scope tags.
+
+Process:
+1. Intercepts `mcp__memory__memory_store` calls
+2. Derives project name from CWD
+3. Detects setup context (personal/work)
+4. Injects `proj:<name>` and `user:<setup>` tags if missing
+5. Returns modified tool input
 
 ### PreCompact hook (v2)
 
 **Purpose**: Capture comprehensive context before it's lost to compaction.
 
 Process:
-1. Parses the ENTIRE transcript JSONL file (not just tail)
-2. Extracts up to 15 user messages (500 chars each) — captures intent
-3. Extracts up to 10 meaningful assistant messages (800 chars each) — captures work done
-4. Tracks all files modified via Edit/Write tool calls
-5. Writes structured summary to `~/.claude/memory-staging/precompact-{session_id}.txt`
-6. Cleans up staging files older than 2 hours
+1. Parses the ENTIRE transcript JSONL file
+2. Categorizes content by priority (errors > decisions > preferences > general)
+3. Extracts within token budget (~8000 chars)
+4. Writes structured summary to `memory-staging/precompact-{session_id}.txt`
+5. Cleans up staging files older than 2 hours
+6. Logs errors to `memory-logs/memory-errors.log`
 
-**Why full transcript**: The v1 approach (`tail -100`) missed earlier context in long sessions. v2 parses everything to capture the full picture before compaction wipes it.
+**Why priority-weighted**: v1 used simple tail/head. v2 scores each item by category and takes the highest-value content within the budget.
 
-**Why staging files**: PreCompact hooks cannot inject context back into Claude (they're side-effect-only). The staging file is a bridge: PreCompact writes it, the next SessionStart(compact) reads it.
+### SessionEnd hook (v5)
 
-### SessionEnd hook (v2)
-
-**Purpose**: Extract a comprehensive session summary for the next session to use.
+**Purpose**: Extract a comprehensive session summary and persist micro-memories.
 
 Process:
 1. Parses the transcript JSONL file
-2. Extracts: user messages, assistant messages, tools used, files modified
-3. Builds a structured markdown summary with sections:
-   - What the user asked (first 10 unique requests)
-   - Key outputs (last 8 meaningful assistant messages)
-   - Files modified (up to 20)
+2. Extracts structured categories: decisions, errors/fixes, learnings, preferences
+3. Scores items by category-specific heuristics
 4. Writes to `{project}-latest.md` (overwritten each session)
-5. Appends to `{project}-history.md` (rolling last 5 sessions)
+5. Appends to `{project}-history.md` (rolling, separated by `<!-- SESSION_BREAK -->`)
 6. Logs session metadata to `sessions.jsonl`
-7. Cleans up staging files
+7. Generates embeddings for micro-memories in background
+8. Uses write-time semantic merge (if available) to deduplicate
 
-**Critical syntax note**: The Python heredoc MUST use `python3 -` (dash) to read from stdin:
-```bash
-# CORRECT:
-python3 - "$ARG1" "$ARG2" << 'PYEOF'
-import sys
-# sys.argv[1] = $ARG1, sys.argv[2] = $ARG2
-PYEOF
+**Background embedding**: A Python subprocess generates embeddings after the main hook completes. Uses WAL mode + busy_timeout for safe concurrent DB access.
 
-# WRONG (Python interprets $ARG1 as script filename):
-python3 << 'PYEOF' "$ARG1" "$ARG2"
-PYEOF
-```
+**Write-time merge**: Imports `merge_or_insert` from `scripts/write-time-merge.py`. Falls back to direct INSERT if the script is unavailable (graceful degradation).
 
-## Cross-project memory
+### PostToolUse hooks
 
-All memories are stored in a single SQLite database. Cross-project recall works because:
+**Feedback hook** (v3): Logs every memory store/search/update/quality call to `feedback.jsonl`. Tracks: action, query text, result count, session sequence number, scope compliance. Used by the weekly feedback digest.
 
-1. Every stored memory is tagged with the project name
-2. At session start, Claude searches with the current project name AND general terms
-3. Relevant memories from other projects surface through semantic similarity
-4. Claude can explicitly search for cross-project patterns when working on similar problems
+**Working Context hook** (v1): Fires on Read/Edit/Write/Glob/Grep. Extracts the file path or search pattern. Persists to `working-memory.json` with atomic writes (tmp + rename). Tracks session ID to reset on session change.
 
-## Multi-setup support
+## Ebbinghaus decay model
 
-For users with multiple Claude Code setups (e.g., personal + work):
+Every memory has a `strength` field (0.3–5.0, default 1.0):
 
-- **MCP server**: Configured globally in `~/.claude.json` — one server, one database
-- **Hook scripts**: Stored in `~/.claude/hooks/` with absolute paths
-- **Hook config**: Must be added to each setup's `settings.json` separately
-- **Memory**: Shared database means both setups contribute to and benefit from the same knowledge base
-- **Session summaries**: Per-project, so different projects don't overwrite each other
-- **User profile**: Per-project directory, but you can symlink or copy across setups
+- **Retrieval boost**: +0.3 per access (capped at 5.0)
+- **Weekly decay**: -0.05 for memories not accessed in 7 days (floor at 0.3)
+- **Combined scoring**: `0.3 × exp(-age/strength) + 0.3 × importance/2 + 0.4 × FTS5_rank`
+
+This creates natural selection: memories that are frequently useful survive and get easier to find. Memories that were stored but never retrieved gradually fade but never fully disappear (minimum 0.3).
+
+## FTS5 hybrid search
+
+The database has a `memory_fts` FTS5 virtual table synced via 4 triggers (INSERT, UPDATE, DELETE on `memories` + content sync). Search combines:
+
+- **BM25 keyword score** (FTS5 rank): Fast exact-match and phrase search
+- **Vector cosine similarity** (sqlite-vec): Semantic meaning match
+- **Weight**: 70% keyword + 30% vector (keyword-heavy because most searches use specific terms)
+
+The hybrid approach handles both precise technical queries ("FTS5 trigger") and semantic queries ("how to search memories").
+
+## Write-time semantic merge
+
+When a new memory is stored via SessionEnd:
+1. Generate embedding for the new content
+2. Query existing memories with `vec_distance_cosine`
+3. If similarity > 0.85: merge content into existing memory, update metadata, rewrite graph hashes
+4. If similarity < 0.85: INSERT as new memory
+5. Handles vec0 table upsert (sqlite-vec requires DELETE+INSERT, not UPDATE)
+
+This prevents the "thousand similar memories" problem that accumulates over months of use.
+
+## Scope system
+
+4 scopes organize memories for multi-project, multi-setup use:
+
+| Scope | Tag | When to use |
+|-------|-----|-------------|
+| **project** | `proj:<name>` | Architecture decisions, project-specific bugs, conventions |
+| **universal** | `user:universal` | Cross-project patterns, CLI tricks, general lessons |
+| **preference** | `user:pref` | User preferences (always global) |
+| **setup** | `user:<setup>` | Team/workflow specific to a particular setup |
+
+The PreToolUse tag enforcement hook automatically injects `proj:` and `user:` tags on every `memory_store` call. The retrieval hook defaults to filtering by `proj:<current>` and widens scope when results are sparse.
+
+## Security
+
+### SQL injection protection
+
+All hooks that interpolate user input into SQLite queries apply sanitization:
+- **Keywords** (retrieval): Strip `'"();{}` characters
+- **Hash prefixes** (browse): Allow only hex characters `[a-fA-F0-9]`
+- **Project names** (pre-fetch, browse): Allow only `[a-zA-Z0-9_-]`
+
+### Data isolation
+
+- All data stays local (no cloud, no API calls for embeddings)
+- Database is SQLite in user's home directory
+- No secrets or credentials in hook scripts
+- MCP server config uses `env: {}` (no environment secrets needed)
 
 ## Limitations and future work
 
 ### Current limitations
 
-1. **No usage pattern learning**: The system doesn't track which memories are frequently accessed vs. never used. Future: PostToolUse hook on memory tools to log access patterns.
+1. **English-optimized embeddings**: MiniLM-L12-v2 is multilingual but primarily optimized for English. Mixed-language content may have reduced semantic accuracy.
 
-2. **English-optimized embeddings**: MiniLM-L6-v2 works well for English technical content but is suboptimal for mixed-language content. Future: Upgrade to a multilingual model.
+2. **No contradiction detection**: The system can store conflicting memories without recognizing the contradiction. Future: NLI (Natural Language Inference) model to detect and flag contradictions.
 
-3. **Session summary quality**: The transcript parser extracts raw text content. It doesn't yet understand conversation structure deeply (e.g., distinguishing decisions from discussions).
+3. **Linear memory scan**: Write-time merge checks against all memories for similarity. As the database grows (10K+ memories), this may need index optimization.
 
 ### Planned improvements
 
-- **PostToolUse feedback loop**: Track memory search results (found/not found) to improve capture strategy
-- **Decay-based archiving**: Automatically archive memories that haven't been accessed in 90+ days
-- **Memory consolidation**: Merge similar memories into stronger, deduplicated entries
-- **Dashboard**: Web UI for browsing and managing the memory graph
+- **Contradiction detection**: NLI model to flag conflicting memories
+- **Graph-based traversal**: Walk memory associations for context expansion
+- **Memory clustering**: Group related memories for batch review
+- **Web dashboard**: Visual memory graph browser
 - **0G integration**: Decentralized storage + TEE-based embedding for privacy-preserving cloud memory

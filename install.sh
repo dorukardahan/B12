@@ -4,19 +4,23 @@
 #
 # Usage:
 #   ./install.sh                    # Install to ~/.claude (default)
-#   ./install.sh ~/.claude-x       # Install to specific setup
+#   ./install.sh ~/.claude-work     # Install to specific setup
 #   ./install.sh --all              # Install to all ~/.claude* setups
 #
 # What it does:
 #   1. Copies hook scripts to ~/.claude/hooks/ (shared location)
-#   2. Merges hook config into target setup's settings.json
-#   3. Does NOT touch .claude.json (MCP config must be added separately)
+#   2. Copies support scripts to ~/.claude/hooks/scripts/ (for write-time merge etc.)
+#   3. Merges hook config into target setup's settings.json
+#   4. Creates required directories
+#   5. Does NOT touch .claude.json (MCP config must be added separately)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_SOURCE="$SCRIPT_DIR/hooks"
+SCRIPT_SOURCE="$SCRIPT_DIR/scripts"
 HOOK_DEST="$HOME/.claude/hooks"
+SCRIPT_DEST="$HOME/.claude/hooks/scripts"
 
 # Color output
 GREEN='\033[0;32m'
@@ -29,10 +33,21 @@ warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[ERR]${NC} $1"; exit 1; }
 
 # ─────────────────────────────────────────────
-# Step 1: Copy hook scripts to shared location
+# Step 1: Create required directories
+# ─────────────────────────────────────────────
+create_dirs() {
+  mkdir -p "$HOOK_DEST"
+  mkdir -p "$SCRIPT_DEST"
+  mkdir -p "$HOME/.claude/memory-staging"
+  mkdir -p "$HOME/.claude/memory-logs"
+  mkdir -p "$HOME/.claude/memory-summaries"
+  info "Created required directories"
+}
+
+# ─────────────────────────────────────────────
+# Step 2: Copy hook scripts to shared location
 # ─────────────────────────────────────────────
 copy_hooks() {
-  mkdir -p "$HOOK_DEST"
   local count=0
   for f in "$HOOK_SOURCE"/memory-*.sh "$HOOK_SOURCE"/memory-*.py; do
     [ -f "$f" ] || continue
@@ -44,7 +59,22 @@ copy_hooks() {
 }
 
 # ─────────────────────────────────────────────
-# Step 2: Merge hook config into settings.json
+# Step 3: Copy support scripts
+# ─────────────────────────────────────────────
+copy_scripts() {
+  local count=0
+  for f in "$SCRIPT_SOURCE"/*.py; do
+    [ -f "$f" ] || continue
+    cp "$f" "$SCRIPT_DEST/"
+    count=$((count + 1))
+  done
+  if [ "$count" -gt 0 ]; then
+    info "Copied $count support scripts to $SCRIPT_DEST"
+  fi
+}
+
+# ─────────────────────────────────────────────
+# Step 4: Merge hook config into settings.json
 # ─────────────────────────────────────────────
 install_to_setup() {
   local SETUP_DIR="$1"
@@ -91,17 +121,18 @@ PYEOF
 # Main
 # ─────────────────────────────────────────────
 
-echo "B12 Memory System Installer"
-echo "─────────────────────────────"
+echo "B12 Memory System Installer (v7)"
+echo "─────────────────────────────────"
 
-# Always copy hooks first
+# Always create dirs and copy files first
+create_dirs
 copy_hooks
+copy_scripts
 
 if [ "$1" = "--all" ]; then
-  # Install to all ~/.claude* directories that have settings.json or look like setups
+  # Install to all ~/.claude* directories that look like setups
   for dir in "$HOME"/.claude*; do
     [ -d "$dir" ] || continue
-    # Skip non-setup directories (like .claude.json file shadow, plugins, etc.)
     base=$(basename "$dir")
     case "$base" in
       .claude|.claude-*) install_to_setup "$dir" ;;
@@ -114,10 +145,15 @@ else
 fi
 
 echo ""
-echo "─────────────────────────────"
+echo "─────────────────────────────────"
 info "Installation complete!"
 echo ""
 echo "Next steps:"
-echo "  1. If this is a new setup, add the memory MCP server to ~/.claude.json"
+echo "  1. Install mcp-memory-service: pipx install mcp-memory-service"
+echo "  2. Add the memory MCP server to ~/.claude.json"
 echo "     (see config/mcp-server-template.json)"
-echo "  2. Restart Claude Code to pick up the new hooks"
+echo "  3. Restart Claude Code to pick up the new hooks"
+echo ""
+echo "Optional:"
+echo "  - Set up launchd agents for automated tasks (see config/*.plist)"
+echo "  - Create a user profile (see templates/user-profile.md)"

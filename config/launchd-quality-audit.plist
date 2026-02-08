@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  B12 Memory Quality Audit — launchd agent template
+  Runs weekly on Wednesday at 3:00 AM: health score, scope compliance, strength distribution
+
+  Install:
+    1. Copy to ~/Library/LaunchAgents/com.b12.memory-quality-audit.plist
+    2. Replace /path/to/home with your actual home directory
+    3. launchctl load ~/Library/LaunchAgents/com.b12.memory-quality-audit.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.b12.memory-quality-audit</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/bash</string>
+        <string>/path/to/home/.claude/hooks/memory-quality-audit.sh</string>
+        <string>--quiet</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Weekday</key>
+        <integer>3</integer>
+        <key>Hour</key>
+        <integer>3</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/path/to/home/.claude/memory-logs/quality-audit-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/home/.claude/memory-logs/quality-audit-stderr.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

@@ -80,7 +80,7 @@ ERROR_RE = re.compile(
 
 PREFERENCE_RE = re.compile(
     r'(?i)(?:'
-    r'(?:(?:user|doruk)\s+(?:prefers?|wants?|asked for|(?:does ?\x27?n.?t|never)\s+(?:want|like|use)))'
+    r'(?:user\s+(?:prefers?|wants?|asked for|(?:does ?\x27?n.?t|never)\s+(?:want|like|use)))'
     r'|(?:always use|never use|convention is|style preference|workflow:)'
     r'|\[user\]\s+'
     r')'
@@ -202,7 +202,7 @@ def score_extraction(text, category):
     elif category == 'preference':
         if any(w in text_lower for w in ['always', 'never', 'prefer', 'convention']):
             score += 1
-        if any(w in text_lower for w in ['user', 'doruk', '[user]']):
+        if any(w in text_lower for w in ['user', '[user]']):
             score += 2
 
     # Penalty for very short text
@@ -572,7 +572,14 @@ try:
         # Try to import write-time merge (graceful degradation if unavailable)
         _USE_MERGE = False
         try:
-            sys.path.insert(0, os.path.expanduser("~/Desktop/B12/scripts"))
+            # Try multiple locations: installed path first, then fallback
+            for p in [
+                os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"),
+                os.path.expanduser("~/.claude/hooks/scripts"),
+            ]:
+                if os.path.isdir(p):
+                    sys.path.insert(0, p)
+                    break
             from write_time_merge import merge_or_insert
             _USE_MERGE = True
         except ImportError:

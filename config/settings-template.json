@@ -36,6 +36,29 @@
         ]
       }
     ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-retrieval.sh",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__memory__memory_store",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-tag-enforce.sh",
+            "timeout": 3
+          }
+        ]
+      }
+    ],
     "PostToolUse": [
       {
         "matcher": "mcp__memory__memory_store|mcp__memory__memory_search|mcp__memory__memory_quality|mcp__memory__memory_update",
@@ -44,6 +67,16 @@
             "type": "command",
             "command": "~/.claude/hooks/memory-feedback.sh",
             "timeout": 3
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Edit|Write|Glob|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.claude/hooks/memory-working-context.sh",
+            "timeout": 2
           }
         ]
       }

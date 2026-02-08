@@ -60,7 +60,7 @@ else
     echo ""
     echo "  To re-apply the FTS5 hybrid patch, ask Claude to:"
     echo "    'Re-apply FTS5 hybrid search patch to sqlite_vec.py'"
-    echo "  Or manually apply from B12 repo: ~/Desktop/B12/patches/"
+    echo "  Or manually re-apply the FTS5 patch from your B12 repo clone."
   fi
 fi
 

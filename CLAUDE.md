@@ -36,7 +36,7 @@ This is a memory system project for Claude Code CLI.
 
 ## Shareability rules
 - This repo is designed to be shared publicly
-- NO personal information (names, usernames, specific paths like ~/)
+- NO personal information (names, usernames, specific paths like /Users/yourname/)
 - NO API keys or secrets
 - Use generic examples and placeholders
 - User profile template should be empty/generic — users fill in their own info

@@ -66,7 +66,7 @@ LEARNING_RE = re.compile(
 
 PREFERENCE_RE = re.compile(
     r'(?i)(?:'
-    r'(?:(?:user|doruk)\s+(?:prefers?|wants?|asked for))'
+    r'(?:user\s+(?:prefers?|wants?|asked for))'
     r'|(?:always use|never use|convention is)'
     r')'
 )
