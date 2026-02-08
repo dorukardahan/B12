@@ -56,8 +56,9 @@ case "$CMD" in
       echo "Usage: memory-browse.sh search <query>"
       exit 1
     fi
-    # Build FTS5 query (OR between words)
-    FTS_QUERY=$(echo "$QUERY" | tr ' ' '\n' | awk 'length > 1 {printf "\"%s\" OR ", $0}' | sed 's/ OR $//')
+    # Build FTS5 query (OR between words), sanitize SQL-dangerous chars
+    SAFE_QUERY=$(echo "$QUERY" | sed "s/['\";(){}]//g")
+    FTS_QUERY=$(echo "$SAFE_QUERY" | tr ' ' '\n' | awk 'length > 1 {printf "\"%s\" OR ", $0}' | sed 's/ OR $//')
 
     echo -e "${BOLD}Search: ${QUERY}${RESET} (FTS5: ${FTS_QUERY})\n"
     sqlite3 -separator '|' "$DB_PATH" "
@@ -128,6 +129,9 @@ case "$CMD" in
       exit 1
     fi
 
+    # Sanitize: hash prefixes should be hex only
+    HASH_PREFIX=$(echo "$HASH_PREFIX" | sed "s/[^a-fA-F0-9]//g")
+
     # Use separate queries to avoid multiline pipe parsing issues
     HEADER=$(sqlite3 -separator '|' "$DB_PATH" "
       SELECT content_hash, memory_type, tags, metadata,
@@ -165,6 +169,9 @@ case "$CMD" in
       echo "Usage: memory-browse.sh delete <hash-prefix>"
       exit 1
     fi
+
+    # Sanitize: hash prefixes should be hex only
+    HASH_PREFIX=$(echo "$HASH_PREFIX" | sed "s/[^a-fA-F0-9]//g")
 
     # Show what will be deleted
     PREVIEW=$(sqlite3 "$DB_PATH" "
@@ -222,6 +229,9 @@ case "$CMD" in
       echo "Usage: memory-browse.sh project <name>"
       exit 1
     fi
+
+    # Sanitize: project names should be alphanumeric/dash/underscore
+    PROJ=$(echo "$PROJ" | sed "s/[^a-zA-Z0-9_.-]//g")
 
     echo -e "${BOLD}Memories for project: ${PROJ}${RESET}\n"
     sqlite3 -separator '|' "$DB_PATH" "

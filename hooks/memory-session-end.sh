@@ -359,14 +359,18 @@ with open(global_exec_file, 'w') as f:
 
 # Append to rolling history (last 5 sessions)
 history_file = os.path.join(summary_dir, f"{project_name}-history.md")
-separator = "\n\n---\n\n"
+separator = "\n\n<!-- SESSION_BREAK -->\n\n"
 
 existing = ""
 if os.path.exists(history_file):
     with open(history_file, 'r') as f:
         existing = f.read()
 
-sessions = existing.split("---")
+# Support both old (---) and new separators for backwards compat
+if "<!-- SESSION_BREAK -->" in existing:
+    sessions = existing.split("<!-- SESSION_BREAK -->")
+else:
+    sessions = existing.split("---")
 sessions = [s.strip() for s in sessions if s.strip()]
 sessions = sessions[-4:]
 sessions.append(summary_text)
@@ -423,7 +427,9 @@ if not os.path.exists(DB_PATH):
 
 try:
     import sqlite_vec
-    conn = sqlite3.connect(DB_PATH, timeout=5)
+    conn = sqlite3.connect(DB_PATH, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)

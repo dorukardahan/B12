@@ -53,7 +53,8 @@ if [ "$WORD_COUNT" -lt 2 ]; then
 fi
 
 # Build FTS5 query: OR between keywords for broader matching
-FTS_QUERY=$(echo "$KEYWORDS" | sed 's/ / OR /g')
+# Sanitize: strip any SQL-dangerous chars (defense-in-depth over keyword regex)
+FTS_QUERY=$(echo "$KEYWORDS" | sed "s/['\";(){}]//g" | sed 's/ / OR /g')
 
 # Search memory DB via FTS5 + Ebbinghaus decay + importance scoring
 # Combined score = 0.3*decay + 0.3*importance + 0.4*relevance(FTS5 rank)
@@ -75,20 +76,28 @@ RESULTS=$(sqlite3 "$DB_PATH" "
 " 2>/dev/null)
 
 # Boost strength of retrieved memories (spaced repetition effect)
+# H1 fix: use same combined scoring as SELECT to ensure we boost the DISPLAYED memories
 if [ -n "$RESULTS" ]; then
   sqlite3 "$DB_PATH" "
-    UPDATE memories
-    SET strength = min(COALESCE(strength, 1.0) + 0.3, 5.0),
-        last_accessed_at = unixepoch('now')
-    WHERE id IN (
+    WITH top3 AS (
       SELECT m.id FROM memories m
       JOIN memory_fts f ON m.id = f.rowid
       WHERE f.memory_fts MATCH '${FTS_QUERY}'
         AND m.deleted_at IS NULL
         AND m.valid_until IS NULL
         AND m.memory_type != 'session_summary'
-      ORDER BY f.rank LIMIT 3
+        AND m.tags NOT LIKE '%session-summary%'
+      ORDER BY (
+        0.3 * COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / COALESCE(m.strength, 1.0)), 0.5)
+        + 0.3 * COALESCE(json_extract(m.metadata, '\$.importance_score'), 1.0) / 2.0
+        + 0.4 * (1.0 / (1.0 + abs(f.rank)))
+      ) DESC
+      LIMIT 3
     )
+    UPDATE memories
+    SET strength = min(COALESCE(strength, 1.0) + 0.3, 5.0),
+        last_accessed_at = unixepoch('now')
+    WHERE id IN (SELECT id FROM top3)
   " 2>/dev/null
 fi
 
