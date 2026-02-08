@@ -26,8 +26,8 @@ case "$PROMPT_LOWER" in
     ;;
 esac
 
-# Skip slash commands
-if [[ "$PROMPT" == /* ]]; then
+# Skip slash commands (e.g., /commit, /help — but NOT file paths like /Users/...)
+if [[ "$PROMPT" =~ ^/[a-zA-Z][a-zA-Z0-9_-]*($|[[:space:]]) ]]; then
   exit 0
 fi
 

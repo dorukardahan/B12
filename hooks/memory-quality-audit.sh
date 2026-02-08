@@ -46,26 +46,28 @@ now = datetime.now(timezone.utc)
 lines = [f"# Memory Quality Audit — {now.strftime('%Y-%m-%d %H:%M UTC')}\n"]
 
 # Overall stats
-total = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+total = conn.execute("SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL").fetchone()[0]
+deleted = conn.execute("SELECT COUNT(*) FROM memories WHERE deleted_at IS NOT NULL").fetchone()[0]
 embeddings = conn.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()[0]
 graph_edges = conn.execute("SELECT COUNT(*) FROM memory_graph").fetchone()[0]
 
 lines.append(f"## Overview")
-lines.append(f"- **Total memories**: {total}")
+lines.append(f"- **Active memories**: {total}")
+lines.append(f"- **Deleted (tombstones)**: {deleted}")
 lines.append(f"- **Embeddings**: {embeddings}")
 lines.append(f"- **Graph edges**: {graph_edges}")
 lines.append(f"- **Embedding coverage**: {embeddings/total*100:.0f}%" if total > 0 else "- **Embedding coverage**: N/A")
 lines.append("")
 
 # Memory type distribution
-types = conn.execute("SELECT memory_type, COUNT(*) FROM memories GROUP BY memory_type ORDER BY COUNT(*) DESC").fetchall()
+types = conn.execute("SELECT memory_type, COUNT(*) FROM memories WHERE deleted_at IS NULL GROUP BY memory_type ORDER BY COUNT(*) DESC").fetchall()
 lines.append("## Type Distribution")
 for t, c in types:
     lines.append(f"- {t}: {c}")
 lines.append("")
 
 # Project distribution
-rows = conn.execute("SELECT tags FROM memories").fetchall()
+rows = conn.execute("SELECT tags FROM memories WHERE deleted_at IS NULL").fetchall()
 from collections import Counter
 projects = Counter()
 for (tags,) in rows:
@@ -96,7 +98,7 @@ if orphan_memories:
     issues.append("")
 
 # Check 2: Very short memories (likely low quality)
-short = conn.execute("SELECT id, content_hash, memory_type, length(content) FROM memories WHERE length(content) < 50").fetchall()
+short = conn.execute("SELECT id, content_hash, memory_type, length(content) FROM memories WHERE length(content) < 50 AND deleted_at IS NULL").fetchall()
 if short:
     issues.append(f"### Very short memories ({len(short)})")
     for m in short:
@@ -106,7 +108,7 @@ if short:
 # Check 3: Duplicate-ish content (same first 100 chars)
 dupes = conn.execute("""
     SELECT substr(content, 1, 100) as prefix, COUNT(*) as cnt
-    FROM memories GROUP BY prefix HAVING cnt > 1
+    FROM memories WHERE deleted_at IS NULL GROUP BY prefix HAVING cnt > 1
 """).fetchall()
 if dupes:
     issues.append(f"### Potential duplicates ({len(dupes)} groups)")
@@ -116,7 +118,7 @@ if dupes:
 
 # Check 4: Stale memories (not accessed in 90+ days)
 stale_threshold = now.timestamp() - (90 * 86400)
-stale = conn.execute("SELECT COUNT(*) FROM memories WHERE updated_at < ?", (stale_threshold,)).fetchone()[0]
+stale = conn.execute("SELECT COUNT(*) FROM memories WHERE updated_at < ? AND deleted_at IS NULL", (stale_threshold,)).fetchone()[0]
 if stale > 0:
     issues.append(f"### Stale memories (>90 days without update): {stale}")
     issues.append("")

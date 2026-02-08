@@ -123,8 +123,13 @@ try:
                                         files_modified.add(inp['file_path'])
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
-except Exception:
-    pass
+except Exception as e:
+    import traceback
+    log_dir = os.path.expanduser("~/.claude/memory-logs")
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, "memory-errors.log"), 'a') as ef:
+        ef.write(f"[{__import__('datetime').datetime.now().isoformat()}] PreCompact error: {e}\n")
+        ef.write(traceback.format_exc() + "\n")
 
 # Sort by priority (highest first), dedup, take top items within token budget
 scored_items.sort(key=lambda x: -x[0])

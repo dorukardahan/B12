@@ -100,12 +100,13 @@ if [ -f "$DB_PATH" ] && [ "$SOURCE" != "compact" ]; then
   # Sanitize project name for SQL (alphanumeric + dash/underscore only)
   SAFE_PROJECT=$(echo "$PROJECT_NAME" | sed 's/[^a-zA-Z0-9_-]//g')
 
-  # Project-relevant memories (tag match OR FTS5 keyword match, exclude session summaries)
+  # Project-relevant memories (tag match OR FTS5 keyword match, exclude session summaries + superseded)
   if [ -n "$SAFE_PROJECT" ] && [ ${#SAFE_PROJECT} -gt 1 ]; then
     PROJ_MEMS=$(sqlite3 "$DB_PATH" "
       SELECT '[' || m.memory_type || '] ' || substr(m.content, 1, 200)
       FROM memories m
       WHERE m.deleted_at IS NULL
+        AND m.valid_until IS NULL
         AND m.memory_type != 'session_summary'
         AND m.tags NOT LIKE '%session-summary%'
         AND (
@@ -130,6 +131,7 @@ if [ -f "$DB_PATH" ] && [ "$SOURCE" != "compact" ]; then
     FROM memories
     WHERE tags LIKE '%user:universal%'
       AND deleted_at IS NULL
+      AND valid_until IS NULL
     ORDER BY created_at DESC
     LIMIT 2
   " 2>/dev/null)
@@ -200,7 +202,7 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
     CONTEXT="${CONTEXT}\n\n--- MEMORY PRE-FETCH ---\n${MEMORY_PREFETCH}\n--- END PRE-FETCH ---"
   fi
 
-  ESCAPED_CONTEXT=$(echo -e "$CONTEXT" | escape_json)
+  ESCAPED_CONTEXT=$(printf '%b' "$CONTEXT" | escape_json)
 
   cat <<CONTEXT_EOF
 {
