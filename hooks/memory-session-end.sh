@@ -569,14 +569,19 @@ try:
             micro_meta.append((mem_type, imp))
 
     if micro_texts:
+        # Try to import write-time merge (graceful degradation if unavailable)
+        _USE_MERGE = False
+        try:
+            sys.path.insert(0, os.path.expanduser("~/Desktop/B12/scripts"))
+            from write_time_merge import merge_or_insert
+            _USE_MERGE = True
+        except ImportError:
+            pass
+
         micro_embeddings = model.encode(micro_texts, convert_to_numpy=True)
         for i, text in enumerate(micro_texts):
             mem_type, imp = micro_meta[i]
             m_hash = hashlib.sha256(text.encode()).hexdigest()
-
-            if conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (m_hash,)).fetchone():
-                continue
-
             m_tags = f"proj:{project_name},user:{setup_context},{mem_type},{now.strftime('%Y-%m')}"
             m_metadata = json.dumps({
                 "project": project_name, "setup": setup_context,
@@ -586,16 +591,26 @@ try:
             })
             m_emb = micro_embeddings[i].astype(np.float32).tobytes()
 
-            conn.execute("""
-                INSERT INTO memories (content, content_hash, tags, memory_type, metadata,
-                                      created_at, updated_at, created_at_iso, updated_at_iso)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (text, m_hash, m_tags, mem_type, m_metadata,
-                  now.timestamp(), now.timestamp(), now.isoformat(), now.isoformat()))
-
-            m_row = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (m_hash,)).fetchone()[0]
-            conn.execute("INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
-                         (m_row, m_emb))
+            if _USE_MERGE:
+                result = merge_or_insert(
+                    conn, content=text, content_hash=m_hash,
+                    tags=m_tags, memory_type=mem_type,
+                    metadata=m_metadata, embedding_bytes=m_emb, now=now
+                )
+                # result.action: "inserted", "merged", or "noop_duplicate"
+            else:
+                # Fallback: direct INSERT (original behavior)
+                if conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (m_hash,)).fetchone():
+                    continue
+                conn.execute("""
+                    INSERT INTO memories (content, content_hash, tags, memory_type, metadata,
+                                          created_at, updated_at, created_at_iso, updated_at_iso)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (text, m_hash, m_tags, mem_type, m_metadata,
+                      now.timestamp(), now.timestamp(), now.isoformat(), now.isoformat()))
+                m_row = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (m_hash,)).fetchone()[0]
+                conn.execute("INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
+                             (m_row, m_emb))
 
     conn.commit()
     conn.close()
