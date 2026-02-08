@@ -234,6 +234,73 @@ if len(projects) > 1:
         lines.append(f"- {proj}: {count} ops")
     lines.append("")
 
+# ═══════════════════════════════════════════════════
+# SELF-IMPROVING RETRIEVAL — strength adjustment
+# Memories not retrieved this week get slight decay
+# This creates natural selection: useful memories survive, noisy ones fade
+# ═══════════════════════════════════════════════════
+
+DB_PATH = os.path.expanduser("~/Library/Application Support/mcp-memory/sqlite_vec.db")
+strength_changes = []
+
+if os.path.exists(DB_PATH):
+    try:
+        import sqlite3
+        conn = sqlite3.connect(DB_PATH, timeout=10)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+
+        week_ago_ts = (now - timedelta(days=7)).timestamp()
+
+        # Decay: memories not accessed in last 7 days lose -0.05 strength (min 0.3)
+        decayed = conn.execute("""
+            UPDATE memories
+            SET strength = MAX(0.3, COALESCE(strength, 1.0) - 0.05)
+            WHERE deleted_at IS NULL
+              AND valid_until IS NULL
+              AND memory_type NOT IN ('session_summary', 'pattern', 'association')
+              AND COALESCE(last_accessed_at, created_at) < ?
+              AND COALESCE(strength, 1.0) > 0.3
+        """, (week_ago_ts,))
+        decay_count = decayed.rowcount
+
+        # Report: memories with extreme strength values
+        high_strength = conn.execute("""
+            SELECT substr(content_hash, 1, 8), strength, memory_type,
+                   substr(content, 1, 60)
+            FROM memories
+            WHERE deleted_at IS NULL AND strength >= 3.0
+            ORDER BY strength DESC LIMIT 5
+        """).fetchall()
+
+        low_strength = conn.execute("""
+            SELECT substr(content_hash, 1, 8), strength, memory_type,
+                   substr(content, 1, 60)
+            FROM memories
+            WHERE deleted_at IS NULL AND strength <= 0.5 AND strength > 0
+            ORDER BY strength ASC LIMIT 5
+        """).fetchall()
+
+        conn.commit()
+        conn.close()
+
+        lines.append("## Self-Improving Retrieval")
+        lines.append(f"- Decayed {decay_count} memories not accessed in 7 days (-0.05 strength)")
+        if high_strength:
+            lines.append("### Frequently Retrieved (high strength)")
+            for h, s, t, preview in high_strength:
+                lines.append(f"- `{h}` [{t}] strength={s:.1f}: {preview}...")
+        if low_strength:
+            lines.append("### Fading Memories (low strength — candidates for review)")
+            for h, s, t, preview in low_strength:
+                lines.append(f"- `{h}` [{t}] strength={s:.2f}: {preview}...")
+        lines.append("")
+
+    except Exception as e:
+        lines.append(f"## Self-Improving Retrieval")
+        lines.append(f"- Error: {e}")
+        lines.append("")
+
 digest_text = '\n'.join(lines)
 
 with open(digest_file, 'w') as f:
