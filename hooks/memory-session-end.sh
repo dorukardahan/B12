@@ -62,18 +62,19 @@ memory_searches = 0
 
 DECISION_RE = re.compile(
     r'(?i)(?:'
-    r'(?:decided|chose|going with|selected|opted for|switched to|went with)\s+.{5,80}(?:instead of|over|rather than|because)'
-    r'|(?:will use|using)\s+\S+\s+(?:instead of|rather than|for)\s+'
-    r'|(?:the (?:approach|solution|decision) is to)\s+'
-    r'|(?:decided|chose|going with|selected|opted for|switched to|went with)\s+\S+.{10,}'
+    r'(?:decided|chose|going with|selected|opted for|switched to|went with)\s+.{5,}'
+    r'|(?:will use|using|let.?s use|we.?ll use)\s+\S+\s+(?:instead of|rather than|for|because)\s+'
+    r'|(?:the (?:approach|solution|decision|plan) is to)\s+'
+    r'|(?:switching from|replacing|migrating from)\s+\S+\s+(?:to|with)\s+'
     r')'
 )
 
 ERROR_RE = re.compile(
     r'(?i)(?:'
-    r'(?:fixed|resolved|solved|workaround[: ])\s+.{5,60}(?:error|bug|issue|crash|failure)'
-    r'|(?:error|bug|issue|crash)\s+.{0,40}(?:was caused by|because|due to|fixed by|resolved by)'
-    r'|(?:root cause|the fix|the solution)\s*(?:is|was|:)\s+'
+    r'(?:fixed|resolved|solved|workaround for)\s+.{5,}'
+    r'|(?:the fix|the solution|root cause)\s*(?:is|was|:)\s+'
+    r'|(?:error|bug|issue)\s+.{0,40}(?:was caused by|because|due to|fixed by)'
+    r'|(?:had to|needed to)\s+.{3,40}(?:because|due to|since)\s+.{3,}(?:error|bug|fail|broke|crash)'
     r')'
 )
 
@@ -87,9 +88,11 @@ PREFERENCE_RE = re.compile(
 
 LEARNING_RE = re.compile(
     r'(?i)(?:'
-    r'(?:turns out|TIL|important to note|gotcha|pitfall|caveat)\s*(?::|that|,)\s+'
-    r'|(?:learned|discovered|realized)\s+that\s+'
-    r'|(?:the (?:trick|key|insight) (?:is|was))\s+'
+    r'(?:turns out|TIL|important to note|gotcha|pitfall|caveat|note:)\s*(?::|that|,)?\s+'
+    r'|(?:learned|discovered|realized|found out)\s+that\s+'
+    r'|(?:the (?:trick|key|insight|important thing) (?:is|was))\s+'
+    r'|(?:remember|important):\s+'
+    r'|(?:pro.?tip|heads.?up|watch out|be careful|don.?t forget)\s*(?::|,)\s+'
     r')'
 )
 
@@ -163,8 +166,9 @@ try:
 
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
-except Exception:
-    pass
+except Exception as e:
+    import traceback
+    sys.stderr.write(f"SessionEnd transcript parse error: {e}\n{traceback.format_exc()}\n")
 
 # ═══════════════════════════════════════════════════════════════
 # v4 SCORING FILTER — quality gate for extracted items
@@ -220,7 +224,7 @@ def dedup(items, max_count=5):
 
 # Apply dedup first, then scoring filter
 decisions = [d for d in dedup(decisions) if score_extraction(d, 'decision') >= 1]
-errors_fixes = [e for e in dedup(errors_fixes) if score_extraction(e, 'error') >= 2]
+errors_fixes = [e for e in dedup(errors_fixes) if score_extraction(e, 'error') >= 1]
 learnings = [l for l in dedup(learnings) if score_extraction(l, 'learning') >= 1]
 preferences = [p for p in dedup(preferences) if score_extraction(p, 'preference') >= 1]
 
@@ -240,6 +244,22 @@ lines.append(f"- **Tools used**: {', '.join(sorted(tools_used)[:15]) if tools_us
 lines.append(f"- **Memory ops**: {memory_stores} stores, {memory_searches} searches")
 lines.append(f"- **Scope tags**: proj:{project_name}, user:{setup_context}")
 lines.append("")
+
+# What was done (always populated if files were modified or tools used)
+key_actions = []
+if files_modified:
+    key_actions.append(f"Modified {len(files_modified)} files")
+if tools_used:
+    key_tools = [t for t in sorted(tools_used) if t not in ('Read', 'Glob', 'Grep', 'LS')][:8]
+    if key_tools:
+        key_actions.append(f"Used: {', '.join(key_tools)}")
+if memory_stores > 0:
+    key_actions.append(f"Stored {memory_stores} memories")
+if key_actions:
+    lines.append("## What Was Done")
+    for a in key_actions:
+        lines.append(f"- {a}")
+    lines.append("")
 
 # Structured sections
 if decisions:
@@ -390,10 +410,11 @@ with open(summary_file, 'r') as f:
 if len(content) < 100:
     sys.exit(0)
 
-INSIGHT_SECTIONS = ['## Decisions Made', '## Errors & Fixes', '## Key Learnings', '## User Preferences Observed']
+# Store any non-trivial session (removed strict has_insights gate)
+# Sessions with structured sections get higher importance
+INSIGHT_SECTIONS = ['## Decisions Made', '## Errors & Fixes', '## Key Learnings',
+                    '## User Preferences Observed', '## What Was Done']
 has_insights = any(s in content for s in INSIGHT_SECTIONS)
-if not has_insights:
-    sys.exit(0)
 
 content_hash = hashlib.sha256(content.encode()).hexdigest()
 DB_PATH = os.path.expanduser("~/Library/Application Support/mcp-memory/sqlite_vec.db")
@@ -475,8 +496,14 @@ try:
     import re as _re
     MICRO_SECTIONS = {
         '## Decisions Made': ('decision', 1.5),
+        '## Decisions': ('decision', 1.5),
         '## Errors & Fixes': ('error_fix', 1.2),
+        '## Problems Fixed': ('error_fix', 1.2),
+        '## Bugs Fixed': ('error_fix', 1.2),
         '## Key Learnings': ('learning', 1.0),
+        '## Learned': ('learning', 1.0),
+        '## Takeaways': ('learning', 1.0),
+        '## What Was Done': ('progress', 0.8),
     }
     micro_texts = []
     micro_meta = []
@@ -491,11 +518,46 @@ try:
         )
         if not match:
             continue
-        bullets = [b.strip().lstrip('- ') for b in match.group(1).strip().split('\n')
-                   if b.strip().startswith('- ') and len(b.strip()) > 30]
+        raw_bullets = match.group(1).strip().split('\n')
+        bullets = []
+        for b in raw_bullets:
+            b = b.strip()
+            if not b.startswith('- '):
+                continue
+            # Strip markdown bold prefix: "- **label**: text" → "label: text"
+            clean = _re.sub(r'^\*\*(.+?)\*\*:\s*', r'\1: ', b.lstrip('- '))
+            if not clean:
+                clean = b.lstrip('- ')
+            if len(clean) > 15:
+                bullets.append(clean)
 
-        prefix_map = {'decision': 'Decision', 'error_fix': 'Error Fix', 'learning': 'Learning'}
-        for bullet in bullets[:3]:
+        # Quality filter: reject conversation fragments, keep actionable knowledge
+        def is_actionable(text):
+            tl = text.lower().strip()
+            # Skip conversation fragments and formatting
+            SKIP = ['tamam', 'ok,', 'evet', 'hayır', 'anladım', 'güzel', 'merhaba',
+                    'hey ', 'hi ', 'şimdi', 'peki', 'hadi', '`★', '─────',
+                    'tüm ', 'bekliyoruz', 'haklısın', 'seni duyuyorum']
+            if any(tl.startswith(s.lower()) for s in SKIP):
+                return False
+            if tl.startswith('|') or tl.startswith('#'):
+                return False
+            # Require technical/actionable signals
+            SIGNALS = ['file', 'error', 'bug', 'fix', 'api', 'config', 'hook',
+                       'script', 'sql', 'python', 'bash', 'git', 'docker',
+                       '.py', '.sh', '.json', '.md', 'command', 'function',
+                       'import', 'install', 'deploy', 'test', 'memory', 'tag',
+                       'embed', 'query', 'created', 'modified', 'deleted',
+                       'added', 'removed', 'fixed', 'resolved', 'updated',
+                       'switched', 'decided', 'chose', 'used', 'configured',
+                       'stored', 'migrat']
+            return any(sig in tl for sig in SIGNALS)
+
+        prefix_map = {'decision': 'Decision', 'error_fix': 'Error Fix',
+                      'learning': 'Learning', 'progress': 'Progress'}
+        for bullet in bullets[:5]:
+            if not is_actionable(bullet):
+                continue
             prefixed = f"[{prefix_map[mem_type]}] {bullet}"
             micro_texts.append(prefixed)
             micro_meta.append((mem_type, imp))
@@ -532,8 +594,14 @@ try:
     conn.commit()
     conn.close()
 
-except Exception:
-    pass  # Fail silently — session logging is more important than memory storage
+except Exception as e:
+    # Log error instead of silent failure
+    import traceback
+    log_dir = os.path.expanduser("~/.claude/memory-logs")
+    os.makedirs(log_dir, exist_ok=True)
+    with open(os.path.join(log_dir, "memory-errors.log"), 'a') as ef:
+        ef.write(f"[{__import__('datetime').datetime.now().isoformat()}] SessionEnd embed error: {e}\n")
+        ef.write(traceback.format_exc() + "\n")
 
 MEMPYEOF
   # Launch in background: subshell runs Python then cleans up temp file
