@@ -123,19 +123,24 @@ chmod +x install.sh
 
 ### 3. Add MCP server to your Claude Code config
 
-Add to `~/.claude.json` under `mcpServers`:
+Add to `~/.claude.json` under `mcpServers`. Use `config/mcp-server-template.json` for the full configuration with recommended environment variables:
 
 ```json
 {
   "memory": {
     "command": "/path/to/memory",
     "args": ["server"],
-    "env": {}
+    "env": {
+      "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+      "MCP_DECAY_ENABLED": "false",
+      "MCP_FORGETTING_ENABLED": "false",
+      "MCP_ASSOCIATIONS_ENABLED": "true"
+    }
   }
 }
 ```
 
-Replace `/path/to/memory` with the output of `which memory`.
+Replace `/path/to/memory` with the output of `which memory`. See `config/mcp-server-template.json` for all available options.
 
 ### 4. Restart Claude Code
 

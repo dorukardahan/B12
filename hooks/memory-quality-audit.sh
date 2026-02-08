@@ -7,6 +7,11 @@
 
 set -e
 
+QUIET=false
+if [ "$1" = "--quiet" ]; then
+  QUIET=true
+fi
+
 VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
 LOG_DIR="$HOME/.claude/memory-logs"
 mkdir -p "$LOG_DIR"
@@ -15,15 +20,16 @@ DATE=$(date -u +%Y-%m-%d)
 REPORT_FILE="$LOG_DIR/quality-audit-${DATE}.md"
 
 if [ ! -x "$VENV_PYTHON" ]; then
-  echo "ERROR: venv Python not found at $VENV_PYTHON" >&2
+  [ "$QUIET" = false ] && echo "ERROR: venv Python not found at $VENV_PYTHON" >&2
   exit 1
 fi
 
-$VENV_PYTHON - "$REPORT_FILE" << 'PYEOF'
+$VENV_PYTHON - "$REPORT_FILE" "$QUIET" << 'PYEOF'
 import sys, os, json, sqlite3, warnings
 warnings.filterwarnings('ignore')
 
 report_file = sys.argv[1]
+quiet = sys.argv[2] == "true" if len(sys.argv) > 2 else False
 DB_PATH = os.path.expanduser("~/Library/Application Support/mcp-memory/sqlite_vec.db")
 
 if not os.path.exists(DB_PATH):
@@ -89,7 +95,7 @@ orphan_memories = conn.execute("""
     SELECT m.id, m.content_hash, m.memory_type, substr(m.content, 1, 60)
     FROM memories m
     LEFT JOIN memory_embeddings me ON m.id = me.rowid
-    WHERE me.rowid IS NULL
+    WHERE me.rowid IS NULL AND m.deleted_at IS NULL
 """).fetchall()
 if orphan_memories:
     issues.append(f"### Memories without embeddings ({len(orphan_memories)})")
@@ -172,9 +178,10 @@ report = '\n'.join(lines)
 with open(report_file, 'w') as f:
     f.write(report)
 
-print(f"Quality audit complete: {report_file}")
-print(f"Health Score: {health_score}/100")
-print(f"Memories: {total}, Embeddings: {embeddings}, Graph Edges: {graph_edges}")
+if not quiet:
+    print(f"Quality audit complete: {report_file}")
+    print(f"Health Score: {health_score}/100")
+    print(f"Memories: {total}, Embeddings: {embeddings}, Graph Edges: {graph_edges}")
 
 conn.close()
 PYEOF
@@ -182,4 +189,4 @@ PYEOF
 # Keep only last 12 audit reports
 ls -t "$LOG_DIR"/quality-audit-*.md 2>/dev/null | tail -n +13 | xargs rm -f 2>/dev/null
 
-echo "Quality audit complete: $REPORT_FILE"
+[ "$QUIET" = false ] && echo "Quality audit complete: $REPORT_FILE"

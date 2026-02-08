@@ -10,6 +10,9 @@
 DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
 BACKUP_DIR="$HOME/.claude/memory-backups"
 MAX_BACKUPS=7
+
+# Portable stat: macOS uses -f%z, Linux uses -c %s
+file_size() { stat -f%z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo "unknown"; }
 TIMESTAMP=$(date +"%Y-%m-%d")
 BACKUP_FILE="$BACKUP_DIR/sqlite_vec-${TIMESTAMP}.db"
 LOG_FILE="$HOME/.claude/memory-logs/backup-${TIMESTAMP}.log"
@@ -32,11 +35,11 @@ fi
 
 # Create backup using sqlite3 .backup (WAL-safe)
 log "Starting backup..."
-DB_SIZE=$(stat -f%z "$DB_PATH" 2>/dev/null || echo "unknown")
+DB_SIZE=$(file_size "$DB_PATH")
 log "Source: $DB_PATH ($DB_SIZE bytes)"
 
 if sqlite3 "$DB_PATH" ".backup '$BACKUP_FILE'" 2>>"$LOG_FILE"; then
-  BACKUP_SIZE=$(stat -f%z "$BACKUP_FILE" 2>/dev/null || echo "unknown")
+  BACKUP_SIZE=$(file_size "$BACKUP_FILE")
   log "Backup created: $BACKUP_FILE ($BACKUP_SIZE bytes)"
 else
   log "ERROR: sqlite3 .backup failed"

@@ -572,14 +572,7 @@ try:
         # Try to import write-time merge (graceful degradation if unavailable)
         _USE_MERGE = False
         try:
-            # Try multiple locations: installed path first, then fallback
-            for p in [
-                os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"),
-                os.path.expanduser("~/.claude/hooks/scripts"),
-            ]:
-                if os.path.isdir(p):
-                    sys.path.insert(0, p)
-                    break
+            sys.path.insert(0, os.path.expanduser("~/.claude/hooks/scripts"))
             from write_time_merge import merge_or_insert
             _USE_MERGE = True
         except ImportError:

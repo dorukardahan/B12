@@ -87,7 +87,7 @@ case "$CMD" in
     EMBEDDINGS=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM memory_embeddings" 2>/dev/null || echo "N/A (vec0)")
     FTS_COUNT=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM memory_fts" 2>/dev/null || echo "N/A")
     GRAPH_EDGES=$(sqlite3 "$DB_PATH" "SELECT COUNT(*) FROM memory_graph" 2>/dev/null || echo "0")
-    DB_SIZE=$(stat -f%z "$DB_PATH" 2>/dev/null || echo "?")
+    DB_SIZE=$(stat -f%z "$DB_PATH" 2>/dev/null || stat -c %s "$DB_PATH" 2>/dev/null || echo "?")
 
     echo -e "  Active memories:  ${GREEN}${TOTAL}${RESET}"
     echo -e "  Deleted (tombstones): ${DIM}${DELETED}${RESET}"

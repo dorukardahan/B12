@@ -22,6 +22,9 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 # Central data directory — override with B12_DATA_DIR env var for custom setups
 B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
 
+# Portable stat: macOS uses -f %m, Linux uses -c %Y
+file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "0"; }
+
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 SUMMARY_DIR="$B12_BASE/memory-summaries"
 
@@ -44,7 +47,7 @@ fi
 USER_PROFILE=""
 PROFILE_FILE="$MEMORY_DIR/user-profile.md"
 if [ -f "$PROFILE_FILE" ]; then
-  PROFILE_AGE=$(( $(date +%s) - $(stat -f %m "$PROFILE_FILE" 2>/dev/null || echo "0") ))
+  PROFILE_AGE=$(( $(date +%s) - $(file_mtime "$PROFILE_FILE") ))
   if [ "$PROFILE_AGE" -lt 604800 ]; then
     USER_PROFILE=$(cat "$PROFILE_FILE" 2>/dev/null | head -40)
   fi
@@ -83,7 +86,7 @@ fi
 FEEDBACK_HINT=""
 DIGEST_FILE="$B12_BASE/memory-logs/feedback-digest.md"
 if [ -f "$DIGEST_FILE" ]; then
-  DIGEST_AGE=$(( $(date +%s) - $(stat -f %m "$DIGEST_FILE" 2>/dev/null || echo "0") ))
+  DIGEST_AGE=$(( $(date +%s) - $(file_mtime "$DIGEST_FILE") ))
   if [ "$DIGEST_AGE" -lt 1209600 ]; then
     # Extract only the Alerts section (most actionable)
     FEEDBACK_HINT=$(sed -n '/^## Alerts/,/^## /p' "$DIGEST_FILE" 2>/dev/null | head -5)
@@ -237,7 +240,7 @@ elif [ "$SOURCE" = "compact" ]; then
   WORKING_MEM=""
   WM_FILE="$STAGING_DIR/working-memory.json"
   if [ -f "$WM_FILE" ] && command -v jq &>/dev/null; then
-    WM_AGE=$(( $(date +%s) - $(stat -f %m "$WM_FILE" 2>/dev/null || echo "0") ))
+    WM_AGE=$(( $(date +%s) - $(file_mtime "$WM_FILE") ))
     # Only use if updated within last 2 hours (same session)
     if [ "$WM_AGE" -lt 7200 ]; then
       WM_MODIFIED=$(jq -r '.modified_files // [] | .[0:8] | join(", ")' "$WM_FILE" 2>/dev/null)
