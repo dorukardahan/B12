@@ -207,6 +207,18 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 
 ## Changelog
 
+### v8 (2026-02-09)
+
+- **Vector re-rank in retrieval hook**: FTS5 top-10 candidates → Python cosine re-rank → top-5 results. Uses mcp-memory-service venv's sentence-transformers with 3-second timeout; falls back to FTS5-only silently
+- **Phrase-aware FTS5 queries**: Bigram detection in both hook and MCP service. Compound terms like "docker compose" become `NEAR(docker compose, 2)` instead of `docker OR compose`
+- **Adaptive hybrid weights**: `_get_hybrid_weights()` in sqlite_vec.py — technical queries (error codes, file paths) get 50/50 vector/FTS5; conceptual queries get 70/30 (default)
+- **Softened Ebbinghaus decay**: `exp(-t/(S*3))` instead of `exp(-t/S)`. At strength=1.0: 2-day memory 0.13→0.51, 7-day 0.001→0.10
+- **Project hierarchy detection**: Walks up directory tree to find `.git` root. Running from `/B12/benchmarks/locomo` now finds `proj:B12` memories
+- **Importance-based pre-fetch**: `ORDER BY importance_score * strength DESC` instead of `created_at DESC`
+- **Post-compact pre-fetch re-enabled**: Memory pre-fetch now runs after context compaction (was skipped)
+- **Hook retrieval feedback logging**: Every retrieval logged to `feedback.jsonl` with query, keyword count, result count, rerank status
+- **Bug fixes**: `recall()` missing `deleted_at IS NULL` (2 locations), SessionEnd scanning only first 400→2000 chars with context extraction, results increased from 3→5
+
 ### v7 (2026-02-08)
 
 - **SQL injection protection**: All user inputs sanitized in retrieval, browse, and tag-enforce hooks
