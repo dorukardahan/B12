@@ -207,6 +207,11 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 
 ## Changelog
 
+### v8.1 (2026-02-09)
+
+- **Query-adaptive search mode**: Retrieval hook (v4) classifies queries before deciding on vector re-rank. Negation/adversarial → always re-rank (hybrid +18pp). Attribute/preference → skip re-rank (keyword +4.7pp). Default → re-rank. Few results (< 2) → fallback re-rank regardless. Saves ~200ms on ~20% of queries
+- **LoCoMo benchmark**: Eval script with keyword/hybrid/adaptive/compare modes. 10 conversations, 1986 QA pairs. Results: keyword 25.8%, hybrid 23.9%, adaptive 24.1% (Recall@3 Answerable). Hybrid wins overall (36.5%) due to adversarial filtering
+
 ### v8 (2026-02-09)
 
 - **Vector re-rank in retrieval hook**: FTS5 top-10 candidates → Python cosine re-rank → top-5 results. Uses mcp-memory-service venv's sentence-transformers with 3-second timeout; falls back to FTS5-only silently
