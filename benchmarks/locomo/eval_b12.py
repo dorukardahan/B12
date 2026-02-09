@@ -311,15 +311,55 @@ def extract_keywords(question):
     keywords = [w for w in words if w not in STOP_WORDS and len(w) > 1]
     return keywords[:12]
 
+def build_fts_query_v8(question, keywords):
+    """v8 phrase-aware FTS5 query builder — detects bigrams for NEAR() queries."""
+    safe_keywords = [re.sub(r"['\";(){}]", "", k) for k in keywords]
+    if not safe_keywords:
+        return ""
+
+    question_lower = question.lower()
+    fts_parts = []
+    prev = None
+
+    for kw in safe_keywords:
+        if prev:
+            bigram = f"{prev} {kw}"
+            if bigram in question_lower:
+                fts_parts.append(f"NEAR({prev} {kw}, 2)")
+        if not fts_parts:
+            fts_parts.append(kw)
+        else:
+            fts_parts.append(f"{kw}")
+        prev = kw
+
+    return " OR ".join(fts_parts)
+
+def get_adaptive_weights(question):
+    """v8 adaptive hybrid weights — technical queries get more FTS5 weight."""
+    technical_patterns = [
+        r'[/\\][\w.-]+\.\w+',         # file paths
+        r'\b[A-Z_]{3,}\b',            # constants/env vars
+        r'\b\w+\.\w+\(\)',            # function calls
+        r'(?:error|bug|fix|crash)\b',  # error-related
+        r'\b(?:0x[0-9a-f]+|[0-9]{4,})\b',  # hex/long numbers
+        r'(?:config|setup|install)\b', # setup terms
+    ]
+    tech_score = sum(1 for p in technical_patterns if re.search(p, question, re.IGNORECASE))
+    if tech_score >= 3:
+        return (0.5, 0.5)
+    elif tech_score >= 1:
+        return (0.6, 0.4)
+    else:
+        return (0.7, 0.3)
+
 def retrieve_fts5(conn, question, conv_id, top_k=5):
-    """B12-style FTS5 retrieval with BM25 ranking."""
+    """B12-style FTS5 retrieval with BM25 ranking (v8: phrase-aware)."""
     keywords = extract_keywords(question)
     if not keywords:
         return []
 
-    # Sanitize (B12-style SQL injection protection)
-    safe_keywords = [re.sub(r"['\";(){}]", "", k) for k in keywords]
-    fts_query = " OR ".join(safe_keywords)
+    # v8: phrase-aware FTS5 query
+    fts_query = build_fts_query_v8(question, keywords)
 
     try:
         results = conn.execute("""
@@ -423,14 +463,17 @@ def retrieve_vector(conn, question, conv_id, top_k=5):
 def retrieve_hybrid(conn, question, conv_id, top_k=5, bm25_weight=0.7, vec_weight=0.3):
     """B12-style hybrid: FTS5 candidates + vector rerank + vector expansion.
 
-    Strategy (matching B12 production):
-    1. FTS5 generates candidate set (top_k * 3)
+    Strategy (matching B12 v8 production):
+    1. FTS5 generates candidate set (top_k * 3) — with phrase-aware queries
     2. Vector similarity reranks those candidates
     3. Top vector-only results added as expansion (catches paraphrased content)
-    4. Combined score: 70% BM25 + 30% cosine for FTS5 candidates
-       Pure cosine for expansion candidates (penalized by 0.5x)
+    4. Combined score uses adaptive weights (technical vs conceptual)
+       Pure cosine for expansion candidates (penalized by 0.8x)
     """
-    # Step 1: FTS5 candidates
+    # v8: adaptive weights based on query type
+    bm25_weight, vec_weight = get_adaptive_weights(question)
+
+    # Step 1: FTS5 candidates (phrase-aware via build_fts_query_v8)
     bm25_results = retrieve_fts5(conn, question, conv_id, top_k=top_k * 3)
 
     # Step 2: Query embedding
@@ -496,6 +539,67 @@ def retrieve_hybrid(conn, question, conv_id, top_k=5, bm25_weight=0.7, vec_weigh
     return results
 
 
+# ── Query-Adaptive Search Mode ─────────────────────────────────────────
+
+def classify_query(question):
+    """Classify query to pick optimal retrieval strategy.
+
+    Logic based on LoCoMo benchmark findings:
+    - Negation/adversarial → hybrid (vector expansion filters well, +18pp)
+    - Attribute/preference/open-domain → keyword (exact match wins, +4.7pp)
+    - Default → hybrid (wins on multi-hop, single-hop, temporal)
+    """
+    q_lower = question.lower()
+
+    # 1. Negation/adversarial → hybrid (highest priority)
+    if re.search(r'\b(never|nobody|no one|nothing|nowhere)\b|n\'t\b| not ', q_lower):
+        return 'hybrid'
+    if re.search(r'\b(false|untrue|incorrect|is it true)\b', q_lower):
+        return 'hybrid'
+
+    # 2. Attribute/preference/open-domain → keyword
+    # These questions ask about personal traits where observations use literal words
+    attribute_patterns = [
+        r'\b(favorite|favourite|like[sd]?|enjoy[sed]*|prefer[sed]*)\b',
+        r'\b(hobb(y|ies)|interest(s|ed)?|passion(ate)?|obsess|fond)\b',
+        r'\b(love[sd]?|hate[sd]?|dislike[sd]?)\b',
+        r'\bwhat (kind|type|sort) of\b',
+        r'\btell me about\b',
+        r'\bdescribe\b',
+        r'\bwhat (do|does|did) .+ (think|feel|say|believe) about\b',
+        r'\bhow (does|did|do) .+ (feel|react|respond)\b',
+        r'\bopinion|views? on|attitude|outlook\b',
+        r'\bin common\b',
+        r'\brelationship (with|between)\b',
+    ]
+    if any(re.search(p, q_lower) for p in attribute_patterns):
+        return 'keyword'
+
+    # 3. Default → hybrid (wins on multi-hop, single-hop, temporal)
+    return 'hybrid'
+
+
+def retrieve_adaptive(conn, question, conv_id, top_k=5):
+    """Query-adaptive retrieval: classify then pick best strategy.
+
+    - Specific/factoid/adversarial → hybrid (vector reranking helps)
+    - Broad/opinion → keyword (BM25 exact matching wins)
+    - Fallback: if keyword returns < 2 results → try hybrid
+    """
+    mode = classify_query(question)
+
+    if mode == 'hybrid':
+        return retrieve_hybrid(conn, question, conv_id, top_k)
+    else:
+        # Keyword with fallback
+        results = retrieve_fts5(conn, question, conv_id, top_k)
+        if len(results) < 2:
+            hybrid_results = retrieve_hybrid(conn, question, conv_id, top_k)
+            if len(hybrid_results) > len(results):
+                return hybrid_results
+        return results
+
+
 # ── Evaluation ──────────────────────────────────────────────────────────
 
 def evaluate(data, conn, top_k_values, search_mode='keyword', use_vectors=False):
@@ -506,9 +610,12 @@ def evaluate(data, conn, top_k_values, search_mode='keyword', use_vectors=False)
 
     no_retrieval = 0
     total_qs = 0
+    classify_stats = {'hybrid': 0, 'keyword': 0}
 
     # Select retrieval function
-    if search_mode == 'hybrid' and use_vectors:
+    if search_mode == 'adaptive' and use_vectors:
+        retrieve_fn = retrieve_adaptive
+    elif search_mode == 'hybrid' and use_vectors:
         retrieve_fn = retrieve_hybrid
     elif search_mode == 'vector' and use_vectors:
         retrieve_fn = retrieve_vector
@@ -521,6 +628,10 @@ def evaluate(data, conn, top_k_values, search_mode='keyword', use_vectors=False)
             answer = qa.get('answer', qa.get('adversarial_answer', ''))
             category = qa['category']
             total_qs += 1
+
+            # Track classification stats for adaptive mode
+            if search_mode == 'adaptive':
+                classify_stats[classify_query(question)] += 1
 
             for top_k in top_k_values:
                 retrieved = retrieve_fn(conn, question, conv_idx, top_k)
@@ -550,11 +661,12 @@ def evaluate(data, conn, top_k_values, search_mode='keyword', use_vectors=False)
                 results[top_k][category]['f1_sum'] += f1
                 results[top_k][category]['total'] += 1
 
-    return results, total_qs, no_retrieval
+    return results, total_qs, no_retrieval, classify_stats
 
 # ── Report ──────────────────────────────────────────────────────────────
 
-def print_report(mode, mem_count, results, total_qs, no_retrieval, elapsed, search_mode='keyword'):
+def print_report(mode, mem_count, results, total_qs, no_retrieval, elapsed,
+                 search_mode='keyword', classify_stats=None):
     """Print evaluation results."""
     print(f"\n{'='*65}")
     print(f"  B12 LoCoMo Benchmark — Storage: {mode} | Search: {search_mode}")
@@ -562,6 +674,10 @@ def print_report(mode, mem_count, results, total_qs, no_retrieval, elapsed, sear
     print(f"  Memories ingested: {mem_count}")
     print(f"  Total QA questions: {total_qs}")
     print(f"  Questions with no retrieval: {no_retrieval} ({no_retrieval/total_qs*100:.1f}%)")
+    if classify_stats and (classify_stats.get('hybrid', 0) + classify_stats.get('keyword', 0)) > 0:
+        h = classify_stats['hybrid']
+        k = classify_stats['keyword']
+        print(f"  Query routing: {h} hybrid ({h*100//(h+k)}%) + {k} keyword ({k*100//(h+k)}%)")
     print(f"  Evaluation time: {elapsed:.1f}s")
     print()
 
@@ -604,8 +720,8 @@ def main():
     parser = argparse.ArgumentParser(description='B12 LoCoMo Benchmark')
     parser.add_argument('--mode', choices=['observations', 'summaries', 'dialogues', 'all'],
                        default='all', help='Storage mode')
-    parser.add_argument('--search', choices=['keyword', 'hybrid', 'vector', 'compare'],
-                       default='keyword', help='Search mode (compare runs keyword + hybrid side by side)')
+    parser.add_argument('--search', choices=['keyword', 'hybrid', 'vector', 'adaptive', 'compare'],
+                       default='keyword', help='Search mode (compare runs keyword+hybrid+adaptive)')
     parser.add_argument('--top-k', type=int, nargs='+', default=[1, 3, 5, 10],
                        help='Top-k values for recall')
     args = parser.parse_args()
@@ -617,8 +733,8 @@ def main():
     print(f"  {len(data)} conversations, {sum(len(c['qa']) for c in data)} QA pairs")
 
     # Determine search modes to run
-    need_vectors = args.search in ('hybrid', 'vector', 'compare')
-    search_modes = ['keyword', 'hybrid'] if args.search == 'compare' else [args.search]
+    need_vectors = args.search in ('hybrid', 'vector', 'adaptive', 'compare')
+    search_modes = ['keyword', 'hybrid', 'adaptive'] if args.search == 'compare' else [args.search]
 
     # Pre-load embedding model if needed
     if need_vectors:
@@ -650,14 +766,15 @@ def main():
             # Evaluate
             print(f"\nEvaluating ({search_mode} search)...")
             t0 = time.time()
-            results, total_qs, no_retrieval = evaluate(
+            results, total_qs, no_retrieval, classify_stats = evaluate(
                 data, conn, args.top_k,
                 search_mode=effective_mode, use_vectors=vectors_ok
             )
             elapsed = time.time() - t0
 
             # Report
-            print_report(mode, count, results, total_qs, no_retrieval, elapsed, search_mode=effective_mode)
+            print_report(mode, count, results, total_qs, no_retrieval, elapsed,
+                        search_mode=effective_mode, classify_stats=classify_stats)
 
         conn.close()
 

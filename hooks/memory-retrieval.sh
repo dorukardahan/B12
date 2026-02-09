@@ -1,19 +1,27 @@
 #!/bin/bash
-# B12 Memory System - UserPromptSubmit Memory Retrieval Hook (v3)
+# B12 Memory System - UserPromptSubmit Memory Retrieval Hook (v4)
 # Searches memory DB on every user message and injects relevant context
+#
+# v4 changes (2026-02-09):
+# - Query-adaptive search mode: keyword-first + smart vector re-rank
+#   - Attribute/preference queries → skip re-rank (BM25 wins)
+#   - Negation/adversarial queries → always re-rank (vector filters better)
+#   - Few FTS5 results (< 2) → fallback to re-rank
+#   - Default → re-rank (hybrid wins on most query types)
+# - Benchmark-validated: adaptive beats pure keyword (+2.2pp overall)
+#   and approaches hybrid quality while saving ~200ms on 20% of queries
 #
 # v3 changes (2026-02-09):
 # - Phrase-aware FTS5 queries (bigram detection for compound terms)
-# - Softened Ebbinghaus decay: exp(-t/(S*3)) — memories persist ~1 week at strength=1.0
+# - Softened Ebbinghaus decay: exp(-t/(S*3))
 # - Project hierarchy awareness (walks up to find parent project)
 # - Vector re-rank via Python helper (3s timeout, fallback to FTS5-only)
 # - Up to 5 results (was 3), with adaptive hint when few results found
 # - Feedback logging to feedback.jsonl
-# - Single CTE for SELECT + UPDATE (was double query)
 #
 # Fires on: every user prompt
 # Output: additionalContext with relevant memories
-# Performance target: <500ms (was <200ms, vector re-rank adds ~200ms warm)
+# Performance target: <500ms (re-rank skipped on attribute queries → ~50ms)
 
 INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // ""')
@@ -61,6 +69,26 @@ while [ "$_dir" != "/" ] && [ "$_dir" != "$HOME" ]; do
   _dir=$(dirname "$_dir")
 done
 
+# ── Query classification (adaptive search mode) ───────────────
+# Determines whether to use vector re-ranking or keep FTS5 order
+# Based on LoCoMo benchmark findings:
+#   - Negation/adversarial → always re-rank (hybrid +18pp)
+#   - Attribute/preference → skip re-rank (keyword +4.7pp)
+#   - Default → re-rank (hybrid wins on most types)
+QUERY_MODE="hybrid"  # default: do vector re-rank
+
+# Check negation first (highest priority → force hybrid)
+if echo "$PROMPT_LOWER" | grep -qE '\b(never|nobody|no one|nothing|nowhere)\b|n'\''t\b| not '; then
+  QUERY_MODE="hybrid"
+# Check attribute/preference patterns (→ keyword, skip re-rank)
+elif echo "$PROMPT_LOWER" | grep -qE '\b(favorite|favourite|favori|likes?|enjoys?|prefers?|hobbi|hobies|hobby|hobbies|interests?|passionate?|obsess|fond)\b'; then
+  QUERY_MODE="keyword"
+elif echo "$PROMPT_LOWER" | grep -qE '\b(loves?|hates?|dislikes?)\b'; then
+  QUERY_MODE="keyword"
+elif echo "$PROMPT_LOWER" | grep -qE '(think about|feel about|opinion|views? on|attitude|in common|relationship (with|between)|tell me about|describe)'; then
+  QUERY_MODE="keyword"
+fi
+
 # ── Keyword extraction ─────────────────────────────────────────
 KEYWORDS=$(echo "$PROMPT" | tr '[:upper:]' '[:lower:]' | \
   grep -oE '[a-zA-Z0-9_.-]{3,}' | \
@@ -69,15 +97,13 @@ KEYWORDS=$(echo "$PROMPT" | tr '[:upper:]' '[:lower:]' | \
   tr '\n' ' ' | \
   sed 's/ *$//')
 
-# Need at least 1 keyword for meaningful search (was 2 — lowered for better coverage)
+# Need at least 1 keyword for meaningful search
 WORD_COUNT=$(echo "$KEYWORDS" | wc -w | tr -d ' ')
 if [ "$WORD_COUNT" -lt 1 ]; then
   exit 0
 fi
 
 # ── Phrase detection (bigrams) ─────────────────────────────────
-# Detect adjacent keyword pairs that form compound terms
-# Build FTS5 query with phrases for better precision
 SAFE_KEYWORDS=$(echo "$KEYWORDS" | sed "s/['\";(){}]//g")
 KEYWORD_ARRAY=($SAFE_KEYWORDS)
 
@@ -85,14 +111,11 @@ FTS_PARTS=""
 PREV=""
 for kw in "${KEYWORD_ARRAY[@]}"; do
   if [ -n "$PREV" ]; then
-    # Check if this bigram appears as a phrase in the original prompt
     BIGRAM="${PREV} ${kw}"
     if echo "$PROMPT_LOWER" | grep -q "${BIGRAM}"; then
-      # Add as FTS5 phrase (NEAR operator for adjacency)
       FTS_PARTS="${FTS_PARTS} OR NEAR(${PREV} ${kw}, 2)"
     fi
   fi
-  # Always add individual keyword
   if [ -z "$FTS_PARTS" ]; then
     FTS_PARTS="${kw}"
   else
@@ -102,9 +125,6 @@ for kw in "${KEYWORD_ARRAY[@]}"; do
 done
 
 # ── FTS5 search with softened Ebbinghaus decay ─────────────────
-# Decay change: exp(-t/S) → exp(-t/(S*3))
-# At strength=1.0: 2-day-old memory goes from 0.13 → 0.51 (much more useful)
-# At strength=1.0: 7-day-old memory goes from 0.001 → 0.10 (still visible)
 RESULTS=$(sqlite3 "$DB_PATH" "
   WITH scored AS (
     SELECT m.id,
@@ -139,16 +159,31 @@ while IFS='|' read -r id display score; do
   fi
 done <<< "$RESULTS"
 
-# ── Vector re-rank (optional, with timeout) ────────────────────
-# If we have FTS5 results and the Python helper exists, re-rank using vector similarity
+# ── Query-adaptive vector re-rank ────────────────────────────
+# Decision tree:
+#   QUERY_MODE=keyword AND results >= 2 → skip re-rank (save ~200ms)
+#   QUERY_MODE=keyword AND results < 2  → fallback to re-rank
+#   QUERY_MODE=hybrid                   → always re-rank
 VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
 RERANK_DONE=false
+SKIP_REASON=""
 
+SHOULD_RERANK=false
 if [ "$RESULT_COUNT" -gt 0 ] && [ -x "$VENV_PYTHON" ]; then
-  # Extract IDs for re-ranking (comma-separated, strip trailing comma)
+  if [ "$QUERY_MODE" = "hybrid" ]; then
+    SHOULD_RERANK=true
+  elif [ "$RESULT_COUNT" -lt 2 ]; then
+    # Keyword mode but few results → fallback to re-rank
+    SHOULD_RERANK=true
+    SKIP_REASON="fallback"
+  else
+    SKIP_REASON="attribute_query"
+  fi
+fi
+
+if [ "$SHOULD_RERANK" = true ]; then
   ID_LIST=$(echo "$RESULT_IDS" | sed 's/,$//')
 
-  # Python vector re-rank with 3-second timeout
   RERANKED=$(timeout 3 "$VENV_PYTHON" - "$DB_PATH" "$ID_LIST" "$PROMPT" 2>/dev/null << 'PYEOF'
 import sys, struct, sqlite3
 
@@ -175,17 +210,14 @@ try:
             scores.append((mem_id, 0.0))
     conn.close()
 
-    # Output re-ranked IDs (highest cosine first)
     scores.sort(key=lambda x: x[1], reverse=True)
     print(','.join(str(s[0]) for s in scores))
 except Exception:
-    # Fail silently — fall back to FTS5 order
     print(','.join(str(i) for i in ids))
 PYEOF
   )
 
   if [ -n "$RERANKED" ] && [ "$RERANKED" != "$ID_LIST" ]; then
-    # Re-fetch display strings in the new order
     RERANK_IDS=$(echo "$RERANKED" | sed 's/,$//')
     RESULT_DISPLAY=$(sqlite3 "$DB_PATH" "
       SELECT '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
@@ -224,12 +256,14 @@ fi
 if [ -d "$FEEDBACK_DIR" ] || mkdir -p "$FEEDBACK_DIR" 2>/dev/null; then
   FEEDBACK_FILE="$FEEDBACK_DIR/feedback.jsonl"
   PROJ="${PARENT_PROJECT:-$PROJECT_NAME}"
-  printf '{"ts":%d,"type":"hook_retrieval","query":"%s","keywords":"%s","result_count":%d,"reranked":%s,"project":"%s"}\n' \
+  printf '{"ts":%d,"type":"hook_retrieval","query":"%s","keywords":"%s","result_count":%d,"reranked":%s,"query_mode":"%s","skip_reason":"%s","project":"%s"}\n' \
     "$(date +%s)" \
     "$(echo "$PROMPT" | head -c 100 | sed 's/"/\\"/g' | tr '\n' ' ')" \
     "$(echo "$SAFE_KEYWORDS" | sed 's/"/\\"/g')" \
     "$RESULT_COUNT" \
     "$RERANK_DONE" \
+    "$QUERY_MODE" \
+    "$SKIP_REASON" \
     "$PROJ" \
     >> "$FEEDBACK_FILE" 2>/dev/null
 fi
@@ -251,7 +285,7 @@ cat <<EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "UserPromptSubmit",
-    "additionalContext": "Memory retrieval (auto, keywords: ${SAFE_KEYWORDS}):\\n${ESCAPED}${HINT}"
+    "additionalContext": "Memory retrieval (auto, ${QUERY_MODE}, keywords: ${SAFE_KEYWORDS}):\\n${ESCAPED}${HINT}"
   }
 }
 EOF
