@@ -1,0 +1,675 @@
+#!/usr/bin/env python3
+"""
+B12 LoCoMo Benchmark — Evaluate B12's retrieval against LoCoMo QA dataset.
+
+Tests how well B12's FTS5 hybrid search retrieves relevant context for
+answering questions about long-term conversations.
+
+Storage modes:
+  - observations: Pre-extracted facts per session (closest to B12's extraction)
+  - summaries: Session-level summaries
+  - dialogues: Raw dialogue turns
+
+Search modes:
+  - keyword: FTS5 BM25 only (baseline)
+  - hybrid: 70% BM25 + 30% vector cosine (B12 production config)
+  - vector: Vector-only cosine similarity
+
+Metrics:
+  - Recall@k: Does the top-k retrieved content contain the answer?
+  - Token F1: Overlap between retrieved content and gold answer
+
+Usage:
+  python3 eval_b12.py [--mode observations|summaries|dialogues] [--search keyword|hybrid|vector]
+"""
+
+import json
+import os
+import re
+import sqlite3
+import string
+import struct
+import sys
+import time
+from collections import Counter
+from pathlib import Path
+
+# Optional: sentence-transformers for vector search
+_embedding_model = None
+
+def get_embedding_model():
+    """Lazy-load embedding model (same as B12 production)."""
+    global _embedding_model
+    if _embedding_model is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+            print(f"  Embedding model loaded (dim={_embedding_model.get_sentence_embedding_dimension()})")
+        except ImportError:
+            print("  ERROR: sentence-transformers not found. Use the mcp-memory-service venv:")
+            print("    $HOME/.local/pipx/venvs/mcp-memory-service/bin/python3 eval_b12.py")
+            sys.exit(1)
+    return _embedding_model
+
+def embed_texts(texts, batch_size=64):
+    """Generate embeddings for a list of texts."""
+    model = get_embedding_model()
+    all_embeddings = []
+    for i in range(0, len(texts), batch_size):
+        batch = texts[i:i+batch_size]
+        embs = model.encode(batch, normalize_embeddings=True, show_progress_bar=False)
+        all_embeddings.extend(embs)
+    return all_embeddings
+
+def serialize_f32(vector):
+    """Serialize a float32 vector for sqlite-vec (little-endian)."""
+    return struct.pack(f'{len(vector)}f', *vector)
+
+# ── Config ──────────────────────────────────────────────────────────────
+
+DATA_FILE = Path(__file__).parent / "locomo10.json"
+TEST_DB = Path(__file__).parent / "test_memory.db"
+TOP_K_VALUES = [1, 3, 5, 10]
+
+CATEGORIES = {1: "multi-hop", 2: "single-hop", 3: "temporal", 4: "open-domain", 5: "adversarial"}
+
+# ── Metrics (from LoCoMo's evaluation.py) ───────────────────────────────
+
+def normalize_answer(s):
+    """Lower text, remove punctuation, articles and extra whitespace."""
+    s = str(s).lower()
+    s = s.replace(",", "")
+    # Remove articles
+    s = re.sub(r'\b(a|an|the|and)\b', ' ', s)
+    # Remove punctuation
+    s = s.translate(str.maketrans('', '', string.punctuation))
+    # Fix whitespace
+    s = ' '.join(s.split())
+    return s
+
+def f1_score(prediction, ground_truth):
+    """Token-level F1 between prediction and ground truth."""
+    pred_tokens = normalize_answer(prediction).split()
+    truth_tokens = normalize_answer(ground_truth).split()
+    if not pred_tokens or not truth_tokens:
+        return float(pred_tokens == truth_tokens)
+    common = Counter(pred_tokens) & Counter(truth_tokens)
+    num_common = sum(common.values())
+    if num_common == 0:
+        return 0.0
+    precision = num_common / len(pred_tokens)
+    recall = num_common / len(truth_tokens)
+    return (2 * precision * recall) / (precision + recall)
+
+def has_answer(text, answer):
+    """Check if normalized answer appears in normalized text."""
+    norm_text = normalize_answer(text)
+    norm_answer = normalize_answer(answer)
+    if not norm_answer:
+        return False
+    # Check both as substring and as token overlap
+    if norm_answer in norm_text:
+        return True
+    # Also check token-level: all answer tokens present
+    answer_tokens = norm_answer.split()
+    text_tokens = set(norm_text.split())
+    return all(t in text_tokens for t in answer_tokens)
+
+# ── Database ────────────────────────────────────────────────────────────
+
+def create_test_db(db_path, use_vectors=False):
+    """Create a fresh test database with FTS5 and optionally sqlite-vec."""
+    if db_path.exists():
+        db_path.unlink()
+    # Also clean WAL/SHM from previous runs
+    for ext in ['-wal', '-shm']:
+        p = Path(str(db_path) + ext)
+        if p.exists():
+            p.unlink()
+
+    conn = sqlite3.connect(str(db_path))
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            content_hash TEXT,
+            memory_type TEXT DEFAULT 'observation',
+            tags TEXT DEFAULT '',
+            metadata TEXT DEFAULT '{}',
+            created_at INTEGER,
+            deleted_at INTEGER,
+            valid_until INTEGER,
+            strength REAL DEFAULT 1.0,
+            last_accessed_at INTEGER,
+            conv_id INTEGER,
+            session_key TEXT
+        )
+    """)
+    conn.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+            content,
+            content='memories',
+            content_rowid='id'
+        )
+    """)
+    # Sync triggers
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS memory_fts_insert AFTER INSERT ON memories BEGIN
+            INSERT INTO memory_fts(rowid, content) VALUES (new.id, new.content);
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS memory_fts_delete AFTER DELETE ON memories BEGIN
+            INSERT INTO memory_fts(memory_fts, rowid, content) VALUES('delete', old.id, old.content);
+        END
+    """)
+    conn.execute("""
+        CREATE TRIGGER IF NOT EXISTS memory_fts_update AFTER UPDATE ON memories BEGIN
+            INSERT INTO memory_fts(memory_fts, rowid, content) VALUES('delete', old.id, old.content);
+            INSERT INTO memory_fts(rowid, content) VALUES (new.id, new.content);
+        END
+    """)
+
+    if use_vectors:
+        try:
+            import sqlite_vec
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            conn.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
+                    memory_id INTEGER PRIMARY KEY,
+                    embedding float[384]
+                )
+            """)
+            print("  sqlite-vec loaded (384-dim vector table created)")
+        except ImportError:
+            print("  WARNING: sqlite-vec not found, vector search disabled")
+            print("    Use: $HOME/.local/pipx/venvs/mcp-memory-service/bin/python3 eval_b12.py")
+            use_vectors = False
+
+    conn.commit()
+    return conn, use_vectors
+
+# ── Ingest ──────────────────────────────────────────────────────────────
+
+def _embed_and_store(conn, use_vectors):
+    """Generate embeddings for all memories and store in memory_vec."""
+    if not use_vectors:
+        return
+    rows = conn.execute("SELECT id, content FROM memories WHERE deleted_at IS NULL").fetchall()
+    if not rows:
+        return
+    ids = [r[0] for r in rows]
+    texts = [r[1] for r in rows]
+    print(f"  Generating embeddings for {len(texts)} memories...")
+    t0 = time.time()
+    embeddings = embed_texts(texts)
+    elapsed = time.time() - t0
+    print(f"  Embeddings generated in {elapsed:.1f}s")
+    for mem_id, emb in zip(ids, embeddings):
+        conn.execute(
+            "INSERT INTO memory_vec (memory_id, embedding) VALUES (?, ?)",
+            (mem_id, serialize_f32(emb))
+        )
+    conn.commit()
+
+def ingest_observations(conn, data, use_vectors=False):
+    """Store observations as memories (closest to B12's extraction)."""
+    count = 0
+    for conv_idx, conv_data in enumerate(data):
+        obs = conv_data.get('observation', {})
+        conv = conv_data['conversation']
+        for session_key, session_obs in obs.items():
+            # session_key like "session_1_observation"
+            session_num = session_key.replace('_observation', '')
+            dt_key = f"{session_num}_date_time"
+            date_time = conv.get(dt_key, '')
+            if isinstance(session_obs, dict):
+                for speaker, facts in session_obs.items():
+                    for fact_item in facts:
+                        if isinstance(fact_item, list) and len(fact_item) >= 1:
+                            text = fact_item[0]
+                            content = f"[{date_time}] {text}"
+                            conn.execute(
+                                "INSERT INTO memories (content, memory_type, tags, conv_id, session_key) VALUES (?, ?, ?, ?, ?)",
+                                (content, 'observation', f'speaker:{speaker}', conv_idx, session_num)
+                            )
+                            count += 1
+    conn.commit()
+    _embed_and_store(conn, use_vectors)
+    return count
+
+def ingest_summaries(conn, data, use_vectors=False):
+    """Store session summaries as memories."""
+    count = 0
+    for conv_idx, conv_data in enumerate(data):
+        ss = conv_data.get('session_summary', {})
+        conv = conv_data['conversation']
+        for session_key, summary in ss.items():
+            session_num = session_key.replace('_summary', '')
+            dt_key = f"{session_num}_date_time"
+            date_time = conv.get(dt_key, '')
+            content = f"[{date_time}] {summary}"
+            conn.execute(
+                "INSERT INTO memories (content, memory_type, tags, conv_id, session_key) VALUES (?, ?, ?, ?, ?)",
+                (content, 'session_summary', '', conv_idx, session_num)
+            )
+            count += 1
+    conn.commit()
+    _embed_and_store(conn, use_vectors)
+    return count
+
+def ingest_dialogues(conn, data, use_vectors=False):
+    """Store raw dialogue turns grouped by session."""
+    count = 0
+    for conv_idx, conv_data in enumerate(data):
+        conv = conv_data['conversation']
+        session_keys = [k for k in conv.keys() if k.startswith('session_') and not k.endswith('_date_time')]
+        for session_key in sorted(session_keys):
+            turns = conv[session_key]
+            dt_key = f"{session_key}_date_time"
+            date_time = conv.get(dt_key, '')
+            # Group turns into a single memory per session
+            lines = []
+            for turn in turns:
+                if isinstance(turn, dict):
+                    speaker = turn.get('speaker', '?')
+                    text = turn.get('text', '')
+                    lines.append(f"{speaker}: {text}")
+            if lines:
+                content = f"[{date_time}]\n" + "\n".join(lines)
+                conn.execute(
+                    "INSERT INTO memories (content, memory_type, tags, conv_id, session_key) VALUES (?, ?, ?, ?, ?)",
+                    (content, 'dialogue', '', conv_idx, session_key)
+                )
+                count += 1
+    conn.commit()
+    _embed_and_store(conn, use_vectors)
+    return count
+
+# ── Retrieval (B12-style FTS5) ──────────────────────────────────────────
+
+STOP_WORDS = {
+    'the', 'a', 'an', 'is', 'are', 'was', 'were', 'be', 'been', 'being',
+    'have', 'has', 'had', 'do', 'does', 'did', 'will', 'would', 'could',
+    'should', 'may', 'might', 'shall', 'can', 'to', 'of', 'in', 'for',
+    'on', 'with', 'at', 'by', 'from', 'as', 'into', 'about', 'between',
+    'through', 'during', 'before', 'after', 'above', 'below', 'up', 'down',
+    'out', 'off', 'over', 'under', 'again', 'further', 'then', 'once',
+    'and', 'but', 'or', 'nor', 'not', 'so', 'yet', 'both', 'each',
+    'this', 'that', 'these', 'those', 'what', 'which', 'who', 'whom',
+    'how', 'when', 'where', 'why', 'all', 'any', 'some', 'no', 'every',
+    'it', 'its', 'he', 'she', 'they', 'them', 'his', 'her', 'their',
+    'i', 'me', 'my', 'we', 'us', 'our', 'you', 'your',
+}
+
+def extract_keywords(question):
+    """Extract search keywords from question (B12-style)."""
+    words = re.findall(r'[a-zA-Z0-9]+', question.lower())
+    keywords = [w for w in words if w not in STOP_WORDS and len(w) > 1]
+    return keywords[:12]
+
+def retrieve_fts5(conn, question, conv_id, top_k=5):
+    """B12-style FTS5 retrieval with BM25 ranking."""
+    keywords = extract_keywords(question)
+    if not keywords:
+        return []
+
+    # Sanitize (B12-style SQL injection protection)
+    safe_keywords = [re.sub(r"['\";(){}]", "", k) for k in keywords]
+    fts_query = " OR ".join(safe_keywords)
+
+    try:
+        results = conn.execute("""
+            SELECT m.id, m.content, m.memory_type, m.session_key,
+                   rank as bm25_score
+            FROM memories m
+            JOIN memory_fts f ON m.id = f.rowid
+            WHERE memory_fts MATCH ?
+              AND m.conv_id = ?
+              AND m.deleted_at IS NULL
+            ORDER BY rank
+            LIMIT ?
+        """, (fts_query, conv_id, top_k)).fetchall()
+    except Exception:
+        # Fallback: try individual keywords
+        results = []
+        for kw in safe_keywords[:3]:
+            try:
+                r = conn.execute("""
+                    SELECT m.id, m.content, m.memory_type, m.session_key,
+                           rank as bm25_score
+                    FROM memories m
+                    JOIN memory_fts f ON m.id = f.rowid
+                    WHERE memory_fts MATCH ?
+                      AND m.conv_id = ?
+                      AND m.deleted_at IS NULL
+                    ORDER BY rank
+                    LIMIT ?
+                """, (kw, conv_id, top_k)).fetchall()
+                results.extend(r)
+            except Exception:
+                pass
+        # Dedup by id, keep best rank
+        seen = {}
+        for r in results:
+            if r[0] not in seen:
+                seen[r[0]] = r
+        results = sorted(seen.values(), key=lambda x: x[4])[:top_k]
+
+    return results
+
+def retrieve_vector(conn, question, conv_id, top_k=5):
+    """Vector-only retrieval using cosine similarity."""
+    q_emb = embed_texts([question])[0]
+    q_blob = serialize_f32(q_emb)
+
+    results = conn.execute("""
+        SELECT m.id, m.content, m.memory_type, m.session_key,
+               v.distance as cosine_dist
+        FROM memory_vec v
+        JOIN memories m ON m.id = v.memory_id
+        WHERE m.conv_id = ?
+          AND m.deleted_at IS NULL
+        ORDER BY v.distance
+        LIMIT ?
+    """, (q_blob, conv_id, top_k)).fetchall()
+    # Note: vec0 distance query syntax requires embedding as first WHERE param
+    # Let's use a different approach — query vec0 then filter
+
+    try:
+        # sqlite-vec: query with embedding, then join
+        results = conn.execute("""
+            SELECT m.id, m.content, m.memory_type, m.session_key,
+                   v.distance as cosine_dist
+            FROM memory_vec v
+            JOIN memories m ON m.id = v.memory_id
+            WHERE v.embedding MATCH ?
+              AND k = ?
+              AND m.conv_id = ?
+              AND m.deleted_at IS NULL
+        """, (q_blob, top_k * 3, conv_id)).fetchall()
+    except Exception:
+        # Fallback: get all vectors for this conv, compute manually
+        rows = conn.execute("""
+            SELECT m.id, m.content, m.memory_type, m.session_key
+            FROM memories m
+            WHERE m.conv_id = ? AND m.deleted_at IS NULL
+        """, (conv_id,)).fetchall()
+        if not rows:
+            return []
+        ids = [r[0] for r in rows]
+        texts = [r[1] for r in rows]
+        # Get stored embeddings
+        import numpy as np
+        scores = []
+        for row in rows:
+            mem_id = row[0]
+            emb_row = conn.execute(
+                "SELECT embedding FROM memory_vec WHERE memory_id = ?", (mem_id,)
+            ).fetchone()
+            if emb_row:
+                stored = struct.unpack(f'{384}f', emb_row[0])
+                cos_sim = sum(a*b for a,b in zip(q_emb, stored))
+                scores.append((row[0], row[1], row[2], row[3], 1.0 - cos_sim))
+        scores.sort(key=lambda x: x[4])
+        results = scores[:top_k]
+
+    return results[:top_k]
+
+
+def retrieve_hybrid(conn, question, conv_id, top_k=5, bm25_weight=0.7, vec_weight=0.3):
+    """B12-style hybrid: FTS5 candidates + vector rerank + vector expansion.
+
+    Strategy (matching B12 production):
+    1. FTS5 generates candidate set (top_k * 3)
+    2. Vector similarity reranks those candidates
+    3. Top vector-only results added as expansion (catches paraphrased content)
+    4. Combined score: 70% BM25 + 30% cosine for FTS5 candidates
+       Pure cosine for expansion candidates (penalized by 0.5x)
+    """
+    # Step 1: FTS5 candidates
+    bm25_results = retrieve_fts5(conn, question, conv_id, top_k=top_k * 3)
+
+    # Step 2: Query embedding
+    q_emb = embed_texts([question])[0]
+
+    # Step 3: Compute vector scores for FTS5 candidates
+    candidate_scores = {}
+    for r in bm25_results:
+        mem_id, content, mtype, skey, bm25_rank = r
+        emb_row = conn.execute(
+            "SELECT embedding FROM memory_vec WHERE memory_id = ?", (mem_id,)
+        ).fetchone()
+        cos_sim = 0.0
+        if emb_row:
+            stored = struct.unpack(f'{384}f', emb_row[0])
+            cos_sim = max(0.0, sum(a * b for a, b in zip(q_emb, stored)))
+
+        # Normalize BM25: rank is negative, closer to 0 = better
+        # Use rank directly as penalty (less negative = better)
+        bm25_norm = 1.0 / (1.0 + abs(bm25_rank))  # Sigmoid-like normalization
+
+        combined = bm25_weight * bm25_norm + vec_weight * cos_sim
+        candidate_scores[mem_id] = (content, mtype, skey, combined)
+
+    # Step 4: Vector expansion — top similar memories NOT in FTS5 set
+    fts_ids = set(candidate_scores.keys())
+    expansion_ids = set()
+
+    # Get top vector matches from this conversation
+    all_mems = conn.execute("""
+        SELECT m.id, m.content, m.memory_type, m.session_key
+        FROM memories m
+        WHERE m.conv_id = ? AND m.deleted_at IS NULL
+    """, (conv_id,)).fetchall()
+
+    vec_candidates = []
+    for mem in all_mems:
+        if mem[0] in fts_ids:
+            continue
+        emb_row = conn.execute(
+            "SELECT embedding FROM memory_vec WHERE memory_id = ?", (mem[0],)
+        ).fetchone()
+        if emb_row:
+            stored = struct.unpack(f'{384}f', emb_row[0])
+            cos_sim = sum(a * b for a, b in zip(q_emb, stored))
+            if cos_sim > 0.3:  # Only add if reasonably similar
+                vec_candidates.append((mem[0], mem[1], mem[2], mem[3], cos_sim))
+
+    # Sort by similarity, take top few as expansion
+    vec_candidates.sort(key=lambda x: x[4], reverse=True)
+    for vc in vec_candidates[:max(1, top_k // 2)]:
+        # Penalize expansion results (no keyword match = less confident)
+        expansion_score = vec_weight * vc[4] * 0.8
+        candidate_scores[vc[0]] = (vc[1], vc[2], vc[3], expansion_score)
+
+    # Step 5: Rank all candidates, return top_k
+    ranked = sorted(candidate_scores.items(), key=lambda x: x[1][3], reverse=True)[:top_k]
+
+    results = []
+    for mem_id, (content, mtype, skey, score) in ranked:
+        results.append((mem_id, content, mtype, skey, score))
+
+    return results
+
+
+# ── Evaluation ──────────────────────────────────────────────────────────
+
+def evaluate(data, conn, top_k_values, search_mode='keyword', use_vectors=False):
+    """Run LoCoMo QA evaluation against B12 retrieval."""
+    results = {k: {cat: {'recall': 0, 'total': 0, 'f1_sum': 0.0}
+                    for cat in CATEGORIES}
+               for k in top_k_values}
+
+    no_retrieval = 0
+    total_qs = 0
+
+    # Select retrieval function
+    if search_mode == 'hybrid' and use_vectors:
+        retrieve_fn = retrieve_hybrid
+    elif search_mode == 'vector' and use_vectors:
+        retrieve_fn = retrieve_vector
+    else:
+        retrieve_fn = retrieve_fts5
+
+    for conv_idx, conv_data in enumerate(data):
+        for qa in conv_data['qa']:
+            question = qa['question']
+            answer = qa.get('answer', qa.get('adversarial_answer', ''))
+            category = qa['category']
+            total_qs += 1
+
+            for top_k in top_k_values:
+                retrieved = retrieve_fn(conn, question, conv_idx, top_k)
+
+                if not retrieved:
+                    no_retrieval += 1 if top_k == top_k_values[0] else 0
+                    # For adversarial: no retrieval = correct behavior
+                    if category == 5:
+                        results[top_k][category]['recall'] += 1
+                    results[top_k][category]['total'] += 1
+                    continue
+
+                # Combine retrieved content
+                combined = " ".join([r[1] for r in retrieved])
+
+                # Recall: does retrieved content contain the answer?
+                if category == 5:
+                    # Adversarial: correct if answer NOT found (question is unanswerable)
+                    if not has_answer(combined, answer):
+                        results[top_k][category]['recall'] += 1
+                else:
+                    if has_answer(combined, answer):
+                        results[top_k][category]['recall'] += 1
+
+                # F1: token overlap between retrieved and answer
+                f1 = f1_score(combined, answer)
+                results[top_k][category]['f1_sum'] += f1
+                results[top_k][category]['total'] += 1
+
+    return results, total_qs, no_retrieval
+
+# ── Report ──────────────────────────────────────────────────────────────
+
+def print_report(mode, mem_count, results, total_qs, no_retrieval, elapsed, search_mode='keyword'):
+    """Print evaluation results."""
+    print(f"\n{'='*65}")
+    print(f"  B12 LoCoMo Benchmark — Storage: {mode} | Search: {search_mode}")
+    print(f"{'='*65}")
+    print(f"  Memories ingested: {mem_count}")
+    print(f"  Total QA questions: {total_qs}")
+    print(f"  Questions with no retrieval: {no_retrieval} ({no_retrieval/total_qs*100:.1f}%)")
+    print(f"  Evaluation time: {elapsed:.1f}s")
+    print()
+
+    for top_k in sorted(results.keys()):
+        print(f"  ── Recall@{top_k} {'─'*45}")
+        total_recall = 0
+        total_count = 0
+        answerable_recall = 0
+        answerable_count = 0
+
+        for cat_id in sorted(CATEGORIES.keys()):
+            cat_name = CATEGORIES[cat_id]
+            r = results[top_k][cat_id]
+            if r['total'] == 0:
+                print(f"    {cat_name:15s}  —  (no questions)")
+                continue
+            recall = r['recall'] / r['total']
+            avg_f1 = r['f1_sum'] / r['total']
+            total_recall += r['recall']
+            total_count += r['total']
+            if cat_id != 5:  # Exclude adversarial from answerable
+                answerable_recall += r['recall']
+                answerable_count += r['total']
+            bar = '█' * int(recall * 20) + '░' * (20 - int(recall * 20))
+            print(f"    {cat_name:15s}  {bar}  {recall*100:5.1f}%  (F1: {avg_f1:.3f})  n={r['total']}")
+
+        if total_count > 0:
+            overall = total_recall / total_count
+            print(f"    {'─'*55}")
+            print(f"    {'OVERALL':15s}  {'':20s}  {overall*100:5.1f}%  n={total_count}")
+        if answerable_count > 0:
+            ans_recall = answerable_recall / answerable_count
+            print(f"    {'ANSWERABLE':15s}  {'':20s}  {ans_recall*100:5.1f}%  n={answerable_count}")
+        print()
+
+# ── Main ────────────────────────────────────────────────────────────────
+
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description='B12 LoCoMo Benchmark')
+    parser.add_argument('--mode', choices=['observations', 'summaries', 'dialogues', 'all'],
+                       default='all', help='Storage mode')
+    parser.add_argument('--search', choices=['keyword', 'hybrid', 'vector', 'compare'],
+                       default='keyword', help='Search mode (compare runs keyword + hybrid side by side)')
+    parser.add_argument('--top-k', type=int, nargs='+', default=[1, 3, 5, 10],
+                       help='Top-k values for recall')
+    args = parser.parse_args()
+
+    # Load data
+    print("Loading LoCoMo dataset...")
+    with open(DATA_FILE) as f:
+        data = json.load(f)
+    print(f"  {len(data)} conversations, {sum(len(c['qa']) for c in data)} QA pairs")
+
+    # Determine search modes to run
+    need_vectors = args.search in ('hybrid', 'vector', 'compare')
+    search_modes = ['keyword', 'hybrid'] if args.search == 'compare' else [args.search]
+
+    # Pre-load embedding model if needed
+    if need_vectors:
+        print("\nLoading embedding model...")
+        get_embedding_model()
+
+    modes = ['observations', 'summaries', 'dialogues'] if args.mode == 'all' else [args.mode]
+
+    for mode in modes:
+        # Create fresh test DB (with vectors if needed)
+        conn, vectors_ok = create_test_db(TEST_DB, use_vectors=need_vectors)
+
+        # Ingest
+        print(f"\nIngesting ({mode})...")
+        if mode == 'observations':
+            count = ingest_observations(conn, data, use_vectors=vectors_ok)
+        elif mode == 'summaries':
+            count = ingest_summaries(conn, data, use_vectors=vectors_ok)
+        elif mode == 'dialogues':
+            count = ingest_dialogues(conn, data, use_vectors=vectors_ok)
+        print(f"  {count} memories stored")
+
+        for search_mode in search_modes:
+            effective_mode = search_mode
+            if search_mode in ('hybrid', 'vector') and not vectors_ok:
+                print(f"\n  Skipping {search_mode} (no vector support)")
+                continue
+
+            # Evaluate
+            print(f"\nEvaluating ({search_mode} search)...")
+            t0 = time.time()
+            results, total_qs, no_retrieval = evaluate(
+                data, conn, args.top_k,
+                search_mode=effective_mode, use_vectors=vectors_ok
+            )
+            elapsed = time.time() - t0
+
+            # Report
+            print_report(mode, count, results, total_qs, no_retrieval, elapsed, search_mode=effective_mode)
+
+        conn.close()
+
+    # Cleanup test DB
+    if TEST_DB.exists():
+        TEST_DB.unlink()
+    for ext in ['-wal', '-shm']:
+        p = Path(str(TEST_DB) + ext)
+        if p.exists():
+            p.unlink()
+
+    print("Done. Test database cleaned up.")
+
+if __name__ == '__main__':
+    main()

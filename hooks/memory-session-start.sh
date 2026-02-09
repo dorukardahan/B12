@@ -28,6 +28,24 @@ file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || ech
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 SUMMARY_DIR="$B12_BASE/memory-summaries"
 
+# ── Project hierarchy detection ──────────────────────────────────
+# Walk up to find project root (directory with .git, package.json, etc.)
+# This ensures /B12/benchmarks/locomo still finds proj:B12 memories
+PARENT_PROJECT=""
+_dir="$CWD"
+while [ "$_dir" != "/" ] && [ "$_dir" != "$HOME" ]; do
+  _parent=$(dirname "$_dir")
+  _pname=$(basename "$_parent" 2>/dev/null)
+  if [ -d "$_dir/.git" ] || [ -f "$_dir/package.json" ] || [ -f "$_dir/Cargo.toml" ] || [ -f "$_dir/go.mod" ] || [ -f "$_dir/pyproject.toml" ]; then
+    _root_name=$(basename "$_dir" 2>/dev/null)
+    if [ "$_root_name" != "$PROJECT_NAME" ]; then
+      PARENT_PROJECT="$_root_name"
+    fi
+    break
+  fi
+  _dir="$_parent"
+done
+
 # Derive project memory directory (same path format as Claude Code uses)
 PROJECT_HASH=$(echo "$CWD" | sed 's|/|-|g')
 MEMORY_DIR="$B12_BASE/projects/${PROJECT_HASH}/memory"
@@ -99,12 +117,27 @@ fi
 MEMORY_PREFETCH=""
 DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
 
-if [ -f "$DB_PATH" ] && [ "$SOURCE" != "compact" ]; then
+if [ -f "$DB_PATH" ]; then
   # Sanitize project name for SQL (alphanumeric + dash/underscore only)
   SAFE_PROJECT=$(echo "$PROJECT_NAME" | sed 's/[^a-zA-Z0-9_-]//g')
 
+  # Parent project tag (for subdirectory awareness)
+  SAFE_PARENT=""
+  if [ -n "$PARENT_PROJECT" ]; then
+    SAFE_PARENT=$(echo "$PARENT_PROJECT" | sed 's/[^a-zA-Z0-9_-]//g')
+  fi
+
   # Project-relevant memories (tag match OR FTS5 keyword match, exclude session summaries + superseded)
+  # Searches both current dir name AND parent project name
   if [ -n "$SAFE_PROJECT" ] && [ ${#SAFE_PROJECT} -gt 1 ]; then
+    # Build tag/FTS conditions — include parent project if different
+    TAG_COND="m.tags LIKE '%proj:${SAFE_PROJECT}%'"
+    FTS_COND="memory_fts MATCH '\"${SAFE_PROJECT}\"'"
+    if [ -n "$SAFE_PARENT" ] && [ ${#SAFE_PARENT} -gt 1 ]; then
+      TAG_COND="${TAG_COND} OR m.tags LIKE '%proj:${SAFE_PARENT}%'"
+      FTS_COND="memory_fts MATCH '\"${SAFE_PROJECT}\" OR \"${SAFE_PARENT}\"'"
+    fi
+
     PROJ_MEMS=$(sqlite3 "$DB_PATH" "
       SELECT '[' || m.memory_type || '] ' || substr(m.content, 1, 200)
       FROM memories m
@@ -113,18 +146,20 @@ if [ -f "$DB_PATH" ] && [ "$SOURCE" != "compact" ]; then
         AND m.memory_type != 'session_summary'
         AND m.tags NOT LIKE '%session-summary%'
         AND (
-          m.tags LIKE '%proj:${SAFE_PROJECT}%'
+          ${TAG_COND}
           OR m.id IN (
             SELECT rowid FROM memory_fts
-            WHERE memory_fts MATCH '\"${SAFE_PROJECT}\"'
+            WHERE ${FTS_COND}
           )
         )
-      ORDER BY m.created_at DESC
+      ORDER BY COALESCE(json_extract(m.metadata, '$.importance_score'), 1.0) * COALESCE(m.strength, 1.0) DESC
       LIMIT 3
     " 2>/dev/null)
 
     if [ -n "$PROJ_MEMS" ]; then
-      MEMORY_PREFETCH="Project memories (${SAFE_PROJECT}):\n${PROJ_MEMS}"
+      PREFETCH_LABEL="${SAFE_PROJECT}"
+      [ -n "$SAFE_PARENT" ] && PREFETCH_LABEL="${SAFE_PARENT}/${SAFE_PROJECT}"
+      MEMORY_PREFETCH="Project memories (${PREFETCH_LABEL}):\n${PROJ_MEMS}"
     fi
   fi
 
@@ -135,7 +170,7 @@ if [ -f "$DB_PATH" ] && [ "$SOURCE" != "compact" ]; then
     WHERE tags LIKE '%user:universal%'
       AND deleted_at IS NULL
       AND valid_until IS NULL
-    ORDER BY created_at DESC
+    ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0) * COALESCE(strength, 1.0) DESC
     LIMIT 2
   " 2>/dev/null)
 
@@ -159,13 +194,21 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # ═══════════════════════════════════════════════════════════
   # BUILD CONTEXT — scope-aware, token-efficient
   # ═══════════════════════════════════════════════════════════
-  CONTEXT="MEMORY SYSTEM ACTIVE (mcp-memory-service v10.7.2). Setup: ${SETUP_CONTEXT}. Project: ${PROJECT_NAME} (${CWD})."
+  PARENT_INFO=""
+  [ -n "$PARENT_PROJECT" ] && PARENT_INFO=" (parent: ${PARENT_PROJECT})"
+  CONTEXT="MEMORY SYSTEM ACTIVE (mcp-memory-service v10.7.2). Setup: ${SETUP_CONTEXT}. Project: ${PROJECT_NAME}${PARENT_INFO} (${CWD})."
 
   # --- Compact behavioral instructions (v4 — ~120 tokens vs ~512 in v3) ---
   CONTEXT="${CONTEXT}\n\nMEMORY TOOLS: memory_search (mode=hybrid, max_response_chars=40000), memory_store (always include metadata), memory_update, memory_graph, memory_quality, memory_cleanup."
 
   # --- Scope classification rules ---
-  CONTEXT="${CONTEXT}\n\nSCOPE SYSTEM:\nSetup: ${SETUP_CONTEXT} | Project: ${PROJECT_NAME}\nWhen STORING: Always include tags [proj:${PROJECT_NAME}, user:${SETUP_CONTEXT}] and metadata {project:\"${PROJECT_NAME}\", setup:\"${SETUP_CONTEXT}\", scope:\"<type>\"}.\nScope types:\n- project: codebase-specific (architecture, decisions, bugs) -> tag: proj:${PROJECT_NAME}\n- universal: applies everywhere (patterns, CLI tricks, lessons) -> tag: user:universal\n- preference: user preferences (always global) -> tag: user:pref\n- setup: team/workflow specific to ${SETUP_CONTEXT} -> tag: user:${SETUP_CONTEXT}\nWhen SEARCHING:\n- Default: tags=[\"proj:${PROJECT_NAME}\"] to get project context. Add user:universal for general knowledge.\n- Cross-project: no tag filter. Mentally deprioritize results from unrelated proj: tags.\n- Few results (<3): widen scope, remove tag filter."
+  STORE_TAG="proj:${PROJECT_NAME}"
+  SEARCH_HINT="Default: tags=[\"proj:${PROJECT_NAME}\"] to get project context."
+  if [ -n "$PARENT_PROJECT" ]; then
+    STORE_TAG="proj:${PARENT_PROJECT}"
+    SEARCH_HINT="Default: tags=[\"proj:${PARENT_PROJECT}\"] (parent project). Also try proj:${PROJECT_NAME} for subdir-specific."
+  fi
+  CONTEXT="${CONTEXT}\n\nSCOPE SYSTEM:\nSetup: ${SETUP_CONTEXT} | Project: ${PROJECT_NAME}${PARENT_INFO}\nWhen STORING: Always include tags [${STORE_TAG}, user:${SETUP_CONTEXT}] and metadata {project:\"${PARENT_PROJECT:-${PROJECT_NAME}}\", setup:\"${SETUP_CONTEXT}\", scope:\"<type>\"}.\nScope types:\n- project: codebase-specific (architecture, decisions, bugs) -> tag: ${STORE_TAG}\n- universal: applies everywhere (patterns, CLI tricks, lessons) -> tag: user:universal\n- preference: user preferences (always global) -> tag: user:pref\n- setup: team/workflow specific to ${SETUP_CONTEXT} -> tag: user:${SETUP_CONTEXT}\nWhen SEARCHING:\n- ${SEARCH_HINT} Add user:universal for general knowledge.\n- Cross-project: no tag filter. Mentally deprioritize results from unrelated proj: tags.\n- Few results (<3): widen scope, remove tag filter."
 
   # --- Dual-layer deconfliction ---
   CONTEXT="${CONTEXT}\n\nDUAL MEMORY LAYERS:\n- MEMORY.md = active project state (current architecture, decisions, conventions). Updated each session.\n- MCP memory = historical knowledge (past errors, cross-project patterns, resolved issues, preferences). Searched on demand.\nDo NOT duplicate between them."

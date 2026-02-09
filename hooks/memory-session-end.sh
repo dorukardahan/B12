@@ -133,16 +133,25 @@ try:
                                         continue
                                     assistant_messages.append(text[:500])
 
-                                    # Pattern matching on assistant text
-                                    snippet = text[:400]
-                                    if DECISION_RE.search(snippet):
-                                        decisions.append(snippet[:200])
-                                    if ERROR_RE.search(snippet):
-                                        errors_fixes.append(snippet[:200])
-                                    if PREFERENCE_RE.search(snippet):
-                                        preferences.append(snippet[:200])
-                                    if LEARNING_RE.search(snippet):
-                                        learnings.append(snippet[:200])
+                                    # Pattern matching on full assistant text (scan up to 2000 chars)
+                                    scan_text = text[:2000]
+                                    if DECISION_RE.search(scan_text):
+                                        # Extract context around the match
+                                        m = DECISION_RE.search(scan_text)
+                                        start = max(0, m.start() - 50)
+                                        decisions.append(scan_text[start:start+250])
+                                    if ERROR_RE.search(scan_text):
+                                        m = ERROR_RE.search(scan_text)
+                                        start = max(0, m.start() - 50)
+                                        errors_fixes.append(scan_text[start:start+250])
+                                    if PREFERENCE_RE.search(scan_text):
+                                        m = PREFERENCE_RE.search(scan_text)
+                                        start = max(0, m.start() - 50)
+                                        preferences.append(scan_text[start:start+250])
+                                    if LEARNING_RE.search(scan_text):
+                                        m = LEARNING_RE.search(scan_text)
+                                        start = max(0, m.start() - 50)
+                                        learnings.append(scan_text[start:start+250])
 
                                 elif block.get('type') == 'tool_use':
                                     tool_name = block.get('name', '')
@@ -161,8 +170,10 @@ try:
                     text = content if isinstance(content, str) else ''
                     if isinstance(content, list):
                         text = ' '.join(b.get('text', '') for b in content if isinstance(b, dict))
-                    if text and PREFERENCE_RE.search(text[:300]):
-                        preferences.append(f"[user] {text[:200]}")
+                    if text and PREFERENCE_RE.search(text[:1000]):
+                        m = PREFERENCE_RE.search(text[:1000])
+                        start = max(0, m.start() - 30)
+                        preferences.append(f"[user] {text[start:start+250]}")
 
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
