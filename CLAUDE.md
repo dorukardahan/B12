@@ -4,7 +4,7 @@ This is a memory system project for Claude Code CLI.
 
 ## Project structure
 - `hooks/` — Shell/Python scripts that fire at Claude Code lifecycle events (v7)
-- `scripts/` — Support modules (write-time merge, Ebbinghaus decay, migration)
+- `scripts/` — Support modules (write-time merge, Ebbinghaus decay, migration, patch applier)
 - `config/` — Template configuration files for Claude Code settings + launchd plists
 - `templates/` — User-facing template files (user profile, etc.)
 - `docs/` — Architecture documentation and setup guide

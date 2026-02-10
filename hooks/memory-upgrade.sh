@@ -45,26 +45,17 @@ else
   echo "  [WARN] response_limiter import line not found - check manually"
 fi
 
-# Step 3: Check FTS5 hybrid search patch
-echo "[3/4] Checking FTS5 hybrid search patch in: $SQLITE_VEC_PY"
-
-if [ -z "$SQLITE_VEC_PY" ]; then
-  echo "  [WARN] sqlite_vec.py not found - skipping FTS5 check"
+# Step 3: Re-apply B12 patches to sqlite_vec.py
+echo "[3/4] Re-applying B12 patches to sqlite_vec.py..."
+PATCH_SCRIPT="${B12_REPO:-$HOME/Desktop/B12}/scripts/apply-patches.py"
+if [ -f "$PATCH_SCRIPT" ]; then
+  python3 "$PATCH_SCRIPT"
 else
-  if grep -q '_init_fts5' "$SQLITE_VEC_PY"; then
-    echo "  FTS5 hybrid search patch already applied"
-  else
-    echo "  [WARN] FTS5 hybrid search patch NOT found in sqlite_vec.py"
-    echo "  The FTS5 database schema (table + triggers) is still intact,"
-    echo "  but hybrid search scoring will revert to pure vector search."
-    echo ""
-    echo "  To re-apply the FTS5 hybrid patch, ask Claude to:"
-    echo "    'Re-apply FTS5 hybrid search patch to sqlite_vec.py'"
-    echo "  Or manually re-apply the FTS5 patch from your B12 repo clone."
-  fi
+  echo "  [WARN] Patch script not found at $PATCH_SCRIPT"
+  echo "  Run manually: python3 ~/Desktop/B12/scripts/apply-patches.py"
 fi
 
-# Step 4: Clear Python bytecache
+# Step 4: Clear Python bytecache (apply-patches.py handles its own, but clear broadly)
 echo "[4/4] Clearing bytecache..."
 find "$HOME/.local/pipx/venvs/mcp-memory-service" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 find "$HOME/.local/pipx/venvs/mcp-memory-service" -name "*.pyc" -delete 2>/dev/null || true
