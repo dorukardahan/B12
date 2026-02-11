@@ -6,6 +6,11 @@
 # Fires on: mcp__memory__memory_store (PreToolUse)
 # Output: updatedInput with corrected tags, or silent allow if compliant
 
+# ── Self-timeout watchdog ─────────────────────────────────────
+( sleep 5 && kill -TERM $$ 2>/dev/null ) &
+_WATCHDOG=$!
+trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
+
 INPUT=$(cat)
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 TAGS_RAW=$(echo "$INPUT" | jq -r '.tool_input.tags // empty' 2>/dev/null)

@@ -23,6 +23,12 @@
 # Output: additionalContext with relevant memories
 # Performance target: <500ms (re-rank skipped on attribute queries → ~50ms)
 
+# ── Self-timeout watchdog ─────────────────────────────────────
+# Kills this script if it exceeds max runtime. Prevents orphan processes.
+( sleep 10 && kill -TERM $$ 2>/dev/null ) &
+_WATCHDOG=$!
+trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
+
 INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // ""')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')

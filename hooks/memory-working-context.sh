@@ -7,6 +7,11 @@
 # Output: empty JSON (side-effect only)
 # Performance target: <50ms
 
+# ── Self-timeout watchdog ─────────────────────────────────────
+( sleep 5 && kill -TERM $$ 2>/dev/null ) &
+_WATCHDOG=$!
+trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
+
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')

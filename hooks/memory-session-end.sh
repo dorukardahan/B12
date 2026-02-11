@@ -11,6 +11,12 @@
 # - Executive summary (5-line) for next session's compact loading
 # - B12_DATA_DIR support for multi-setup
 
+# ── Self-timeout watchdog ─────────────────────────────────────
+# Kills this script if it exceeds max runtime. Prevents orphan processes.
+( sleep 30 && kill -TERM $$ 2>/dev/null ) &
+_WATCHDOG=$!
+trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
+
 INPUT=$(cat)
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
 REASON=$(echo "$INPUT" | jq -r '.reason // "other"')

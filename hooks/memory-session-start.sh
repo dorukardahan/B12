@@ -15,6 +15,19 @@
 # - Lazy-load user profile (only if updated within 7 days)
 # - Dual-layer deconfliction rule (MEMORY.md vs MCP memory)
 
+# ── Orphan hook cleanup ──────────────────────────────────────
+# Kill memory hook processes orphaned from previous sessions (PPID=1)
+for _pid in $(pgrep -f "memory-.*\.sh" 2>/dev/null); do
+  [ "$_pid" = "$$" ] && continue
+  [ "$(ps -p "$_pid" -o ppid= 2>/dev/null | tr -d ' ')" = "1" ] && kill "$_pid" 2>/dev/null
+done
+
+# ── Self-timeout watchdog ─────────────────────────────────────
+# Kills this script if it exceeds max runtime. Prevents orphan processes.
+( sleep 15 && kill -TERM $$ 2>/dev/null ) &
+_WATCHDOG=$!
+trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
+
 INPUT=$(cat)
 SOURCE=$(echo "$INPUT" | jq -r '.source // "startup"')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
