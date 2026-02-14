@@ -47,12 +47,15 @@ fi
 
 # Step 3: Re-apply B12 patches to sqlite_vec.py
 echo "[3/4] Re-applying B12 patches to sqlite_vec.py..."
-PATCH_SCRIPT="${B12_REPO:-$HOME/Desktop/B12}/scripts/apply-patches.py"
-if [ -f "$PATCH_SCRIPT" ]; then
+PATCH_SCRIPT="${B12_REPO}/scripts/apply-patches.py"
+if [ -z "$B12_REPO" ]; then
+  echo "  [WARN] B12_REPO env var not set. Set it to your B12 repo path."
+  echo "  Example: export B12_REPO=\$HOME/path/to/B12"
+elif [ -f "$PATCH_SCRIPT" ]; then
   python3 "$PATCH_SCRIPT"
 else
   echo "  [WARN] Patch script not found at $PATCH_SCRIPT"
-  echo "  Run manually: python3 ~/Desktop/B12/scripts/apply-patches.py"
+  echo "  Run manually: python3 \$B12_REPO/scripts/apply-patches.py"
 fi
 
 # Step 4: Clear Python bytecache (apply-patches.py handles its own, but clear broadly)

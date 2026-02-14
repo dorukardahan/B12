@@ -20,8 +20,9 @@ B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
 
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 
-# Setup detection
-if [[ "$B12_BASE" == *".claude-x"* ]] || [[ "$CWD" == *"/0G"* ]] || [[ "$CWD" == *"/0g"* ]]; then
+# Setup detection (set B12_WORK_PATTERN env var to match your work dirs)
+_WORK_PAT="${B12_WORK_PATTERN:-}"
+if [ -n "$_WORK_PAT" ] && { [[ "$B12_BASE" == *"$_WORK_PAT"* ]] || [[ "$CWD" == *"/$_WORK_PAT"* ]] || [[ "$CWD" == *"/${_WORK_PAT,,}"* ]]; }; then
   SETUP="work"
 else
   SETUP="personal"

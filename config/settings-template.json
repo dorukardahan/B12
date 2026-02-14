@@ -1,5 +1,9 @@
 {
-  "_comment": "Merge these hooks into your ~/.claude/settings.json or ~/.claude-<setup>/settings.json",
+  "_comment": "Merge these into your ~/.claude/settings.json or ~/.claude-<setup>/settings.json",
+  "env": {
+    "_comment_env": "B12_WORK_PATTERN: set to match your work directories (e.g. 'mycompany')",
+    "B12_WORK_PATTERN": ""
+  },
   "hooks": {
     "SessionStart": [
       {
@@ -8,7 +12,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-session-start.sh",
-            "timeout": 10
+            "timeout": 20
           }
         ]
       }
@@ -20,7 +24,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-precompact.sh",
-            "timeout": 15
+            "timeout": 30
           }
         ]
       }
@@ -31,7 +35,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-session-end.sh",
-            "timeout": 15
+            "timeout": 35
           }
         ]
       }
@@ -42,7 +46,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-retrieval.sh",
-            "timeout": 3
+            "timeout": 15
           }
         ]
       }
@@ -54,7 +58,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-tag-enforce.sh",
-            "timeout": 3
+            "timeout": 8
           }
         ]
       }
@@ -66,7 +70,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-feedback.sh",
-            "timeout": 3
+            "timeout": 8
           }
         ]
       },
@@ -76,7 +80,7 @@
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-working-context.sh",
-            "timeout": 2
+            "timeout": 8
           }
         ]
       }

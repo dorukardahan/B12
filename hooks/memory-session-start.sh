@@ -65,8 +65,11 @@ MEMORY_DIR="$B12_BASE/projects/${PROJECT_HASH}/memory"
 
 # ═══════════════════════════════════════════════════════════════
 # SETUP DETECTION — personal vs work
+# Set B12_WORK_PATTERN to match your work directories/setup name.
+# Example: B12_WORK_PATTERN="mycompany" matches .claude-mycompany or /mycompany/ dirs
 # ═══════════════════════════════════════════════════════════════
-if [[ "$B12_BASE" == *".claude-x"* ]] || [[ "$CWD" == *"/0G"* ]] || [[ "$CWD" == *"/0g"* ]]; then
+_WORK_PAT="${B12_WORK_PATTERN:-}"
+if [ -n "$_WORK_PAT" ] && { [[ "$B12_BASE" == *"$_WORK_PAT"* ]] || [[ "$CWD" == *"/$_WORK_PAT"* ]] || [[ "$CWD" == *"/${_WORK_PAT,,}"* ]]; }; then
   SETUP_CONTEXT="work"
 else
   SETUP_CONTEXT="personal"

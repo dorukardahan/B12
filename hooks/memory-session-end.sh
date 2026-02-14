@@ -32,8 +32,9 @@ STAGING_DIR="$B12_BASE/memory-staging"
 LOG_DIR="$B12_BASE/memory-logs"
 mkdir -p "$SUMMARY_DIR" "$LOG_DIR"
 
-# Setup detection
-if [[ "$B12_BASE" == *".claude-x"* ]] || [[ "$CWD" == *"/0G"* ]] || [[ "$CWD" == *"/0g"* ]]; then
+# Setup detection (set B12_WORK_PATTERN env var to match your work dirs)
+_WORK_PAT="${B12_WORK_PATTERN:-}"
+if [ -n "$_WORK_PAT" ] && { [[ "$B12_BASE" == *"$_WORK_PAT"* ]] || [[ "$CWD" == *"/$_WORK_PAT"* ]] || [[ "$CWD" == *"/${_WORK_PAT,,}"* ]]; }; then
   SETUP_CONTEXT="work"
 else
   SETUP_CONTEXT="personal"
