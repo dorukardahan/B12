@@ -83,13 +83,20 @@ user_messages = []
 files_modified = set()
 
 try:
-    with open(transcript_path, 'r') as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
+    # Optimization: only read last 3000 lines to avoid slow parse on huge transcripts
+    import subprocess
+    tail_result = subprocess.run(
+        ['tail', '-n', '3000', transcript_path],
+        capture_output=True, text=True, timeout=10
+    )
+    tail_lines = tail_result.stdout.splitlines() if tail_result.returncode == 0 else []
+
+    for line in tail_lines:
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            obj = json.loads(line)
                 msg_type = obj.get('type', '')
 
                 if msg_type == 'human':

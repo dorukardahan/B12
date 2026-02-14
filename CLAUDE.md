@@ -12,7 +12,8 @@ This is a memory system project for Claude Code CLI.
 ## Development rules
 - Hook scripts must be POSIX-compatible shell (bash)
 - All hooks must exit 0 for success (non-zero blocks actions)
-- Hooks must complete within their timeout (SessionStart: 10s, PreCompact: 15s, SessionEnd: 15s)
+- Hooks must complete within their timeout (SessionStart: 20s, PreCompact: 30s, SessionEnd: 35s)
+- Hook timeouts MUST be >= watchdog timer + 5s (timeout = watchdog + 5)
 - Never include personal data, API keys, or file paths in the repo
 - Use placeholder paths (`/path/to/...`) in templates
 - Use `$HOME` or `~` instead of hardcoded user directories
