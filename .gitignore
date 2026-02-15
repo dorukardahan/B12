@@ -34,3 +34,11 @@ venv/
 # Backup files
 backups/
 consolidation_archive/
+
+# Personal/local files
+*.local.md
+working-memory.json
+feedback.jsonl
+
+# Benchmark data (large)
+benchmarks/locomo/locomo10.json

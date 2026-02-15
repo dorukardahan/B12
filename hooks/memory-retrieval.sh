@@ -42,7 +42,7 @@ fi
 # Skip common non-searchable patterns
 PROMPT_LOWER=$(echo "$PROMPT" | tr '[:upper:]' '[:lower:]')
 case "$PROMPT_LOWER" in
-  evet*|hayır*|tamam*|ok*|yes*|no*|devam*|anladım*|güzel*|teşekkür*|thanks*|merhaba*|hey*|hi\ *|hello*|peki*|hadi*)
+  evet*|hayır*|tamam*|ok*|yes*|no*|devam*|anladım*|güzel*|teşekkür*|thanks*|merhaba*|hey*|hi\ *|hello*|peki*|hadi*|tamamdır*|oldu*|anlaşıldı*|süper*|harika*)
     exit 0
     ;;
 esac
@@ -96,12 +96,22 @@ elif echo "$PROMPT_LOWER" | grep -qE '(think about|feel about|opinion|views? on|
 fi
 
 # ── Keyword extraction ─────────────────────────────────────────
-KEYWORDS=$(echo "$PROMPT" | tr '[:upper:]' '[:lower:]' | \
-  grep -oE '[a-zA-Z0-9_.-]{3,}' | \
-  grep -vE '^(the|and|for|are|but|not|you|all|can|had|her|was|one|our|out|has|his|how|its|let|may|new|now|old|see|way|who|did|get|got|him|say|she|too|use|bir|ile|için|var|ben|sen|nasıl|neden|ama|gibi|daha|çok|bana|sana|olan|olarak|bunu|şimdi|lütfen|this|that|with|from|have|will|been|they|what|when|which|would|could|should|about|there|their|these|where|some|than|them|then|into|also|just|like|only|come|made|after|back|over|such|take|other|most|make|know|long|here|many|help|want|need|look|does)$' | \
-  head -10 | \
-  tr '\n' ' ' | \
-  sed 's/ *$//')
+KEYWORDS=$(echo "$PROMPT" | python3 -c "
+import re, sys
+text = sys.stdin.read().lower()
+words = re.findall(r'[\w]{3,}', text, re.UNICODE)
+stops = {'bir','ile','için','var','ben','sen','nasıl','neden','ama','gibi','daha',
+         'çok','bana','sana','olan','olarak','bunu','şimdi','lütfen','yapıyoruz',
+         'yapalım','bunun','burada','benim','onun','şey','the','and','for','are',
+         'but','not','you','all','can','had','was','one','has','how','its','may',
+         'new','now','see','who','did','get','him','she','too','use','this','that',
+         'with','from','have','will','been','they','what','when','which','would',
+         'could','should','about','there','their','these','where','some','than',
+         'them','then','into','also','just','like','only','make','know','here',
+         'help','want','need','look','does'}
+filtered = [w for w in words if w not in stops][:10]
+print(' '.join(filtered))
+" 2>/dev/null)
 
 # Need at least 1 keyword for meaningful search
 WORD_COUNT=$(echo "$KEYWORDS" | wc -w | tr -d ' ')
@@ -164,6 +174,58 @@ while IFS='|' read -r id display score; do
     RESULT_COUNT=$((RESULT_COUNT + 1))
   fi
 done <<< "$RESULTS"
+
+# ── Semantic fallback when FTS5 returns 0 ──────────────────────
+VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
+if [ "$RESULT_COUNT" -eq 0 ] && [ -x "$VENV_PYTHON" ]; then
+  SEMANTIC_RESULTS=$(timeout 4 "$VENV_PYTHON" - "$DB_PATH" "$PROMPT" 2>/dev/null << 'SEMEOF'
+import sys, struct, sqlite3
+
+db_path, query = sys.argv[1], sys.argv[2]
+try:
+    from sentence_transformers import SentenceTransformer
+    model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+    q_emb = model.encode([query], normalize_embeddings=True)[0]
+
+    conn = sqlite3.connect(db_path)
+    rows = conn.execute("""
+        SELECT m.id, m.content, e.content_embedding
+        FROM memories m
+        JOIN memory_embeddings e ON m.id = e.rowid
+        WHERE m.deleted_at IS NULL
+          AND m.memory_type != 'session_summary'
+          AND m.tags NOT LIKE '%session-summary%'
+    """).fetchall()
+
+    scores = []
+    for row_id, content, emb_bytes in rows:
+        if not emb_bytes:
+            continue
+        dim = len(emb_bytes) // 4
+        stored = struct.unpack(f'{dim}f', emb_bytes)
+        cos_sim = sum(a*b for a,b in zip(q_emb, stored))
+        if cos_sim > 0.3:  # minimum similarity threshold
+            display = '[' + (content[:300].replace('\n', ' ')) + ']'
+            scores.append((row_id, cos_sim, display))
+
+    scores.sort(key=lambda x: x[1], reverse=True)
+    for row_id, sim, display in scores[:5]:
+        print(f"{row_id}|{display}|{sim:.3f}")
+    conn.close()
+except Exception:
+    pass
+SEMEOF
+  )
+
+  # Parse semantic results
+  while IFS='|' read -r id display score; do
+    if [ -n "$id" ]; then
+      RESULT_IDS="${RESULT_IDS}${id},"
+      RESULT_DISPLAY="${RESULT_DISPLAY}${display}\n"
+      RESULT_COUNT=$((RESULT_COUNT + 1))
+    fi
+  done <<< "$SEMANTIC_RESULTS"
+fi
 
 # ── Query-adaptive vector re-rank ────────────────────────────
 # Decision tree:

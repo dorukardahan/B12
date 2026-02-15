@@ -69,37 +69,56 @@ memory_searches = 0
 
 DECISION_RE = re.compile(
     r'(?i)(?:'
+    # English patterns
     r'(?:decided|chose|going with|selected|opted for|switched to|went with)\s+.{5,}'
     r'|(?:will use|using|let.?s use|we.?ll use)\s+\S+\s+(?:instead of|rather than|for|because)\s+'
     r'|(?:the (?:approach|solution|decision|plan) is to)\s+'
     r'|(?:switching from|replacing|migrating from)\s+\S+\s+(?:to|with)\s+'
+    # Turkish patterns
+    r'|(?:karar verdik?|seçtik?|tercih ettik?|bununla gid|bunu kullan)\s*.{5,}'
+    r'|(?:yerine|değil de|bunun yerine)\s+\S+\s+.{3,}'
+    r'|(?:planımız|yaklaşımımız|çözüm(?:ümüz)?)\s+.{5,}'
     r')'
 )
 
 ERROR_RE = re.compile(
     r'(?i)(?:'
+    # English patterns
     r'(?:fixed|resolved|solved|workaround for)\s+.{5,}'
     r'|(?:the fix|the solution|root cause)\s*(?:is|was|:)\s+'
     r'|(?:error|bug|issue)\s+.{0,40}(?:was caused by|because|due to|fixed by)'
     r'|(?:had to|needed to)\s+.{3,40}(?:because|due to|since)\s+.{3,}(?:error|bug|fail|broke|crash)'
+    # Turkish patterns
+    r'|(?:düzelttik?|çözdük?|giderdik?|fix.?ledik?)\s+.{5,}'
+    r'|(?:hata|bug|sorun)\s+.{0,40}(?:sebebi|nedeni|çözümü|düzeltmesi)'
+    r'|(?:sorun şuydu|hata şuydu|sebebi şuydu)\s*(?::)?\s+'
     r')'
 )
 
 PREFERENCE_RE = re.compile(
     r'(?i)(?:'
+    # English patterns
     r'(?:user\s+(?:prefers?|wants?|asked for|(?:does ?\x27?n.?t|never)\s+(?:want|like|use)))'
     r'|(?:always use|never use|convention is|style preference|workflow:)'
     r'|\[user\]\s+'
+    # Turkish patterns
+    r'|(?:kullanıcı\s+(?:tercih|istiyor|istemiyor|istemez))'
+    r'|(?:her zaman|hiçbir zaman|asla|daima)\s+(?:kullan|yap|kullanma|yapma)'
     r')'
 )
 
 LEARNING_RE = re.compile(
     r'(?i)(?:'
+    # English patterns
     r'(?:turns out|TIL|important to note|gotcha|pitfall|caveat|note:)\s*(?::|that|,)?\s+'
     r'|(?:learned|discovered|realized|found out)\s+that\s+'
     r'|(?:the (?:trick|key|insight|important thing) (?:is|was))\s+'
     r'|(?:remember|important):\s+'
     r'|(?:pro.?tip|heads.?up|watch out|be careful|don.?t forget)\s*(?::|,)\s+'
+    # Turkish patterns
+    r'|(?:meğer|meğerse|anlaşılan)\s+.{5,}'
+    r'|(?:öğrendik?|fark ettik?|keşfettik?)\s+.{3,}'
+    r'|(?:dikkat|önemli|unutma)(?::|\s).{5,}'
     r')'
 )
 
@@ -198,29 +217,35 @@ def score_extraction(text, category):
     text_lower = text.lower()
 
     if category == 'decision':
-        if any(w in text_lower for w in ['instead of', 'over', 'rather than', 'because', 'tradeoff']):
+        if any(w in text_lower for w in ['instead of', 'over', 'rather than', 'because', 'tradeoff',
+                                          'yerine', 'çünkü', 'sebebiyle', 'nedeniyle']):
             score += 2
-        if any(w in text_lower for w in ['chose', 'decided', 'selected', 'opted']):
+        if any(w in text_lower for w in ['chose', 'decided', 'selected', 'opted',
+                                          'karar', 'seçtik', 'tercih', 'gidelim']):
             score += 1
 
     elif category == 'error':
-        has_problem = any(w in text_lower for w in ['error', 'bug', 'crash', 'fail', 'broke'])
-        has_resolution = any(w in text_lower for w in ['fixed', 'resolved', 'solved', 'workaround', 'caused by', 'root cause'])
+        has_problem = any(w in text_lower for w in ['error', 'bug', 'crash', 'fail', 'broke',
+                                                     'hata', 'sorun', 'çöktü', 'bozuldu'])
+        has_resolution = any(w in text_lower for w in ['fixed', 'resolved', 'solved', 'workaround', 'caused by', 'root cause',
+                                                        'düzelttik', 'çözdük', 'giderdik', 'sebebi', 'nedeni'])
         if has_problem and has_resolution:
             score += 3
         elif has_problem:
             score += 0  # Problem without resolution = not useful
 
     elif category == 'learning':
-        if any(w in text_lower for w in ['turns out', 'gotcha', 'pitfall', 'caveat', 'important to note']):
+        if any(w in text_lower for w in ['turns out', 'gotcha', 'pitfall', 'caveat', 'important to note',
+                                          'meğer', 'meğerse', 'anlaşılan', 'dikkat', 'önemli']):
             score += 2
-        if 'because' in text_lower or 'so that' in text_lower:
+        if any(w in text_lower for w in ['because', 'so that', 'çünkü', 'dolayı']):
             score += 1
 
     elif category == 'preference':
-        if any(w in text_lower for w in ['always', 'never', 'prefer', 'convention']):
+        if any(w in text_lower for w in ['always', 'never', 'prefer', 'convention',
+                                          'her zaman', 'asla', 'hiçbir zaman', 'tercih']):
             score += 1
-        if any(w in text_lower for w in ['user', '[user]']):
+        if any(w in text_lower for w in ['user', '[user]', 'kullanıcı']):
             score += 2
 
     # Penalty for very short text

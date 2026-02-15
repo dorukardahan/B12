@@ -97,45 +97,45 @@ try:
             continue
         try:
             obj = json.loads(line)
-                msg_type = obj.get('type', '')
+            msg_type = obj.get('type', '')
 
-                if msg_type == 'human':
-                    content = obj.get('message', {}).get('content', '')
-                    if isinstance(content, str) and content.strip():
-                        user_messages.append(content[:300])
-                    elif isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get('type') == 'text':
-                                user_messages.append(block['text'][:300])
+            if msg_type == 'human':
+                content = obj.get('message', {}).get('content', '')
+                if isinstance(content, str) and content.strip():
+                    user_messages.append(content[:300])
+                elif isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict) and block.get('type') == 'text':
+                            user_messages.append(block['text'][:300])
 
-                elif msg_type == 'assistant':
-                    content = obj.get('message', {}).get('content', [])
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict):
-                                if block.get('type') == 'text' and block.get('text', '').strip():
-                                    text = block['text']
-                                    snippet = text[:400]
+            elif msg_type == 'assistant':
+                content = obj.get('message', {}).get('content', [])
+                if isinstance(content, list):
+                    for block in content:
+                        if isinstance(block, dict):
+                            if block.get('type') == 'text' and block.get('text', '').strip():
+                                text = block['text']
+                                snippet = text[:400]
 
-                                    # Score by pattern match
-                                    if DECISION_RE.search(snippet):
-                                        scored_items.append((PRIORITY_WEIGHTS['decision'], 'decision', snippet[:200]))
-                                    elif ERROR_RE.search(snippet):
-                                        scored_items.append((PRIORITY_WEIGHTS['error_fix'], 'error_fix', snippet[:200]))
-                                    elif LEARNING_RE.search(snippet):
-                                        scored_items.append((PRIORITY_WEIGHTS['learning'], 'learning', snippet[:200]))
-                                    elif PREFERENCE_RE.search(snippet):
-                                        scored_items.append((PRIORITY_WEIGHTS['preference'], 'preference', snippet[:200]))
-                                    elif len(text) > 100:
-                                        scored_items.append((PRIORITY_WEIGHTS['general_work'], 'general', snippet[:200]))
+                                # Score by pattern match
+                                if DECISION_RE.search(snippet):
+                                    scored_items.append((PRIORITY_WEIGHTS['decision'], 'decision', snippet[:200]))
+                                elif ERROR_RE.search(snippet):
+                                    scored_items.append((PRIORITY_WEIGHTS['error_fix'], 'error_fix', snippet[:200]))
+                                elif LEARNING_RE.search(snippet):
+                                    scored_items.append((PRIORITY_WEIGHTS['learning'], 'learning', snippet[:200]))
+                                elif PREFERENCE_RE.search(snippet):
+                                    scored_items.append((PRIORITY_WEIGHTS['preference'], 'preference', snippet[:200]))
+                                elif len(text) > 100:
+                                    scored_items.append((PRIORITY_WEIGHTS['general_work'], 'general', snippet[:200]))
 
-                                elif block.get('type') == 'tool_use':
-                                    inp = block.get('input', {})
-                                    name = block.get('name', '')
-                                    if name in ('Edit', 'Write') and 'file_path' in inp:
-                                        files_modified.add(inp['file_path'])
-            except (json.JSONDecodeError, KeyError, TypeError):
-                continue
+                            elif block.get('type') == 'tool_use':
+                                inp = block.get('input', {})
+                                name = block.get('name', '')
+                                if name in ('Edit', 'Write') and 'file_path' in inp:
+                                    files_modified.add(inp['file_path'])
+        except (json.JSONDecodeError, KeyError, TypeError):
+            continue
 except Exception as e:
     import traceback
     log_dir = os.path.expanduser("~/.claude/memory-logs")
