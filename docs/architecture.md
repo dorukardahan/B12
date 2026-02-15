@@ -184,7 +184,7 @@ Process:
 
 **Background embedding**: A Python subprocess generates embeddings after the main hook completes. Uses WAL mode + busy_timeout for safe concurrent DB access.
 
-**Write-time merge**: Imports `merge_or_insert` from `scripts/write-time-merge.py`. Falls back to direct INSERT if the script is unavailable (graceful degradation).
+**Write-time merge**: Imports `merge_or_insert` from `scripts/write_time_merge.py`. Falls back to direct INSERT if the script is unavailable (graceful degradation).
 
 ### PostToolUse hooks
 

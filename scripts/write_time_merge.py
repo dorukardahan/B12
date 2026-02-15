@@ -27,7 +27,7 @@ Requirements implemented
    - Boost strength by +0.2 (cap 5.0) if column exists
 4. Else: normal INSERT into memories + memory_embeddings
 5. Self-test on a temporary DB: merge and insert scenarios
-6. CLI: python scripts/write-time-merge.py --self-test
+6. CLI: python scripts/write_time_merge.py --self-test
 
 Notes
 -----

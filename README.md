@@ -79,7 +79,7 @@ mcp-memory-service (MCP Server)
 
 | Script | Description |
 |--------|-------------|
-| `scripts/write-time-merge.py` | Semantic dedup at write time — cosine similarity > 0.85 triggers content merge instead of INSERT. Handles graph hash rewriting and vec0 table upsert |
+| `scripts/write_time_merge.py` | Semantic dedup at write time — cosine similarity > 0.85 triggers content merge instead of INSERT. Handles graph hash rewriting and vec0 table upsert |
 | `scripts/ebbinghaus.py` | Ebbinghaus decay scoring utilities — half-life calculation, strength-based retention |
 | `scripts/migrate-ebbinghaus.py` | Migration script — adds `strength` and `last_accessed_at` fields to existing DB |
 
@@ -207,6 +207,15 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 
 ## Changelog
 
+### v8.2 (2026-02-15)
+
+- **PreCompact IndentationError fix**: Python heredoc had 16-space indent instead of 12, causing SyntaxError since creation — PreCompact hook never successfully extracted transcript content
+- **write_time_merge.py rename**: `scripts/write-time-merge.py` → `scripts/write_time_merge.py`. Python cannot import modules with hyphens; `from write_time_merge import merge_or_insert` was silently failing via ImportError catch
+- **Turkish keyword extraction**: Replaced ASCII-only `grep -oE '[a-zA-Z0-9_.-]{3,}'` with Python `re.findall(r'[\w]{3,}', text, re.UNICODE)` + 60+ Turkish/English stop words. Queries like "hafıza sistemi kararları" now extract all keywords instead of returning empty
+- **Semantic vector fallback**: When FTS5 returns 0 results, falls back to pure vector similarity search (SentenceTransformer embedding, cosine similarity > 0.3 threshold, 4s timeout, top 5). Only triggers on zero-result queries — no overhead on normal retrievals
+- **Turkish SessionEnd patterns + scoring**: Added Turkish alternatives to all 4 regex patterns (DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE) and Turkish keywords to `score_extraction()`. Turkish decisions, errors, and learnings are now captured
+- **Filename reference cleanup**: Updated all references from `write-time-merge.py` to `write_time_merge.py` across README, docs, and internal comments
+
 ### v8.1 (2026-02-09)
 
 - **Query-adaptive search mode**: Retrieval hook (v4) classifies queries before deciding on vector re-rank. Negation/adversarial → always re-rank (hybrid +18pp). Attribute/preference → skip re-rank (keyword +4.7pp). Default → re-rank. Few results (< 2) → fallback re-rank regardless. Saves ~200ms on ~20% of queries
@@ -227,7 +236,7 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 ### v7 (2026-02-08)
 
 - **SQL injection protection**: All user inputs sanitized in retrieval, browse, and tag-enforce hooks
-- **Write-time semantic merge**: New `scripts/write-time-merge.py` — cosine > 0.85 triggers merge. Integrated into SessionEnd micro-memory extraction with graceful degradation
+- **Write-time semantic merge**: New `scripts/write_time_merge.py` — cosine > 0.85 triggers merge. Integrated into SessionEnd micro-memory extraction with graceful degradation
 - **Self-improving retrieval**: Weekly strength decay in feedback-digest (-0.05 for memories not accessed in 7 days, min 0.3)
 - **Working Memory**: New PostToolUse hook tracks active/modified files and search patterns. Loaded by SessionStart after compaction
 - **Bug fixes**: CTE alignment for strength boost, printf '%b' POSIX fix, valid_until IS NULL filter, deleted_at IS NULL in quality audit, error logging in PreCompact, narrowed slash command regex
