@@ -149,7 +149,13 @@ def _ensure_sqlite_vec_loaded(conn: sqlite3.Connection) -> None:
             "or install sqlite-vec."
         ) from e
 
-    # Many callers already loaded the extension; calling again is harmless.
+    # Check if sqlite_vec is already loaded (avoids double-load crash)
+    try:
+        conn.execute("SELECT vec_version()")
+        return  # Already loaded, nothing to do
+    except sqlite3.OperationalError:
+        pass  # Not loaded yet, proceed
+
     try:
         conn.enable_load_extension(True)
     except Exception:
