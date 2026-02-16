@@ -185,9 +185,9 @@ try:
                                     inp = block.get('input', {})
                                     if tool_name in ('Edit', 'Write') and 'file_path' in inp:
                                         files_modified.add(inp['file_path'])
-                                    if tool_name == 'mcp__memory__memory_store':
+                                    if tool_name in ('mcp__memory__store_memory', 'mcp__memory__memory_store'):
                                         memory_stores += 1
-                                    elif tool_name == 'mcp__memory__memory_search':
+                                    elif tool_name in ('mcp__memory__retrieve_memory', 'mcp__memory__memory_search'):
                                         memory_searches += 1
 
                 # User preference detection

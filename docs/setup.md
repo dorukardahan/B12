@@ -200,25 +200,18 @@ cp templates/user-profile.md ~/.claude/projects/-Users-$(whoami)/memory/user-pro
 
 Edit the profile with your actual preferences. Claude will also update it automatically as it learns about you.
 
-### Step 6: Set up FTS5 hybrid search (recommended)
+### Step 6: Run database migration (automatic)
 
-The FTS5 hybrid search requires a patch to mcp-memory-service's Python code. This adds a `memory_fts` FTS5 virtual table and modifies the `retrieve()` and `recall()` methods to use hybrid scoring.
+The installer automatically runs `scripts/migrate_v10_13.py` which ensures the native `memory_content_fts` FTS5 table exists. This is needed for mcp-memory-service v10.13.0+ features to work on existing databases.
+
+B12's own FTS5 table (`memory_fts`) is created separately by the hooks and is independent of the server's native table. Both tables coexist without interference.
+
+To run the migration manually:
 
 ```bash
-# Find the installed package location
-SITE=$(python3 -c "import mcp_memory_service; print(mcp_memory_service.__path__[0])" 2>/dev/null || pipx runpip mcp-memory-service show mcp-memory-service | grep Location | awk '{print $2}')
-
-# The file to patch:
-# $SITE/mcp_memory_service/storage/sqlite_vec.py
-
-# Apply the FTS5 patch (see scripts/migrate-ebbinghaus.py for schema changes)
-# The patch adds:
-#   - memory_fts FTS5 virtual table
-#   - 4 triggers (INSERT, UPDATE, DELETE, content sync)
-#   - Hybrid scoring in retrieve() and recall()
+python3 scripts/migrate_v10_13.py           # Run migration
+python3 scripts/migrate_v10_13.py --check   # Check status only
 ```
-
-**Important**: The database schema persists across upgrades, but the Python code patch needs to be re-applied after `pipx upgrade mcp-memory-service`. The `memory-upgrade.sh` script detects and warns if the patch is missing.
 
 ### Step 7: Set up automated tasks (optional)
 
@@ -367,10 +360,8 @@ ls -la ~/.local/share/mcp-memory/
 # Upgrade mcp-memory-service
 ~/.claude/hooks/memory-upgrade.sh
 
-# Re-run installer to update hooks
+# Re-run installer to update hooks + run DB migration
 cd /path/to/B12
 git pull
 ./install.sh --all
-
-# Note: After pipx upgrade, re-apply the FTS5 patch if you use hybrid search
 ```

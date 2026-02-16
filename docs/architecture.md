@@ -204,13 +204,20 @@ This creates natural selection: memories that are frequently useful survive and 
 
 ## FTS5 hybrid search
 
-The database has a `memory_fts` FTS5 virtual table synced via 4 triggers (INSERT, UPDATE, DELETE on `memories` + content sync). Search combines:
+The database has two FTS5 virtual tables:
 
-- **BM25 keyword score** (FTS5 rank): Fast exact-match and phrase search
+- **`memory_fts`** (B12): `unicode61` tokenizer, synced via 4 triggers. Used by B12 hooks for word-boundary keyword matching
+- **`memory_content_fts`** (native, v10.13.0+): `trigram` tokenizer, synced via 3 triggers. Used by the MCP server's internal `retrieve_hybrid()` and `_search_bm25()` methods
+
+B12 hook search combines:
+
+- **BM25 keyword score** (FTS5 rank via `memory_fts`): Fast exact-match and phrase search
 - **Vector cosine similarity** (sqlite-vec): Semantic meaning match
 - **Weight**: 70% keyword + 30% vector (keyword-heavy because most searches use specific terms)
 
 The hybrid approach handles both precise technical queries ("FTS5 trigger") and semantic queries ("how to search memories").
+
+B12 hooks are fully independent of the MCP server's search implementation — they query the database directly. This decoupling means upstream upgrades no longer break B12 functionality.
 
 ## Write-time semantic merge
 

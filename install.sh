@@ -121,7 +121,7 @@ PYEOF
 # Main
 # ─────────────────────────────────────────────
 
-echo "B12 Memory System Installer (v7)"
+echo "B12 Memory System Installer (v8)"
 echo "─────────────────────────────────"
 
 # Always create dirs and copy files first
@@ -145,6 +145,36 @@ else
 fi
 
 echo ""
+
+# ─────────────────────────────────────────────
+# Step 5: Run DB migration (if database exists)
+# ─────────────────────────────────────────────
+run_migration() {
+  local MIGRATE_SCRIPT="$SCRIPT_DIR/scripts/migrate_v10_13.py"
+  if [ ! -f "$MIGRATE_SCRIPT" ]; then
+    return
+  fi
+
+  # Check if database exists (macOS or Linux default paths)
+  local DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+  if [ ! -f "$DB_PATH" ]; then
+    DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
+  fi
+  if [ ! -f "$DB_PATH" ]; then
+    warn "Memory database not found (will be created on first use)"
+    return
+  fi
+
+  python3 "$MIGRATE_SCRIPT" --db "$DB_PATH" 2>/dev/null
+  if [ $? -eq 0 ]; then
+    info "Database migration check passed"
+  else
+    warn "Database migration had issues (see output above)"
+  fi
+}
+
+run_migration
+
 echo "─────────────────────────────────"
 info "Installation complete!"
 echo ""

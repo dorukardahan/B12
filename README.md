@@ -72,7 +72,7 @@ mcp-memory-service (MCP Server)
 | `memory-quality-audit.sh` | Scheduled | Weekly health score — type distribution, scope compliance, strength distribution, orphan detection |
 | `memory-feedback-digest.sh` | Scheduled | Weekly digest — search patterns, refinement detection, self-improving retrieval (strength decay for unused memories) |
 | `memory-backup.sh` | Scheduled | Daily WAL-safe backup with 7-day rotation and integrity check |
-| `memory-upgrade.sh` | Manual | pipx upgrade + FTS5 patch check + bytecache clear |
+| `memory-upgrade.sh` | Manual | pipx upgrade + bytecache clear |
 | `memory-browse.sh` | Manual | CLI browser — search, stats, CRUD, tag filter. SQL-sanitized inputs |
 
 ### Scripts (support modules)
@@ -82,6 +82,7 @@ mcp-memory-service (MCP Server)
 | `scripts/write_time_merge.py` | Semantic dedup at write time — cosine similarity > 0.85 triggers content merge instead of INSERT. Handles graph hash rewriting and vec0 table upsert |
 | `scripts/ebbinghaus.py` | Ebbinghaus decay scoring utilities — half-life calculation, strength-based retention |
 | `scripts/migrate-ebbinghaus.py` | Migration script — adds `strength` and `last_accessed_at` fields to existing DB |
+| `scripts/migrate_v10_13.py` | Migration script — creates native `memory_content_fts` table for mcp-memory-service v10.13.0 |
 
 ### Config templates
 
@@ -206,6 +207,14 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 - **Install**: `./install.sh --all` handles multiple setups
 
 ## Changelog
+
+### v9.0 (2026-02-16)
+
+- **mcp-memory-service v10.13.0 migration**: Upstream upgrade wiped all 5 B12 patches from `sqlite_vec.py`. Instead of re-patching, B12 hooks are now fully independent of server-side code
+- **Retired `apply-patches.py`**: No longer needed — B12 hooks do their own hybrid search (bash sqlite3 + Python re-rank) directly on the database, independent of server patches
+- **New `scripts/migrate_v10_13.py`**: One-time migration script that creates the native `memory_content_fts` FTS5 table (trigram tokenizer) on existing databases. v10.13.0 skips this table creation on existing DBs, breaking native hybrid search
+- **SessionEnd tool tracking update**: Tool name counters now match both old (`memory_store`) and new (`store_memory`) MCP tool names for accurate metrics across the transition
+- **Installer migration step**: `install.sh` now runs DB migration automatically to ensure `memory_content_fts` exists
 
 ### v8.2 (2026-02-15)
 
