@@ -216,6 +216,7 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 - **Turkish SessionEnd patterns + scoring**: Added Turkish alternatives to all 4 regex patterns (DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE) and Turkish keywords to `score_extraction()`. Turkish decisions, errors, and learnings are now captured
 - **Filename reference cleanup**: Updated all references from `write-time-merge.py` to `write_time_merge.py` across README, docs, and internal comments
 - **sqlite_vec double-load fix**: `_ensure_sqlite_vec_loaded()` in `write_time_merge.py` now checks `vec_version()` before loading the extension, preventing `OperationalError` when `merge_or_insert` is called from the SessionEnd embed script which already has sqlite_vec loaded
+- **Semantic fallback + re-rank fix**: Two bugs — (1) semantic fallback opened DB without loading sqlite_vec extension, causing silent `no such module: vec0` error; (2) both semantic fallback and vector re-rank used `timeout` command which doesn't exist on macOS. Replaced with Python `signal.alarm()` for self-timeout. Both features were completely non-functional since creation
 
 ### v8.1 (2026-02-09)
 

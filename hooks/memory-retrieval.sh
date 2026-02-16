@@ -178,8 +178,9 @@ done <<< "$RESULTS"
 # ── Semantic fallback when FTS5 returns 0 ──────────────────────
 VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
 if [ "$RESULT_COUNT" -eq 0 ] && [ -x "$VENV_PYTHON" ]; then
-  SEMANTIC_RESULTS=$(timeout 4 "$VENV_PYTHON" - "$DB_PATH" "$PROMPT" 2>/dev/null << 'SEMEOF'
-import sys, struct, sqlite3
+  SEMANTIC_RESULTS=$("$VENV_PYTHON" - "$DB_PATH" "$PROMPT" 2>/dev/null << 'SEMEOF'
+import sys, struct, sqlite3, signal
+signal.alarm(4)  # self-timeout (macOS has no timeout command)
 
 db_path, query = sys.argv[1], sys.argv[2]
 try:
@@ -187,7 +188,11 @@ try:
     model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
     q_emb = model.encode([query], normalize_embeddings=True)[0]
 
+    import sqlite_vec
     conn = sqlite3.connect(db_path)
+    conn.enable_load_extension(True)
+    sqlite_vec.load(conn)
+    conn.enable_load_extension(False)
     rows = conn.execute("""
         SELECT m.id, m.content, e.content_embedding
         FROM memories m
@@ -252,8 +257,9 @@ fi
 if [ "$SHOULD_RERANK" = true ]; then
   ID_LIST=$(echo "$RESULT_IDS" | sed 's/,$//')
 
-  RERANKED=$(timeout 3 "$VENV_PYTHON" - "$DB_PATH" "$ID_LIST" "$PROMPT" 2>/dev/null << 'PYEOF'
-import sys, struct, sqlite3
+  RERANKED=$("$VENV_PYTHON" - "$DB_PATH" "$ID_LIST" "$PROMPT" 2>/dev/null << 'PYEOF'
+import sys, struct, sqlite3, signal
+signal.alarm(3)  # self-timeout (macOS has no timeout command)
 
 db_path, id_list, query = sys.argv[1], sys.argv[2], sys.argv[3]
 ids = [int(x) for x in id_list.split(',') if x.strip()]
