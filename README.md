@@ -72,7 +72,7 @@ mcp-memory-service (MCP Server)
 | `memory-quality-audit.sh` | Scheduled | Weekly health score — type distribution, scope compliance, strength distribution, orphan detection |
 | `memory-feedback-digest.sh` | Scheduled | Weekly digest — search patterns, refinement detection, self-improving retrieval (strength decay for unused memories) |
 | `memory-backup.sh` | Scheduled | Daily WAL-safe backup with 7-day rotation and integrity check |
-| `memory-upgrade.sh` | Manual | pipx upgrade + bytecache clear |
+| `memory-upgrade.sh` | Manual | pipx upgrade + migration + validation patch + bytecache clear |
 | `memory-browse.sh` | Manual | CLI browser — search, stats, CRUD, tag filter. SQL-sanitized inputs |
 
 ### Scripts (support modules)
@@ -83,6 +83,7 @@ mcp-memory-service (MCP Server)
 | `scripts/ebbinghaus.py` | Ebbinghaus decay scoring utilities — half-life calculation, strength-based retention |
 | `scripts/migrate-ebbinghaus.py` | Migration script — adds `strength` and `last_accessed_at` fields to existing DB |
 | `scripts/migrate_v10_13.py` | Migration script — creates native `memory_content_fts` table for mcp-memory-service v10.13.0 |
+| `scripts/patch_validate_input.py` | Patches `server_impl.py` to disable MCP SDK input validation (fixes intermittent `memory_store` failures) |
 
 ### Config templates
 
@@ -207,6 +208,12 @@ If you run multiple Claude Code setups (e.g., personal + work), the system works
 - **Install**: `./install.sh --all` handles multiple setups
 
 ## Changelog
+
+### v9.1 (2026-02-16)
+
+- **Fix intermittent `memory_store` validation error**: Root-caused `"Input validation error: 'content' is a required property"` to MCP SDK's `jsonschema.validate` in `server_impl.py`. The `call_tool()` decorator defaults to `validate_input=True`, but the handler does its own validation — matching FastMCP's approach of `validate_input=False`
+- **New `scripts/patch_validate_input.py`**: Idempotent patch that disables SDK-level input validation in `server_impl.py`. Supports `--check`, `--revert`. Auto-applied by `install.sh` and re-applied by `memory-upgrade.sh` after `pipx upgrade`
+- **Upgrade script updated**: `memory-upgrade.sh` now has 4 steps: upgrade → migrate → patch → bytecache clear
 
 ### v9.0 (2026-02-16)
 

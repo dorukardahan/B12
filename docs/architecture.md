@@ -269,6 +269,8 @@ All hooks that interpolate user input into SQLite queries apply sanitization:
 
 3. **Linear memory scan**: Write-time merge checks against all memories for similarity. As the database grows (10K+ memories), this may need index optimization.
 
+4. **MCP SDK validation bug**: `server_impl.py` registers `call_tool()` with `validate_input=True` (MCP SDK default). The SDK's `jsonschema.validate()` intermittently rejects valid arguments. B12 patches this to `validate_input=False` (matching FastMCP's approach). The patch must be re-applied after each `pipx upgrade` — `memory-upgrade.sh` handles this automatically.
+
 ### Planned improvements
 
 - **Contradiction detection**: NLI model to flag conflicting memories

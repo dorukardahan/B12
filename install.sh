@@ -175,6 +175,25 @@ run_migration() {
 
 run_migration
 
+# ─────────────────────────────────────────────
+# Step 6: Patch server_impl.py (validate_input fix)
+# ─────────────────────────────────────────────
+apply_server_patch() {
+  local PATCH_SCRIPT="$SCRIPT_DIR/scripts/patch_validate_input.py"
+  if [ ! -f "$PATCH_SCRIPT" ]; then
+    return
+  fi
+
+  python3 "$PATCH_SCRIPT"
+  if [ $? -eq 0 ]; then
+    info "Server validation patch applied"
+  else
+    warn "Server validation patch had issues (see output above)"
+  fi
+}
+
+apply_server_patch
+
 echo "─────────────────────────────────"
 info "Installation complete!"
 echo ""
