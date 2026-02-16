@@ -165,7 +165,7 @@ run_migration() {
     return
   fi
 
-  python3 "$MIGRATE_SCRIPT" --db "$DB_PATH" 2>/dev/null
+  python3 "$MIGRATE_SCRIPT" --db "$DB_PATH"
   if [ $? -eq 0 ]; then
     info "Database migration check passed"
   else

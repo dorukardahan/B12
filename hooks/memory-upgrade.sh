@@ -1,65 +1,47 @@
 #!/bin/bash
 # B12 Memory System - MCP Memory Service Upgrade Script
-# Upgrades mcp-memory-service via pipx and re-applies known patches
+# Upgrades mcp-memory-service via pipx and runs DB migration
 #
 # Usage: bash ~/.claude/hooks/memory-upgrade.sh
 #
-# Why this exists: pipx upgrade replaces all site-packages files,
-# reverting any local patches. This script automates re-applying them.
+# What it does:
+#   1. pipx upgrade mcp-memory-service
+#   2. Run DB migration (ensure memory_content_fts exists)
+#   3. Clear Python bytecache
 #
-# Patches applied:
-#   1. response_limiter import fix (memory.py) — upstream bug
-#   2. FTS5 hybrid search (sqlite_vec.py) — B12 patch for keyword + vector
-#
-# Note: FTS5 database schema (table + triggers) persists across upgrades.
-# Only the Python code changes need re-applying.
+# Note: B12 hooks are fully independent of server-side code (v9.0+).
+# No server patches needed — hooks do their own hybrid search directly.
 
 set -e
 
 echo "=== mcp-memory-service upgrade ==="
 
 # Step 1: Upgrade
-echo "[1/4] Running pipx upgrade..."
+echo "[1/3] Running pipx upgrade..."
 pipx upgrade mcp-memory-service
 
-# Step 2: Find files to patch
-MEMORY_PY=$(find "$HOME/.local/pipx/venvs/mcp-memory-service" -path "*/server/handlers/memory.py" -type f 2>/dev/null | head -1)
-SQLITE_VEC_PY=$(find "$HOME/.local/pipx/venvs/mcp-memory-service" -path "*/storage/sqlite_vec.py" -type f 2>/dev/null | head -1)
-
-if [ -z "$MEMORY_PY" ]; then
-  echo "[ERROR] memory.py not found in venv"
-  exit 1
-fi
-
-echo "[2/4] Patching response_limiter import in: $MEMORY_PY"
-
-# The upstream bug: `from ...utils.response_limiter` (3 dots = grandparent)
-# Correct:          `from ..utils.response_limiter`  (2 dots = parent)
-
-if grep -q 'from \.\.\.utils\.response_limiter' "$MEMORY_PY"; then
-  sed -i '' '/response_limiter/s/from \.\.\.utils/from ..utils/g' "$MEMORY_PY"
-  echo "  Fixed: ...utils -> ..utils (response_limiter only)"
-elif grep -q 'from \.\.utils\.response_limiter' "$MEMORY_PY"; then
-  echo "  Already patched (..utils) - no change needed"
-else
-  echo "  [WARN] response_limiter import line not found - check manually"
-fi
-
-# Step 3: Re-apply B12 patches to sqlite_vec.py
-echo "[3/4] Re-applying B12 patches to sqlite_vec.py..."
-PATCH_SCRIPT="${B12_REPO}/scripts/apply-patches.py"
+# Step 2: Run DB migration (ensure memory_content_fts exists)
+echo "[2/3] Running DB migration..."
+MIGRATE_SCRIPT="${B12_REPO}/scripts/migrate_v10_13.py"
 if [ -z "$B12_REPO" ]; then
-  echo "  [WARN] B12_REPO env var not set. Set it to your B12 repo path."
-  echo "  Example: export B12_REPO=\$HOME/path/to/B12"
-elif [ -f "$PATCH_SCRIPT" ]; then
-  python3 "$PATCH_SCRIPT"
-else
-  echo "  [WARN] Patch script not found at $PATCH_SCRIPT"
-  echo "  Run manually: python3 \$B12_REPO/scripts/apply-patches.py"
+  # Try common locations
+  for candidate in "$HOME/Desktop/B12" "$HOME/B12" "$HOME/projects/B12"; do
+    if [ -f "$candidate/scripts/migrate_v10_13.py" ]; then
+      MIGRATE_SCRIPT="$candidate/scripts/migrate_v10_13.py"
+      break
+    fi
+  done
 fi
 
-# Step 4: Clear Python bytecache (apply-patches.py handles its own, but clear broadly)
-echo "[4/4] Clearing bytecache..."
+if [ -f "$MIGRATE_SCRIPT" ]; then
+  python3 "$MIGRATE_SCRIPT"
+else
+  echo "  [WARN] Migration script not found. Set B12_REPO env var."
+  echo "  Example: export B12_REPO=\$HOME/Desktop/B12"
+fi
+
+# Step 3: Clear Python bytecache
+echo "[3/3] Clearing bytecache..."
 find "$HOME/.local/pipx/venvs/mcp-memory-service" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
 find "$HOME/.local/pipx/venvs/mcp-memory-service" -name "*.pyc" -delete 2>/dev/null || true
 
