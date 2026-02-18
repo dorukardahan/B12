@@ -340,7 +340,7 @@ fi
 
 # ── Boost strength (spaced repetition) ─────────────────────────
 if [ "$RESULT_COUNT" -gt 0 ]; then
-  BOOST_IDS=$(echo "$RESULT_IDS" | sed 's/,$//' | head -c 200)
+  BOOST_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | head -5 | tr '\n' ',' | sed 's/,$//')
   sqlite3 "$DB_PATH" "
     PRAGMA busy_timeout=5000;
     UPDATE memories

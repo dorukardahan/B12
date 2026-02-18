@@ -50,10 +50,9 @@ import sys, json, os, re
 from datetime import datetime, timezone
 
 # Import shared patterns (DRY — same patterns used in precompact.sh)
-_scripts_dir = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'scripts')
-if not os.path.isdir(_scripts_dir):
-    _scripts_dir = os.path.expanduser('~/.claude/hooks/scripts')
-sys.path.insert(0, _scripts_dir)
+# Note: sys.argv[0] is "-" in heredocs, so use B12_DATA_DIR / known path
+_b12_base = os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.claude'))
+sys.path.insert(0, os.path.join(_b12_base, 'hooks', 'scripts'))
 from shared_patterns import DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE
 
 transcript_path = sys.argv[1]
