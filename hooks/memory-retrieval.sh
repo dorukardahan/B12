@@ -1,6 +1,13 @@
 #!/bin/bash
-# B12 Memory System - UserPromptSubmit Memory Retrieval Hook (v4)
+# B12 Memory System - UserPromptSubmit Memory Retrieval Hook (v5)
 # Searches memory DB on every user message and injects relevant context
+#
+# v5 changes (2026-02-18) — Phase 0 retrieval quality:
+# - FTS5 AND logic for 3+ keywords (precision boost)
+# - Filter out 'progress' type micro-memories (noise reduction)
+# - Fix Ebbinghaus decay: remove *3 softening (align with ebbinghaus.py)
+# - FTS5 sanitization: strip *, ^, :, NEAR operators
+# - busy_timeout on strength boost UPDATE
 #
 # v4 changes (2026-02-09):
 # - Query-adaptive search mode: keyword-first + smart vector re-rank
@@ -13,7 +20,7 @@
 #
 # v3 changes (2026-02-09):
 # - Phrase-aware FTS5 queries (bigram detection for compound terms)
-# - Softened Ebbinghaus decay: exp(-t/(S*3))
+# - Ebbinghaus decay: exp(-t/S) (v5: removed *3 softening)
 # - Project hierarchy awareness (walks up to find parent project)
 # - Vector re-rank via Python helper (3s timeout, fallback to FTS5-only)
 # - Up to 5 results (was 3), with adaptive hint when few results found
@@ -120,25 +127,41 @@ if [ "$WORD_COUNT" -lt 1 ]; then
 fi
 
 # ── Phrase detection (bigrams) ─────────────────────────────────
-SAFE_KEYWORDS=$(echo "$KEYWORDS" | sed "s/['\";(){}]//g")
+SAFE_KEYWORDS=$(echo "$KEYWORDS" | sed "s/['\";(){}*^:]//g" | sed 's/\bNEAR\b//gI')
 KEYWORD_ARRAY=($SAFE_KEYWORDS)
 
-FTS_PARTS=""
-PREV=""
-for kw in "${KEYWORD_ARRAY[@]}"; do
-  if [ -n "$PREV" ]; then
-    BIGRAM="${PREV} ${kw}"
-    if echo "$PROMPT_LOWER" | grep -q "${BIGRAM}"; then
-      FTS_PARTS="${FTS_PARTS} OR NEAR(${PREV} ${kw}, 2)"
+if [ "$WORD_COUNT" -ge 3 ]; then
+  # AND logic: require all keywords (precision over recall)
+  FTS_PARTS=""
+  for kw in "${KEYWORD_ARRAY[@]}"; do
+    if [ -z "$FTS_PARTS" ]; then
+      FTS_PARTS="${kw}"
+    else
+      FTS_PARTS="${FTS_PARTS} AND ${kw}"
     fi
-  fi
-  if [ -z "$FTS_PARTS" ]; then
-    FTS_PARTS="${kw}"
-  else
-    FTS_PARTS="${FTS_PARTS} OR ${kw}"
-  fi
-  PREV="$kw"
-done
+  done
+  # Add bigrams as OR boost for recall
+  PREV=""
+  for kw in "${KEYWORD_ARRAY[@]}"; do
+    if [ -n "$PREV" ]; then
+      BIGRAM="${PREV} ${kw}"
+      if echo "$PROMPT_LOWER" | grep -q "${BIGRAM}"; then
+        FTS_PARTS="${FTS_PARTS} OR NEAR(${PREV} ${kw}, 2)"
+      fi
+    fi
+    PREV="$kw"
+  done
+else
+  # 1-2 keywords: keep OR (need recall)
+  FTS_PARTS=""
+  for kw in "${KEYWORD_ARRAY[@]}"; do
+    if [ -z "$FTS_PARTS" ]; then
+      FTS_PARTS="${kw}"
+    else
+      FTS_PARTS="${FTS_PARTS} OR ${kw}"
+    fi
+  done
+fi
 
 # ── FTS5 search with softened Ebbinghaus decay ─────────────────
 RESULTS=$(sqlite3 "$DB_PATH" "
@@ -146,7 +169,7 @@ RESULTS=$(sqlite3 "$DB_PATH" "
     SELECT m.id,
            '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') as display,
            (
-             0.3 * COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / (COALESCE(m.strength, 1.0) * 3.0)), 0.5)
+             0.3 * COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / COALESCE(m.strength, 1.0)), 0.5)
              + 0.3 * COALESCE(json_extract(m.metadata, '$.importance_score'), 1.0) / 2.0
              + 0.4 * (1.0 / (1.0 + abs(f.rank)))
            ) as score
@@ -155,7 +178,7 @@ RESULTS=$(sqlite3 "$DB_PATH" "
     WHERE f.memory_fts MATCH '${FTS_PARTS}'
       AND m.deleted_at IS NULL
       AND m.valid_until IS NULL
-      AND m.memory_type != 'session_summary'
+      AND m.memory_type NOT IN ('session_summary', 'progress')
       AND m.tags NOT LIKE '%session-summary%'
     ORDER BY score DESC
     LIMIT 10
@@ -198,7 +221,7 @@ try:
         FROM memories m
         JOIN memory_embeddings e ON m.id = e.rowid
         WHERE m.deleted_at IS NULL
-          AND m.memory_type != 'session_summary'
+          AND m.memory_type NOT IN ('session_summary', 'progress')
           AND m.tags NOT LIKE '%session-summary%'
     """).fetchall()
 
@@ -319,6 +342,7 @@ fi
 if [ "$RESULT_COUNT" -gt 0 ]; then
   BOOST_IDS=$(echo "$RESULT_IDS" | sed 's/,$//' | head -c 200)
   sqlite3 "$DB_PATH" "
+    PRAGMA busy_timeout=5000;
     UPDATE memories
     SET strength = min(COALESCE(strength, 1.0) + 0.3, 5.0),
         last_accessed_at = unixepoch('now')

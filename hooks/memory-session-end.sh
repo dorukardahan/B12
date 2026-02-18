@@ -49,6 +49,13 @@ if [ -f "$TRANSCRIPT_PATH" ]; then
 import sys, json, os, re
 from datetime import datetime, timezone
 
+# Import shared patterns (DRY — same patterns used in precompact.sh)
+_scripts_dir = os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), 'scripts')
+if not os.path.isdir(_scripts_dir):
+    _scripts_dir = os.path.expanduser('~/.claude/hooks/scripts')
+sys.path.insert(0, _scripts_dir)
+from shared_patterns import DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE
+
 transcript_path = sys.argv[1]
 project_name = sys.argv[2]
 session_id = sys.argv[3]
@@ -56,71 +63,16 @@ summary_dir = sys.argv[4]
 cwd = sys.argv[5]
 setup_context = sys.argv[6]
 
+# Guard against empty setup_context (causes "user:," in tags)
+if not setup_context or setup_context.strip() == '':
+    setup_context = 'personal'
+
 user_messages = []
 assistant_messages = []
 tools_used = set()
 files_modified = set()
 memory_stores = 0
 memory_searches = 0
-
-# ═══════════════════════════════════════════════════════════════
-# v4 CONTEXTUAL PATTERNS — require structural context, not just keywords
-# ═══════════════════════════════════════════════════════════════
-
-DECISION_RE = re.compile(
-    r'(?i)(?:'
-    # English patterns
-    r'(?:decided|chose|going with|selected|opted for|switched to|went with)\s+.{5,}'
-    r'|(?:will use|using|let.?s use|we.?ll use)\s+\S+\s+(?:instead of|rather than|for|because)\s+'
-    r'|(?:the (?:approach|solution|decision|plan) is to)\s+'
-    r'|(?:switching from|replacing|migrating from)\s+\S+\s+(?:to|with)\s+'
-    # Turkish patterns
-    r'|(?:karar verdik?|seçtik?|tercih ettik?|bununla gid|bunu kullan)\s*.{5,}'
-    r'|(?:yerine|değil de|bunun yerine)\s+\S+\s+.{3,}'
-    r'|(?:planımız|yaklaşımımız|çözüm(?:ümüz)?)\s+.{5,}'
-    r')'
-)
-
-ERROR_RE = re.compile(
-    r'(?i)(?:'
-    # English patterns
-    r'(?:fixed|resolved|solved|workaround for)\s+.{5,}'
-    r'|(?:the fix|the solution|root cause)\s*(?:is|was|:)\s+'
-    r'|(?:error|bug|issue)\s+.{0,40}(?:was caused by|because|due to|fixed by)'
-    r'|(?:had to|needed to)\s+.{3,40}(?:because|due to|since)\s+.{3,}(?:error|bug|fail|broke|crash)'
-    # Turkish patterns
-    r'|(?:düzelttik?|çözdük?|giderdik?|fix.?ledik?)\s+.{5,}'
-    r'|(?:hata|bug|sorun)\s+.{0,40}(?:sebebi|nedeni|çözümü|düzeltmesi)'
-    r'|(?:sorun şuydu|hata şuydu|sebebi şuydu)\s*(?::)?\s+'
-    r')'
-)
-
-PREFERENCE_RE = re.compile(
-    r'(?i)(?:'
-    # English patterns
-    r'(?:user\s+(?:prefers?|wants?|asked for|(?:does ?\x27?n.?t|never)\s+(?:want|like|use)))'
-    r'|(?:always use|never use|convention is|style preference|workflow:)'
-    r'|\[user\]\s+'
-    # Turkish patterns
-    r'|(?:kullanıcı\s+(?:tercih|istiyor|istemiyor|istemez))'
-    r'|(?:her zaman|hiçbir zaman|asla|daima)\s+(?:kullan|yap|kullanma|yapma)'
-    r')'
-)
-
-LEARNING_RE = re.compile(
-    r'(?i)(?:'
-    # English patterns
-    r'(?:turns out|TIL|important to note|gotcha|pitfall|caveat|note:)\s*(?::|that|,)?\s+'
-    r'|(?:learned|discovered|realized|found out)\s+that\s+'
-    r'|(?:the (?:trick|key|insight|important thing) (?:is|was))\s+'
-    r'|(?:remember|important):\s+'
-    r'|(?:pro.?tip|heads.?up|watch out|be careful|don.?t forget)\s*(?::|,)\s+'
-    # Turkish patterns
-    r'|(?:meğer|meğerse|anlaşılan)\s+.{5,}'
-    r'|(?:öğrendik?|fark ettik?|keşfettik?)\s+.{3,}'
-    r'|(?:dikkat|önemli|unutma)(?::|\s).{5,}'
-    r')'
-)
 
 decisions = []
 errors_fixes = []
@@ -591,15 +543,19 @@ try:
                 return False
             if tl.startswith('|') or tl.startswith('#'):
                 return False
+            # Minimum word count — very short items are usually noise
+            if len(tl.split()) < 5:
+                return False
             # Require technical/actionable signals
+            # Removed overly generic: 'used', 'stored', 'created', 'modified',
+            # 'deleted', 'added', 'removed', 'updated' (match noise like
+            # "[Progress] Used: Bash, Edit..." and "Stored 9 memories")
             SIGNALS = ['file', 'error', 'bug', 'fix', 'api', 'config', 'hook',
                        'script', 'sql', 'python', 'bash', 'git', 'docker',
                        '.py', '.sh', '.json', '.md', 'command', 'function',
                        'import', 'install', 'deploy', 'test', 'memory', 'tag',
-                       'embed', 'query', 'created', 'modified', 'deleted',
-                       'added', 'removed', 'fixed', 'resolved', 'updated',
-                       'switched', 'decided', 'chose', 'used', 'configured',
-                       'stored', 'migrat']
+                       'embed', 'query', 'switched', 'decided', 'chose',
+                       'configured', 'migrat', 'resolved']
             return any(sig in tl for sig in SIGNALS)
 
         prefix_map = {'decision': 'Decision', 'error_fix': 'Error Fix',
