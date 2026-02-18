@@ -148,7 +148,7 @@ if [ "$WORD_COUNT" -lt 1 ]; then
 fi
 
 # ── Phrase detection (bigrams) ─────────────────────────────────
-SAFE_KEYWORDS=$(echo "$KEYWORDS" | sed "s/['\";(){}*^:]//g" | sed 's/\bNEAR\b//gI')
+SAFE_KEYWORDS=$(echo "$KEYWORDS" | sed "s/['\";(){}*^:\\\\]//g" | sed 's/--//g' | sed 's|/\*||g' | sed 's|\*/||g' | sed 's/\bNEAR\b//gI')
 KEYWORD_ARRAY=($SAFE_KEYWORDS)
 
 if [ "$WORD_COUNT" -ge 3 ]; then
@@ -439,15 +439,25 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
     GRAPH_EXPANDED=$(sqlite3 "$DB_PATH" "
       SELECT DISTINCT m2.id,
              '[' || m2.memory_type || '] ' || replace(substr(m2.content, 1, 200), char(10), ' ')
-      FROM memory_graph mg
-      JOIN memories m ON m.content_hash = mg.source_hash
-      JOIN memories m2 ON m2.content_hash = mg.target_hash
-      WHERE m.id IN (${TOP_3_IDS})
-        AND mg.relationship_type IN ('related', 'supports')
-        AND mg.similarity > 0.6
-        AND m2.id NOT IN (${ALL_IDS})
+      FROM (
+        SELECT mg.target_hash AS neighbor_hash, mg.similarity
+        FROM memory_graph mg
+        JOIN memories m ON m.content_hash = mg.source_hash
+        WHERE m.id IN (${TOP_3_IDS})
+          AND mg.relationship_type IN ('related', 'supports')
+          AND mg.similarity > 0.6
+        UNION
+        SELECT mg.source_hash AS neighbor_hash, mg.similarity
+        FROM memory_graph mg
+        JOIN memories m ON m.content_hash = mg.target_hash
+        WHERE m.id IN (${TOP_3_IDS})
+          AND mg.relationship_type IN ('related', 'supports')
+          AND mg.similarity > 0.6
+      ) edges
+      JOIN memories m2 ON m2.content_hash = edges.neighbor_hash
+      WHERE m2.id NOT IN (${ALL_IDS})
         AND m2.deleted_at IS NULL
-      ORDER BY mg.similarity DESC
+      ORDER BY edges.similarity DESC
       LIMIT 2
     " 2>/dev/null)
   fi
@@ -460,17 +470,17 @@ if [ -d "$FEEDBACK_DIR" ] || mkdir -p "$FEEDBACK_DIR" 2>/dev/null; then
   _END_MS=$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null || echo 0)
   _LATENCY_MS=0
   [ "$_START_MS" -gt 0 ] && [ "$_END_MS" -gt 0 ] && _LATENCY_MS=$((_END_MS - _START_MS))
-  printf '{"ts":%d,"type":"hook_retrieval","query":"%s","keywords":"%s","result_count":%d,"reranked":%s,"query_mode":"%s","skip_reason":"%s","search_source":"%s","latency_ms":%d,"project":"%s"}\n' \
-    "$(date +%s)" \
-    "$(echo "$PROMPT" | head -c 100 | sed 's/"/\\"/g' | tr '\n' ' ')" \
-    "$(echo "$SAFE_KEYWORDS" | sed 's/"/\\"/g')" \
-    "$RESULT_COUNT" \
-    "$RERANK_DONE" \
-    "$QUERY_MODE" \
-    "$SKIP_REASON" \
-    "$SEARCH_SOURCE" \
-    "$_LATENCY_MS" \
-    "$PROJ" \
+  jq -nc \
+    --arg q "$(echo "$PROMPT" | head -c 100)" \
+    --arg kw "$SAFE_KEYWORDS" \
+    --argjson rc "$RESULT_COUNT" \
+    --arg rr "$RERANK_DONE" \
+    --arg qm "$QUERY_MODE" \
+    --arg sr "$SKIP_REASON" \
+    --arg ss "$SEARCH_SOURCE" \
+    --argjson lat "$_LATENCY_MS" \
+    --arg proj "$PROJ" \
+    '{ts: (now|floor), type: "hook_retrieval", query: $q, keywords: $kw, result_count: $rc, reranked: ($rr == "true"), query_mode: $qm, skip_reason: $sr, search_source: $ss, latency_ms: $lat, project: $proj}' \
     >> "$FEEDBACK_FILE" 2>/dev/null
 fi
 

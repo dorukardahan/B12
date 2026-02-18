@@ -692,10 +692,7 @@ MEMPYEOF
   (
     "$VENV_PYTHON" "$EMBED_SCRIPT" "$SUMMARY_FILE" "$PROJECT_NAME" "$SETUP_CONTEXT" "$SESSION_ID"
     rm -f "$EMBED_SCRIPT"
-    # Shut down embedding daemon (session is ending, no more requests expected)
-    _UID=$(id -u)
-    _SOCK="/tmp/b12-embed-${_UID}.sock"
-    [ -S "$_SOCK" ] && printf '{"op":"shutdown"}\n' | nc -U "$_SOCK" -w 2 2>/dev/null
+    # Daemon stays alive for concurrent sessions — relies on IDLE_TIMEOUT (2h)
   ) > /dev/null 2>&1 &
   disown 2>/dev/null
 fi

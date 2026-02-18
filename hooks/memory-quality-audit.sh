@@ -156,7 +156,12 @@ if stale_embeddings > 0:
     if fix_mode:
         conn.execute("""
             DELETE FROM memory_embeddings
-            WHERE rowid NOT IN (SELECT id FROM memories WHERE deleted_at IS NULL)
+            WHERE rowid IN (
+                SELECT m.id FROM memories m
+                WHERE m.deleted_at IS NOT NULL
+                  AND m.deleted_at < unixepoch('now') - 604800
+            )
+            OR rowid NOT IN (SELECT id FROM memories)
         """)
         conn.commit()
         fix_actions.append(f"Deleted {stale_embeddings} stale embeddings")

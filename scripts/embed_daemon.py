@@ -158,7 +158,7 @@ def _encode_batch(model, data):
         return {'ok': False, 'error': 'missing texts'}
 
     import numpy as np
-    embeddings = model.encode(texts, convert_to_numpy=True)
+    embeddings = model.encode(texts, normalize_embeddings=True, convert_to_numpy=True)
     result = []
     for emb in embeddings:
         emb_bytes = emb.astype(np.float32).tobytes()
@@ -448,13 +448,11 @@ def main():
         log(f"Model loaded: {MODEL_NAME}")
     except Exception as e:
         log(f"Model load FAILED: {e}")
-        cleanup()
-        sys.exit(1)
+        sys.exit(1)  # atexit handles cleanup
 
     # Check if we were killed during model load
     if not running[0]:
-        cleanup()
-        sys.exit(0)
+        sys.exit(0)  # atexit handles cleanup
 
     # Create socket AFTER model load (so daemon_alive() = model ready)
     if os.path.exists(SOCKET_PATH):

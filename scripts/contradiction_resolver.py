@@ -146,8 +146,8 @@ def merge_memories(conn, id1, content1, hash1, id2, content2, hash2):
         (merged, new_hash, now.timestamp(), now.isoformat(), id1)
     )
 
-    # Rewrite graph edges from old hash to new hash
-    for old_h in (hash1,):
+    # Rewrite graph edges from old hashes to new hash (both memories)
+    for old_h in (hash1, hash2):
         edges = conn.execute(
             "SELECT source_hash, target_hash, similarity, connection_types, metadata, created_at, relationship_type "
             "FROM memory_graph WHERE source_hash = ? OR target_hash = ?",
@@ -156,6 +156,8 @@ def merge_memories(conn, id1, content1, hash1, id2, content2, hash2):
         for src, tgt, sim, ct, meta, ca, rt in edges:
             new_src = new_hash if src == old_h else src
             new_tgt = new_hash if tgt == old_h else tgt
+            if new_src == new_tgt:
+                continue  # skip self-edges
             conn.execute(
                 "INSERT OR IGNORE INTO memory_graph "
                 "(source_hash, target_hash, similarity, connection_types, metadata, created_at, relationship_type) "

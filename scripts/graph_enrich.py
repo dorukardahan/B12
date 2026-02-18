@@ -31,6 +31,7 @@ import json
 import os
 import socket
 import sqlite3
+import subprocess
 import sys
 import time
 from datetime import datetime, timezone
@@ -100,7 +101,13 @@ def start_daemon_if_needed():
         daemon_script = os.path.join(os.path.dirname(__file__), "embed_daemon.py")
     if not os.path.exists(daemon_script) or not os.path.exists(venv_python):
         return False
-    os.spawnl(os.P_NOWAIT, venv_python, venv_python, daemon_script)
+    subprocess.Popen(
+        [venv_python, daemon_script],
+        stdin=subprocess.DEVNULL,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        close_fds=True,
+    )
     # Wait up to 30s for daemon to be ready (model load takes ~12s)
     for _ in range(60):
         time.sleep(0.5)
