@@ -49,6 +49,17 @@ NLI_CONTRADICTION_THRESHOLD = 0.7
 NLI_ENTAILMENT_THRESHOLD = 0.8
 NLI_SIM_RANGE = (0.5, 0.85)  # Only NLI-check pairs in this cosine range
 MIN_CONTENT_LEN = 30  # Skip very short memories for NLI
+# Content patterns that indicate session metadata (not real knowledge)
+_SKIP_NLI_PATTERNS = (
+    '[Progress]',
+    '# Session Summary',
+    '## Session Summary',
+)
+
+
+def _is_session_metadata(content):
+    """Check if content is session metadata that shouldn't get NLI checked."""
+    return any(content.startswith(p) for p in _SKIP_NLI_PATTERNS)
 
 
 def log(msg, quiet=False):
@@ -177,7 +188,7 @@ def main():
         SELECT id, content_hash, content, memory_type
         FROM memories
         WHERE deleted_at IS NULL
-          AND memory_type NOT IN ('session_summary')
+          AND memory_type NOT IN ('session_summary', 'progress')
         ORDER BY updated_at DESC
         LIMIT ?
     """, (MAX_MEMORIES_PER_RUN,)).fetchall()
@@ -206,14 +217,31 @@ def main():
             n_id = neighbor['id']
             n_sim = neighbor['similarity']
 
-            # Get neighbor's hash and content
+            # Get neighbor's hash, content, and type
             n_row = conn.execute(
-                "SELECT content_hash, content FROM memories WHERE id = ? AND deleted_at IS NULL",
+                "SELECT content_hash, content, memory_type FROM memories WHERE id = ? AND deleted_at IS NULL",
                 (n_id,)
             ).fetchone()
             if not n_row:
                 continue
-            n_hash, n_content = n_row
+            n_hash, n_content, n_type = n_row
+
+            # Skip session summaries and progress as NLI neighbors
+            if n_type in ('session_summary', 'progress'):
+                # Still create related edge but skip NLI
+                if not edge_exists_typed(conn, mem_hash, n_hash, 'related'):
+                    if args.apply:
+                        conn.execute("""
+                            INSERT OR IGNORE INTO memory_graph
+                            (source_hash, target_hash, similarity, connection_types,
+                             metadata, created_at, relationship_type)
+                            VALUES (?, ?, ?, '["embedding_similarity"]', ?, ?, 'related')
+                        """, (mem_hash, n_hash, n_sim,
+                              json.dumps({"source": "graph_enrich"}), now_ts))
+                    new_related += 1
+                else:
+                    skipped_existing += 1
+                continue
 
             # Skip self-edges
             if mem_hash == n_hash:
@@ -235,7 +263,9 @@ def main():
 
             # Collect NLI candidates (cosine in the right range, content long enough)
             if args.nli and NLI_SIM_RANGE[0] <= n_sim <= NLI_SIM_RANGE[1]:
-                if len(mem_content) >= MIN_CONTENT_LEN and len(n_content) >= MIN_CONTENT_LEN:
+                if (len(mem_content) >= MIN_CONTENT_LEN and len(n_content) >= MIN_CONTENT_LEN
+                        and not _is_session_metadata(mem_content)
+                        and not _is_session_metadata(n_content)):
                     nli_candidates.append((mem_hash, mem_content, n_hash, n_content, n_sim))
 
     if args.apply:

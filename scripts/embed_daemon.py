@@ -185,9 +185,109 @@ _NEG_PREFIXES = [
     "Bu doğru değil: ",       # Turkish
 ]
 
+# ── ONNX NLI (lazy-loaded, ~83MB ARM64 quantized DeBERTa v3 xsmall) ──
+_NLI_SESSION = None
+_NLI_TOKENIZER = None
+_NLI_LABELS = None
+_NLI_ONNX_AVAILABLE = None  # None = not checked yet
+_NLI_INPUT_NAMES = None
+NLI_ONNX_MODEL_DIR = os.path.expanduser("~/.cache/b12-nli-onnx")
+NLI_ONNX_MODEL_PATH = os.path.join(NLI_ONNX_MODEL_DIR, "onnx/model_qint8_arm64.onnx")
+
+
+def _load_onnx_nli():
+    """Lazy-load ONNX NLI model. Returns True if available."""
+    global _NLI_SESSION, _NLI_TOKENIZER, _NLI_LABELS, _NLI_ONNX_AVAILABLE, _NLI_INPUT_NAMES
+
+    if _NLI_ONNX_AVAILABLE is not None:
+        return _NLI_ONNX_AVAILABLE
+
+    try:
+        import onnxruntime as ort
+        from tokenizers import Tokenizer as HFTokenizer
+
+        if not os.path.exists(NLI_ONNX_MODEL_PATH):
+            log("ONNX NLI: model file not found, using NLI-lite fallback")
+            _NLI_ONNX_AVAILABLE = False
+            return False
+
+        t0 = time.time()
+        _NLI_SESSION = ort.InferenceSession(
+            NLI_ONNX_MODEL_PATH,
+            providers=["CPUExecutionProvider"]
+        )
+        _NLI_INPUT_NAMES = [i.name for i in _NLI_SESSION.get_inputs()]
+        _NLI_TOKENIZER = HFTokenizer.from_file(
+            os.path.join(NLI_ONNX_MODEL_DIR, "tokenizer.json")
+        )
+        _NLI_TOKENIZER.enable_padding()
+        _NLI_TOKENIZER.enable_truncation(max_length=512)
+
+        config = json.load(open(os.path.join(NLI_ONNX_MODEL_DIR, "config.json")))
+        _NLI_LABELS = config.get("id2label",
+                                  {"0": "contradiction", "1": "entailment", "2": "neutral"})
+
+        _NLI_ONNX_AVAILABLE = True
+        log(f"ONNX NLI loaded in {time.time()-t0:.1f}s ({NLI_ONNX_MODEL_PATH})")
+        return True
+    except Exception as e:
+        log(f"ONNX NLI load failed: {e}, using NLI-lite fallback")
+        _NLI_ONNX_AVAILABLE = False
+        return False
+
+
+def _nli_check_onnx(pairs):
+    """ONNX-based NLI (DeBERTa v3 xsmall, ARM64 int8 quantized).
+
+    ~10ms per pair, 83MB model, 3-class output.
+    """
+    import numpy as np
+
+    results = []
+    for text_a, text_b in pairs:
+        encoded = _NLI_TOKENIZER.encode(text_a, text_b)
+        inputs = {
+            "input_ids": np.array([encoded.ids], dtype=np.int64),
+            "attention_mask": np.array([encoded.attention_mask], dtype=np.int64),
+        }
+        if "token_type_ids" in _NLI_INPUT_NAMES:
+            inputs["token_type_ids"] = np.array([encoded.type_ids], dtype=np.int64)
+
+        logits = _NLI_SESSION.run(None, inputs)[0][0]
+        exp_l = np.exp(logits - np.max(logits))
+        probs = exp_l / exp_l.sum()
+
+        pred_idx = int(np.argmax(probs))
+        label = _NLI_LABELS[str(pred_idx)]
+
+        results.append({
+            'label': label,
+            'scores': {
+                'contradiction': round(float(probs[0]), 4),
+                'entailment': round(float(probs[1]), 4),
+                'neutral': round(float(probs[2]), 4),
+            }
+        })
+
+    log(f"NLI-onnx: processed {len(pairs)} pairs")
+    return {'ok': True, 'results': results, 'engine': 'onnx'}
+
 
 def _nli_check(model, data):
-    """Embedding+keyword contradiction detection.
+    """NLI dispatcher — ONNX model primary, NLI-lite fallback."""
+    pairs = data.get('pairs', [])
+    if not pairs:
+        return {'ok': False, 'error': 'missing pairs'}
+    if len(pairs) > NLI_MAX_PAIRS:
+        pairs = pairs[:NLI_MAX_PAIRS]
+
+    if _load_onnx_nli():
+        return _nli_check_onnx(pairs)
+    return _nli_check_lite(model, pairs)
+
+
+def _nli_check_lite(model, pairs):
+    """Embedding+keyword contradiction detection (fallback when ONNX unavailable).
 
     Combines cosine similarity with lexical negation signals.
     For each pair (A, B), checks:
@@ -198,12 +298,6 @@ def _nli_check(model, data):
     """
     import numpy as np
     import re
-
-    pairs = data.get('pairs', [])
-    if not pairs:
-        return {'ok': False, 'error': 'missing pairs'}
-    if len(pairs) > NLI_MAX_PAIRS:
-        pairs = pairs[:NLI_MAX_PAIRS]
 
     # ── Lexical contradiction signals ────────────────────────
     _NEGATION_WORDS = {
@@ -328,7 +422,7 @@ def _nli_check(model, data):
         })
 
     log(f"NLI-lite: processed {len(pairs)} pairs")
-    return {'ok': True, 'results': results}
+    return {'ok': True, 'results': results, 'engine': 'lite'}
 
 
 def _find_neighbors(model, data):
