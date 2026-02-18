@@ -429,6 +429,30 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
   " >/dev/null 2>&1
 fi
 
+# ── Graph-aware context expansion (Phase 2) ──────────────────
+# 1-hop expansion from top-3 results via memory_graph edges (~2ms SQLite)
+GRAPH_EXPANDED=""
+if [ "$RESULT_COUNT" -gt 0 ]; then
+  TOP_3_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | head -3 | tr '\n' ',' | sed 's/,$//')
+  ALL_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | tr '\n' ',' | sed 's/,$//')
+  if [ -n "$TOP_3_IDS" ]; then
+    GRAPH_EXPANDED=$(sqlite3 "$DB_PATH" "
+      SELECT DISTINCT m2.id,
+             '[' || m2.memory_type || '] ' || replace(substr(m2.content, 1, 200), char(10), ' ')
+      FROM memory_graph mg
+      JOIN memories m ON m.content_hash = mg.source_hash
+      JOIN memories m2 ON m2.content_hash = mg.target_hash
+      WHERE m.id IN (${TOP_3_IDS})
+        AND mg.relationship_type IN ('related', 'supports')
+        AND mg.similarity > 0.6
+        AND m2.id NOT IN (${ALL_IDS})
+        AND m2.deleted_at IS NULL
+      ORDER BY mg.similarity DESC
+      LIMIT 2
+    " 2>/dev/null)
+  fi
+fi
+
 # ── Feedback logging ───────────────────────────────────────────
 if [ -d "$FEEDBACK_DIR" ] || mkdir -p "$FEEDBACK_DIR" 2>/dev/null; then
   FEEDBACK_FILE="$FEEDBACK_DIR/feedback.jsonl"
@@ -461,12 +485,43 @@ if [ "$RESULT_COUNT" -lt 2 ]; then
   HINT=$'\n(Few results — consider using memory_search for broader semantic context)'
 fi
 
+# ── Contradiction warnings (Phase 2) ─────────────────────────
+# Check if any returned memories have 'contradicts' edges (~2ms SQLite)
+CONTRADICTION_WARN=""
+if [ "$RESULT_COUNT" -gt 0 ]; then
+  _CONTRA_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | head -5 | tr '\n' ',' | sed 's/,$//')
+  if [ -n "$_CONTRA_IDS" ]; then
+    _CONTRA_HITS=$(sqlite3 "$DB_PATH" "
+      SELECT DISTINCT m.id || ' ' || m2.id
+      FROM memory_graph mg
+      JOIN memories m ON m.content_hash = mg.source_hash
+      JOIN memories m2 ON m2.content_hash = mg.target_hash
+      WHERE m.id IN (${_CONTRA_IDS})
+        AND mg.relationship_type = 'contradicts'
+        AND m2.deleted_at IS NULL
+      LIMIT 3
+    " 2>/dev/null)
+    if [ -n "$_CONTRA_HITS" ]; then
+      CONTRADICTION_WARN=$'\n[Note: Potential contradictions detected — verify which is current]'
+      while read -r _src_id _tgt_id; do
+        [ -n "$_src_id" ] && [ -n "$_tgt_id" ] && \
+          CONTRADICTION_WARN="${CONTRADICTION_WARN}"$'\n'"  Memory #${_src_id} may conflict with #${_tgt_id}"
+      done <<< "$_CONTRA_HITS"
+    fi
+  fi
+fi
+
 # Use jq to construct valid JSON (handles all control chars and Unicode safely)
 {
   printf '%s' "Memory retrieval (auto, ${QUERY_MODE}, keywords: ${SAFE_KEYWORDS}):"
   printf '\n'
   printf '%b' "$RESULT_DISPLAY"
+  if [ -n "$GRAPH_EXPANDED" ]; then
+    printf '\nRelated (graph):\n'
+    printf '%s\n' "$GRAPH_EXPANDED"
+  fi
   printf '%s' "$HINT"
+  printf '%s' "$CONTRADICTION_WARN"
 } | jq -Rs '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}'
 
 exit 0

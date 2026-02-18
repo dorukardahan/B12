@@ -645,9 +645,22 @@ try:
                 result = merge_or_insert(
                     conn, content=text, content_hash=m_hash,
                     tags=m_tags, memory_type=mem_type,
-                    metadata=m_metadata, embedding_bytes=m_emb, now=now
+                    metadata=m_metadata, embedding_bytes=m_emb, now=now,
+                    db_path=DB_PATH
                 )
                 # result.action: "inserted", "merged", or "noop_duplicate"
+                # Log contradictions as graph edges (Phase 2)
+                if hasattr(result, 'contradictions') and result.contradictions:
+                    for c in result.contradictions:
+                        conn.execute("""
+                            INSERT OR IGNORE INTO memory_graph
+                            (source_hash, target_hash, similarity, connection_types,
+                             metadata, created_at, relationship_type)
+                            VALUES (?, ?, ?, '["nli","store_time"]', ?, ?, 'contradicts')
+                        """, (m_hash, c['hash'], c['score'],
+                              json.dumps({"detected_by": "session_end_nli",
+                                          "snippet": c.get('snippet', '')[:60]}),
+                              now.timestamp()))
             else:
                 # Fallback: direct INSERT (original behavior)
                 if conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (m_hash,)).fetchone():

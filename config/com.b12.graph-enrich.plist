@@ -1,0 +1,39 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  B12 Graph Enrichment — launchd agent template
+  Runs daily at 4:00 AM: discovers related/contradicts/supports edges
+  between memories using embedding similarity + NLI.
+
+  Install:
+    1. Copy to ~/Library/LaunchAgents/com.b12.graph-enrich.plist
+    2. Replace /path/to/home with your actual home directory
+    3. launchctl load ~/Library/LaunchAgents/com.b12.graph-enrich.plist
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.b12.graph-enrich</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/path/to/home/.local/pipx/venvs/mcp-memory-service/bin/python3</string>
+        <string>/path/to/home/.claude/hooks/scripts/graph_enrich.py</string>
+        <string>--apply</string>
+        <string>--nli</string>
+        <string>--quiet</string>
+    </array>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key>
+        <integer>4</integer>
+        <key>Minute</key>
+        <integer>0</integer>
+    </dict>
+    <key>StandardOutPath</key>
+    <string>/path/to/home/.claude/memory-logs/graph-enrich-stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/path/to/home/.claude/memory-logs/graph-enrich-stderr.log</string>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>

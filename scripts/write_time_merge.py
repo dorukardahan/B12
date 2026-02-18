@@ -78,6 +78,7 @@ class MergeResult:
     similarity: Optional[float] = None
     merged_from_id: Optional[int] = None
     reason: Optional[str] = None
+    contradictions: Optional[list] = None  # [{id, hash, score, snippet}]
 
 
 # Lazy global cache: only loaded if we actually need to re-embed on merge.
@@ -330,6 +331,119 @@ def _rewrite_graph_hashes(conn: sqlite3.Connection, old_hash: str, new_hash: str
     conn.execute("DELETE FROM memory_graph WHERE source_hash = ? OR target_hash = ?", (old_hash, old_hash))
 
 
+def _daemon_request(payload: dict, timeout: float = 10) -> Optional[dict]:
+    """Send JSON request to embedding daemon, return parsed response or None."""
+    import socket as _sock
+    uid = os.getuid()
+    sock_path = f"/tmp/b12-embed-{uid}.sock"
+    pid_path = f"/tmp/b12-embed-{uid}.pid"
+    if not os.path.exists(sock_path) or not os.path.exists(pid_path):
+        return None
+    try:
+        pid = int(open(pid_path).read().strip())
+        os.kill(pid, 0)
+    except (ValueError, ProcessLookupError, PermissionError, FileNotFoundError):
+        return None
+    try:
+        s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect(sock_path)
+        import json as _json
+        s.sendall((_json.dumps(payload) + '\n').encode())
+        data = b''
+        while True:
+            chunk = s.recv(1048576)
+            if not chunk:
+                break
+            data += chunk
+            if b'\n' in data:
+                break
+        s.close()
+        return _json.loads(data.decode().strip())
+    except Exception:
+        return None
+
+
+def check_contradictions(
+    content: str,
+    db_path: str,
+    memory_type: Optional[str],
+    embedding_bytes: bytes,
+) -> list:
+    """
+    Check if new content contradicts existing memories via daemon NLI.
+
+    Returns list of dicts: [{id, hash, score, snippet}] for contradictions > 0.7.
+    Returns empty list if daemon unavailable or no contradictions found.
+    Skips memories shorter than 30 chars.
+    """
+    if len(content) < 30:
+        return []
+
+    # Step 1: Find top-5 similar memories via daemon
+    # We need a memory_id but we don't have one yet (new content).
+    # Instead, use find_neighbors on the closest match, or encode_batch + manual scan.
+    # Simpler: ask daemon for semantic_search which already does cosine scan.
+    resp = _daemon_request({
+        'op': 'semantic_search',
+        'query': content,
+        'db_path': db_path,
+        'limit': 5,
+    })
+    if not resp or not resp.get('ok'):
+        return []
+
+    neighbors = resp.get('results', [])
+    if not neighbors:
+        return []
+
+    # Step 2: Get neighbor content for NLI
+    import sqlite3 as _sqlite3
+    try:
+        conn = _sqlite3.connect(db_path, timeout=5)
+        conn.execute("PRAGMA busy_timeout=5000")
+    except Exception:
+        return []
+
+    pairs = []
+    neighbor_info = []
+    for n in neighbors:
+        n_id = n.get('id')
+        if not n_id:
+            continue
+        row = conn.execute(
+            "SELECT content_hash, content FROM memories WHERE id = ? AND deleted_at IS NULL",
+            (n_id,)
+        ).fetchone()
+        if not row or len(row[1]) < 30:
+            continue
+        pairs.append([content, row[1]])
+        neighbor_info.append({'id': n_id, 'hash': row[0], 'content': row[1]})
+    conn.close()
+
+    if not pairs:
+        return []
+
+    # Step 3: NLI check via daemon
+    nli_resp = _daemon_request({'op': 'nli_check', 'pairs': pairs}, timeout=15)
+    if not nli_resp or not nli_resp.get('ok'):
+        return []
+
+    contradictions = []
+    for i, result in enumerate(nli_resp.get('results', [])):
+        scores = result.get('scores', {})
+        if scores.get('contradiction', 0) > 0.7:
+            info = neighbor_info[i]
+            contradictions.append({
+                'id': info['id'],
+                'hash': info['hash'],
+                'score': round(scores['contradiction'], 4),
+                'snippet': info['content'][:100],
+            })
+
+    return contradictions
+
+
 def merge_or_insert(
     conn: sqlite3.Connection,
     content: str,
@@ -339,6 +453,7 @@ def merge_or_insert(
     metadata: Optional[Union[str, Dict[str, Any]]],
     embedding_bytes: Union[bytes, bytearray, memoryview],
     now: Any,
+    db_path: Optional[str] = None,
 ) -> MergeResult:
     """
     Merge new content into nearest existing memory if similarity > threshold.
@@ -361,6 +476,9 @@ def merge_or_insert(
         float32 embedding bytes for `content` (used for matching + insert)
     now:
         datetime | unix seconds | None
+    db_path:
+        Optional path to sqlite_vec.db. If provided, enables contradiction
+        detection via the embedding daemon's NLI service.
     """
     if not isinstance(conn, sqlite3.Connection):
         raise TypeError("conn must be a sqlite3.Connection")
@@ -404,6 +522,16 @@ def merge_or_insert(
         best_id, best_content, best_hash, best_strength, best_similarity = best
     else:
         best_id, best_content, best_hash, best_strength, best_similarity = None, None, None, None, None
+
+    # Contradiction check via daemon NLI (only if db_path provided)
+    detected_contradictions = None
+    if db_path:
+        try:
+            detected_contradictions = check_contradictions(
+                content, db_path, memory_type, embedding_blob
+            ) or None
+        except Exception:
+            pass  # Never block store on contradiction check failure
 
     if best is not None and best_similarity is not None and best_similarity > SIMILARITY_THRESHOLD:
         merged_content = f"{best_content.rstrip()}\n• {content.strip()}"
@@ -492,6 +620,7 @@ def merge_or_insert(
             memory_id=int(best_id),
             similarity=float(best_similarity),
             merged_from_id=int(best_id),
+            contradictions=detected_contradictions,
         )
 
     # Normal INSERT (existing behavior)
@@ -522,6 +651,7 @@ def merge_or_insert(
         memory_id=new_id,
         similarity=float(best_similarity) if best_similarity is not None else None,
         reason="no_match" if best is None else "below_threshold",
+        contradictions=detected_contradictions,
     )
 
 

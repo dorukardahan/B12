@@ -14,6 +14,8 @@ Operations:
   semantic_search  {query, db_path, limit}      → {results: [{id, display, score}]}
   rerank           {query, db_path, ids}         → {ranked_ids: [int]}
   encode_batch     {texts}                       → {embeddings: [base64]}
+  nli_check        {pairs: [[a,b], ...]}         → {results: [{label, scores}]}
+  find_neighbors   {db_path, memory_id, k, min_sim} → {neighbors: [{id, similarity}]}
   health           {}                            → {uptime, requests_served}
   shutdown         {}                            → {} + daemon exits
 
@@ -47,7 +49,7 @@ PID_PATH = f"/tmp/b12-embed-{_UID}.pid"
 LOG_DIR = os.path.expanduser("~/.claude/memory-logs")
 LOG_PATH = os.path.join(LOG_DIR, "embed-daemon.log")
 IDLE_TIMEOUT = 7200  # 2 hours
-CONN_TIMEOUT = 5     # Per-connection read timeout
+CONN_TIMEOUT = 10    # Per-connection read timeout (increased for NLI batches)
 MODEL_NAME = os.environ.get('MCP_EMBEDDING_MODEL', 'paraphrase-multilingual-MiniLM-L12-v2')
 
 
@@ -164,6 +166,223 @@ def _encode_batch(model, data):
     return {'ok': True, 'embeddings': result}
 
 
+# ── NLI-lite (embedding-based contradiction detection) ───────
+# Uses the ALREADY-LOADED SentenceTransformer to detect contradictions.
+# Approach: high cosine(A, B) + low cosine(A, neg_B) = likely contradiction.
+# No extra model needed — zero additional RAM, works on Python 3.14 + arm64.
+#
+# Heuristic: for each (text_a, text_b) pair:
+#   sim_ab   = cosine(embed(A), embed(B))           — topic similarity
+#   neg_b    = "This is not true: " + B
+#   sim_neg  = cosine(embed(A), embed(neg_b))        — negation similarity
+#   contradiction_score = sim_ab - sim_neg            — divergence
+#
+# High sim_ab + low sim_neg → texts are about same topic but disagree.
+# Label thresholds: contradiction > 0.15, entailment if sim_ab > 0.85
+NLI_MAX_PAIRS = 20
+_NEG_PREFIXES = [
+    "This is not true: ",     # English
+    "Bu doğru değil: ",       # Turkish
+]
+
+
+def _nli_check(model, data):
+    """Embedding+keyword contradiction detection.
+
+    Combines cosine similarity with lexical negation signals.
+    For each pair (A, B), checks:
+    1. Topic similarity via cosine(A, B)
+    2. Negation contrast: cosine(A, "not B") vs cosine(A, B)
+    3. Lexical opposition: antonym patterns, conflicting values
+    4. Direct negation: "not", "never", "don't" etc.
+    """
+    import numpy as np
+    import re
+
+    pairs = data.get('pairs', [])
+    if not pairs:
+        return {'ok': False, 'error': 'missing pairs'}
+    if len(pairs) > NLI_MAX_PAIRS:
+        pairs = pairs[:NLI_MAX_PAIRS]
+
+    # ── Lexical contradiction signals ────────────────────────
+    _NEGATION_WORDS = {
+        'not', 'never', "don't", "doesn't", "didn't", "won't", "can't",
+        "isn't", "aren't", "wasn't", "weren't", 'no', 'none', 'nobody',
+        'nothing', 'nowhere', 'neither', 'nor', 'hate', 'avoid', 'refuse',
+        'değil', 'asla', 'hiçbir', 'yok', 'olmaz', 'yapma', 'yapmaz',
+    }
+    _POSITIVE_WORDS = {
+        'prefer', 'like', 'love', 'use', 'always', 'choose', 'want',
+        'enjoy', 'recommend', 'best', 'should', 'must', 'correct',
+        'tercih', 'sev', 'kullan', 'her zaman', 'doğru', 'iyi',
+    }
+
+    def _has_negation(text):
+        words = set(text.lower().split())
+        return bool(words & _NEGATION_WORDS)
+
+    def _has_positive(text):
+        tl = text.lower()
+        return any(w in tl for w in _POSITIVE_WORDS)
+
+    def _extract_numbers(text):
+        # Remove date-like patterns first (YYYY-MM-DD, DD/MM, HH:MM, etc.)
+        cleaned = re.sub(r'\b\d{4}[-/]\d{1,2}[-/]\d{1,2}\b', '', text)
+        cleaned = re.sub(r'\b\d{1,2}[-/]\d{1,2}[-/]\d{2,4}\b', '', cleaned)
+        cleaned = re.sub(r'\b\d{1,2}:\d{2}(?::\d{2})?\b', '', cleaned)
+        return set(re.findall(r'\b\d+(?:\.\d+)?\b', cleaned))
+
+    def _lexical_contradiction_score(text_a, text_b):
+        """Return 0.0-1.0 score for lexical contradiction signals."""
+        score = 0.0
+        a_neg = _has_negation(text_a)
+        b_neg = _has_negation(text_b)
+        a_pos = _has_positive(text_a)
+        b_pos = _has_positive(text_b)
+
+        # Opposite polarity: one positive, one negative
+        if (a_neg and b_pos) or (b_neg and a_pos):
+            score += 0.4
+        if a_neg != b_neg:
+            score += 0.2
+
+        # Conflicting numbers in similar context — strong signal
+        nums_a = _extract_numbers(text_a)
+        nums_b = _extract_numbers(text_b)
+        if nums_a and nums_b and nums_a != nums_b:
+            # Check they share context words (same topic, different values)
+            words_a = set(text_a.lower().split()) - _NEGATION_WORDS - nums_a
+            words_b = set(text_b.lower().split()) - _NEGATION_WORDS - nums_b
+            overlap = words_a & words_b
+            if len(overlap) >= 2:
+                score += 0.7  # Stronger: different numbers + shared context
+
+        # Substitution pattern: identical sentence except 1 key word swapped
+        # "I use tabs" vs "I use spaces" — same structure, different key word
+        # Only 1-word diff (strict) to avoid false positives on context changes
+        # Skip multiline/structured content (session summaries, etc.)
+        if '\n' not in text_a and '\n' not in text_b:
+            words_a_list = text_a.lower().split()
+            words_b_list = text_b.lower().split()
+            if len(words_a_list) == len(words_b_list) and 4 <= len(words_a_list) <= 20:
+                diffs = [(a, b) for a, b in zip(words_a_list, words_b_list) if a != b]
+                if len(diffs) == 1 and len(words_a_list) - 1 >= 3:
+                    score += 0.6  # Strong: near-identical with single word substitution
+
+        return min(score, 1.0)
+
+    # ── Encode all texts in one batch ────────────────────────
+    all_texts = []
+    for text_a, text_b in pairs:
+        all_texts.append(text_a)
+        all_texts.append(text_b)
+        all_texts.append(_NEG_PREFIXES[0] + text_b)
+
+    embeddings = model.encode(all_texts, normalize_embeddings=True,
+                              convert_to_numpy=True)
+
+    results = []
+    for i, (text_a, text_b) in enumerate(pairs):
+        emb_a = embeddings[i * 3]
+        emb_b = embeddings[i * 3 + 1]
+        emb_neg_b = embeddings[i * 3 + 2]
+
+        sim_ab = float(np.dot(emb_a, emb_b))
+        sim_neg = float(np.dot(emb_a, emb_neg_b))
+        neg_divergence = sim_neg - sim_ab  # Higher = B's negation closer to A
+        lex_score = _lexical_contradiction_score(text_a, text_b)
+
+        # Combined contradiction score
+        c_signal = max(0.0, neg_divergence * 3) + lex_score * 0.6
+
+        # Classification
+        if sim_ab > 0.85 and lex_score < 0.2:
+            label = 'entailment'
+            e_score = min(1.0, sim_ab)
+            c_score = max(0.0, c_signal * 0.3)
+            n_score = max(0.0, 1.0 - e_score - c_score)
+        elif c_signal > 0.3 and sim_ab > 0.3:
+            label = 'contradiction'
+            c_score = min(1.0, 0.5 + c_signal * 0.5)
+            e_score = max(0.0, sim_ab * 0.2)
+            n_score = max(0.0, 1.0 - c_score - e_score)
+        else:
+            label = 'neutral'
+            n_score = max(0.3, 1.0 - sim_ab)
+            e_score = max(0.0, sim_ab - 0.3)
+            c_score = max(0.0, c_signal * 0.5)
+
+        # Normalize scores to sum to 1
+        total = max(e_score + n_score + c_score, 0.001)
+        results.append({
+            'label': label,
+            'scores': {
+                'entailment': round(e_score / total, 4),
+                'neutral': round(n_score / total, 4),
+                'contradiction': round(c_score / total, 4),
+            }
+        })
+
+    log(f"NLI-lite: processed {len(pairs)} pairs")
+    return {'ok': True, 'results': results}
+
+
+def _find_neighbors(model, data):
+    """Find top-K similar memories by cosine similarity."""
+    db_path = data.get('db_path', '')
+    memory_id = data.get('memory_id')
+    k = data.get('k', 5)
+    min_sim = data.get('min_sim', 0.5)
+
+    if not db_path or memory_id is None:
+        return {'ok': False, 'error': 'missing db_path or memory_id'}
+
+    conn = _open_db(db_path)
+
+    # Get the target memory's embedding
+    target_row = conn.execute(
+        'SELECT content_embedding FROM memory_embeddings WHERE rowid = ?',
+        (int(memory_id),)
+    ).fetchone()
+    if not target_row or not target_row[0]:
+        conn.close()
+        return {'ok': False, 'error': f'no embedding for memory_id={memory_id}'}
+
+    target_bytes = target_row[0]
+    dim = len(target_bytes) // 4
+    target_emb = struct.unpack(f'{dim}f', target_bytes)
+
+    # Scan all active non-deleted memories
+    rows = conn.execute("""
+        SELECT m.id, e.content_embedding
+        FROM memories m
+        JOIN memory_embeddings e ON m.id = e.rowid
+        WHERE m.deleted_at IS NULL AND m.id != ?
+    """, (int(memory_id),)).fetchall()
+
+    import math
+    # Pre-compute target norm
+    target_norm = math.sqrt(sum(x * x for x in target_emb))
+
+    neighbors = []
+    for row_id, emb_bytes in rows:
+        if not emb_bytes:
+            continue
+        d = len(emb_bytes) // 4
+        stored = struct.unpack(f'{d}f', emb_bytes)
+        dot = float(sum(a * b for a, b in zip(target_emb, stored)))
+        stored_norm = math.sqrt(sum(x * x for x in stored))
+        denom = target_norm * stored_norm
+        cos_sim = dot / denom if denom > 0 else 0.0
+        if cos_sim >= min_sim:
+            neighbors.append({'id': row_id, 'similarity': round(cos_sim, 4)})
+
+    neighbors.sort(key=lambda x: x['similarity'], reverse=True)
+    conn.close()
+    return {'ok': True, 'neighbors': neighbors[:k]}
+
+
 def handle_request(model, data, start_time, requests_served):
     """Route a JSON request to the appropriate handler."""
     op = data.get('op', '')
@@ -189,6 +408,10 @@ def handle_request(model, data, start_time, requests_served):
             return _rerank(model, data)
         elif op == 'encode_batch':
             return _encode_batch(model, data)
+        elif op == 'nli_check':
+            return _nli_check(model, data)
+        elif op == 'find_neighbors':
+            return _find_neighbors(model, data)
         else:
             return {'ok': False, 'error': f'unknown_op: {op}'}
     except Exception as e:
