@@ -210,6 +210,9 @@ def _nli_check(model, data):
         'not', 'never', "don't", "doesn't", "didn't", "won't", "can't",
         "isn't", "aren't", "wasn't", "weren't", 'no', 'none', 'nobody',
         'nothing', 'nowhere', 'neither', 'nor', 'hate', 'avoid', 'refuse',
+        # Smart quote variants (U+2019 right single quotation mark)
+        "don\u2019t", "doesn\u2019t", "didn\u2019t", "won\u2019t", "can\u2019t",
+        "isn\u2019t", "aren\u2019t", "wasn\u2019t", "weren\u2019t",
         'değil', 'asla', 'hiçbir', 'yok', 'olmaz', 'yapma', 'yapmaz',
     }
     _POSITIVE_WORDS = {

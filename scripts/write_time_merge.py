@@ -376,6 +376,9 @@ def check_contradictions(
     Returns list of dicts: [{id, hash, score, snippet}] for contradictions > 0.7.
     Returns empty list if daemon unavailable or no contradictions found.
     Skips memories shorter than 30 chars.
+
+    IMPORTANT: Must be called BEFORE any writes on the parent connection,
+    as this opens a separate DB connection for neighbor lookups.
     """
     if len(content) < 30:
         return []

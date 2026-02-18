@@ -29,6 +29,13 @@
         <key>Minute</key>
         <integer>0</integer>
     </dict>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>HOME</key>
+        <string>/path/to/home</string>
+        <key>MCP_EMBEDDING_MODEL</key>
+        <string>paraphrase-multilingual-MiniLM-L12-v2</string>
+    </dict>
     <key>StandardOutPath</key>
     <string>/path/to/home/.claude/memory-logs/graph-enrich-stdout.log</string>
     <key>StandardErrorPath</key>

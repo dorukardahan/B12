@@ -46,8 +46,11 @@ rm -f "$STAGING_DIR/precompact-${SESSION_ID}.txt" 2>/dev/null
 # Extract structured session summary from transcript
 if [ -f "$TRANSCRIPT_PATH" ]; then
   python3 - "$TRANSCRIPT_PATH" "$PROJECT_NAME" "$SESSION_ID" "$SUMMARY_DIR" "$CWD" "$SETUP_CONTEXT" << 'PYEOF'
-import sys, json, os, re
+import sys, json, os, re, signal
 from datetime import datetime, timezone
+
+# Transcript parse must complete within 25s (leaves 5s for embed launch)
+signal.alarm(25)
 
 # Import shared patterns (DRY — same patterns used in precompact.sh)
 # Note: sys.argv[0] is "-" in heredocs, so use B12_DATA_DIR / known path
