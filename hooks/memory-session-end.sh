@@ -392,7 +392,7 @@ if [ -f "$SUMMARY_FILE" ] && [ -x "$VENV_PYTHON" ]; then
   # Avoids 9.4s blocking (import: 4.9s + model load: 4.5s + encode: 0.01s)
   EMBED_SCRIPT="$LOG_DIR/embed-${SESSION_ID}.py"
   cat > "$EMBED_SCRIPT" << 'MEMPYEOF'
-import sys, os, json, hashlib, sqlite3, warnings
+import sys, os, json, hashlib, sqlite3, warnings, socket as _sock, base64
 warnings.filterwarnings('ignore')
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 
@@ -419,6 +419,62 @@ DB_PATH = os.path.expanduser("~/Library/Application Support/mcp-memory/sqlite_ve
 if not os.path.exists(DB_PATH):
     sys.exit(0)
 
+# ─── Daemon-first embedding (Phase 1) ────────────────────────
+# Try embedding daemon before loading SentenceTransformer (~4.5s savings)
+_DAEMON_SOCK = f"/tmp/b12-embed-{os.getuid()}.sock"
+_DAEMON_PID = f"/tmp/b12-embed-{os.getuid()}.pid"
+_USE_DAEMON = False
+
+if os.path.exists(_DAEMON_SOCK) and os.path.exists(_DAEMON_PID):
+    try:
+        _pid = int(open(_DAEMON_PID).read().strip())
+        os.kill(_pid, 0)  # Check if process is alive
+        _USE_DAEMON = True
+    except (ValueError, ProcessLookupError, PermissionError, FileNotFoundError):
+        pass
+
+def _daemon_encode(texts):
+    """Encode texts via daemon socket, return list of float32 bytes or None."""
+    try:
+        s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+        s.settimeout(15)  # generous timeout for batch encoding
+        s.connect(_DAEMON_SOCK)
+        req = json.dumps({'op': 'encode_batch', 'texts': texts}) + '\n'
+        s.sendall(req.encode())
+        data = b''
+        while True:
+            chunk = s.recv(1048576)  # 1MB buffer
+            if not chunk:
+                break
+            data += chunk
+            if b'\n' in data:
+                break
+        s.close()
+        resp = json.loads(data.decode().strip())
+        if resp.get('ok'):
+            return [base64.b64decode(e) for e in resp['embeddings']]
+    except Exception:
+        pass
+    return None
+
+# Embedding helper: daemon-first with model fallback
+_model = [None]  # Lazy-loaded
+
+def encode_texts(texts):
+    """Return list of float32 bytes for each text."""
+    import numpy as np
+    if _USE_DAEMON:
+        result = _daemon_encode(texts)
+        if result:
+            return result
+    # Cold fallback: load model locally
+    if _model[0] is None:
+        from sentence_transformers import SentenceTransformer
+        model_name = os.environ.get('MCP_EMBEDDING_MODEL', 'paraphrase-multilingual-MiniLM-L12-v2')
+        _model[0] = SentenceTransformer(model_name, device='cpu')
+    embeddings = _model[0].encode(texts, convert_to_numpy=True)
+    return [emb.astype(np.float32).tobytes() for emb in embeddings]
+
 try:
     import sqlite_vec
     conn = sqlite3.connect(DB_PATH, timeout=10)
@@ -433,14 +489,10 @@ try:
         conn.close()
         sys.exit(0)
 
-    from sentence_transformers import SentenceTransformer
-    import numpy as np
     from datetime import datetime, timezone
+    import numpy as np
 
-    model_name = os.environ.get('MCP_EMBEDDING_MODEL', 'paraphrase-multilingual-MiniLM-L12-v2')
-    model = SentenceTransformer(model_name, device='cpu')
-    embedding = model.encode([content], convert_to_numpy=True)[0]
-    embedding_bytes = embedding.astype(np.float32).tobytes()
+    embedding_bytes = encode_texts([content])[0]
 
     now = datetime.now(timezone.utc)
     tags = f"proj:{project_name},user:{setup_context},session-summary,{now.strftime('%Y-%m')}"
@@ -576,7 +628,7 @@ try:
         except ImportError:
             pass
 
-        micro_embeddings = model.encode(micro_texts, convert_to_numpy=True)
+        micro_emb_bytes = encode_texts(micro_texts)
         for i, text in enumerate(micro_texts):
             mem_type, imp = micro_meta[i]
             m_hash = hashlib.sha256(text.encode()).hexdigest()
@@ -587,7 +639,7 @@ try:
                 "source_session": session_id[:12],
                 "importance_score": imp
             })
-            m_emb = micro_embeddings[i].astype(np.float32).tobytes()
+            m_emb = micro_emb_bytes[i]
 
             if _USE_MERGE:
                 result = merge_or_insert(
@@ -623,10 +675,14 @@ except Exception as e:
         ef.write(traceback.format_exc() + "\n")
 
 MEMPYEOF
-  # Launch in background: subshell runs Python then cleans up temp file
+  # Launch in background: subshell runs Python then cleans up temp file + daemon
   (
     "$VENV_PYTHON" "$EMBED_SCRIPT" "$SUMMARY_FILE" "$PROJECT_NAME" "$SETUP_CONTEXT" "$SESSION_ID"
     rm -f "$EMBED_SCRIPT"
+    # Shut down embedding daemon (session is ending, no more requests expected)
+    _UID=$(id -u)
+    _SOCK="/tmp/b12-embed-${_UID}.sock"
+    [ -S "$_SOCK" ] && printf '{"op":"shutdown"}\n' | nc -U "$_SOCK" -w 2 2>/dev/null
   ) > /dev/null 2>&1 &
   disown 2>/dev/null
 fi

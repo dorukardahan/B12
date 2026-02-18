@@ -1,6 +1,14 @@
 #!/bin/bash
-# B12 Memory System - UserPromptSubmit Memory Retrieval Hook (v5)
+# B12 Memory System - UserPromptSubmit Memory Retrieval Hook (v6)
 # Searches memory DB on every user message and injects relevant context
+#
+# v6 changes (2026-02-18) — Phase 1 latency reduction:
+# - Embedding daemon: persistent SentenceTransformer over Unix socket
+# - Daemon-first search/rerank (~50ms each) with cold fallback
+# - Merged cold fallback: single Python process for both ops (was 2)
+# - Pure bash keyword extraction (saves ~150ms Python spawn)
+# - Smart re-rank skip: high FTS scores bypass reranking
+# - Latency tracking in feedback.jsonl (millisecond precision via perl)
 #
 # v5 changes (2026-02-18) — Phase 0 retrieval quality:
 # - FTS5 AND logic for 3+ keywords (precision boost)
@@ -40,6 +48,9 @@ INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // ""')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 
+# ── Latency tracking (Phase 1) ───────────────────────────────
+_START_MS=$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null || echo 0)
+
 # Skip trivial messages (short, greetings, confirmations)
 PROMPT_LEN=${#PROMPT}
 if [ "$PROMPT_LEN" -lt 15 ]; then
@@ -66,6 +77,20 @@ fi
 
 B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
 FEEDBACK_DIR="$B12_BASE/memory-logs"
+
+# ── Embedding daemon helpers (Phase 1) ───────────────────────
+_UID=$(id -u)
+EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
+EMBED_PID="/tmp/b12-embed-${_UID}.pid"
+
+daemon_alive() {
+  [ -S "$EMBED_SOCK" ] && [ -f "$EMBED_PID" ] && \
+    kill -0 "$(cat "$EMBED_PID" 2>/dev/null)" 2>/dev/null
+}
+
+daemon_request() {
+  printf '%s\n' "$1" | nc -U "$EMBED_SOCK" -w 4 2>/dev/null
+}
 
 # ── Project detection (with hierarchy) ─────────────────────────
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
@@ -102,23 +127,19 @@ elif echo "$PROMPT_LOWER" | grep -qE '(think about|feel about|opinion|views? on|
   QUERY_MODE="keyword"
 fi
 
-# ── Keyword extraction ─────────────────────────────────────────
-KEYWORDS=$(echo "$PROMPT" | python3 -c "
-import re, sys
-text = sys.stdin.read().lower()
-words = re.findall(r'[\w]{3,}', text, re.UNICODE)
-stops = {'bir','ile','için','var','ben','sen','nasıl','neden','ama','gibi','daha',
-         'çok','bana','sana','olan','olarak','bunu','şimdi','lütfen','yapıyoruz',
-         'yapalım','bunun','burada','benim','onun','şey','the','and','for','are',
-         'but','not','you','all','can','had','was','one','has','how','its','may',
-         'new','now','see','who','did','get','him','she','too','use','this','that',
-         'with','from','have','will','been','they','what','when','which','would',
-         'could','should','about','there','their','these','where','some','than',
-         'them','then','into','also','just','like','only','make','know','here',
-         'help','want','need','look','does'}
-filtered = [w for w in words if w not in stops][:10]
-print(' '.join(filtered))
-" 2>/dev/null)
+# ── Keyword extraction (pure bash — no Python spawn) ──────────
+# Saves ~150ms by avoiding Python startup. Uses sed + case for stopwords.
+# Note: sed [:alnum:] handles Turkish chars (ı,ş,ç,ö,ü,ğ) with UTF-8 locale.
+KEYWORDS=""
+_kw_count=0
+for _w in $(echo "$PROMPT_LOWER" | sed 's/[^[:alnum:]_]/ /g'); do
+  [ ${#_w} -lt 3 ] && continue
+  case "$_w" in
+    bir|ile|için|var|ben|sen|nasıl|neden|ama|gibi|daha|çok|bana|sana|olan|olarak|bunu|şimdi|lütfen|yapıyoruz|yapalım|bunun|burada|benim|onun|şey|the|and|for|are|but|not|you|all|can|had|was|one|has|how|its|may|new|now|see|who|did|get|him|she|too|use|this|that|with|from|have|will|been|they|what|when|which|would|could|should|about|there|their|these|where|some|than|them|then|into|also|just|like|only|make|know|here|help|want|need|look|does) continue ;;
+    *) KEYWORDS="${KEYWORDS}${_w} "; _kw_count=$((_kw_count + 1)); [ $_kw_count -ge 10 ] && break ;;
+  esac
+done
+KEYWORDS=$(echo "$KEYWORDS" | sed 's/ *$//')
 
 # Need at least 1 keyword for meaningful search
 WORD_COUNT=$(echo "$KEYWORDS" | wc -w | tr -d ' ')
@@ -198,78 +219,21 @@ while IFS='|' read -r id display score; do
   fi
 done <<< "$RESULTS"
 
-# ── Semantic fallback when FTS5 returns 0 ──────────────────────
-VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
-if [ "$RESULT_COUNT" -eq 0 ] && [ -x "$VENV_PYTHON" ]; then
-  SEMANTIC_RESULTS=$("$VENV_PYTHON" - "$DB_PATH" "$PROMPT" 2>/dev/null << 'SEMEOF'
-import sys, struct, sqlite3, signal
-signal.alarm(4)  # self-timeout (macOS has no timeout command)
-
-db_path, query = sys.argv[1], sys.argv[2]
-try:
-    from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
-    q_emb = model.encode([query], normalize_embeddings=True)[0]
-
-    import sqlite_vec
-    conn = sqlite3.connect(db_path)
-    conn.enable_load_extension(True)
-    sqlite_vec.load(conn)
-    conn.enable_load_extension(False)
-    rows = conn.execute("""
-        SELECT m.id, m.content, e.content_embedding
-        FROM memories m
-        JOIN memory_embeddings e ON m.id = e.rowid
-        WHERE m.deleted_at IS NULL
-          AND m.memory_type NOT IN ('session_summary', 'progress')
-          AND m.tags NOT LIKE '%session-summary%'
-    """).fetchall()
-
-    scores = []
-    for row_id, content, emb_bytes in rows:
-        if not emb_bytes:
-            continue
-        dim = len(emb_bytes) // 4
-        stored = struct.unpack(f'{dim}f', emb_bytes)
-        cos_sim = sum(a*b for a,b in zip(q_emb, stored))
-        if cos_sim > 0.3:  # minimum similarity threshold
-            display = '[' + (content[:300].replace('\n', ' ')) + ']'
-            scores.append((row_id, cos_sim, display))
-
-    scores.sort(key=lambda x: x[1], reverse=True)
-    for row_id, sim, display in scores[:5]:
-        print(f"{row_id}|{display}|{sim:.3f}")
-    conn.close()
-except Exception:
-    pass
-SEMEOF
-  )
-
-  # Parse semantic results
-  while IFS='|' read -r id display score; do
-    if [ -n "$id" ]; then
-      RESULT_IDS="${RESULT_IDS}${id},"
-      RESULT_DISPLAY="${RESULT_DISPLAY}${display}\n"
-      RESULT_COUNT=$((RESULT_COUNT + 1))
-    fi
-  done <<< "$SEMANTIC_RESULTS"
-fi
-
-# ── Query-adaptive vector re-rank ────────────────────────────
-# Decision tree:
-#   QUERY_MODE=keyword AND results >= 2 → skip re-rank (save ~200ms)
-#   QUERY_MODE=keyword AND results < 2  → fallback to re-rank
-#   QUERY_MODE=hybrid                   → always re-rank
+# ── Determine needed operations ───────────────────────────────
 VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
 RERANK_DONE=false
 SKIP_REASON=""
+SEARCH_SOURCE="fts5"  # Track for feedback log
 
+NEEDS_SEMANTIC=false
+[ "$RESULT_COUNT" -eq 0 ] && NEEDS_SEMANTIC=true
+
+# Query-adaptive re-rank decision
 SHOULD_RERANK=false
-if [ "$RESULT_COUNT" -gt 0 ] && [ -x "$VENV_PYTHON" ]; then
+if [ "$RESULT_COUNT" -gt 0 ]; then
   if [ "$QUERY_MODE" = "hybrid" ]; then
     SHOULD_RERANK=true
   elif [ "$RESULT_COUNT" -lt 2 ]; then
-    # Keyword mode but few results → fallback to re-rank
     SHOULD_RERANK=true
     SKIP_REASON="fallback"
   else
@@ -277,57 +241,172 @@ if [ "$RESULT_COUNT" -gt 0 ] && [ -x "$VENV_PYTHON" ]; then
   fi
 fi
 
-if [ "$SHOULD_RERANK" = true ]; then
-  ID_LIST=$(echo "$RESULT_IDS" | sed 's/,$//')
+# Smart re-rank skip: if top FTS score is very high, reranking won't help
+if [ "$SHOULD_RERANK" = true ] && [ "$RESULT_COUNT" -ge 3 ]; then
+  TOP_SCORE=$(echo "$RESULTS" | head -1 | awk -F'|' '{print $3}')
+  if [ -n "$TOP_SCORE" ] && echo "$TOP_SCORE" | awk '{exit ($1 > 0.8) ? 0 : 1}' 2>/dev/null; then
+    SHOULD_RERANK=false
+    SKIP_REASON="high_fts_score"
+  fi
+fi
 
-  RERANKED=$("$VENV_PYTHON" - "$DB_PATH" "$ID_LIST" "$PROMPT" 2>/dev/null << 'PYEOF'
+# ── Daemon-first path with cold fallback (Phase 1) ───────────
+if daemon_alive; then
+  # Fast daemon path (~50ms per operation)
+  if [ "$NEEDS_SEMANTIC" = true ]; then
+    _REQ=$(jq -nc --arg q "$PROMPT" --arg db "$DB_PATH" '{op:"semantic_search",query:$q,db_path:$db,limit:5}')
+    _RESP=$(daemon_request "$_REQ")
+    if echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+      _SEM_DATA=$(echo "$_RESP" | jq -r '.results[] | "\(.id)|\(.display)"')
+      while IFS='|' read -r _id _display; do
+        if [ -n "$_id" ]; then
+          RESULT_IDS="${RESULT_IDS}${_id},"
+          RESULT_DISPLAY="${RESULT_DISPLAY}${_display}\n"
+          RESULT_COUNT=$((RESULT_COUNT + 1))
+        fi
+      done <<< "$_SEM_DATA"
+      NEEDS_SEMANTIC=false
+      SEARCH_SOURCE="daemon_semantic"
+    fi
+  fi
+
+  if [ "$SHOULD_RERANK" = true ] && [ "$RESULT_COUNT" -gt 0 ]; then
+    _IDS_JSON=$(echo "$RESULT_IDS" | sed 's/,$//' | tr ',' '\n' | grep -E '^[0-9]+$' | head -10 | jq -Rn '[inputs | tonumber]')
+    _REQ=$(jq -nc --arg q "$PROMPT" --arg db "$DB_PATH" --argjson ids "$_IDS_JSON" '{op:"rerank",query:$q,db_path:$db,ids:$ids}')
+    _RESP=$(daemon_request "$_REQ")
+    if echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+      RERANK_IDS=$(echo "$_RESP" | jq -r '.ranked_ids | map(tostring) | join(",")')
+      if [ -n "$RERANK_IDS" ]; then
+        RESULT_DISPLAY=$(sqlite3 "$DB_PATH" "
+          SELECT '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
+          FROM memories m
+          WHERE m.id IN (${RERANK_IDS})
+          ORDER BY CASE m.id
+            $(echo "$RERANK_IDS" | tr ',' '\n' | awk '{printf "WHEN %s THEN %d\n", $1, NR}')
+          END
+          LIMIT 5
+        " 2>/dev/null)
+        RESULT_IDS="${RERANK_IDS},"
+        RERANK_DONE=true
+        SHOULD_RERANK=false
+        SEARCH_SOURCE="${SEARCH_SOURCE}+daemon_rerank"
+      fi
+    fi
+  fi
+fi
+
+# ── Cold fallback: single Python process for remaining ops ────
+# Loads model ONCE for both semantic search and rerank (saves ~4.5s vs two heredocs)
+if { [ "$NEEDS_SEMANTIC" = true ] || [ "$SHOULD_RERANK" = true ]; } && [ -x "$VENV_PYTHON" ]; then
+  _ID_LIST=$(echo "$RESULT_IDS" | sed 's/,$//')
+
+  _COLD_OUTPUT=$("$VENV_PYTHON" - "$DB_PATH" "$PROMPT" "$NEEDS_SEMANTIC" "$SHOULD_RERANK" "$_ID_LIST" 2>/dev/null << 'COLDEOF'
 import sys, struct, sqlite3, signal
-signal.alarm(3)  # self-timeout (macOS has no timeout command)
+signal.alarm(8)  # Must be < watchdog (10s); cold model load ~5s cached, ~12s first-ever
 
-db_path, id_list, query = sys.argv[1], sys.argv[2], sys.argv[3]
-ids = [int(x) for x in id_list.split(',') if x.strip()]
-if not ids:
-    sys.exit(0)
+db_path = sys.argv[1]
+query = sys.argv[2]
+needs_semantic = sys.argv[3] == 'true'
+should_rerank = sys.argv[4] == 'true'
+id_list_str = sys.argv[5] if len(sys.argv) > 5 else ''
 
 try:
     from sentence_transformers import SentenceTransformer
     model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
     q_emb = model.encode([query], normalize_embeddings=True)[0]
 
-    conn = sqlite3.connect(db_path)
-    scores = []
-    for mem_id in ids:
-        row = conn.execute('SELECT content_embedding FROM memory_embeddings WHERE rowid = ?', (mem_id,)).fetchone()
-        if row and row[0]:
-            dim = len(row[0]) // 4
-            stored = struct.unpack(f'{dim}f', row[0])
-            cos_sim = sum(a*b for a,b in zip(q_emb, stored))
-            scores.append((mem_id, max(0.0, cos_sim)))
-        else:
-            scores.append((mem_id, 0.0))
-    conn.close()
+    if needs_semantic:
+        import sqlite_vec
+        conn = sqlite3.connect(db_path)
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+        rows = conn.execute("""
+            SELECT m.id,
+                   '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' '),
+                   e.content_embedding
+            FROM memories m
+            JOIN memory_embeddings e ON m.id = e.rowid
+            WHERE m.deleted_at IS NULL
+              AND m.valid_until IS NULL
+              AND m.memory_type NOT IN ('session_summary', 'progress')
+              AND m.tags NOT LIKE '%session-summary%'
+        """).fetchall()
 
-    scores.sort(key=lambda x: x[1], reverse=True)
-    print(','.join(str(s[0]) for s in scores))
+        scores = []
+        for row_id, display, emb_bytes in rows:
+            if not emb_bytes:
+                continue
+            dim = len(emb_bytes) // 4
+            stored = struct.unpack(f'{dim}f', emb_bytes)
+            cos_sim = sum(a*b for a,b in zip(q_emb, stored))
+            if cos_sim > 0.3:
+                scores.append((row_id, display, cos_sim))
+        scores.sort(key=lambda x: x[2], reverse=True)
+        for row_id, display, sim in scores[:5]:
+            print(f"SEM:{row_id}|{display}|{sim:.3f}")
+        conn.close()
+        # Semantic results are already cosine-sorted — skip rerank
+
+    elif should_rerank and id_list_str:
+        ids = [int(x) for x in id_list_str.split(',') if x.strip()]
+        if ids:
+            import sqlite_vec
+            conn = sqlite3.connect(db_path)
+            conn.enable_load_extension(True)
+            sqlite_vec.load(conn)
+            conn.enable_load_extension(False)
+            scores = []
+            for mem_id in ids:
+                row = conn.execute('SELECT content_embedding FROM memory_embeddings WHERE rowid = ?', (mem_id,)).fetchone()
+                if row and row[0]:
+                    dim = len(row[0]) // 4
+                    stored = struct.unpack(f'{dim}f', row[0])
+                    cos_sim = sum(a*b for a,b in zip(q_emb, stored))
+                    scores.append((mem_id, max(0.0, cos_sim)))
+                else:
+                    scores.append((mem_id, 0.0))
+            conn.close()
+            scores.sort(key=lambda x: x[1], reverse=True)
+            print("RERANK:" + ','.join(str(s[0]) for s in scores))
 except Exception:
-    print(','.join(str(i) for i in ids))
-PYEOF
+    pass
+COLDEOF
   )
 
-  if [ -n "$RERANKED" ] && [ "$RERANKED" != "$ID_LIST" ]; then
-    RERANK_IDS=$(echo "$RERANKED" | sed 's/,$//')
-    RESULT_DISPLAY=$(sqlite3 "$DB_PATH" "
-      SELECT '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
-      FROM memories m
-      WHERE m.id IN (${RERANK_IDS})
-      ORDER BY CASE m.id
-        $(echo "$RERANK_IDS" | tr ',' '\n' | awk '{printf \"WHEN %s THEN %d\\n\", \$1, NR}')
-      END
-      LIMIT 5
-    " 2>/dev/null)
-    RESULT_IDS="${RERANK_IDS},"
-    RERANK_DONE=true
-  fi
+  # Parse cold fallback output (prefixed lines)
+  while IFS= read -r _line; do
+    case "$_line" in
+      SEM:*)
+        _data="${_line#SEM:}"
+        IFS='|' read -r _id _display _score <<< "$_data"
+        if [ -n "$_id" ]; then
+          RESULT_IDS="${RESULT_IDS}${_id},"
+          RESULT_DISPLAY="${RESULT_DISPLAY}${_display}\n"
+          RESULT_COUNT=$((RESULT_COUNT + 1))
+        fi
+        SEARCH_SOURCE="cold_semantic"
+        ;;
+      RERANK:*)
+        _rerank_ids="${_line#RERANK:}"
+        if [ -n "$_rerank_ids" ]; then
+          RERANK_IDS=$(echo "$_rerank_ids" | sed 's/,$//')
+          RESULT_DISPLAY=$(sqlite3 "$DB_PATH" "
+            SELECT '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
+            FROM memories m
+            WHERE m.id IN (${RERANK_IDS})
+            ORDER BY CASE m.id
+              $(echo "$RERANK_IDS" | tr ',' '\n' | awk '{printf "WHEN %s THEN %d\n", $1, NR}')
+            END
+            LIMIT 5
+          " 2>/dev/null)
+          RESULT_IDS="${RERANK_IDS},"
+          RERANK_DONE=true
+          SEARCH_SOURCE="${SEARCH_SOURCE:-fts5}+cold_rerank"
+        fi
+        ;;
+    esac
+  done <<< "$_COLD_OUTPUT"
 fi
 
 # Trim to top 5
@@ -347,14 +426,17 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
     SET strength = min(COALESCE(strength, 1.0) + 0.3, 5.0),
         last_accessed_at = unixepoch('now')
     WHERE id IN (${BOOST_IDS})
-  " 2>/dev/null
+  " >/dev/null 2>&1
 fi
 
 # ── Feedback logging ───────────────────────────────────────────
 if [ -d "$FEEDBACK_DIR" ] || mkdir -p "$FEEDBACK_DIR" 2>/dev/null; then
   FEEDBACK_FILE="$FEEDBACK_DIR/feedback.jsonl"
   PROJ="${PARENT_PROJECT:-$PROJECT_NAME}"
-  printf '{"ts":%d,"type":"hook_retrieval","query":"%s","keywords":"%s","result_count":%d,"reranked":%s,"query_mode":"%s","skip_reason":"%s","project":"%s"}\n' \
+  _END_MS=$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null || echo 0)
+  _LATENCY_MS=0
+  [ "$_START_MS" -gt 0 ] && [ "$_END_MS" -gt 0 ] && _LATENCY_MS=$((_END_MS - _START_MS))
+  printf '{"ts":%d,"type":"hook_retrieval","query":"%s","keywords":"%s","result_count":%d,"reranked":%s,"query_mode":"%s","skip_reason":"%s","search_source":"%s","latency_ms":%d,"project":"%s"}\n' \
     "$(date +%s)" \
     "$(echo "$PROMPT" | head -c 100 | sed 's/"/\\"/g' | tr '\n' ' ')" \
     "$(echo "$SAFE_KEYWORDS" | sed 's/"/\\"/g')" \
@@ -362,6 +444,8 @@ if [ -d "$FEEDBACK_DIR" ] || mkdir -p "$FEEDBACK_DIR" 2>/dev/null; then
     "$RERANK_DONE" \
     "$QUERY_MODE" \
     "$SKIP_REASON" \
+    "$SEARCH_SOURCE" \
+    "$_LATENCY_MS" \
     "$PROJ" \
     >> "$FEEDBACK_FILE" 2>/dev/null
 fi
@@ -374,18 +458,15 @@ fi
 # Build context with adaptive hint
 HINT=""
 if [ "$RESULT_COUNT" -lt 2 ]; then
-  HINT="\\n(Few results — consider using memory_search for broader semantic context)"
+  HINT=$'\n(Few results — consider using memory_search for broader semantic context)'
 fi
 
-ESCAPED=$(echo -e "$RESULT_DISPLAY" | jq -Rs '.' | sed 's/^"//;s/"$//')
-
-cat <<EOF
+# Use jq to construct valid JSON (handles all control chars and Unicode safely)
 {
-  "hookSpecificOutput": {
-    "hookEventName": "UserPromptSubmit",
-    "additionalContext": "Memory retrieval (auto, ${QUERY_MODE}, keywords: ${SAFE_KEYWORDS}):\\n${ESCAPED}${HINT}"
-  }
-}
-EOF
+  printf '%s' "Memory retrieval (auto, ${QUERY_MODE}, keywords: ${SAFE_KEYWORDS}):"
+  printf '\n'
+  printf '%b' "$RESULT_DISPLAY"
+  printf '%s' "$HINT"
+} | jq -Rs '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}'
 
 exit 0

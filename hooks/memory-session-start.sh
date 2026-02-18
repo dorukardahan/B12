@@ -22,6 +22,32 @@ for _pid in $(pgrep -f "memory-.*\.sh" 2>/dev/null); do
   [ "$(ps -p "$_pid" -o ppid= 2>/dev/null | tr -d ' ')" = "1" ] && kill "$_pid" 2>/dev/null
 done
 
+# ── Start embedding daemon (Phase 1 — latency reduction) ─────
+# Persistent SentenceTransformer process. Hooks communicate via Unix socket.
+# Model loads async (~12s). First few retrieval calls use cold path.
+_UID=$(id -u)
+EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
+EMBED_PID="/tmp/b12-embed-${_UID}.pid"
+VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
+B12_SCRIPTS="${B12_DATA_DIR:-$HOME/.claude}/hooks/scripts"
+DAEMON_SCRIPT="$B12_SCRIPTS/embed_daemon.py"
+
+# Kill stale daemon from previous session
+if [ -f "$EMBED_PID" ]; then
+  _old_pid=$(cat "$EMBED_PID" 2>/dev/null)
+  if [ -n "$_old_pid" ] && kill -0 "$_old_pid" 2>/dev/null; then
+    kill "$_old_pid" 2>/dev/null
+    sleep 0.2
+  fi
+  rm -f "$EMBED_PID" "$EMBED_SOCK"
+fi
+
+# Start daemon (background, async model load ~12s)
+if [ -x "$VENV_PYTHON" ] && [ -f "$DAEMON_SCRIPT" ]; then
+  "$VENV_PYTHON" "$DAEMON_SCRIPT" > /dev/null 2>&1 &
+  disown 2>/dev/null
+fi
+
 # ── Self-timeout watchdog ─────────────────────────────────────
 # Kills this script if it exceeds max runtime. Prevents orphan processes.
 ( sleep 15 && kill -TERM $$ 2>/dev/null ) &
