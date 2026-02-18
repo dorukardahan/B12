@@ -656,7 +656,7 @@ try:
                 if hasattr(result, 'contradictions') and result.contradictions:
                     for c in result.contradictions:
                         conn.execute("""
-                            INSERT OR IGNORE INTO memory_graph
+                            INSERT OR REPLACE INTO memory_graph
                             (source_hash, target_hash, similarity, connection_types,
                              metadata, created_at, relationship_type)
                             VALUES (?, ?, ?, '["nli","store_time"]', ?, ?, 'contradicts')

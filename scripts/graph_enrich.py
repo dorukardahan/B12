@@ -307,8 +307,10 @@ def main():
                 if scores.get('contradiction', 0) > NLI_CONTRADICTION_THRESHOLD:
                     if not edge_exists_typed(conn, mh, nh, 'contradicts'):
                         if args.apply:
+                            # INSERT OR REPLACE: contradiction upgrades any existing
+                            # 'related' edge (PK is source_hash+target_hash only)
                             conn.execute("""
-                                INSERT OR IGNORE INTO memory_graph
+                                INSERT OR REPLACE INTO memory_graph
                                 (source_hash, target_hash, similarity, connection_types,
                                  metadata, created_at, relationship_type)
                                 VALUES (?, ?, ?, '["nli","graph_enrich"]', ?, ?, 'contradicts')
@@ -345,8 +347,10 @@ def main():
                 elif scores.get('entailment', 0) > NLI_ENTAILMENT_THRESHOLD:
                     if not edge_exists_typed(conn, mh, nh, 'supports'):
                         if args.apply:
+                            # INSERT OR REPLACE: supports upgrades any existing
+                            # 'related' edge (PK is source_hash+target_hash only)
                             conn.execute("""
-                                INSERT OR IGNORE INTO memory_graph
+                                INSERT OR REPLACE INTO memory_graph
                                 (source_hash, target_hash, similarity, connection_types,
                                  metadata, created_at, relationship_type)
                                 VALUES (?, ?, ?, '["nli","graph_enrich"]', ?, ?, 'supports')
