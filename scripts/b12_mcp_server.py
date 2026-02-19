@@ -44,7 +44,7 @@ async def lifespan(server: FastMCP):
         _db.close()
         _db = None
 
-server = FastMCP("b12-memory", lifespan=lifespan)
+server = FastMCP("B12", lifespan=lifespan)
 
 
 # ── Helpers ──────────────────────────────────────────────────────

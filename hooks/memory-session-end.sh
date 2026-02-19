@@ -139,9 +139,9 @@ try:
                                     inp = block.get('input', {})
                                     if tool_name in ('Edit', 'Write') and 'file_path' in inp:
                                         files_modified.add(inp['file_path'])
-                                    if tool_name in ('mcp__memory__store_memory', 'mcp__memory__memory_store'):
+                                    if tool_name in ('mcp__B12__store_memory', 'mcp__B12__memory_store'):
                                         memory_stores += 1
-                                    elif tool_name in ('mcp__memory__retrieve_memory', 'mcp__memory__memory_search'):
+                                    elif tool_name in ('mcp__B12__retrieve_memory', 'mcp__B12__memory_search'):
                                         memory_searches += 1
 
                 # User preference detection
@@ -385,7 +385,7 @@ fi
 # ═══════════════════════════════════════════════════════════════
 
 SUMMARY_FILE="$SUMMARY_DIR/${PROJECT_NAME}-latest.md"
-VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
+VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
 
 if [ -f "$SUMMARY_FILE" ] && [ -x "$VENV_PYTHON" ]; then
   # Clean up any orphaned embed scripts from previous sessions

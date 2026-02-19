@@ -146,7 +146,7 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
     ],
     "PreToolUse": [
       {
-        "matcher": "mcp__memory__memory_store",
+        "matcher": "mcp__B12__memory_store",
         "hooks": [
           {
             "type": "command",
@@ -158,7 +158,7 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
     ],
     "PostToolUse": [
       {
-        "matcher": "mcp__memory__memory_store|mcp__memory__memory_search|mcp__memory__memory_quality|mcp__memory__memory_update",
+        "matcher": "mcp__B12__memory_store|mcp__B12__memory_search|mcp__B12__memory_quality|mcp__B12__memory_update",
         "hooks": [
           {
             "type": "command",

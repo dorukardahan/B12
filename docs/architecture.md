@@ -148,7 +148,7 @@ Process:
 **Purpose**: Ensure every `memory_store` call has proper scope tags.
 
 Process:
-1. Intercepts `mcp__memory__memory_store` calls
+1. Intercepts `mcp__B12__memory_store` calls
 2. Derives project name from CWD
 3. Detects setup context (personal/work)
 4. Injects `proj:<name>` and `user:<setup>` tags if missing

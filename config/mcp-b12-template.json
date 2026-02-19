@@ -4,7 +4,7 @@
   "_note_script": "Set MCP_SERVER_SCRIPT to the deployed b12_mcp_server.py path",
   "_example_python": "$HOME/.local/b12-venv/bin/python3",
   "_example_script": "$HOME/.claude/hooks/scripts/b12_mcp_server.py",
-  "memory": {
+  "B12": {
     "command": "/path/to/python3-with-mcp-package",
     "args": ["/path/to/b12_mcp_server.py"],
     "env": {

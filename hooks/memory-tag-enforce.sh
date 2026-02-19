@@ -3,7 +3,7 @@
 # Ensures every memory_store call has proper scope tags (proj:*, user:*)
 # If missing, auto-injects based on CWD and setup detection
 #
-# Fires on: mcp__memory__memory_store (PreToolUse)
+# Fires on: mcp__B12__memory_store (PreToolUse)
 # Output: updatedInput with corrected tags, or silent allow if compliant
 
 # ── Self-timeout watchdog ─────────────────────────────────────

@@ -2,8 +2,8 @@
 # B12 Memory System - PostToolUse Feedback Hook (v3 — Retrieval Feedback)
 # Tracks memory tool usage patterns for quality improvement
 #
-# Fires on: mcp__memory__memory_store, mcp__memory__memory_search,
-#           mcp__memory__memory_quality, mcp__memory__memory_update
+# Fires on: mcp__B12__memory_store, mcp__B12__memory_search,
+#           mcp__B12__memory_quality, mcp__B12__memory_update
 # Output: Appends to feedback.jsonl — no additionalContext
 #
 # v3 changes (2026-02-08):
@@ -35,7 +35,7 @@ TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
 
 mkdir -p "$FEEDBACK_DIR" 2>/dev/null
 
-if [ "$TOOL_NAME" = "mcp__memory__memory_store" ]; then
+if [ "$TOOL_NAME" = "mcp__B12__memory_store" ]; then
   # Track store quality — metadata, tags, scope compliance
   HAS_METADATA=$(echo "$INPUT" | jq -r 'if .tool_input.metadata then "true" else "false" end' 2>/dev/null)
   HAS_TAGS=$(echo "$INPUT" | jq -r 'if .tool_input.tags then "true" else "false" end' 2>/dev/null)
@@ -55,7 +55,7 @@ if [ "$TOOL_NAME" = "mcp__memory__memory_store" ]; then
 
   echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"store\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\",\"has_metadata\":$HAS_METADATA,\"has_tags\":$HAS_TAGS,\"content_length\":$CONTENT_LEN,\"has_proj_tag\":$HAS_PROJ_TAG,\"has_scope\":$HAS_SCOPE}" >> "$FEEDBACK_FILE"
 
-elif [ "$TOOL_NAME" = "mcp__memory__memory_search" ]; then
+elif [ "$TOOL_NAME" = "mcp__B12__memory_search" ]; then
   # Track search patterns — query text, result count, sequence, empty detection
   QUERY=$(echo "$INPUT" | jq -r '.tool_input.query // ""' 2>/dev/null)
   QUERY_LEN=${#QUERY}
@@ -80,11 +80,11 @@ elif [ "$TOOL_NAME" = "mcp__memory__memory_search" ]; then
 
   echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"search\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\",\"query_length\":$QUERY_LEN,\"query_text\":\"$QUERY_TEXT\",\"result_count\":$RESULT_COUNT,\"search_seq\":$SEARCH_SEQ,\"empty_result\":$IS_EMPTY}" >> "$FEEDBACK_FILE"
 
-elif [ "$TOOL_NAME" = "mcp__memory__memory_quality" ]; then
+elif [ "$TOOL_NAME" = "mcp__B12__memory_quality" ]; then
   MEMORY_HASH=$(echo "$INPUT" | jq -r '.tool_input.content_hash // ""' 2>/dev/null)
   echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"quality\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\",\"memory_hash\":\"$MEMORY_HASH\"}" >> "$FEEDBACK_FILE"
 
-elif [ "$TOOL_NAME" = "mcp__memory__memory_update" ]; then
+elif [ "$TOOL_NAME" = "mcp__B12__memory_update" ]; then
   echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"update\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\"}" >> "$FEEDBACK_FILE"
 fi
 
