@@ -86,7 +86,7 @@ _MODEL_CACHE: Dict[str, Any] = {}
 
 
 def _sha256_hex(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+    return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
 
 
 def _coerce_now(now: Any) -> Tuple[float, str]:
@@ -146,7 +146,7 @@ def _ensure_sqlite_vec_loaded(conn: sqlite3.Connection) -> None:
         import sqlite_vec
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(
-            "sqlite-vec is required. Run this using the mcp-memory-service venv "
+            "sqlite-vec is required. Run this using the b12-venv "
             "or install sqlite-vec."
         ) from e
 
@@ -184,7 +184,7 @@ def _get_sentence_transformer(model_name: str):
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(
             "sentence-transformers is required for merge re-embedding. "
-            "Run this using the mcp-memory-service venv."
+            "Run this using the b12-venv."
         ) from e
 
     model = SentenceTransformer(model_name, device="cpu")
@@ -680,7 +680,7 @@ def _self_test() -> None:
     try:
         import sqlite_vec  # noqa: F401
     except Exception as e:  # noqa: BLE001
-        raise RuntimeError("Self-test requires sqlite-vec. Run using the mcp-memory-service venv.") from e
+        raise RuntimeError("Self-test requires sqlite-vec. Run using the b12-venv.") from e
 
     # Trigger model load early so failures show up as test failures.
     _ = _get_sentence_transformer(os.environ.get("MCP_EMBEDDING_MODEL", DEFAULT_MODEL_NAME))

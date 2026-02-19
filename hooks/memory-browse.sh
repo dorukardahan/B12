@@ -56,8 +56,8 @@ case "$CMD" in
       echo "Usage: memory-browse.sh search <query>"
       exit 1
     fi
-    # Build FTS5 query (OR between words), sanitize SQL-dangerous chars
-    SAFE_QUERY=$(echo "$QUERY" | sed "s/['\";(){}]//g")
+    # Build FTS5 query (OR between words), sanitize SQL-dangerous chars + FTS5 operators
+    SAFE_QUERY=$(echo "$QUERY" | sed "s/['\";(){}*]//g; s/\bAND\b//gI; s/\bOR\b//gI; s/\bNOT\b//gI; s/\bNEAR\b//gI")
     FTS_QUERY=$(echo "$SAFE_QUERY" | tr ' ' '\n' | awk 'length > 1 {printf "\"%s\" OR ", $0}' | sed 's/ OR $//')
 
     echo -e "${BOLD}Search: ${QUERY}${RESET} (FTS5: ${FTS_QUERY})\n"

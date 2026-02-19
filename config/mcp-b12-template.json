@@ -1,0 +1,15 @@
+{
+  "_comment": "B12 custom MCP server — replaces mcp-memory-service",
+  "_note_python": "Set VENV_PYTHON to the Python interpreter that has the 'mcp' package installed",
+  "_note_script": "Set MCP_SERVER_SCRIPT to the deployed b12_mcp_server.py path",
+  "_example_python": "$HOME/.local/b12-venv/bin/python3",
+  "_example_script": "$HOME/.claude/hooks/scripts/b12_mcp_server.py",
+  "memory": {
+    "command": "/path/to/python3-with-mcp-package",
+    "args": ["/path/to/b12_mcp_server.py"],
+    "env": {
+      "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+      "MCP_MAX_RESPONSE_CHARS": "40000"
+    }
+  }
+}

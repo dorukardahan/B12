@@ -15,60 +15,12 @@
 
 set -e
 
-echo "=== mcp-memory-service upgrade ==="
-
-# Step 1: Upgrade
-echo "[1/4] Running pipx upgrade..."
-pipx upgrade mcp-memory-service
-
-# Step 2: Run DB migration (ensure memory_content_fts exists)
-echo "[2/4] Running DB migration..."
-MIGRATE_SCRIPT="${B12_REPO}/scripts/migrate_v10_13.py"
-if [ -z "$B12_REPO" ]; then
-  # Try common locations
-  for candidate in "$HOME/Desktop/B12" "$HOME/B12" "$HOME/projects/B12"; do
-    if [ -f "$candidate/scripts/migrate_v10_13.py" ]; then
-      MIGRATE_SCRIPT="$candidate/scripts/migrate_v10_13.py"
-      break
-    fi
-  done
-fi
-
-if [ -f "$MIGRATE_SCRIPT" ]; then
-  python3 "$MIGRATE_SCRIPT"
-else
-  echo "  [WARN] Migration script not found. Set B12_REPO env var."
-  echo "  Example: export B12_REPO=\$HOME/Desktop/B12"
-fi
-
-# Step 3: Re-apply validate_input patch (pipx upgrade wipes it)
-echo "[3/4] Applying validate_input patch..."
-PATCH_SCRIPT="${B12_REPO}/scripts/patch_validate_input.py"
-if [ -z "$B12_REPO" ]; then
-  for candidate in "$HOME/Desktop/B12" "$HOME/B12" "$HOME/projects/B12"; do
-    if [ -f "$candidate/scripts/patch_validate_input.py" ]; then
-      PATCH_SCRIPT="$candidate/scripts/patch_validate_input.py"
-      break
-    fi
-  done
-fi
-
-if [ -f "$PATCH_SCRIPT" ]; then
-  python3 "$PATCH_SCRIPT"
-else
-  echo "  [WARN] Patch script not found. Set B12_REPO env var."
-fi
-
-# Step 4: Clear Python bytecache
-echo "[4/4] Clearing bytecache..."
-find "$HOME/.local/pipx/venvs/mcp-memory-service" -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
-find "$HOME/.local/pipx/venvs/mcp-memory-service" -name "*.pyc" -delete 2>/dev/null || true
-
-# Get version
-NEW_VER=$(pipx list --json 2>/dev/null | python3 -c "import sys,json; d=json.load(sys.stdin); print(d['venvs']['mcp-memory-service']['metadata']['main_package']['package_version'])" 2>/dev/null || echo "unknown")
-
-echo ""
-echo "=== Done ==="
-echo "Version: $NEW_VER"
-echo "IMPORTANT: Restart Claude Code for changes to take effect"
-echo "           (MCP server caches modules in memory)"
+# ── DEPRECATED ─────────────────────────────────────────────────────
+# B12 now uses b12_mcp_server.py (custom MCP server) instead of mcp-memory-service.
+# This script's pipx upgrade flow is no longer applicable.
+# To upgrade the B12 venv:
+#   ~/.local/b12-venv/bin/pip install --upgrade mcp sentence-transformers
+echo "[DEPRECATED] memory-upgrade.sh is no longer needed."
+echo "B12 now uses b12_mcp_server.py (custom MCP server) instead of mcp-memory-service."
+echo "To upgrade the B12 venv: ~/.local/b12-venv/bin/pip install --upgrade mcp sentence-transformers"
+exit 0

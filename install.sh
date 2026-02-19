@@ -63,11 +63,18 @@ copy_hooks() {
 # ─────────────────────────────────────────────
 copy_scripts() {
   local count=0
+  local EXCLUDE="patch_validate_input.py fix_empty_tags.py"
   for f in "$SCRIPT_SOURCE"/*.py; do
     [ -f "$f" ] || continue
+    local base=$(basename "$f")
+    case " $EXCLUDE " in *" $base "*) continue ;; esac
     cp "$f" "$SCRIPT_DEST/"
     count=$((count + 1))
   done
+  # Make MCP server executable (replaces mcp-memory-service)
+  if [ -f "$SCRIPT_DEST/b12_mcp_server.py" ]; then
+    chmod +x "$SCRIPT_DEST/b12_mcp_server.py"
+  fi
   if [ "$count" -gt 0 ]; then
     info "Copied $count support scripts to $SCRIPT_DEST"
   fi
@@ -121,13 +128,33 @@ PYEOF
 # Main
 # ─────────────────────────────────────────────
 
-echo "B12 Memory System Installer (v8)"
+echo "B12 Memory System Installer (v9 — custom MCP server)"
 echo "─────────────────────────────────"
 
 # Always create dirs and copy files first
 create_dirs
 copy_hooks
 copy_scripts
+
+# ─────────────────────────────────
+# Step 3b: Verify MCP Python package
+# ─────────────────────────────────
+verify_mcp_package() {
+  local VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
+  if [ -x "$VENV_PYTHON" ]; then
+    if "$VENV_PYTHON" -c "import mcp" 2>/dev/null; then
+      info "MCP Python package available (via b12-venv)"
+    else
+      warn "MCP Python package not found in $VENV_PYTHON"
+      warn "B12 MCP server needs 'mcp' package. Install with:"
+      echo "       $VENV_PYTHON -m pip install mcp"
+    fi
+  else
+    warn "B12 venv Python not found at $VENV_PYTHON"
+    warn "B12 MCP server requires a Python environment with the 'mcp' package"
+  fi
+}
+verify_mcp_package
 
 if [ "$1" = "--all" ]; then
   # Install to all ~/.claude* directories that look like setups
@@ -175,32 +202,13 @@ run_migration() {
 
 run_migration
 
-# ─────────────────────────────────────────────
-# Step 6: Patch server_impl.py (validate_input fix)
-# ─────────────────────────────────────────────
-apply_server_patch() {
-  local PATCH_SCRIPT="$SCRIPT_DIR/scripts/patch_validate_input.py"
-  if [ ! -f "$PATCH_SCRIPT" ]; then
-    return
-  fi
-
-  python3 "$PATCH_SCRIPT"
-  if [ $? -eq 0 ]; then
-    info "Server validation patch applied"
-  else
-    warn "Server validation patch had issues (see output above)"
-  fi
-}
-
-apply_server_patch
-
 echo "─────────────────────────────────"
 info "Installation complete!"
 echo ""
 echo "Next steps:"
-echo "  1. Install mcp-memory-service: pipx install mcp-memory-service"
-echo "  2. Add the memory MCP server to ~/.claude.json"
-echo "     (see config/mcp-server-template.json)"
+echo "  1. Ensure Python env has 'mcp' package (check output above)"
+echo "  2. Update MCP server config in ~/.claude.json"
+echo "     (see config/mcp-b12-template.json for B12 custom server)"
 echo "  3. Restart Claude Code to pick up the new hooks"
 echo ""
 echo "Optional:"

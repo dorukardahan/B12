@@ -16,9 +16,6 @@ Functions
 
 - boost_strength(current_strength) -> float
     Increments strength by 0.3 each retrieval, capped at 5.0.
-
-- combined_score(recency, importance, relevance, ...) -> float
-    Park et al.-style weighted combination score.
 """
 
 from __future__ import annotations
@@ -71,30 +68,6 @@ def boost_strength(current_strength: float) -> float:
     return min(current_strength + 0.3, 5.0)
 
 
-def combined_score(
-    recency: float,
-    importance: float,
-    relevance: float,
-    alpha_r: float = 0.3,
-    alpha_i: float = 0.3,
-    alpha_rel: float = 0.4,
-) -> float:
-    """
-    Weighted scoring function (Park et al.).
-
-    By default, weights sum to 1.0. If the caller supplies weights that do not
-    sum to 1.0, they are normalized so the output stays on the same scale.
-    """
-    total = alpha_r + alpha_i + alpha_rel
-    if total <= 0:
-        raise ValueError("alpha weights must sum to a positive value")
-
-    wr = alpha_r / total
-    wi = alpha_i / total
-    wrel = alpha_rel / total
-    return (wr * recency) + (wi * importance) + (wrel * relevance)
-
-
 if __name__ == "__main__":
     # Lightweight self-tests / examples.
     import time
@@ -114,9 +87,4 @@ if __name__ == "__main__":
     print("  4.9 ->", boost_strength(4.9))
     assert abs(boost_strength(1.0) - 1.3) < 1e-9
     assert boost_strength(4.9) == 5.0
-
-    print("\ncombined_score example:")
-    c = combined_score(recency=0.8, importance=0.5, relevance=0.2)
-    print("  combined_score(0.8, 0.5, 0.2) ->", round(c, 6))
-    assert abs(c - (0.3 * 0.8 + 0.3 * 0.5 + 0.4 * 0.2)) < 1e-9
 
