@@ -2,16 +2,22 @@
 
 ## Prerequisites
 
-- Claude Code CLI (latest version)
-- Python 3.10+ with pipx
-- jq (for hook scripts)
-- sqlite3 CLI (for pre-fetch and browse — usually pre-installed on macOS/Linux)
+- **Claude Code CLI** (latest version)
+- **Python 3.11+** (for the MCP server and embedding daemon)
+- **jq** (for hook scripts — pre-installed on most systems)
+- **sqlite3 CLI** (for pre-fetch and browse — pre-installed on macOS/Linux)
 
-## Quick install
+## Quick Install
 
 ```bash
-git clone https://github.com/youruser/B12.git
+git clone https://github.com/dorukardahan/B12.git
 cd B12
+
+# Create Python environment
+python3 -m venv ~/.local/b12-venv
+~/.local/b12-venv/bin/pip install mcp sentence-transformers sqlite-vec
+
+# Run installer
 chmod +x install.sh
 ./install.sh          # Install to ~/.claude (default)
 ```
@@ -19,81 +25,91 @@ chmod +x install.sh
 The installer:
 1. Creates required directories (`hooks/`, `memory-staging/`, `memory-logs/`, `memory-summaries/`)
 2. Copies all hook scripts to `~/.claude/hooks/`
-3. Copies support scripts to `~/.claude/hooks/scripts/`
+3. Copies support scripts to `~/.claude/hooks/scripts/` (includes `b12_mcp_server.py`)
 4. Merges hook configuration into `~/.claude/settings.json`
+5. Runs database migration (if existing database found)
 
 For multiple setups: `./install.sh --all` installs to all `~/.claude*` directories.
 
-## Step-by-step install
+## Step-by-Step Install
 
-### Step 1: Install mcp-memory-service
+### Step 1: Create the B12 Python environment
+
+B12 uses a dedicated venv to avoid conflicts with your system Python:
 
 ```bash
-# Install via pipx (recommended — isolated environment)
-pipx install mcp-memory-service
-
-# Verify installation
-memory --version
-which memory
-# Note the path — you'll need it for the MCP config
+python3 -m venv ~/.local/b12-venv
+~/.local/b12-venv/bin/pip install mcp sentence-transformers sqlite-vec
 ```
 
-The database will be created automatically at:
-- **macOS**: `~/Library/Application Support/mcp-memory/sqlite_vec.db`
-- **Linux**: `~/.local/share/mcp-memory/sqlite_vec.db`
+Verify the installation:
 
-### Step 2: Configure MCP server
+```bash
+~/.local/b12-venv/bin/python3 -c "import mcp; print('mcp OK')"
+~/.local/b12-venv/bin/python3 -c "import sentence_transformers; print('sentence-transformers OK')"
+~/.local/b12-venv/bin/python3 -c "import sqlite_vec; print('sqlite-vec OK')"
+```
 
-Add the memory server to your `~/.claude.json`:
+The key packages:
+- **`mcp`** — Model Context Protocol SDK (FastMCP server framework)
+- **`sentence-transformers`** — local embedding model for semantic search
+- **`sqlite-vec`** — vector similarity extension for SQLite
+
+### Step 2: Clone and run the installer
+
+```bash
+git clone https://github.com/dorukardahan/B12.git
+cd B12
+chmod +x install.sh
+./install.sh
+```
+
+This copies all hooks and scripts to `~/.claude/hooks/` and merges the hook configuration into your `settings.json`.
+
+### Step 3: Configure the MCP server
+
+Add the B12 MCP server to your `~/.claude.json`:
 
 ```json
 {
   "mcpServers": {
-    "memory": {
-      "command": "/path/to/memory",
-      "args": ["server"],
-      "env": {}
+    "B12": {
+      "command": "~/.local/b12-venv/bin/python3",
+      "args": ["~/.claude/hooks/scripts/b12_mcp_server.py"],
+      "env": {
+        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_MAX_RESPONSE_CHARS": "40000"
+      }
     }
   }
 }
 ```
 
-Replace `/path/to/memory` with the output of `which memory`.
+A full template is available at `config/mcp-b12-template.json`.
 
-### Step 3: Install hooks and scripts
+**Important**: The `command` must point to the Python interpreter in your `b12-venv`, and the `args` must point to the deployed `b12_mcp_server.py` (copied by the installer to `~/.claude/hooks/scripts/`).
 
-```bash
-# Create required directories
-mkdir -p ~/.claude/hooks
-mkdir -p ~/.claude/hooks/scripts
-mkdir -p ~/.claude/memory-staging
-mkdir -p ~/.claude/memory-logs
-mkdir -p ~/.claude/memory-summaries
+### Step 4: Verify the installation
 
-# Copy all hook scripts
-cp hooks/memory-*.sh hooks/memory-*.py ~/.claude/hooks/
+Restart Claude Code, then run `/mcp`. You should see:
 
-# Copy support scripts
-cp scripts/*.py ~/.claude/hooks/scripts/
-
-# Make executable
-chmod +x ~/.claude/hooks/memory-*.sh
+```
+B12 · connected
+  Tools: memory_store, memory_search, memory_update, memory_quality
 ```
 
-### Step 4: Configure hooks in settings
+If the server shows as disconnected, check:
+- Python path exists: `ls ~/.local/b12-venv/bin/python3`
+- Script path exists: `ls ~/.claude/hooks/scripts/b12_mcp_server.py`
+- MCP package is installed: `~/.local/b12-venv/bin/python3 -c "import mcp"`
 
-Add the hooks configuration to your Claude Code settings.
+### Step 5: Configure hooks (usually automatic)
 
-#### Automated method
+The installer merges hook configuration from `config/settings-template.json` into your `settings.json`. To verify hooks are active, start a Claude Code session and run `/hooks` — you should see `[User]` tagged hooks.
 
-```bash
-# Using the installer (recommended)
-./install.sh
-```
+#### Manual hook configuration
 
-#### Manual method
-
-Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other setups):
+If you prefer manual setup, edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json`):
 
 ```json
 {
@@ -105,7 +121,7 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-session-start.sh",
-            "timeout": 10
+            "timeout": 20
           }
         ]
       }
@@ -117,7 +133,7 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-precompact.sh",
-            "timeout": 15
+            "timeout": 30
           }
         ]
       }
@@ -128,7 +144,7 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-session-end.sh",
-            "timeout": 15
+            "timeout": 35
           }
         ]
       }
@@ -139,7 +155,7 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-retrieval.sh",
-            "timeout": 3
+            "timeout": 15
           }
         ]
       }
@@ -151,7 +167,7 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-tag-enforce.sh",
-            "timeout": 3
+            "timeout": 8
           }
         ]
       }
@@ -163,7 +179,7 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-feedback.sh",
-            "timeout": 3
+            "timeout": 8
           }
         ]
       },
@@ -173,7 +189,7 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
           {
             "type": "command",
             "command": "~/.claude/hooks/memory-working-context.sh",
-            "timeout": 2
+            "timeout": 8
           }
         ]
       }
@@ -182,11 +198,9 @@ Edit `~/.claude/settings.json` (or `~/.claude-<setup>/settings.json` for other s
 }
 ```
 
-**Important**: SessionEnd timeout is 15 seconds because the hook parses the full transcript with Python. If you have very long sessions (10K+ lines), consider increasing to 20.
+**Hook timeout note**: Timeouts must be >= watchdog timer + 5s. The `settings-template.json` has correct values. SessionEnd is 35s because it parses the full transcript with Python.
 
-**Multi-setup**: Add the hooks config to each setup's settings.json.
-
-### Step 5: Create user profile (optional but recommended)
+### Step 6: Create user profile (optional but recommended)
 
 ```bash
 # Find your project memory directory
@@ -200,19 +214,6 @@ cp templates/user-profile.md ~/.claude/projects/-Users-$(whoami)/memory/user-pro
 
 Edit the profile with your actual preferences. Claude will also update it automatically as it learns about you.
 
-### Step 6: Run database migration (automatic)
-
-The installer automatically runs `scripts/migrate_v10_13.py` which ensures the native `memory_content_fts` FTS5 table exists. This is needed for mcp-memory-service v10.13.0+ features to work on existing databases.
-
-B12's own FTS5 table (`memory_fts`) is created separately by the hooks and is independent of the server's native table. Both tables coexist without interference.
-
-To run the migration manually:
-
-```bash
-python3 scripts/migrate_v10_13.py           # Run migration
-python3 scripts/migrate_v10_13.py --check   # Check status only
-```
-
 ### Step 7: Set up automated tasks (optional)
 
 #### macOS (launchd)
@@ -222,7 +223,7 @@ python3 scripts/migrate_v10_13.py --check   # Check status only
 cp config/launchd-*.plist ~/Library/LaunchAgents/
 
 # Edit each plist to replace /path/to/home with your actual home directory
-# For example: sed -i '' "s|/path/to/home|$HOME|g" ~/Library/LaunchAgents/com.b12.memory-*.plist
+sed -i '' "s|/path/to/home|$HOME|g" ~/Library/LaunchAgents/com.b12.memory-*.plist
 
 # Load the agents
 launchctl load ~/Library/LaunchAgents/com.b12.memory-backup.plist
@@ -248,16 +249,23 @@ launchctl load ~/Library/LaunchAgents/com.b12.memory-quality-audit.plist
 0 3 * * 3 /bin/bash ~/.claude/hooks/memory-quality-audit.sh --quiet
 ```
 
-### Step 8: Restart Claude Code
+## Verify Installation
 
-The memory system activates on the next session start. Verify:
+### Check MCP server
 
-1. Start a new Claude Code session
-2. You should see the memory system context being loaded
-3. Work normally — Claude will silently store important learnings
-4. Close and reopen Claude Code — check if it remembers the last session
+```bash
+# In a Claude Code session
+/mcp
+# Should show: B12 · connected (4 tools)
+```
 
-## Verify installation
+### Check hooks
+
+```bash
+# In a Claude Code session
+/hooks
+# Should show [User] tagged hooks for all 7 events
+```
 
 ### Check session summaries
 
@@ -274,12 +282,6 @@ cat ~/.claude/memory-summaries/<your-project>-latest.md
 # Test SessionStart
 echo '{"source":"startup","cwd":"/tmp","session_id":"test"}' | ~/.claude/hooks/memory-session-start.sh
 
-# Test SessionEnd (needs a real transcript)
-echo '{"session_id":"test","reason":"test","cwd":"/tmp","transcript_path":"/path/to/transcript.jsonl"}' | ~/.claude/hooks/memory-session-end.sh
-
-# Test PreCompact (needs a real transcript)
-echo '{"session_id":"test","cwd":"/tmp","transcript_path":"/path/to/transcript.jsonl"}' | ~/.claude/hooks/memory-precompact.sh
-
 # Test retrieval
 echo '{"prompt":"how does authentication work","cwd":"/tmp","session_id":"test"}' | ~/.claude/hooks/memory-retrieval.sh
 ```
@@ -291,42 +293,43 @@ echo '{"prompt":"how does authentication work","cwd":"/tmp","session_id":"test"}
 ~/.claude/hooks/memory-browse.sh stats
 ~/.claude/hooks/memory-browse.sh search "your query"
 
-# Run quality audit
-~/.claude/hooks/memory-quality-audit.sh
-
-# Check backup
-ls ~/.claude/memory-backups/
+# Database location (macOS)
+ls -la ~/Library/Application\ Support/mcp-memory/
 ```
 
 ## Troubleshooting
 
-### Memory server not starting
+### B12 MCP server not connecting
 
 ```bash
-# Check if memory command is available
-which memory
+# Check if the Python path is correct
+ls ~/.local/b12-venv/bin/python3
 
-# Test server manually
-memory server --debug
+# Check if the server script exists
+ls ~/.claude/hooks/scripts/b12_mcp_server.py
+
+# Test the server manually (should print nothing and wait for stdin)
+~/.local/b12-venv/bin/python3 ~/.claude/hooks/scripts/b12_mcp_server.py
 # Press Ctrl+C to stop
+
+# Check if MCP package is installed
+~/.local/b12-venv/bin/python3 -c "import mcp; print(mcp.__version__)"
 ```
 
 ### Hooks not firing
 
 ```bash
 # Check if hooks are configured
-claude /hooks
+# In Claude Code: /hooks
 # Look for [User] tagged hooks
 
 # Test hook manually
 echo '{"source":"startup","cwd":"/tmp","session_id":"test"}' | ~/.claude/hooks/memory-session-start.sh
-
-# Enable verbose mode in Claude Code to see hook execution
 ```
 
 ### SessionEnd not creating summaries
 
-The most common cause: the heredoc syntax bug. Ensure your hooks use:
+The most common cause: the Python heredoc syntax in the hook script. Ensure hooks use:
 ```bash
 # CORRECT:
 python3 - "$ARG" << 'PYEOF'
@@ -337,31 +340,37 @@ python3 << 'PYEOF' "$ARG"
 
 ### No memories being stored
 
-- Verify the MCP server is running: look for `memory` in Claude Code's MCP server list
-- Check that Claude has access to memory tools: ask "What memory tools do you have?"
-- The database is created on first write, so it may not exist until the first memory is stored
+1. Verify the MCP server is running: `/mcp` in Claude Code
+2. Check that Claude has access to memory tools: ask "What memory tools do you have?"
+3. The database is created on first write — it may not exist until the first memory is stored
 
-### Database location
+### Embed daemon not starting
+
+The embed daemon (`embed_daemon.py`) starts automatically when the MCP server needs it. If semantic search isn't working:
 
 ```bash
-# macOS
-ls -la ~/Library/Application\ Support/mcp-memory/
+# Check if daemon socket exists
+ls /tmp/b12-embed-$(id -u).sock
 
-# Linux
-ls -la ~/.local/share/mcp-memory/
-
-# View database stats via browse CLI
-~/.claude/hooks/memory-browse.sh stats
+# Check if sentence-transformers is installed
+~/.local/b12-venv/bin/python3 -c "from sentence_transformers import SentenceTransformer; print('OK')"
 ```
 
-### Upgrading
+### Upgrading from mcp-memory-service
+
+If you were using the old `mcp-memory-service` (pipx) system:
+
+1. The SQLite database is compatible — B12 reads the same `sqlite_vec.db`
+2. Remove the old MCP config from `~/.claude.json` (the `"memory"` key)
+3. Add the new B12 config (the `"B12"` key — see Step 3 above)
+4. Hook matchers already use `mcp__B12__*` tool names
+5. You can uninstall the old package: `pipx uninstall mcp-memory-service`
+
+### Updating B12
 
 ```bash
-# Upgrade mcp-memory-service
-~/.claude/hooks/memory-upgrade.sh
-
-# Re-run installer to update hooks + run DB migration
 cd /path/to/B12
 git pull
-./install.sh --all
+./install.sh --all    # Re-deploys hooks and scripts
+# Restart Claude Code to pick up changes
 ```

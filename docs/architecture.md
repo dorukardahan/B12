@@ -21,17 +21,18 @@ Claude Code's built-in memory system:
 - Path: `~/.claude/projects/<project-hash>/memory/`
 - Best for: Stable, high-level project knowledge (current state)
 
-### Layer 2: mcp-memory-service (semantic memory)
+### Layer 2: B12 MCP Server (`b12_mcp_server.py`)
 
-External MCP server providing semantic search over stored memories:
-- **Database**: SQLite-vec (local file)
-- **Embeddings**: multilingual-MiniLM-L12-v2 (ONNX, runs locally, no API)
-- **Search**: FTS5 hybrid — BM25 keyword + vector cosine (70/30 weight)
+Custom FastMCP server providing 4 memory tools (`memory_store`, `memory_search`, `memory_update`, `memory_quality`). Replaces the old `mcp-memory-service` (pipx) with a lightweight ~400-line server that delegates ML operations to a background embed daemon via Unix socket.
+
+- **Database**: SQLite + sqlite-vec (local file)
+- **Embeddings**: multilingual-MiniLM-L12-v2 via `embed_daemon.py` (runs locally, no API)
+- **Search**: FTS5 hybrid — BM25 keyword + vector cosine
 - **Scoring**: Ebbinghaus decay-aware — combines retention, importance, and relevance
 - **Dedup**: Write-time semantic merge (cosine > 0.85 = merge, not INSERT)
 - **Graph**: Association-based memory connections
 - **Backup**: Daily WAL-safe backups with 7-day rotation
-- **Location**: `~/Library/Application Support/mcp-memory/` (macOS)
+- **Location**: Database at `~/Library/Application Support/mcp-memory/sqlite_vec.db` (macOS)
 - Best for: Detailed learnings, decisions, patterns that need semantic search
 
 ### Layer 3: Smart hooks (automation glue)
@@ -207,7 +208,7 @@ This creates natural selection: memories that are frequently useful survive and 
 The database has two FTS5 virtual tables:
 
 - **`memory_fts`** (B12): `unicode61` tokenizer, synced via 4 triggers. Used by B12 hooks for word-boundary keyword matching
-- **`memory_content_fts`** (native, v10.13.0+): `trigram` tokenizer, synced via 3 triggers. Used by the MCP server's internal `retrieve_hybrid()` and `_search_bm25()` methods
+- **`memory_content_fts`** (legacy, originally from mcp-memory-service v10.13.0): `trigram` tokenizer, synced via 3 triggers. Kept for backward compatibility
 
 B12 hook search combines:
 
@@ -269,11 +270,9 @@ All hooks that interpolate user input into SQLite queries apply sanitization:
 
 3. **Linear memory scan**: Write-time merge checks against all memories for similarity. As the database grows (10K+ memories), this may need index optimization.
 
-4. **MCP SDK validation bug**: `server_impl.py` registers `call_tool()` with `validate_input=True` (MCP SDK default). The SDK's `jsonschema.validate()` intermittently rejects valid arguments. B12 patches this to `validate_input=False` (matching FastMCP's approach). The patch must be re-applied after each `pipx upgrade` — `memory-upgrade.sh` handles this automatically.
-
 ### Planned improvements
 
-- **Contradiction detection**: NLI model to flag conflicting memories
+- **Contradiction detection**: NLI model to flag conflicting memories (partially implemented — ONNX NLI available)
 - **Graph-based traversal**: Walk memory associations for context expansion
 - **Memory clustering**: Group related memories for batch review
 - **Web dashboard**: Visual memory graph browser
