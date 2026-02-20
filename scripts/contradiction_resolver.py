@@ -137,7 +137,7 @@ def mark_reviewed(conn, memory_hash):
 def merge_memories(conn, id1, content1, hash1, id2, content2, hash2):
     """Merge two memories: combine content into memory A, soft-delete B."""
     merged = f"{content1.rstrip()}\n• [Merged from #{id2}] {content2.strip()}"
-    new_hash = hashlib.sha256(merged.encode()).hexdigest()
+    new_hash = hashlib.sha256(merged.strip().lower().encode('utf-8')).hexdigest()
     now = datetime.now(timezone.utc)
 
     # Update memory A with merged content

@@ -139,9 +139,9 @@ try:
                                     inp = block.get('input', {})
                                     if tool_name in ('Edit', 'Write') and 'file_path' in inp:
                                         files_modified.add(inp['file_path'])
-                                    if tool_name in ('mcp__B12__store_memory', 'mcp__B12__memory_store'):
+                                    if tool_name in ('mcp__B12__memory_store', 'mcp__memory__memory_store', 'mcp__memory__store_memory'):
                                         memory_stores += 1
-                                    elif tool_name in ('mcp__B12__retrieve_memory', 'mcp__B12__memory_search'):
+                                    elif tool_name in ('mcp__B12__memory_search', 'mcp__memory__memory_search', 'mcp__memory__retrieve_memory'):
                                         memory_searches += 1
 
                 # User preference detection
@@ -417,7 +417,7 @@ INSIGHT_SECTIONS = ['## Decisions Made', '## Errors & Fixes', '## Key Learnings'
                     '## User Preferences Observed', '## What Was Done']
 has_insights = any(s in content for s in INSIGHT_SECTIONS)
 
-content_hash = hashlib.sha256(content.encode()).hexdigest()
+content_hash = hashlib.sha256(content.strip().lower().encode('utf-8')).hexdigest()
 DB_PATH = os.path.expanduser("~/Library/Application Support/mcp-memory/sqlite_vec.db")
 if not os.path.exists(DB_PATH):
     sys.exit(0)
@@ -634,7 +634,7 @@ try:
         micro_emb_bytes = encode_texts(micro_texts)
         for i, text in enumerate(micro_texts):
             mem_type, imp = micro_meta[i]
-            m_hash = hashlib.sha256(text.encode()).hexdigest()
+            m_hash = hashlib.sha256(text.strip().lower().encode('utf-8')).hexdigest()
             m_tags = f"proj:{project_name},user:{setup_context},{mem_type},{now.strftime('%Y-%m')}"
             m_metadata = json.dumps({
                 "project": project_name, "setup": setup_context,

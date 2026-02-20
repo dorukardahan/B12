@@ -57,7 +57,8 @@ case "$CMD" in
       exit 1
     fi
     # Build FTS5 query (OR between words), sanitize SQL-dangerous chars + FTS5 operators
-    SAFE_QUERY=$(echo "$QUERY" | sed "s/['\";(){}*]//g; s/\bAND\b//gI; s/\bOR\b//gI; s/\bNOT\b//gI; s/\bNEAR\b//gI")
+    # Note: uses BSD sed -E with [[:<:]] word boundaries (macOS compatible)
+    SAFE_QUERY=$(echo "$QUERY" | sed -E "s/['\";(){}*]//g; s/[[:<:]]AND[[:>:]]//gI; s/[[:<:]]OR[[:>:]]//gI; s/[[:<:]]NOT[[:>:]]//gI; s/[[:<:]]NEAR[[:>:]]//gI")
     FTS_QUERY=$(echo "$SAFE_QUERY" | tr ' ' '\n' | awk 'length > 1 {printf "\"%s\" OR ", $0}' | sed 's/ OR $//')
 
     echo -e "${BOLD}Search: ${QUERY}${RESET} (FTS5: ${FTS_QUERY})\n"

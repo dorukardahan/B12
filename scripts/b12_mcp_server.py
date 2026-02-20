@@ -164,12 +164,9 @@ def memory_search(
     mode: str = "hybrid",
     tags: list[str] | str | None = None,
     limit: int = 10,
-    time_expr: str | None = None,
     after: str | None = None,
     before: str | None = None,
-    quality_boost: float = 0.0,
     max_response_chars: int = int(os.environ.get("MCP_MAX_RESPONSE_CHARS", "40000")),
-    include_debug: bool = False,
 ) -> str:
     """Search memories by semantic similarity, full-text, or hybrid."""
     db = _require_db()
@@ -346,8 +343,6 @@ def memory_quality(
     content_hash: str | None = None,
     rating: str | None = None,
     feedback: str | None = None,
-    min_quality: float = 0.0,
-    max_quality: float = 1.0,
 ) -> str:
     """Rate, get, or analyze memory quality scores."""
     db = _require_db()
