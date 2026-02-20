@@ -267,7 +267,7 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   CONTEXT="${CONTEXT}\n\nIMPORTANCE: Set importance_score in metadata (2.0=critical, 1.5=important, 1.0=normal, 0.7=temporary). Use tags: critical, important, reference, temporary."
 
   # --- Automatic behavior (compressed) ---
-  CONTEXT="${CONTEXT}\n\nAUTO BEHAVIOR: 1) Search memory on startup with project + task keywords. 2) Store silently when learning something important — categorize by type (architecture/decision/pattern/gotcha/progress/preference). 3) Update user-profile.md at ${MEMORY_DIR}/user-profile.md when learning new preferences. 4) NEVER mention memory operations to user unless asked."
+  CONTEXT="${CONTEXT}\n\nAUTO BEHAVIOR: 1) Search memory on startup with project + task keywords. 2) Store silently when learning something important — categorize by type (architecture/decision/pattern/gotcha/progress/preference). 3) Update user-profile.md at ${MEMORY_DIR}/user-profile.md when learning new preferences. 4) At session start, print ONE short line: 'B12: N memories loaded, last session: [date]' so user knows the system is active. 5) When retrieval hook returns relevant memories, briefly note it inline: '(B12: found X about Y, stored [date])'. When storing, note: '(B12: saved to memory)'. Keep these under 15 words, in parentheses."
 
   # Add user profile (if recent)
   if [ -n "$USER_PROFILE" ]; then
