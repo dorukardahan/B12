@@ -117,7 +117,7 @@ install_to_setup() {
   fi
 
   # Merge hooks using python3 (preserves existing settings)
-  python3 - "$SETTINGS_FILE" "$SCRIPT_DIR/config/settings-template.json" << 'PYEOF'
+  if ! python3 - "$SETTINGS_FILE" "$SCRIPT_DIR/config/settings-template.json" << 'PYEOF'
 import sys, json
 
 settings_path = sys.argv[1]
@@ -138,6 +138,9 @@ with open(settings_path, 'w') as f:
     f.write('\n')
 
 PYEOF
+  then
+    error "Failed to merge hook config into $SETTINGS_FILE (is it valid JSON?)"
+  fi
 
   info "Hook config merged into $SETTINGS_FILE"
 }
@@ -182,7 +185,7 @@ inject_mcp_config() {
   fi
 
   # Inject B12 MCP server config using Python (preserves existing config)
-  python3 - "$CLAUDE_JSON" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+  if ! python3 - "$CLAUDE_JSON" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
 import sys, json
 
 config_path = sys.argv[1]
@@ -209,6 +212,9 @@ with open(config_path, 'w') as f:
     f.write('\n')
 
 PYEOF
+  then
+    error "Failed to update $CLAUDE_JSON (is it valid JSON?)"
+  fi
 
   info "B12 MCP server added to $CLAUDE_JSON"
   echo "     command: $VENV_PYTHON"
@@ -248,20 +254,36 @@ run_migration() {
 verify() {
   local errors=0
 
-  # Check venv
-  if [ -x "$VENV_PYTHON" ]; then
-    if "$VENV_PYTHON" -c "import mcp" 2>/dev/null; then
-      info "Verify: mcp package OK"
+  # Venv and MCP config checks only apply to --full installs
+  if $FULL_SETUP; then
+    # Check venv
+    if [ -x "$VENV_PYTHON" ]; then
+      if "$VENV_PYTHON" -c "import mcp" 2>/dev/null; then
+        info "Verify: mcp package OK"
+      else
+        warn "Verify: mcp package NOT found in b12-venv"
+        errors=$((errors + 1))
+      fi
     else
-      warn "Verify: mcp package NOT found in b12-venv"
+      warn "Verify: b12-venv not found at $VENV_PATH"
       errors=$((errors + 1))
     fi
-  else
-    warn "Verify: b12-venv not found at $VENV_PATH"
-    errors=$((errors + 1))
+
+    # Check MCP config in ~/.claude.json
+    if [ -f "$HOME/.claude.json" ]; then
+      if python3 -c "import json; c=json.load(open('$HOME/.claude.json')); assert 'B12' in c.get('mcpServers',{})" 2>/dev/null; then
+        info "Verify: B12 MCP server configured in ~/.claude.json"
+      else
+        warn "Verify: B12 NOT found in ~/.claude.json mcpServers"
+        errors=$((errors + 1))
+      fi
+    else
+      warn "Verify: ~/.claude.json not found"
+      errors=$((errors + 1))
+    fi
   fi
 
-  # Check MCP server script
+  # Always check: MCP server script deployed
   if [ -f "$SCRIPT_DEST/b12_mcp_server.py" ]; then
     info "Verify: MCP server script deployed"
   else
@@ -269,7 +291,7 @@ verify() {
     errors=$((errors + 1))
   fi
 
-  # Check hooks deployed
+  # Always check: hooks deployed
   local hook_count=0
   for f in "$HOOK_DEST"/memory-*.sh; do
     [ -f "$f" ] && hook_count=$((hook_count + 1))
@@ -278,19 +300,6 @@ verify() {
     info "Verify: $hook_count hook scripts deployed"
   else
     warn "Verify: Only $hook_count hooks found (expected 7+)"
-    errors=$((errors + 1))
-  fi
-
-  # Check MCP config in ~/.claude.json
-  if [ -f "$HOME/.claude.json" ]; then
-    if python3 -c "import json; c=json.load(open('$HOME/.claude.json')); assert 'B12' in c.get('mcpServers',{})" 2>/dev/null; then
-      info "Verify: B12 MCP server configured in ~/.claude.json"
-    else
-      warn "Verify: B12 NOT found in ~/.claude.json mcpServers"
-      errors=$((errors + 1))
-    fi
-  else
-    warn "Verify: ~/.claude.json not found"
     errors=$((errors + 1))
   fi
 
