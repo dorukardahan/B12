@@ -28,6 +28,7 @@ Lifecycle:
 
 import atexit
 import base64
+import fcntl
 import json
 import os
 import signal
@@ -46,6 +47,7 @@ os.environ.setdefault('WANDB_MODE', 'disabled')
 _UID = os.getuid()
 SOCKET_PATH = f"/tmp/b12-embed-{_UID}.sock"
 PID_PATH = f"/tmp/b12-embed-{_UID}.pid"
+LOCK_PATH = f"/tmp/b12-embed-{_UID}.lock"
 LOG_DIR = os.path.expanduser("~/.claude/memory-logs")
 LOG_PATH = os.path.join(LOG_DIR, "embed-daemon.log")
 IDLE_TIMEOUT = 7200  # 2 hours
@@ -63,8 +65,8 @@ def log(msg):
 
 
 def cleanup():
-    """Remove socket and PID files (registered with atexit)."""
-    for path in (SOCKET_PATH, PID_PATH):
+    """Remove socket, PID, and lock files (registered with atexit)."""
+    for path in (SOCKET_PATH, PID_PATH, LOCK_PATH):
         try:
             os.unlink(path)
         except OSError:
@@ -518,7 +520,22 @@ def handle_request(model, data, start_time, requests_served):
 def main():
     os.makedirs(LOG_DIR, exist_ok=True)
 
-    # Write PID immediately (for stale daemon cleanup)
+    # ── Singleton lock (prevents multiple daemons) ──────────────
+    # flock is released automatically if process dies (crash/kill/OOM).
+    # The file descriptor must stay open for the daemon's lifetime.
+    lock_fd = open(LOCK_PATH, 'w')
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        # Another daemon holds the lock (running or loading model)
+        lock_fd.close()
+        sys.exit(0)
+
+    # Write PID to lock file (before model load, so hook can check)
+    lock_fd.write(str(os.getpid()))
+    lock_fd.flush()
+
+    # Also write PID file for backward compatibility
     with open(PID_PATH, 'w') as f:
         f.write(str(os.getpid()))
 

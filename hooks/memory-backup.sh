@@ -38,6 +38,10 @@ log "Starting backup..."
 DB_SIZE=$(file_size "$DB_PATH")
 log "Source: $DB_PATH ($DB_SIZE bytes)"
 
+# Flush WAL to main DB before backup (ensures clean copy)
+sqlite3 "$DB_PATH" "PRAGMA wal_checkpoint(TRUNCATE);" 2>>"$LOG_FILE"
+log "WAL checkpoint completed"
+
 if sqlite3 "$DB_PATH" ".backup '$BACKUP_FILE'" 2>>"$LOG_FILE"; then
   BACKUP_SIZE=$(file_size "$BACKUP_FILE")
   log "Backup created: $BACKUP_FILE ($BACKUP_SIZE bytes)"

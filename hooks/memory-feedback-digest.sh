@@ -61,10 +61,12 @@ now = datetime.now(timezone.utc)
 week_ago = now - timedelta(days=7)
 month_ago = now - timedelta(days=30)
 
-def parse_ts(ts_str):
+def parse_ts(ts_value):
     try:
-        return datetime.fromisoformat(ts_str.replace('Z', '+00:00'))
-    except (ValueError, TypeError):
+        if isinstance(ts_value, (int, float)):
+            return datetime.fromtimestamp(ts_value, tz=timezone.utc)
+        return datetime.fromisoformat(ts_value.replace('Z', '+00:00'))
+    except (ValueError, TypeError, AttributeError, OSError):
         return None
 
 # Categorize entries by time window

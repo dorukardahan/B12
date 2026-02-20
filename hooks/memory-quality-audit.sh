@@ -21,7 +21,7 @@ for arg in "$@"; do
   esac
 done
 
-VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
+VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
 LOG_DIR="$HOME/.claude/memory-logs"
 mkdir -p "$LOG_DIR"
 

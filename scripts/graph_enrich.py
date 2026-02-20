@@ -104,7 +104,7 @@ def start_daemon_if_needed():
     if daemon_alive():
         return True
     venv_python = os.path.expanduser(
-        "~/.local/pipx/venvs/mcp-memory-service/bin/python3"
+        "~/.local/b12-venv/bin/python3"
     )
     daemon_script = os.path.expanduser("~/.claude/hooks/scripts/embed_daemon.py")
     if not os.path.exists(daemon_script):

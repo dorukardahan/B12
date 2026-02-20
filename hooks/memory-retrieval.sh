@@ -220,7 +220,7 @@ while IFS='|' read -r id display score; do
 done <<< "$RESULTS"
 
 # ── Determine needed operations ───────────────────────────────
-VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
+VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
 RERANK_DONE=false
 SKIP_REASON=""
 SEARCH_SOURCE="fts5"  # Track for feedback log

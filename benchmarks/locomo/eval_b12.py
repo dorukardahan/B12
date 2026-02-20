@@ -46,8 +46,8 @@ def get_embedding_model():
             _embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
             print(f"  Embedding model loaded (dim={_embedding_model.get_sentence_embedding_dimension()})")
         except ImportError:
-            print("  ERROR: sentence-transformers not found. Use the mcp-memory-service venv:")
-            print("    $HOME/.local/pipx/venvs/mcp-memory-service/bin/python3 eval_b12.py")
+            print("  ERROR: sentence-transformers not found. Use the b12-venv:")
+            print("    $HOME/.local/b12-venv/bin/python3 eval_b12.py")
             sys.exit(1)
     return _embedding_model
 
@@ -186,7 +186,7 @@ def create_test_db(db_path, use_vectors=False):
             print("  sqlite-vec loaded (384-dim vector table created)")
         except ImportError:
             print("  WARNING: sqlite-vec not found, vector search disabled")
-            print("    Use: $HOME/.local/pipx/venvs/mcp-memory-service/bin/python3 eval_b12.py")
+            print("    Use: $HOME/.local/b12-venv/bin/python3 eval_b12.py")
             use_vectors = False
 
     conn.commit()
