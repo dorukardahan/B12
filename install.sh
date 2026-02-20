@@ -1,18 +1,22 @@
 #!/bin/bash
 # B12 Memory System — Setup Installer
-# Merges hook configuration into any Claude Code setup's settings.json
 #
 # Usage:
-#   ./install.sh                    # Install to ~/.claude (default)
-#   ./install.sh ~/.claude-work     # Install to specific setup
+#   ./install.sh                    # Standard install (hooks + config only)
 #   ./install.sh --all              # Install to all ~/.claude* setups
+#   ./install.sh --full             # Full setup: venv + deps + hooks + MCP config
+#   ./install.sh --full --all       # Full setup for all setups
 #
-# What it does:
+# What --full does (in addition to standard install):
+#   1. Creates ~/.local/b12-venv if it doesn't exist
+#   2. Installs Python dependencies (mcp, sentence-transformers, sqlite-vec)
+#   3. Adds B12 MCP server config to ~/.claude.json (with correct absolute paths)
+#
+# Standard install:
 #   1. Copies hook scripts to ~/.claude/hooks/ (shared location)
-#   2. Copies support scripts to ~/.claude/hooks/scripts/ (for write-time merge etc.)
+#   2. Copies support scripts to ~/.claude/hooks/scripts/
 #   3. Merges hook config into target setup's settings.json
 #   4. Creates required directories
-#   5. Does NOT touch .claude.json (MCP config must be added separately)
 
 set -e
 
@@ -21,6 +25,8 @@ HOOK_SOURCE="$SCRIPT_DIR/hooks"
 SCRIPT_SOURCE="$SCRIPT_DIR/scripts"
 HOOK_DEST="$HOME/.claude/hooks"
 SCRIPT_DEST="$HOME/.claude/hooks/scripts"
+VENV_PATH="$HOME/.local/b12-venv"
+VENV_PYTHON="$VENV_PATH/bin/python3"
 
 # Color output
 GREEN='\033[0;32m'
@@ -31,6 +37,18 @@ NC='\033[0m'
 info()  { echo -e "${GREEN}[OK]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[ERR]${NC} $1"; exit 1; }
+
+# Parse flags
+FULL_SETUP=false
+INSTALL_ALL=false
+TARGET_DIR=""
+for arg in "$@"; do
+  case "$arg" in
+    --full) FULL_SETUP=true ;;
+    --all)  INSTALL_ALL=true ;;
+    *)      TARGET_DIR="$arg" ;;
+  esac
+done
 
 # ─────────────────────────────────────────────
 # Step 1: Create required directories
@@ -71,7 +89,7 @@ copy_scripts() {
     cp "$f" "$SCRIPT_DEST/"
     count=$((count + 1))
   done
-  # Make MCP server executable (replaces mcp-memory-service)
+  # Make MCP server executable
   if [ -f "$SCRIPT_DEST/b12_mcp_server.py" ]; then
     chmod +x "$SCRIPT_DEST/b12_mcp_server.py"
   fi
@@ -125,56 +143,80 @@ PYEOF
 }
 
 # ─────────────────────────────────────────────
-# Main
+# Full setup: create venv + install deps
 # ─────────────────────────────────────────────
-
-echo "B12 Memory System Installer (v10.0 — custom MCP server)"
-echo "─────────────────────────────────"
-
-# Always create dirs and copy files first
-create_dirs
-copy_hooks
-copy_scripts
-
-# ─────────────────────────────────
-# Step 3b: Verify MCP Python package
-# ─────────────────────────────────
-verify_mcp_package() {
-  local VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
+setup_venv() {
   if [ -x "$VENV_PYTHON" ]; then
-    if "$VENV_PYTHON" -c "import mcp" 2>/dev/null; then
-      info "MCP Python package available (via b12-venv)"
-    else
-      warn "MCP Python package not found in $VENV_PYTHON"
-      warn "B12 MCP server needs 'mcp' package. Install with:"
-      echo "       $VENV_PYTHON -m pip install mcp"
-    fi
+    info "B12 venv already exists at $VENV_PATH"
   else
-    warn "B12 venv Python not found at $VENV_PYTHON"
-    warn "B12 MCP server requires a Python environment with the 'mcp' package"
+    echo "Creating B12 Python environment at $VENV_PATH..."
+    python3 -m venv "$VENV_PATH" || error "Failed to create venv (is python3 installed?)"
+    info "Created venv at $VENV_PATH"
   fi
+
+  echo "Installing dependencies (mcp, sentence-transformers, sqlite-vec)..."
+  "$VENV_PYTHON" -m pip install --quiet mcp sentence-transformers sqlite-vec || error "pip install failed"
+  info "Dependencies installed"
 }
-verify_mcp_package
-
-if [ "$1" = "--all" ]; then
-  # Install to all ~/.claude* directories that look like setups
-  for dir in "$HOME"/.claude*; do
-    [ -d "$dir" ] || continue
-    base=$(basename "$dir")
-    case "$base" in
-      .claude|.claude-*) install_to_setup "$dir" ;;
-    esac
-  done
-elif [ -n "$1" ]; then
-  install_to_setup "$1"
-else
-  install_to_setup "$HOME/.claude"
-fi
-
-echo ""
 
 # ─────────────────────────────────────────────
-# Step 5: Run DB migration (if database exists)
+# Full setup: inject MCP config into ~/.claude.json
+# ─────────────────────────────────────────────
+inject_mcp_config() {
+  local CLAUDE_JSON="$HOME/.claude.json"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  # Verify paths exist
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON — skipping MCP config"
+    return
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — skipping MCP config"
+    return
+  fi
+
+  # Create ~/.claude.json if it doesn't exist
+  if [ ! -f "$CLAUDE_JSON" ]; then
+    echo '{}' > "$CLAUDE_JSON"
+  fi
+
+  # Inject B12 MCP server config using Python (preserves existing config)
+  python3 - "$CLAUDE_JSON" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, json
+
+config_path = sys.argv[1]
+venv_python = sys.argv[2]
+server_script = sys.argv[3]
+
+with open(config_path, 'r') as f:
+    config = json.load(f)
+
+if 'mcpServers' not in config:
+    config['mcpServers'] = {}
+
+config['mcpServers']['B12'] = {
+    "command": venv_python,
+    "args": [server_script],
+    "env": {
+        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_MAX_RESPONSE_CHARS": "40000"
+    }
+}
+
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+
+PYEOF
+
+  info "B12 MCP server added to $CLAUDE_JSON"
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+# ─────────────────────────────────────────────
+# Run DB migration (if database exists)
 # ─────────────────────────────────────────────
 run_migration() {
   local MIGRATE_SCRIPT="$SCRIPT_DIR/scripts/migrate_v10_13.py"
@@ -188,7 +230,7 @@ run_migration() {
     DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
   fi
   if [ ! -f "$DB_PATH" ]; then
-    warn "Memory database not found (will be created on first use)"
+    info "No existing database found (will be created on first use by MCP server)"
     return
   fi
 
@@ -200,17 +242,140 @@ run_migration() {
   fi
 }
 
+# ─────────────────────────────────────────────
+# Verify installation
+# ─────────────────────────────────────────────
+verify() {
+  local errors=0
+
+  # Check venv
+  if [ -x "$VENV_PYTHON" ]; then
+    if "$VENV_PYTHON" -c "import mcp" 2>/dev/null; then
+      info "Verify: mcp package OK"
+    else
+      warn "Verify: mcp package NOT found in b12-venv"
+      errors=$((errors + 1))
+    fi
+  else
+    warn "Verify: b12-venv not found at $VENV_PATH"
+    errors=$((errors + 1))
+  fi
+
+  # Check MCP server script
+  if [ -f "$SCRIPT_DEST/b12_mcp_server.py" ]; then
+    info "Verify: MCP server script deployed"
+  else
+    warn "Verify: MCP server script NOT found"
+    errors=$((errors + 1))
+  fi
+
+  # Check hooks deployed
+  local hook_count=0
+  for f in "$HOOK_DEST"/memory-*.sh; do
+    [ -f "$f" ] && hook_count=$((hook_count + 1))
+  done
+  if [ "$hook_count" -gt 5 ]; then
+    info "Verify: $hook_count hook scripts deployed"
+  else
+    warn "Verify: Only $hook_count hooks found (expected 7+)"
+    errors=$((errors + 1))
+  fi
+
+  # Check MCP config in ~/.claude.json
+  if [ -f "$HOME/.claude.json" ]; then
+    if python3 -c "import json; c=json.load(open('$HOME/.claude.json')); assert 'B12' in c.get('mcpServers',{})" 2>/dev/null; then
+      info "Verify: B12 MCP server configured in ~/.claude.json"
+    else
+      warn "Verify: B12 NOT found in ~/.claude.json mcpServers"
+      errors=$((errors + 1))
+    fi
+  else
+    warn "Verify: ~/.claude.json not found"
+    errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ─────────────────────────────────────────────
+# Main
+# ─────────────────────────────────────────────
+
+echo "B12 Memory System Installer (v10.0 — custom MCP server)"
+echo "─────────────────────────────────"
+
+# Full setup: create venv first
+if $FULL_SETUP; then
+  setup_venv
+  echo ""
+fi
+
+# Always create dirs and copy files
+create_dirs
+copy_hooks
+copy_scripts
+
+# Verify MCP package
+if [ -x "$VENV_PYTHON" ]; then
+  if "$VENV_PYTHON" -c "import mcp" 2>/dev/null; then
+    info "MCP Python package available (via b12-venv)"
+  else
+    warn "MCP Python package not found in b12-venv"
+    warn "Run: $VENV_PYTHON -m pip install mcp sentence-transformers sqlite-vec"
+  fi
+else
+  if ! $FULL_SETUP; then
+    warn "B12 venv not found. Run with --full for automatic setup, or manually:"
+    echo "       python3 -m venv $VENV_PATH"
+    echo "       $VENV_PYTHON -m pip install mcp sentence-transformers sqlite-vec"
+  fi
+fi
+
+# Install hooks to setups
+if $INSTALL_ALL; then
+  for dir in "$HOME"/.claude*; do
+    [ -d "$dir" ] || continue
+    base=$(basename "$dir")
+    case "$base" in
+      .claude|.claude-*) install_to_setup "$dir" ;;
+    esac
+  done
+elif [ -n "$TARGET_DIR" ]; then
+  install_to_setup "$TARGET_DIR"
+else
+  install_to_setup "$HOME/.claude"
+fi
+
+echo ""
+
+# Full setup: inject MCP config
+if $FULL_SETUP; then
+  inject_mcp_config
+  echo ""
+fi
+
+# Run migration
 run_migration
 
+echo ""
 echo "─────────────────────────────────"
-info "Installation complete!"
+
+# Run verification
+verify
+VERIFY_RESULT=$?
+
 echo ""
-echo "Next steps:"
-echo "  1. Ensure Python env has 'mcp' package (check output above)"
-echo "  2. Update MCP server config in ~/.claude.json"
-echo "     (see config/mcp-b12-template.json for B12 custom server)"
-echo "  3. Restart Claude Code to pick up the new hooks"
+echo "─────────────────────────────────"
+if [ $VERIFY_RESULT -eq 0 ]; then
+  info "Installation complete! Restart Claude Code to activate B12."
+else
+  warn "Installation complete with $VERIFY_RESULT warning(s). See above."
+fi
+
+if ! $FULL_SETUP; then
+  echo ""
+  echo "Tip: Run './install.sh --full' for automatic venv + MCP config setup."
+fi
+
 echo ""
-echo "Optional:"
-echo "  - Set up launchd agents for automated tasks (see config/*.plist)"
-echo "  - Create a user profile (see templates/user-profile.md)"
+echo "Next: Restart Claude Code, then run /mcp to verify B12 is connected."

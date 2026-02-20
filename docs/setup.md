@@ -12,15 +12,13 @@
 ```bash
 git clone https://github.com/dorukardahan/B12.git
 cd B12
-
-# Create Python environment
-python3 -m venv ~/.local/b12-venv
-~/.local/b12-venv/bin/pip install mcp sentence-transformers sqlite-vec
-
-# Run installer
 chmod +x install.sh
-./install.sh          # Install to ~/.claude (default)
+./install.sh --full          # Full setup: venv + deps + hooks + MCP config
 ```
+
+This single command creates the venv, installs dependencies, deploys hooks, and configures the MCP server with correct absolute paths.
+
+For multiple Claude Code setups: `./install.sh --full --all`
 
 The installer:
 1. Creates required directories (`hooks/`, `memory-staging/`, `memory-logs/`, `memory-summaries/`)
@@ -73,14 +71,16 @@ This copies all hooks and scripts to `~/.claude/hooks/` and merges the hook conf
 
 ### Step 4: Configure the MCP server
 
-Add the B12 MCP server to your `~/.claude.json`:
+**Option A — Automatic (recommended):** If you used `./install.sh --full`, this is already done. Skip to Step 5.
+
+**Option B — Manual:** Add the B12 MCP server to your `~/.claude.json`:
 
 ```json
 {
   "mcpServers": {
     "B12": {
-      "command": "~/.local/b12-venv/bin/python3",
-      "args": ["~/.claude/hooks/scripts/b12_mcp_server.py"],
+      "command": "/Users/yourname/.local/b12-venv/bin/python3",
+      "args": ["/Users/yourname/.claude/hooks/scripts/b12_mcp_server.py"],
       "env": {
         "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
         "MCP_MAX_RESPONSE_CHARS": "40000"
@@ -90,9 +90,11 @@ Add the B12 MCP server to your `~/.claude.json`:
 }
 ```
 
+Replace `/Users/yourname` with your actual home directory (run `echo $HOME` to find it).
+
 A full template is available at `config/mcp-b12-template.json`.
 
-**Important**: The `command` must point to the Python interpreter in your `b12-venv`, and the `args` must point to the deployed `b12_mcp_server.py` (copied by the installer to `~/.claude/hooks/scripts/`).
+**Important — tilde paths don't work:** Claude Code does NOT expand `~` in MCP server configs. You must use absolute paths (`/Users/you/...` or `/home/you/...`), not `~/.local/...`. The `--full` installer handles this automatically.
 
 ### Step 5: Verify the installation
 
@@ -102,6 +104,8 @@ Restart Claude Code, then run `/mcp`. You should see:
 B12 · connected
   Tools: memory_store, memory_search, memory_update, memory_quality
 ```
+
+**First run note:** The embedding model (~90MB) downloads automatically on the first session start. This is a one-time download and may take 30-60 seconds. Subsequent sessions start instantly. The database and all tables are created automatically by the MCP server on first use.
 
 If the server shows as disconnected, check:
 - Python path exists: `ls ~/.local/b12-venv/bin/python3`

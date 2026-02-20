@@ -19,19 +19,126 @@ from mcp.server.fastmcp import FastMCP
 
 # ── Paths ────────────────────────────────────────────────────────
 _UID = os.getuid()
-DB_PATH = os.path.join(
-    os.path.expanduser("~"), "Library", "Application Support",
-    "mcp-memory", "sqlite_vec.db"
-)
+import sys as _sys
+if _sys.platform == "darwin":
+    DB_PATH = os.path.join(
+        os.path.expanduser("~"), "Library", "Application Support",
+        "mcp-memory", "sqlite_vec.db"
+    )
+else:
+    DB_PATH = os.path.join(
+        os.path.expanduser("~"), ".local", "share",
+        "mcp-memory", "sqlite_vec.db"
+    )
 SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 
 # ── SQLite connection (set during lifespan) ──────────────────────
 _db: sqlite3.Connection | None = None
 
 
+def _ensure_schema(db: sqlite3.Connection) -> None:
+    """Create all required tables if they don't exist. Safe on existing DBs."""
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS memories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            content TEXT NOT NULL,
+            content_hash TEXT UNIQUE,
+            memory_type TEXT DEFAULT 'general',
+            tags TEXT DEFAULT '',
+            metadata TEXT DEFAULT '{}',
+            created_at REAL,
+            updated_at REAL,
+            created_at_iso TEXT,
+            updated_at_iso TEXT,
+            deleted_at REAL DEFAULT NULL,
+            strength REAL DEFAULT 1.0,
+            last_accessed_at REAL DEFAULT NULL,
+            valid_until TEXT DEFAULT NULL
+        )
+    """)
+    # B12 FTS5 table (unicode61 tokenizer, used by hooks)
+    db.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
+            content,
+            content='memories',
+            content_rowid='id',
+            tokenize='unicode61'
+        )
+    """)
+    # FTS5 sync triggers for memory_fts
+    db.execute("""
+        CREATE TRIGGER IF NOT EXISTS memory_fts_insert AFTER INSERT ON memories BEGIN
+            INSERT INTO memory_fts(rowid, content) VALUES (new.id, new.content);
+        END
+    """)
+    db.execute("""
+        CREATE TRIGGER IF NOT EXISTS memory_fts_delete AFTER DELETE ON memories BEGIN
+            INSERT INTO memory_fts(memory_fts, rowid, content) VALUES('delete', old.id, old.content);
+        END
+    """)
+    db.execute("""
+        CREATE TRIGGER IF NOT EXISTS memory_fts_update AFTER UPDATE ON memories BEGIN
+            INSERT INTO memory_fts(memory_fts, rowid, content) VALUES('delete', old.id, old.content);
+            INSERT INTO memory_fts(rowid, content) VALUES (new.id, new.content);
+        END
+    """)
+    # Native FTS5 table (trigram tokenizer, used by MCP server search)
+    db.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_content_fts USING fts5(
+            content,
+            content='memories',
+            content_rowid='id',
+            tokenize='trigram'
+        )
+    """)
+    # Triggers for memory_content_fts
+    db.execute("""
+        CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
+            INSERT INTO memory_content_fts(rowid, content) VALUES (new.id, new.content);
+        END
+    """)
+    db.execute("""
+        CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+            DELETE FROM memory_content_fts WHERE rowid = old.id;
+            INSERT INTO memory_content_fts(rowid, content) VALUES (new.id, new.content);
+        END
+    """)
+    db.execute("""
+        CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+            DELETE FROM memory_content_fts WHERE rowid = old.id;
+        END
+    """)
+    # Memory graph (edges between memories)
+    db.execute("""
+        CREATE TABLE IF NOT EXISTS memory_graph (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_hash TEXT NOT NULL,
+            target_hash TEXT NOT NULL,
+            similarity REAL,
+            connection_types TEXT,
+            metadata TEXT,
+            created_at REAL,
+            relationship_type TEXT,
+            UNIQUE(source_hash, target_hash, relationship_type)
+        )
+    """)
+    # Vector embeddings table (requires sqlite-vec)
+    if _HAS_VEC:
+        try:
+            db.execute("""
+                CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings USING vec0(
+                    content_embedding FLOAT[384] distance_metric=cosine
+                )
+            """)
+        except Exception:
+            pass  # vec0 may already exist with different params
+    db.commit()
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     global _db
+    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     _db = sqlite3.connect(DB_PATH, timeout=10)
     _db.execute("PRAGMA journal_mode=WAL")
     _db.execute("PRAGMA busy_timeout=5000")
@@ -39,6 +146,7 @@ async def lifespan(server: FastMCP):
     if _HAS_VEC:
         _db.enable_load_extension(True)
         sqlite_vec.load(_db)
+    _ensure_schema(_db)
     yield
     if _db:
         _db.close()

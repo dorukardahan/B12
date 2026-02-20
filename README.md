@@ -44,6 +44,26 @@ B12 MCP Server (b12_mcp_server.py)
     └── Auto-backup (daily, 7-day rotation)
 ```
 
+## Setup via AI Assistant
+
+If you're feeding this repo to Claude Code, Cursor, or another AI coding assistant to set it up for you, here's what the AI needs to do:
+
+```bash
+# 1. Clone and run full installer (one command does everything)
+git clone https://github.com/dorukardahan/B12.git ~/Desktop/B12
+cd ~/Desktop/B12 && chmod +x install.sh && ./install.sh --full
+
+# 2. Restart Claude Code and verify
+# Run /mcp in Claude Code — should show: B12 · connected (4 tools)
+```
+
+That's it. The `--full` flag creates the Python venv, installs all dependencies, deploys hooks, and configures the MCP server in `~/.claude.json` with correct absolute paths. The database and tables are created automatically on first use.
+
+**Verification checklist for AI assistants:**
+- `~/.local/b12-venv/bin/python3 -c "import mcp; print('OK')"` → should print OK
+- `ls ~/.claude/hooks/memory-session-start.sh` → should exist
+- `python3 -c "import json; c=json.load(open('$HOME/.claude.json')); print('B12' in c.get('mcpServers',{}))"` → should print True
+
 ## Features
 
 - **Cross-session memory** — automatically captures decisions, errors, learnings, preferences at session end
@@ -61,37 +81,46 @@ B12 MCP Server (b12_mcp_server.py)
 
 ## Quick Start
 
-### 1. Clone and create Python environment
+### 1. One-command setup (recommended)
 
 ```bash
 git clone https://github.com/dorukardahan/B12.git
 cd B12
-
-# Create a dedicated venv for B12
-python3 -m venv ~/.local/b12-venv
-~/.local/b12-venv/bin/pip install mcp sentence-transformers sqlite-vec
-```
-
-### 2. Run the installer
-
-```bash
 chmod +x install.sh
-./install.sh              # Install to ~/.claude (default)
-# or: ./install.sh --all  # Install to all ~/.claude* setups
+./install.sh --full       # Creates venv, installs deps, deploys hooks, configures MCP
+# or: ./install.sh --full --all   # Same, but for all ~/.claude* setups
 ```
 
-The installer copies hooks, scripts, and merges hook configuration into your `settings.json`.
+This single command:
+- Creates `~/.local/b12-venv` with all Python dependencies
+- Deploys hooks and scripts to `~/.claude/hooks/`
+- Adds the B12 MCP server to `~/.claude.json` (with correct absolute paths)
+- Verifies the installation
 
-### 3. Add the B12 MCP server to your Claude Code config
+### 2. Restart Claude Code
 
-Add to `~/.claude.json` under `mcpServers`:
+Start a new session. Run `/mcp` — you should see `B12 · connected` with 4 tools:
+- `memory_store` — store a memory with metadata and tags
+- `memory_search` — hybrid semantic + full-text search
+- `memory_update` — update metadata, tags, or strength
+- `memory_quality` — rate, get, or analyze memory quality
+
+**First run note:** The embedding model (~90MB) downloads automatically on the first session. This is a one-time download — subsequent sessions start instantly.
+
+The database and all tables are created automatically on first use. After your first session ends, check `~/.claude/memory-summaries/` for the generated summary.
+
+### 3. Manual setup (alternative)
+
+If you prefer step-by-step control, see [docs/setup.md](docs/setup.md) for the full installation guide with individual steps.
+
+**Important for manual MCP config:** Claude Code does NOT expand `~` in `~/.claude.json`. Use absolute paths:
 
 ```json
 {
   "mcpServers": {
     "B12": {
-      "command": "~/.local/b12-venv/bin/python3",
-      "args": ["~/.claude/hooks/scripts/b12_mcp_server.py"],
+      "command": "/Users/yourname/.local/b12-venv/bin/python3",
+      "args": ["/Users/yourname/.claude/hooks/scripts/b12_mcp_server.py"],
       "env": {
         "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
         "MCP_MAX_RESPONSE_CHARS": "40000"
@@ -101,19 +130,9 @@ Add to `~/.claude.json` under `mcpServers`:
 }
 ```
 
-See `config/mcp-b12-template.json` for the full template.
+Replace `/Users/yourname` with your actual home directory (`echo $HOME`).
 
-### 4. Restart Claude Code
-
-Start a new session. Run `/mcp` — you should see `B12 · connected` with 4 tools:
-- `memory_store` — store a memory with metadata and tags
-- `memory_search` — hybrid semantic + full-text search
-- `memory_update` — update metadata, tags, or strength
-- `memory_quality` — rate, get, or analyze memory quality
-
-After your first session ends, check `~/.claude/memory-summaries/` for the generated summary.
-
-### 5. Optional — Automated tasks
+### 4. Optional — Automated tasks
 
 Copy the launchd plists to enable daily backup, consolidation, and weekly audits:
 

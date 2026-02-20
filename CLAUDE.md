@@ -2,12 +2,31 @@
 
 This is a memory system project for Claude Code CLI.
 
+## For AI assistants: Setting up B12 for a user
+
+If a user gives you this repo and asks you to set it up:
+
+```bash
+cd /path/to/B12
+chmod +x install.sh
+./install.sh --full    # Creates venv, installs deps, deploys hooks, configures MCP
+```
+
+Then restart Claude Code and run `/mcp` to verify `B12 · connected`.
+
+**Key facts:**
+- The MCP server (`b12_mcp_server.py`) creates all database tables automatically on first run
+- The embedding model (~90MB) downloads on first session — one-time only
+- `install.sh --full` handles everything including `~/.claude.json` MCP config
+- Claude Code does NOT expand `~` in MCP paths — the installer uses absolute paths
+
 ## Project structure
-- `hooks/` — Shell/Python scripts that fire at Claude Code lifecycle events (v7)
-- `scripts/` — Support modules (write_time_merge, Ebbinghaus decay, migration, patch applier)
+- `hooks/` — Shell/Python scripts that fire at Claude Code lifecycle events
+- `scripts/` — Support modules (b12_mcp_server, embed_daemon, write_time_merge, Ebbinghaus decay, etc.)
 - `config/` — Template configuration files for Claude Code settings + launchd plists
 - `templates/` — User-facing template files (user profile, etc.)
 - `docs/` — Architecture documentation and setup guide
+- `benchmarks/` — Retrieval quality evaluation (LoCoMo)
 
 ## Development rules
 - Hook scripts must be POSIX-compatible shell (bash)
@@ -19,11 +38,25 @@ This is a memory system project for Claude Code CLI.
 - Use `$HOME` or `~` instead of hardcoded user directories
 - Test hooks manually before committing: `echo '{}' | ./hooks/script.sh`
 
+## Documentation sync rule
+
+When making code changes, ALWAYS update the corresponding documentation:
+- **New feature/tool** → update README.md (features list, diagram), docs/architecture.md
+- **Changed setup steps** → update README.md (Quick Start), docs/setup.md
+- **New script/hook** → update README.md (Project Structure table)
+- **Breaking change** → add entry to CHANGELOG.md
+- **New config option** → update README.md (Configuration section)
+- **Version bump** → update install.sh banner, CHANGELOG.md, README.md changelog section
+
+Documentation lives in: `README.md`, `docs/setup.md`, `docs/architecture.md`, `CHANGELOG.md`
+
 ## Key technical constraints
 - PreCompact hooks cannot inject context — they can only run side effects
 - SessionStart hooks CAN inject context via `additionalContext` in JSON output
-- The memory MCP server runs as a child process spawned by Claude Code
+- The B12 MCP server (`scripts/b12_mcp_server.py`) runs as a child process spawned by Claude Code
+- The embed daemon (`scripts/embed_daemon.py`) runs as a background process, communicates via Unix socket
 - Hook scripts receive JSON on stdin and must output valid JSON on stdout
+- `b12_mcp_server.py` creates all tables via `_ensure_schema()` on startup — no external migration needed for fresh installs
 - Python heredocs MUST use `python3 -` (dash) to read from stdin when passing arguments:
   ```bash
   # CORRECT:
@@ -94,3 +127,6 @@ When adding new patterns, always add both English and Turkish variants.
 - NO API keys or secrets
 - Use generic examples and placeholders
 - User profile template should be empty/generic — users fill in their own info
+
+# currentDate
+Today's date is 2026-02-20.
