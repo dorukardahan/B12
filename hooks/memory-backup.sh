@@ -7,7 +7,11 @@
 #
 # Keeps last 7 backups. Uses sqlite3 .backup for WAL-safe copies.
 
-DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+if [ "$(uname)" = "Darwin" ]; then
+  DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+else
+  DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
+fi
 BACKUP_DIR="$HOME/.claude/memory-backups"
 MAX_BACKUPS=7
 

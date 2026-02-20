@@ -28,11 +28,14 @@ from collections import defaultdict
 SIMILARITY_THRESHOLD = 0.65  # Jaccard similarity threshold for near-duplicates
 STALE_DAYS = 90              # Memories older than this with no updates are flagged
 MIN_CONTENT_LENGTH = 20      # Minimum content length — shorter is suspect
-DB_PATH = os.path.expanduser("~/Library/Application Support/mcp-memory/sqlite_vec.db")
-
-# Linux fallback
-if not os.path.exists(DB_PATH):
-    DB_PATH = os.path.expanduser("~/.local/share/mcp-memory/sqlite_vec.db")
+import sys as _sys
+_home = os.path.expanduser("~")
+if _sys.platform == "darwin":
+    DB_PATH = os.path.join(_home, "Library", "Application Support", "mcp-memory", "sqlite_vec.db")
+elif _sys.platform == "win32":
+    DB_PATH = os.path.join(_home, "AppData", "Local", "mcp-memory", "sqlite_vec.db")
+else:
+    DB_PATH = os.path.join(_home, ".local", "share", "mcp-memory", "sqlite_vec.db")
 
 
 def jaccard_similarity(text_a, text_b):

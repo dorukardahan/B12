@@ -13,7 +13,11 @@
 #   memory-browse.sh tags               # List all tags with counts
 #   memory-browse.sh project <name>     # List memories for a project
 
-DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+if [ "$(uname)" = "Darwin" ]; then
+  DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+else
+  DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
+fi
 
 if [ ! -f "$DB_PATH" ]; then
   echo "Error: DB not found at $DB_PATH"

@@ -40,7 +40,14 @@ warnings.filterwarnings('ignore')
 report_file = sys.argv[1]
 quiet = sys.argv[2] == "true" if len(sys.argv) > 2 else False
 fix_mode = sys.argv[3] == "true" if len(sys.argv) > 3 else False
-DB_PATH = os.path.expanduser("~/Library/Application Support/mcp-memory/sqlite_vec.db")
+import sys as _sys
+_home = os.path.expanduser("~")
+if _sys.platform == "darwin":
+    DB_PATH = os.path.join(_home, "Library", "Application Support", "mcp-memory", "sqlite_vec.db")
+elif _sys.platform == "win32":
+    DB_PATH = os.path.join(_home, "AppData", "Local", "mcp-memory", "sqlite_vec.db")
+else:
+    DB_PATH = os.path.join(_home, ".local", "share", "mcp-memory", "sqlite_vec.db")
 
 if not os.path.exists(DB_PATH):
     print("ERROR: Database not found")

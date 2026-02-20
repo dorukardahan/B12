@@ -1,11 +1,38 @@
-"""Shared regex patterns for B12 hooks (session-end, precompact).
+"""Shared patterns and utilities for B12 hooks and scripts.
 
-DRY extraction — these 4 regexes were duplicated identically across
-hooks/memory-session-end.sh and hooks/memory-precompact.sh.
+DRY extraction — regexes, paths, and platform detection used across
+hooks/memory-session-end.sh, hooks/memory-precompact.sh, and all scripts.
 
 English + Turkish contextual patterns (v4 format).
 """
+import os
 import re
+import sys
+
+
+# ── Platform-aware database path ──────────────────────────────────
+
+def get_db_path() -> str:
+    """Return the B12 SQLite database path for the current platform.
+
+    macOS:   ~/Library/Application Support/mcp-memory/sqlite_vec.db
+    Linux:   ~/.local/share/mcp-memory/sqlite_vec.db
+    Windows: ~/AppData/Local/mcp-memory/sqlite_vec.db (or WSL Linux path)
+    """
+    home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        return os.path.join(home, "Library", "Application Support",
+                            "mcp-memory", "sqlite_vec.db")
+    elif sys.platform == "win32":
+        return os.path.join(home, "AppData", "Local",
+                            "mcp-memory", "sqlite_vec.db")
+    else:
+        # Linux, WSL, and other Unix-like
+        return os.path.join(home, ".local", "share",
+                            "mcp-memory", "sqlite_vec.db")
+
+
+DB_PATH = get_db_path()
 
 DECISION_RE = re.compile(
     r'(?i)(?:'

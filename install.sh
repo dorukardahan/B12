@@ -26,7 +26,12 @@ SCRIPT_SOURCE="$SCRIPT_DIR/scripts"
 HOOK_DEST="$HOME/.claude/hooks"
 SCRIPT_DEST="$HOME/.claude/hooks/scripts"
 VENV_PATH="$HOME/.local/b12-venv"
-VENV_PYTHON="$VENV_PATH/bin/python3"
+# Windows/Git Bash uses Scripts/python instead of bin/python3
+if [ -f "$VENV_PATH/Scripts/python.exe" ]; then
+  VENV_PYTHON="$VENV_PATH/Scripts/python"
+else
+  VENV_PYTHON="$VENV_PATH/bin/python3"
+fi
 
 # Color output
 GREEN='\033[0;32m'
@@ -230,9 +235,13 @@ run_migration() {
     return
   fi
 
-  # Check if database exists (macOS or Linux default paths)
-  local DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
-  if [ ! -f "$DB_PATH" ]; then
+  # Check if database exists (macOS, Linux, or Windows paths)
+  local DB_PATH=""
+  if [ "$(uname)" = "Darwin" ]; then
+    DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+  elif [ -d "$HOME/AppData" ]; then
+    DB_PATH="$HOME/AppData/Local/mcp-memory/sqlite_vec.db"
+  else
     DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
   fi
   if [ ! -f "$DB_PATH" ]; then

@@ -29,7 +29,13 @@ from pathlib import Path
 from typing import Dict, List, Set, Tuple
 
 
-DEFAULT_DB_PATH = Path("~/Library/Application Support/mcp-memory/sqlite_vec.db").expanduser()
+_home = Path.home()
+if sys.platform == "darwin":
+    DEFAULT_DB_PATH = _home / "Library" / "Application Support" / "mcp-memory" / "sqlite_vec.db"
+elif sys.platform == "win32":
+    DEFAULT_DB_PATH = _home / "AppData" / "Local" / "mcp-memory" / "sqlite_vec.db"
+else:
+    DEFAULT_DB_PATH = _home / ".local" / "share" / "mcp-memory" / "sqlite_vec.db"
 DEFAULT_TABLE = "memories"
 
 # Column name -> SQLite column definition used in ALTER TABLE ... ADD COLUMN.

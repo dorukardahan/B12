@@ -418,13 +418,22 @@ INSIGHT_SECTIONS = ['## Decisions Made', '## Errors & Fixes', '## Key Learnings'
 has_insights = any(s in content for s in INSIGHT_SECTIONS)
 
 content_hash = hashlib.sha256(content.strip().lower().encode('utf-8')).hexdigest()
-DB_PATH = os.path.expanduser("~/Library/Application Support/mcp-memory/sqlite_vec.db")
+import sys as _sys
+_home = os.path.expanduser("~")
+if _sys.platform == "darwin":
+    DB_PATH = os.path.join(_home, "Library", "Application Support", "mcp-memory", "sqlite_vec.db")
+elif _sys.platform == "win32":
+    DB_PATH = os.path.join(_home, "AppData", "Local", "mcp-memory", "sqlite_vec.db")
+else:
+    DB_PATH = os.path.join(_home, ".local", "share", "mcp-memory", "sqlite_vec.db")
 if not os.path.exists(DB_PATH):
     sys.exit(0)
 
 # ─── Daemon-first embedding (Phase 1) ────────────────────────
 # Try embedding daemon before loading SentenceTransformer (~4.5s savings)
-_DAEMON_SOCK = f"/tmp/b12-embed-{os.getuid()}.sock"
+_uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
+_tmpdir = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
+_DAEMON_SOCK = os.path.join(_tmpdir, f"b12-embed-{_uid}.sock")
 _DAEMON_PID = f"/tmp/b12-embed-{os.getuid()}.pid"
 _USE_DAEMON = False
 

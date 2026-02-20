@@ -11,7 +11,17 @@ import os
 import sys
 import sqlite3
 
-DB_PATH = os.path.expanduser("~/Library/Application Support/mcp-memory/sqlite_vec.db")
+try:
+    from shared_patterns import get_db_path
+    DB_PATH = get_db_path()
+except ImportError:
+    _home = os.path.expanduser("~")
+    if sys.platform == "darwin":
+        DB_PATH = os.path.join(_home, "Library", "Application Support", "mcp-memory", "sqlite_vec.db")
+    elif sys.platform == "win32":
+        DB_PATH = os.path.join(_home, "AppData", "Local", "mcp-memory", "sqlite_vec.db")
+    else:
+        DB_PATH = os.path.join(_home, ".local", "share", "mcp-memory", "sqlite_vec.db")
 
 def main():
     dry_run = '--dry-run' in sys.argv

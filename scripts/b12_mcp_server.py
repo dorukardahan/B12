@@ -18,19 +18,21 @@ from datetime import datetime, timezone
 from mcp.server.fastmcp import FastMCP
 
 # ── Paths ────────────────────────────────────────────────────────
-_UID = os.getuid()
 import sys as _sys
+_home = os.path.expanduser("~")
 if _sys.platform == "darwin":
-    DB_PATH = os.path.join(
-        os.path.expanduser("~"), "Library", "Application Support",
-        "mcp-memory", "sqlite_vec.db"
-    )
+    DB_PATH = os.path.join(_home, "Library", "Application Support",
+                           "mcp-memory", "sqlite_vec.db")
+elif _sys.platform == "win32":
+    DB_PATH = os.path.join(_home, "AppData", "Local",
+                           "mcp-memory", "sqlite_vec.db")
 else:
-    DB_PATH = os.path.join(
-        os.path.expanduser("~"), ".local", "share",
-        "mcp-memory", "sqlite_vec.db"
-    )
-SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
+    DB_PATH = os.path.join(_home, ".local", "share",
+                           "mcp-memory", "sqlite_vec.db")
+
+_UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
+_tmp = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
+SOCK_PATH = os.path.join(_tmp, f"b12-embed-{_UID}.sock")
 
 # ── SQLite connection (set during lifespan) ──────────────────────
 _db: sqlite3.Connection | None = None
