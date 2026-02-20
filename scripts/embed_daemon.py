@@ -44,10 +44,11 @@ os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 os.environ.setdefault('WANDB_DISABLED', 'true')
 os.environ.setdefault('WANDB_MODE', 'disabled')
 
-_UID = os.getuid()
-SOCKET_PATH = f"/tmp/b12-embed-{_UID}.sock"
-PID_PATH = f"/tmp/b12-embed-{_UID}.pid"
-LOCK_PATH = f"/tmp/b12-embed-{_UID}.lock"
+_UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
+_TMP = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
+SOCKET_PATH = os.path.join(_TMP, f"b12-embed-{_UID}.sock")
+PID_PATH = os.path.join(_TMP, f"b12-embed-{_UID}.pid")
+LOCK_PATH = os.path.join(_TMP, f"b12-embed-{_UID}.lock")
 LOG_DIR = os.path.expanduser("~/.claude/memory-logs")
 LOG_PATH = os.path.join(LOG_DIR, "embed-daemon.log")
 IDLE_TIMEOUT = 7200  # 2 hours

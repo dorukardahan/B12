@@ -434,7 +434,7 @@ if not os.path.exists(DB_PATH):
 _uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
 _tmpdir = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
 _DAEMON_SOCK = os.path.join(_tmpdir, f"b12-embed-{_uid}.sock")
-_DAEMON_PID = f"/tmp/b12-embed-{os.getuid()}.pid"
+_DAEMON_PID = os.path.join(_tmpdir, f"b12-embed-{_uid}.pid")
 _USE_DAEMON = False
 
 if os.path.exists(_DAEMON_SOCK) and os.path.exists(_DAEMON_PID):

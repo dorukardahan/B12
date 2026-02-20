@@ -72,6 +72,8 @@ fi
 
 if [ "$(uname)" = "Darwin" ]; then
   DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+elif [ -d "$HOME/AppData" ]; then
+  DB_PATH="$HOME/AppData/Local/mcp-memory/sqlite_vec.db"
 else
   DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
 fi
@@ -83,9 +85,10 @@ B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
 FEEDBACK_DIR="$B12_BASE/memory-logs"
 
 # ── Embedding daemon helpers (Phase 1) ───────────────────────
-_UID=$(id -u)
-EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
-EMBED_PID="/tmp/b12-embed-${_UID}.pid"
+_UID=$(id -u 2>/dev/null || echo $$)
+_TMPDIR="${TMPDIR:-${TEMP:-/tmp}}"
+EMBED_SOCK="${_TMPDIR}/b12-embed-${_UID}.sock"
+EMBED_PID="${_TMPDIR}/b12-embed-${_UID}.pid"
 
 daemon_alive() {
   [ -S "$EMBED_SOCK" ] && [ -f "$EMBED_PID" ] && \

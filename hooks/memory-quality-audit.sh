@@ -74,8 +74,10 @@ if fix_mode:
     lines.append("**Mode: Auto-remediation enabled (--fix)**\n")
 
 # ── Daemon helper for orphan embedding regeneration ──────────
-_DAEMON_SOCK = f"/tmp/b12-embed-{os.getuid()}.sock"
-_DAEMON_PID = f"/tmp/b12-embed-{os.getuid()}.pid"
+_uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
+_tmpdir = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
+_DAEMON_SOCK = os.path.join(_tmpdir, f"b12-embed-{_uid}.sock")
+_DAEMON_PID = os.path.join(_tmpdir, f"b12-embed-{_uid}.pid")
 
 def daemon_alive():
     if not os.path.exists(_DAEMON_SOCK) or not os.path.exists(_DAEMON_PID):

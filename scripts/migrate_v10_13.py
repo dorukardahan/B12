@@ -26,12 +26,17 @@ from pathlib import Path
 
 def get_db_path():
     """Find the mcp-memory database."""
-    # macOS default
+    # macOS
     mac_path = Path.home() / "Library" / "Application Support" / "mcp-memory" / "sqlite_vec.db"
     if mac_path.exists():
         return str(mac_path)
 
-    # Linux default
+    # Windows
+    win_path = Path.home() / "AppData" / "Local" / "mcp-memory" / "sqlite_vec.db"
+    if win_path.exists():
+        return str(win_path)
+
+    # Linux / WSL
     linux_path = Path.home() / ".local" / "share" / "mcp-memory" / "sqlite_vec.db"
     if linux_path.exists():
         return str(linux_path)

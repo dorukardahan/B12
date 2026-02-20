@@ -48,9 +48,10 @@ except ImportError:
     else:
         DB_PATH = os.path.join(_home, ".local", "share", "mcp-memory", "sqlite_vec.db")
 LOG_DIR = os.path.expanduser("~/.claude/memory-logs")
-_UID = os.getuid()
-DAEMON_SOCK = f"/tmp/b12-embed-{_UID}.sock"
-DAEMON_PID = f"/tmp/b12-embed-{_UID}.pid"
+_UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
+_TMP = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
+DAEMON_SOCK = os.path.join(_TMP, f"b12-embed-{_UID}.sock")
+DAEMON_PID = os.path.join(_TMP, f"b12-embed-{_UID}.pid")
 
 MAX_MEMORIES_PER_RUN = 50
 NEIGHBOR_K = 5

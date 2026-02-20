@@ -26,9 +26,10 @@ done
 # Persistent SentenceTransformer process. Hooks communicate via Unix socket.
 # Model loads async (~12s). First few retrieval calls use cold path.
 # Singleton: daemon uses fcntl.flock() — only one instance can run.
-_UID=$(id -u)
-EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
-EMBED_LOCK="/tmp/b12-embed-${_UID}.lock"
+_UID=$(id -u 2>/dev/null || echo $$)
+_TMPDIR="${TMPDIR:-${TEMP:-/tmp}}"
+EMBED_SOCK="${_TMPDIR}/b12-embed-${_UID}.sock"
+EMBED_LOCK="${_TMPDIR}/b12-embed-${_UID}.lock"
 VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
 B12_SCRIPTS="${B12_DATA_DIR:-$HOME/.claude}/hooks/scripts"
 DAEMON_SCRIPT="$B12_SCRIPTS/embed_daemon.py"
@@ -167,6 +168,8 @@ fi
 MEMORY_PREFETCH=""
 if [ "$(uname)" = "Darwin" ]; then
   DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+elif [ -d "$HOME/AppData" ]; then
+  DB_PATH="$HOME/AppData/Local/mcp-memory/sqlite_vec.db"
 else
   DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
 fi

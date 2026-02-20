@@ -9,6 +9,8 @@
 
 if [ "$(uname)" = "Darwin" ]; then
   DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+elif [ -d "$HOME/AppData" ]; then
+  DB_PATH="$HOME/AppData/Local/mcp-memory/sqlite_vec.db"
 else
   DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
 fi

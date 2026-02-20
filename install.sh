@@ -28,7 +28,7 @@ SCRIPT_DEST="$HOME/.claude/hooks/scripts"
 VENV_PATH="$HOME/.local/b12-venv"
 # Windows/Git Bash uses Scripts/python instead of bin/python3
 if [ -f "$VENV_PATH/Scripts/python.exe" ]; then
-  VENV_PYTHON="$VENV_PATH/Scripts/python"
+  VENV_PYTHON="$VENV_PATH/Scripts/python.exe"
 else
   VENV_PYTHON="$VENV_PATH/bin/python3"
 fi
