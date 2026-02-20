@@ -25,25 +25,33 @@ done
 # ── Start embedding daemon (Phase 1 — latency reduction) ─────
 # Persistent SentenceTransformer process. Hooks communicate via Unix socket.
 # Model loads async (~12s). First few retrieval calls use cold path.
+# Singleton: daemon uses fcntl.flock() — only one instance can run.
 _UID=$(id -u)
 EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
-EMBED_PID="/tmp/b12-embed-${_UID}.pid"
-VENV_PYTHON="$HOME/.local/pipx/venvs/mcp-memory-service/bin/python3"
+EMBED_LOCK="/tmp/b12-embed-${_UID}.lock"
+VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
 B12_SCRIPTS="${B12_DATA_DIR:-$HOME/.claude}/hooks/scripts"
 DAEMON_SCRIPT="$B12_SCRIPTS/embed_daemon.py"
 
-# Kill stale daemon from previous session
-if [ -f "$EMBED_PID" ]; then
-  _old_pid=$(cat "$EMBED_PID" 2>/dev/null)
-  if [ -n "$_old_pid" ] && kill -0 "$_old_pid" 2>/dev/null; then
-    kill "$_old_pid" 2>/dev/null
-    sleep 0.2
+_DAEMON_NEEDED=true
+
+# Check 1: Socket exists AND responsive? → daemon ready, skip
+if [ -S "$EMBED_SOCK" ]; then
+  if echo '{"op":"health"}' | nc -w1 -U "$EMBED_SOCK" 2>/dev/null | grep -q '"ok"'; then
+    _DAEMON_NEEDED=false
   fi
-  rm -f "$EMBED_PID" "$EMBED_SOCK"
 fi
 
-# Start daemon (background, async model load ~12s)
-if [ -x "$VENV_PYTHON" ] && [ -f "$DAEMON_SCRIPT" ]; then
+# Check 2: Lock file PID alive? → daemon loading model, skip
+if $_DAEMON_NEEDED && [ -f "$EMBED_LOCK" ]; then
+  _lock_pid=$(cat "$EMBED_LOCK" 2>/dev/null | tr -d '[:space:]')
+  if [ -n "$_lock_pid" ] && kill -0 "$_lock_pid" 2>/dev/null; then
+    _DAEMON_NEEDED=false
+  fi
+fi
+
+# Start daemon only if no existing instance detected
+if $_DAEMON_NEEDED && [ -x "$VENV_PYTHON" ] && [ -f "$DAEMON_SCRIPT" ]; then
   "$VENV_PYTHON" "$DAEMON_SCRIPT" > /dev/null 2>&1 &
   disown 2>/dev/null
 fi
@@ -238,10 +246,10 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # ═══════════════════════════════════════════════════════════
   PARENT_INFO=""
   [ -n "$PARENT_PROJECT" ] && PARENT_INFO=" (parent: ${PARENT_PROJECT})"
-  CONTEXT="MEMORY SYSTEM ACTIVE (mcp-memory-service v10.7.2). Setup: ${SETUP_CONTEXT}. Project: ${PROJECT_NAME}${PARENT_INFO} (${CWD})."
+  CONTEXT="MEMORY SYSTEM ACTIVE (b12-memory v1.0). Setup: ${SETUP_CONTEXT}. Project: ${PROJECT_NAME}${PARENT_INFO} (${CWD})."
 
   # --- Compact behavioral instructions (v4 — ~120 tokens vs ~512 in v3) ---
-  CONTEXT="${CONTEXT}\n\nMEMORY TOOLS: memory_search (mode=hybrid, max_response_chars=40000), memory_store (always include metadata), memory_update, memory_graph, memory_quality, memory_cleanup."
+  CONTEXT="${CONTEXT}\n\nMEMORY TOOLS: memory_search (mode=hybrid, after/before=ISO date, max_response_chars=40000), memory_store (always include metadata), memory_update, memory_quality.\nTIME SEARCH: When user says approximate time (\"2 days ago\", \"last week\", \"this morning\"), use wide buffer: ±1 day for days, ±2 days for weeks. Example: \"2 days ago\" → after=3_days_ago, before=1_day_ago. If few results, widen range."
 
   # --- Scope classification rules ---
   STORE_TAG="proj:${PROJECT_NAME}"
