@@ -33,7 +33,14 @@ For multiple setups: `./install.sh --all` installs to all `~/.claude*` directori
 
 ## Step-by-Step Install
 
-### Step 1: Create the B12 Python environment
+### Step 1: Clone the repository
+
+```bash
+git clone https://github.com/dorukardahan/B12.git
+cd B12
+```
+
+### Step 2: Create the B12 Python environment
 
 B12 uses a dedicated venv to avoid conflicts with your system Python:
 
@@ -55,18 +62,16 @@ The key packages:
 - **`sentence-transformers`** — local embedding model for semantic search
 - **`sqlite-vec`** — vector similarity extension for SQLite
 
-### Step 2: Clone and run the installer
+### Step 3: Run the installer
 
 ```bash
-git clone https://github.com/dorukardahan/B12.git
-cd B12
 chmod +x install.sh
 ./install.sh
 ```
 
 This copies all hooks and scripts to `~/.claude/hooks/` and merges the hook configuration into your `settings.json`.
 
-### Step 3: Configure the MCP server
+### Step 4: Configure the MCP server
 
 Add the B12 MCP server to your `~/.claude.json`:
 
@@ -89,7 +94,7 @@ A full template is available at `config/mcp-b12-template.json`.
 
 **Important**: The `command` must point to the Python interpreter in your `b12-venv`, and the `args` must point to the deployed `b12_mcp_server.py` (copied by the installer to `~/.claude/hooks/scripts/`).
 
-### Step 4: Verify the installation
+### Step 5: Verify the installation
 
 Restart Claude Code, then run `/mcp`. You should see:
 
@@ -103,7 +108,7 @@ If the server shows as disconnected, check:
 - Script path exists: `ls ~/.claude/hooks/scripts/b12_mcp_server.py`
 - MCP package is installed: `~/.local/b12-venv/bin/python3 -c "import mcp"`
 
-### Step 5: Configure hooks (usually automatic)
+### Step 6: Configure hooks (usually automatic)
 
 The installer merges hook configuration from `config/settings-template.json` into your `settings.json`. To verify hooks are active, start a Claude Code session and run `/hooks` — you should see `[User]` tagged hooks.
 
@@ -200,7 +205,7 @@ If you prefer manual setup, edit `~/.claude/settings.json` (or `~/.claude-<setup
 
 **Hook timeout note**: Timeouts must be >= watchdog timer + 5s. The `settings-template.json` has correct values. SessionEnd is 35s because it parses the full transcript with Python.
 
-### Step 6: Create user profile (optional but recommended)
+### Step 7: Create user profile (optional but recommended)
 
 ```bash
 # Find your project memory directory
@@ -214,7 +219,7 @@ cp templates/user-profile.md ~/.claude/projects/-Users-$(whoami)/memory/user-pro
 
 Edit the profile with your actual preferences. Claude will also update it automatically as it learns about you.
 
-### Step 7: Set up automated tasks (optional)
+### Step 8: Set up automated tasks (optional)
 
 #### macOS (launchd)
 
@@ -238,6 +243,18 @@ launchctl load ~/Library/LaunchAgents/com.b12.memory-quality-audit.plist
 | `com.b12.memory-consolidate` | Daily 2:00 AM | Dedup, stale cleanup, cross-project index |
 | `com.b12.memory-feedback-digest` | Monday 3:00 AM | Search pattern analysis, usage stats, alerts |
 | `com.b12.memory-quality-audit` | Wednesday 3:00 AM | Health score, scope compliance, strength distribution |
+
+**Graph enrichment** (optional, requires ONNX NLI model):
+
+```bash
+cp config/com.b12.graph-enrich.plist ~/Library/LaunchAgents/
+sed -i '' "s|/path/to/home|$HOME|g" ~/Library/LaunchAgents/com.b12.graph-enrich.plist
+launchctl load ~/Library/LaunchAgents/com.b12.graph-enrich.plist
+```
+
+| Agent | Schedule | What it does |
+|-------|----------|-------------|
+| `com.b12.graph-enrich` | Daily 4:00 AM | Discovers related/contradicts/supports edges between memories |
 
 #### Linux (cron)
 
@@ -362,7 +379,7 @@ If you were using the old `mcp-memory-service` (pipx) system:
 
 1. The SQLite database is compatible — B12 reads the same `sqlite_vec.db`
 2. Remove the old MCP config from `~/.claude.json` (the `"memory"` key)
-3. Add the new B12 config (the `"B12"` key — see Step 3 above)
+3. Add the new B12 config (the `"B12"` key — see Step 4 above)
 4. Hook matchers already use `mcp__B12__*` tool names
 5. You can uninstall the old package: `pipx uninstall mcp-memory-service`
 

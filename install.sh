@@ -128,7 +128,7 @@ PYEOF
 # Main
 # ─────────────────────────────────────────────
 
-echo "B12 Memory System Installer (v9 — custom MCP server)"
+echo "B12 Memory System Installer (v10.0 — custom MCP server)"
 echo "─────────────────────────────────"
 
 # Always create dirs and copy files first

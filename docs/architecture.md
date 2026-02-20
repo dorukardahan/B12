@@ -266,13 +266,11 @@ All hooks that interpolate user input into SQLite queries apply sanitization:
 
 1. **English-optimized embeddings**: MiniLM-L12-v2 is multilingual but primarily optimized for English. Mixed-language content may have reduced semantic accuracy.
 
-2. **No contradiction detection**: The system can store conflicting memories without recognizing the contradiction. Future: NLI (Natural Language Inference) model to detect and flag contradictions.
+2. **Contradiction detection coverage**: `contradiction_resolver.py` provides ONNX NLI-based contradiction detection, but it runs as a scheduled task (graph enrichment), not inline at write time. Contradicting memories may coexist until the next enrichment cycle.
 
 3. **Linear memory scan**: Write-time merge checks against all memories for similarity. As the database grows (10K+ memories), this may need index optimization.
 
 ### Planned improvements
-
-- **Contradiction detection**: NLI model to flag conflicting memories (partially implemented — ONNX NLI available)
 - **Graph-based traversal**: Walk memory associations for context expansion
 - **Memory clustering**: Group related memories for batch review
 - **Web dashboard**: Visual memory graph browser
