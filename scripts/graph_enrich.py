@@ -228,9 +228,11 @@ def main():
             n_id = neighbor['id']
             n_sim = neighbor['similarity']
 
-            # Sanity check: cosine similarity must be in [0, 1]
-            if n_sim > 1.0 or n_sim < 0.0:
+            # Sanity check: cosine similarity must be in valid range
+            # Allow small epsilon for IEEE 754 floating point rounding
+            if n_sim > 1.001 or n_sim < -0.001:
                 continue
+            n_sim = min(n_sim, 1.0)  # Clamp to valid range
 
             # Get neighbor's hash, content, and type
             n_row = conn.execute(

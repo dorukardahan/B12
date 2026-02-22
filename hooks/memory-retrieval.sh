@@ -63,13 +63,16 @@ case "$PROMPT_LOWER" in
   evet*|hayır*|tamam*|ok*|yes*|no*|devam*|anladım*|güzel*|teşekkür*|thanks*|merhaba*|hey*|hi\ *|hello*|peki*|hadi*|tamamdır*|oldu*|anlaşıldı*|süper*|harika*)
     exit 0
     ;;
-  # Imperative commands — no memory context needed
+  # Imperative commands — skip if short (<=3 words, likely bare command)
+  # Longer prompts like "push notification implementation" should NOT be skipped
   commit*|push*|pull*|merge*|rebase*|deploy*|install*|build*|run\ *|start\ *|stop\ *|restart*|kill\ *)
-    exit 0
+    _WORD_COUNT_RAW=$(echo "$PROMPT" | wc -w | tr -d ' ')
+    [ "$_WORD_COUNT_RAW" -le 3 ] && exit 0
     ;;
-  # Turkish imperative commands
-  *commit\'le*|*push\'la*|*güncelle*|*kapat*|*başlat*|*çalıştır*|*sil\ *|*yükle*|*kur\ *|*aç\ *)
-    exit 0
+  # Turkish imperative commands (short only)
+  *commit\'le*|*push\'la*|*başlat*|*çalıştır*)
+    _WORD_COUNT_RAW=$(echo "$PROMPT" | wc -w | tr -d ' ')
+    [ "$_WORD_COUNT_RAW" -le 4 ] && exit 0
     ;;
 esac
 

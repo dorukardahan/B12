@@ -92,11 +92,19 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
             END
         """)
         db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memory_fts_update AFTER UPDATE ON memories BEGIN
+            CREATE TRIGGER IF NOT EXISTS memory_fts_update AFTER UPDATE ON memories
+            WHEN new.deleted_at IS NULL BEGIN
                 INSERT INTO memory_fts(memory_fts, rowid, content, tags)
                 VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
                 INSERT INTO memory_fts(rowid, content, tags)
                 VALUES (new.id, new.content, COALESCE(new.tags, ''));
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memory_fts_softdel AFTER UPDATE ON memories
+            WHEN new.deleted_at IS NOT NULL AND old.deleted_at IS NULL BEGIN
+                INSERT INTO memory_fts(memory_fts, rowid, content, tags)
+                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
             END
         """)
     # Native FTS5 table (trigram tokenizer, used by MCP server search)
@@ -120,9 +128,16 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
             END
         """)
         db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+            CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories
+            WHEN new.deleted_at IS NULL BEGIN
                 DELETE FROM memory_content_fts WHERE rowid = old.id;
                 INSERT INTO memory_content_fts(rowid, content) VALUES (new.id, new.content);
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memories_fts_softdel AFTER UPDATE ON memories
+            WHEN new.deleted_at IS NOT NULL AND old.deleted_at IS NULL BEGIN
+                DELETE FROM memory_content_fts WHERE rowid = old.id;
             END
         """)
         db.execute("""
