@@ -432,9 +432,9 @@ if not os.path.exists(DB_PATH):
 # ─── Daemon-first embedding (Phase 1) ────────────────────────
 # Try embedding daemon before loading SentenceTransformer (~4.5s savings)
 _uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-_tmpdir = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
-_DAEMON_SOCK = os.path.join(_tmpdir, f"b12-embed-{_uid}.sock")
-_DAEMON_PID = os.path.join(_tmpdir, f"b12-embed-{_uid}.pid")
+# Hardcode /tmp/ — macOS TMPDIR varies per session
+_DAEMON_SOCK = f"/tmp/b12-embed-{_uid}.sock"
+_DAEMON_PID = f"/tmp/b12-embed-{_uid}.pid"
 _USE_DAEMON = False
 
 if os.path.exists(_DAEMON_SOCK) and os.path.exists(_DAEMON_PID):
@@ -605,6 +605,9 @@ try:
             if any(tl.startswith(s.lower()) for s in SKIP):
                 return False
             if tl.startswith('|') or tl.startswith('#'):
+                return False
+            # Skip progress noise: tool lists, stored/modified counts
+            if tl.startswith('[progress] used:') or tl.startswith('[progress] stored') or tl.startswith('[progress] modified'):
                 return False
             # Minimum word count — very short items are usually noise
             if len(tl.split()) < 5:

@@ -63,6 +63,14 @@ case "$PROMPT_LOWER" in
   evet*|hayır*|tamam*|ok*|yes*|no*|devam*|anladım*|güzel*|teşekkür*|thanks*|merhaba*|hey*|hi\ *|hello*|peki*|hadi*|tamamdır*|oldu*|anlaşıldı*|süper*|harika*)
     exit 0
     ;;
+  # Imperative commands — no memory context needed
+  commit*|push*|pull*|merge*|rebase*|deploy*|install*|build*|run\ *|start\ *|stop\ *|restart*|kill\ *)
+    exit 0
+    ;;
+  # Turkish imperative commands
+  *commit\'le*|*push\'la*|*güncelle*|*kapat*|*başlat*|*çalıştır*|*sil\ *|*yükle*|*kur\ *|*aç\ *)
+    exit 0
+    ;;
 esac
 
 # Skip slash commands (e.g., /commit, /help — but NOT file paths like /Users/...)
@@ -86,9 +94,9 @@ FEEDBACK_DIR="$B12_BASE/memory-logs"
 
 # ── Embedding daemon helpers (Phase 1) ───────────────────────
 _UID=$(id -u 2>/dev/null || echo $$)
-_TMPDIR="${TMPDIR:-${TEMP:-/tmp}}"
-EMBED_SOCK="${_TMPDIR}/b12-embed-${_UID}.sock"
-EMBED_PID="${_TMPDIR}/b12-embed-${_UID}.pid"
+# Hardcode /tmp/ — macOS TMPDIR varies per session, causing mismatch with daemon
+EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
+EMBED_PID="/tmp/b12-embed-${_UID}.pid"
 
 daemon_alive() {
   [ -S "$EMBED_SOCK" ] && [ -f "$EMBED_PID" ] && \
@@ -197,7 +205,7 @@ RESULTS=$(sqlite3 "$DB_PATH" "
     SELECT m.id,
            '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') as display,
            (
-             0.3 * COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / COALESCE(m.strength, 1.0)), 0.5)
+             0.3 * max(COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / COALESCE(m.strength, 1.0)), 0.5), 0.1)
              + 0.3 * COALESCE(json_extract(m.metadata, '$.importance_score'), 1.0) / 2.0
              + 0.4 * (1.0 / (1.0 + abs(f.rank)))
            ) as score
@@ -309,7 +317,7 @@ if { [ "$NEEDS_SEMANTIC" = true ] || [ "$SHOULD_RERANK" = true ]; } && [ -x "$VE
 
   _COLD_OUTPUT=$("$VENV_PYTHON" - "$DB_PATH" "$PROMPT" "$NEEDS_SEMANTIC" "$SHOULD_RERANK" "$_ID_LIST" 2>/dev/null << 'COLDEOF'
 import sys, struct, sqlite3, signal
-signal.alarm(8)  # Must be < watchdog (10s); cold model load ~5s cached, ~12s first-ever
+signal.alarm(3)  # Fail fast if daemon is down — cold model load takes 5-12s anyway
 
 db_path = sys.argv[1]
 query = sys.argv[2]

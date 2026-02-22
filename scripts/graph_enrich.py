@@ -49,14 +49,14 @@ except ImportError:
         DB_PATH = os.path.join(_home, ".local", "share", "mcp-memory", "sqlite_vec.db")
 LOG_DIR = os.path.expanduser("~/.claude/memory-logs")
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-_TMP = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
-DAEMON_SOCK = os.path.join(_TMP, f"b12-embed-{_UID}.sock")
-DAEMON_PID = os.path.join(_TMP, f"b12-embed-{_UID}.pid")
+# Hardcode /tmp/ — macOS TMPDIR varies per session
+DAEMON_SOCK = f"/tmp/b12-embed-{_UID}.sock"
+DAEMON_PID = f"/tmp/b12-embed-{_UID}.pid"
 
 MAX_MEMORIES_PER_RUN = 50
 NEIGHBOR_K = 5
 NEIGHBOR_MIN_SIM = 0.5
-NLI_CONTRADICTION_THRESHOLD = 0.7
+NLI_CONTRADICTION_THRESHOLD = 0.8  # Raised from 0.7 — reduces ~67% false positive rate
 NLI_ENTAILMENT_THRESHOLD = 0.8
 NLI_SIM_RANGE = (0.5, 0.85)  # Only NLI-check pairs in this cosine range
 MIN_CONTENT_LEN = 30  # Skip very short memories for NLI
@@ -227,6 +227,10 @@ def main():
         for neighbor in resp.get('neighbors', []):
             n_id = neighbor['id']
             n_sim = neighbor['similarity']
+
+            # Sanity check: cosine similarity must be in [0, 1]
+            if n_sim > 1.0 or n_sim < 0.0:
+                continue
 
             # Get neighbor's hash, content, and type
             n_row = conn.execute(

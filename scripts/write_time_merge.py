@@ -346,9 +346,9 @@ def _daemon_request(payload: dict, timeout: float = 10) -> Optional[dict]:
     """Send JSON request to embedding daemon, return parsed response or None."""
     import socket as _sock
     uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-    _tmp = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
-    sock_path = os.path.join(_tmp, f"b12-embed-{uid}.sock")
-    pid_path = os.path.join(_tmp, f"b12-embed-{uid}.pid")
+    # Hardcode /tmp/ — macOS TMPDIR varies per session
+    sock_path = f"/tmp/b12-embed-{uid}.sock"
+    pid_path = f"/tmp/b12-embed-{uid}.pid"
     if not os.path.exists(sock_path) or not os.path.exists(pid_path):
         return None
     try:

@@ -45,10 +45,11 @@ os.environ.setdefault('WANDB_DISABLED', 'true')
 os.environ.setdefault('WANDB_MODE', 'disabled')
 
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-_TMP = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
-SOCKET_PATH = os.path.join(_TMP, f"b12-embed-{_UID}.sock")
-PID_PATH = os.path.join(_TMP, f"b12-embed-{_UID}.pid")
-LOCK_PATH = os.path.join(_TMP, f"b12-embed-{_UID}.lock")
+# Hardcode /tmp/ — macOS TMPDIR varies per session (/var/folders/...),
+# causing socket path mismatch between daemon and hooks.
+SOCKET_PATH = f"/tmp/b12-embed-{_UID}.sock"
+PID_PATH = f"/tmp/b12-embed-{_UID}.pid"
+LOCK_PATH = f"/tmp/b12-embed-{_UID}.lock"
 LOG_DIR = os.path.expanduser("~/.claude/memory-logs")
 LOG_PATH = os.path.join(LOG_DIR, "embed-daemon.log")
 IDLE_TIMEOUT = 7200  # 2 hours
@@ -57,17 +58,20 @@ MODEL_NAME = os.environ.get('MCP_EMBEDDING_MODEL', 'paraphrase-multilingual-Mini
 
 
 def log(msg):
-    """Append timestamped message to daemon log file."""
+    """Append timestamped message with PID to daemon log file."""
     try:
         with open(LOG_PATH, 'a') as f:
-            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [{os.getpid()}] {msg}\n")
     except Exception:
         pass
 
 
 def cleanup():
-    """Remove socket, PID, and lock files (registered with atexit)."""
-    for path in (SOCKET_PATH, PID_PATH, LOCK_PATH):
+    """Remove socket and PID files (registered with atexit).
+    NOTE: Lock file is NOT removed — flock is released automatically on process
+    death. Removing the lock file creates a race where two daemons can each
+    flock a different inode of the same path (10% of starts affected)."""
+    for path in (SOCKET_PATH, PID_PATH):
         try:
             os.unlink(path)
         except OSError:

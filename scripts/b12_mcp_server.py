@@ -31,8 +31,8 @@ else:
                            "mcp-memory", "sqlite_vec.db")
 
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-_tmp = os.environ.get("TMPDIR", os.environ.get("TEMP", "/tmp"))
-SOCK_PATH = os.path.join(_tmp, f"b12-embed-{_UID}.sock")
+# Hardcode /tmp/ — macOS TMPDIR varies per session, causing socket mismatch
+SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 
 # ── SQLite connection (set during lifespan) ──────────────────────
 _db: sqlite3.Connection | None = None
@@ -59,31 +59,46 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
         )
     """)
     # B12 FTS5 table (unicode61 tokenizer, used by hooks)
+    # Includes tags column to match existing DB schema from mcp-memory-service
     db.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts USING fts5(
             content,
+            tags,
             content='memories',
             content_rowid='id',
             tokenize='unicode61'
         )
     """)
     # FTS5 sync triggers for memory_fts
-    db.execute("""
-        CREATE TRIGGER IF NOT EXISTS memory_fts_insert AFTER INSERT ON memories BEGIN
-            INSERT INTO memory_fts(rowid, content) VALUES (new.id, new.content);
-        END
-    """)
-    db.execute("""
-        CREATE TRIGGER IF NOT EXISTS memory_fts_delete AFTER DELETE ON memories BEGIN
-            INSERT INTO memory_fts(memory_fts, rowid, content) VALUES('delete', old.id, old.content);
-        END
-    """)
-    db.execute("""
-        CREATE TRIGGER IF NOT EXISTS memory_fts_update AFTER UPDATE ON memories BEGIN
-            INSERT INTO memory_fts(memory_fts, rowid, content) VALUES('delete', old.id, old.content);
-            INSERT INTO memory_fts(rowid, content) VALUES (new.id, new.content);
-        END
-    """)
+    # NOTE: We do NOT create triggers here if they already exist from mcp-memory-service
+    # (fts_insert, fts_update, fts_softdel, fts_hardel). Check before creating to avoid
+    # duplicate trigger firing which corrupts the FTS index.
+    _existing_triggers = {r[0] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%memory_fts%'"
+    ).fetchall()}
+    if not _existing_triggers:
+        # Fresh install — create B12 triggers with soft-delete awareness
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memory_fts_insert AFTER INSERT ON memories
+            WHEN new.deleted_at IS NULL BEGIN
+                INSERT INTO memory_fts(rowid, content, tags)
+                VALUES (new.id, new.content, COALESCE(new.tags, ''));
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memory_fts_delete AFTER DELETE ON memories BEGIN
+                INSERT INTO memory_fts(memory_fts, rowid, content, tags)
+                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memory_fts_update AFTER UPDATE ON memories BEGIN
+                INSERT INTO memory_fts(memory_fts, rowid, content, tags)
+                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
+                INSERT INTO memory_fts(rowid, content, tags)
+                VALUES (new.id, new.content, COALESCE(new.tags, ''));
+            END
+        """)
     # Native FTS5 table (trigram tokenizer, used by MCP server search)
     db.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_content_fts USING fts5(
@@ -93,35 +108,42 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
             tokenize='trigram'
         )
     """)
-    # Triggers for memory_content_fts
-    db.execute("""
-        CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories BEGIN
-            INSERT INTO memory_content_fts(rowid, content) VALUES (new.id, new.content);
-        END
-    """)
-    db.execute("""
-        CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
-            DELETE FROM memory_content_fts WHERE rowid = old.id;
-            INSERT INTO memory_content_fts(rowid, content) VALUES (new.id, new.content);
-        END
-    """)
-    db.execute("""
-        CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
-            DELETE FROM memory_content_fts WHERE rowid = old.id;
-        END
-    """)
+    # Triggers for memory_content_fts (with soft-delete guard)
+    _existing_content_triggers = {r[0] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%memory_content_fts%'"
+    ).fetchall()}
+    if not _existing_content_triggers:
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories
+            WHEN new.deleted_at IS NULL BEGIN
+                INSERT INTO memory_content_fts(rowid, content) VALUES (new.id, new.content);
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories BEGIN
+                DELETE FROM memory_content_fts WHERE rowid = old.id;
+                INSERT INTO memory_content_fts(rowid, content) VALUES (new.id, new.content);
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
+                DELETE FROM memory_content_fts WHERE rowid = old.id;
+            END
+        """)
+
     # Memory graph (edges between memories)
+    # Uses composite PK matching existing DB from mcp-memory-service.
+    # One edge per (source, target) pair — INSERT OR REPLACE upgrades type.
     db.execute("""
         CREATE TABLE IF NOT EXISTS memory_graph (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
             source_hash TEXT NOT NULL,
             target_hash TEXT NOT NULL,
-            similarity REAL,
-            connection_types TEXT,
+            similarity REAL NOT NULL,
+            connection_types TEXT NOT NULL DEFAULT '[]',
             metadata TEXT,
-            created_at REAL,
-            relationship_type TEXT,
-            UNIQUE(source_hash, target_hash, relationship_type)
+            created_at REAL NOT NULL,
+            relationship_type TEXT DEFAULT 'related',
+            PRIMARY KEY (source_hash, target_hash)
         )
     """)
     # Vector embeddings table (requires sqlite-vec)
