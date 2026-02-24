@@ -117,7 +117,8 @@ def start_daemon_if_needed():
     venv_python = os.path.expanduser(
         "~/.local/b12-venv/bin/python3"
     )
-    daemon_script = os.path.expanduser("~/.claude/hooks/scripts/embed_daemon.py")
+    _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.claude/hooks'))
+    daemon_script = os.path.join(_hook_dir, 'scripts', 'embed_daemon.py')
     if not os.path.exists(daemon_script):
         # Try B12 source location
         daemon_script = os.path.join(os.path.dirname(__file__), "embed_daemon.py")

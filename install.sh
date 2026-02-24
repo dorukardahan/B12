@@ -319,7 +319,7 @@ verify() {
 # Main
 # ─────────────────────────────────────────────
 
-echo "B12 Memory System Installer (v10.0 — custom MCP server)"
+echo "B12 Memory System Installer (v10.1 — path isolation + context cap)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first

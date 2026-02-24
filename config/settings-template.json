@@ -1,7 +1,7 @@
 {
   "_comment": "Merge these into your ~/.claude/settings.json or ~/.claude-<setup>/settings.json",
   "env": {
-    "_comment_env": "B12_WORK_PATTERN: set to match your work directories (e.g. 'mycompany')",
+    "_comment_env": "B12_WORK_PATTERN: work dir pattern. B12_DATA_DIR: per-setup data path (default ~/.claude). B12_HOOK_DIR: hook code path (default ~/.claude/hooks, rarely needed).",
     "B12_WORK_PATTERN": ""
   },
   "hooks": {

@@ -292,7 +292,7 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
 
   # Add cross-project hints
   if [ -n "$CROSS_PROJECT_HINT" ]; then
-    CONTEXT="${CONTEXT}\n\n--- CROSS-PROJECT ---\n${CROSS_PROJECT_HINT}\nSearch without tag filter to explore these.\n--- END ---"
+    CONTEXT="${CONTEXT}\n\n--- CROSS-PROJECT ---\n${CROSS_PROJECT_HINT}\nSearch without tag filter to explore these.\n--- END CROSS-PROJECT ---"
   fi
 
   # Add feedback alerts (if any)
@@ -305,29 +305,30 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
     CONTEXT="${CONTEXT}\n\n--- MEMORY PRE-FETCH ---\n${MEMORY_PREFETCH}\n--- END PRE-FETCH ---"
   fi
 
-  # ── Context hard cap — progressive trimming (Phase 2 fix) ────
+  # ── Context hard cap — progressive trimming ──────────────────
   # Fixed instructions (~2120 chars) are always kept.
   # Variable sections trimmed in priority order (least valuable first).
+  # Note: CONTEXT has literal \n — expand with printf '%b' before sed.
   MAX_CONTEXT_CHARS=6000
   _ctx_len=${#CONTEXT}
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
     # Tier 1: Remove memory pre-fetch
-    CONTEXT=$(printf '%s' "$CONTEXT" | sed '/--- MEMORY PRE-FETCH ---/,/--- END PRE-FETCH ---/d')
+    CONTEXT=$(printf '%b' "$CONTEXT" | sed '/--- MEMORY PRE-FETCH ---/,/--- END PRE-FETCH ---/d')
     _ctx_len=${#CONTEXT}
   fi
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
     # Tier 2: Remove cross-project hints
-    CONTEXT=$(printf '%s' "$CONTEXT" | sed '/--- CROSS-PROJECT ---/,/--- END ---/d')
+    CONTEXT=$(printf '%b' "$CONTEXT" | sed '/--- CROSS-PROJECT ---/,/--- END CROSS-PROJECT ---/d')
     _ctx_len=${#CONTEXT}
   fi
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
     # Tier 3: Remove feedback digest
-    CONTEXT=$(printf '%s' "$CONTEXT" | sed '/--- MEMORY USAGE FEEDBACK ---/,/--- END FEEDBACK ---/d')
+    CONTEXT=$(printf '%b' "$CONTEXT" | sed '/--- MEMORY USAGE FEEDBACK ---/,/--- END FEEDBACK ---/d')
     _ctx_len=${#CONTEXT}
   fi
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
     # Tier 4: Truncate to hard cap (last resort — keeps fixed instructions intact)
-    CONTEXT=$(printf '%s' "$CONTEXT" | head -c "$MAX_CONTEXT_CHARS")
+    CONTEXT=$(printf '%b' "$CONTEXT" | head -c "$MAX_CONTEXT_CHARS")
   fi
 
   ESCAPED_CONTEXT=$(printf '%b' "$CONTEXT" | escape_json)
