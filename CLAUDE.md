@@ -51,6 +51,8 @@ When making code changes, ALWAYS update the corresponding documentation:
 Documentation lives in: `README.md`, `docs/setup.md`, `docs/architecture.md`, `CHANGELOG.md`
 
 ## Key technical constraints
+- `B12_DATA_DIR` controls data/state paths (summaries, staging, logs). `B12_HOOK_DIR` controls hook code paths (script imports, embed daemon). They are intentionally separate — data can be per-setup while code stays shared.
+- SessionStart context injection has a 6000-char hard cap with progressive trimming (pre-fetch → cross-project → feedback → truncation).
 - PreCompact hooks cannot inject context — they can only run side effects
 - SessionStart hooks CAN inject context via `additionalContext` in JSON output
 - The B12 MCP server (`scripts/b12_mcp_server.py`) runs as a child process spawned by Claude Code

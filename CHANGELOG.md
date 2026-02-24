@@ -2,6 +2,20 @@
 
 All notable changes to B12 are documented in this file.
 
+## v10.1 (2026-02-25) — Path Isolation + Context Cap
+
+### Fixed
+- **Script/data path conflation**: `B12_DATA_DIR` no longer controls script import paths. New `B12_HOOK_DIR` env var controls hook code location independently. Fixes `ModuleNotFoundError: shared_patterns` when `B12_DATA_DIR` pointed to a per-setup directory.
+- **Inconsistent `write_time_merge` import**: Was hardcoded to `~/.claude/hooks/scripts` while others used `B12_DATA_DIR`. Now unified under `B12_HOOK_DIR`.
+
+### Added
+- **Context injection hard cap** (6000 chars): SessionStart progressively trims variable sections when context exceeds limit. Trim order: memory pre-fetch → cross-project hints → feedback digest → hard truncation. Prevents long-context 429 errors on extended sessions.
+- **Environment variables documentation**: README now has a table of all B12 env vars with defaults and examples.
+
+### Changed
+- 4 files updated: `memory-session-start.sh`, `memory-precompact.sh`, `memory-session-end.sh` (2 locations)
+- `CLAUDE.md` updated with path separation rule and context cap documentation
+
 ## v10.0 (2026-02-20) — Custom MCP Server
 
 ### Breaking Changes

@@ -31,7 +31,7 @@ _UID=$(id -u 2>/dev/null || echo $$)
 EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
 EMBED_LOCK="/tmp/b12-embed-${_UID}.lock"
 VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
-B12_SCRIPTS="${B12_DATA_DIR:-$HOME/.claude}/hooks/scripts"
+B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.claude/hooks}/scripts"
 DAEMON_SCRIPT="$B12_SCRIPTS/embed_daemon.py"
 
 _DAEMON_NEEDED=true
@@ -303,6 +303,31 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # Add pre-fetched memories (project-relevant + universal)
   if [ -n "$MEMORY_PREFETCH" ]; then
     CONTEXT="${CONTEXT}\n\n--- MEMORY PRE-FETCH ---\n${MEMORY_PREFETCH}\n--- END PRE-FETCH ---"
+  fi
+
+  # ── Context hard cap — progressive trimming (Phase 2 fix) ────
+  # Fixed instructions (~2120 chars) are always kept.
+  # Variable sections trimmed in priority order (least valuable first).
+  MAX_CONTEXT_CHARS=6000
+  _ctx_len=${#CONTEXT}
+  if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
+    # Tier 1: Remove memory pre-fetch
+    CONTEXT=$(printf '%s' "$CONTEXT" | sed '/--- MEMORY PRE-FETCH ---/,/--- END PRE-FETCH ---/d')
+    _ctx_len=${#CONTEXT}
+  fi
+  if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
+    # Tier 2: Remove cross-project hints
+    CONTEXT=$(printf '%s' "$CONTEXT" | sed '/--- CROSS-PROJECT ---/,/--- END ---/d')
+    _ctx_len=${#CONTEXT}
+  fi
+  if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
+    # Tier 3: Remove feedback digest
+    CONTEXT=$(printf '%s' "$CONTEXT" | sed '/--- MEMORY USAGE FEEDBACK ---/,/--- END FEEDBACK ---/d')
+    _ctx_len=${#CONTEXT}
+  fi
+  if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
+    # Tier 4: Truncate to hard cap (last resort — keeps fixed instructions intact)
+    CONTEXT=$(printf '%s' "$CONTEXT" | head -c "$MAX_CONTEXT_CHARS")
   fi
 
   ESCAPED_CONTEXT=$(printf '%b' "$CONTEXT" | escape_json)

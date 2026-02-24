@@ -53,9 +53,9 @@ from datetime import datetime, timezone
 signal.alarm(25)
 
 # Import shared patterns (DRY — same patterns used in precompact.sh)
-# Note: sys.argv[0] is "-" in heredocs, so use B12_DATA_DIR / known path
-_b12_base = os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.claude'))
-sys.path.insert(0, os.path.join(_b12_base, 'hooks', 'scripts'))
+# B12_HOOK_DIR controls code location; B12_DATA_DIR controls data only
+_hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.claude/hooks'))
+sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
 from shared_patterns import DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE
 
 transcript_path = sys.argv[1]
@@ -637,7 +637,8 @@ try:
         # Try to import write-time merge (graceful degradation if unavailable)
         _USE_MERGE = False
         try:
-            sys.path.insert(0, os.path.expanduser("~/.claude/hooks/scripts"))
+            _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.claude/hooks'))
+            sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
             from write_time_merge import merge_or_insert
             _USE_MERGE = True
         except ImportError:

@@ -31,9 +31,9 @@ if [ -f "$TRANSCRIPT_PATH" ]; then
 import sys, json, os, re
 
 # Import shared patterns (DRY — same patterns used in session-end.sh)
-# Note: sys.argv[0] is "-" in heredocs, so use B12_DATA_DIR / known path
-_b12_base = os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.claude'))
-sys.path.insert(0, os.path.join(_b12_base, 'hooks', 'scripts'))
+# B12_HOOK_DIR controls code location; B12_DATA_DIR controls data only
+_hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.claude/hooks'))
+sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
 from shared_patterns import DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE
 
 transcript_path = sys.argv[1]

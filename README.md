@@ -212,6 +212,27 @@ If you run multiple Claude Code setups (e.g., personal + work):
 - **Hook config** needs to be in each setup's `settings.json`
 - **Install**: `./install.sh --all` handles all setups
 
+### Environment variables
+
+| Variable | Controls | Default | Example |
+|----------|----------|---------|---------|
+| `B12_DATA_DIR` | Data/state: summaries, staging, logs | `~/.claude` | `~/.claude-work` |
+| `B12_HOOK_DIR` | Hook code: script imports, embed daemon | `~/.claude/hooks` | (rarely needed) |
+| `B12_WORK_PATTERN` | Work setup detection pattern | (none) | `mycompany` |
+
+**Important:** `B12_DATA_DIR` and `B12_HOOK_DIR` are separate by design. Data can be per-setup while hook code stays shared. Set them in your setup's `settings.json`:
+```json
+{
+  "env": {
+    "B12_DATA_DIR": "~/.claude-work"
+  }
+}
+```
+
+### Context injection limits
+
+SessionStart injects behavioral instructions + variable data (profile, session summary, pre-fetch, etc.). A hard cap of **6000 characters** prevents context bloat. When exceeded, variable sections are trimmed in priority order: pre-fetch first, then cross-project hints, then feedback digest, then hard truncation.
+
 ## How Memory Works
 
 **Session start** — the SessionStart hook loads your user profile, last session's summary, cross-project hints, and pre-fetches relevant memories from the database using FTS5 + tag queries. All of this is injected as `additionalContext`.
