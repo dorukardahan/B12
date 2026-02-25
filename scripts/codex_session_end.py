@@ -77,7 +77,17 @@ def save_processed_session(session_id):
 
 
 def get_embedding(text):
-    """Get embedding via embed daemon (or return None if unavailable)."""
+    """Get embedding via daemon first, fallback to direct model load."""
+    # Try daemon first (fast, no model load)
+    emb = _get_embedding_daemon(text)
+    if emb:
+        return emb
+    # Fallback: load model directly (slow first time, ~2s cached)
+    return _get_embedding_direct(text)
+
+
+def _get_embedding_daemon(text):
+    """Get embedding via embed daemon Unix socket."""
     import socket
     sock_path = f"/tmp/b12-embed-{os.getuid()}.sock"
     if not os.path.exists(sock_path):
@@ -103,6 +113,30 @@ def get_embedding(text):
     except Exception:
         pass
     return None
+
+
+# Module-level model cache (loaded once per process)
+_model = None
+
+
+def _get_embedding_direct(text):
+    """Get embedding by loading SentenceTransformer directly."""
+    global _model
+    try:
+        if _model is None:
+            from sentence_transformers import SentenceTransformer
+            model_name = os.environ.get(
+                "MCP_EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2"
+            )
+            _model = SentenceTransformer(model_name)
+        import base64, numpy as np
+        emb = _model.encode([text], normalize_embeddings=True, convert_to_numpy=True)
+        emb_bytes = emb[0].astype(np.float32).tobytes()
+        return base64.b64encode(emb_bytes).decode('ascii')
+    except ImportError:
+        return None
+    except Exception:
+        return None
 
 
 def store_memory(db_path, content, metadata_str, tags, embedding=None):
