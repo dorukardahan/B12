@@ -6,9 +6,9 @@
 # to have ended (no new turns for 2+ minutes).
 #
 # Config in ~/.codex/config.toml:
-#   notify = ["bash", "-lc", "~/.claude/hooks/b12-codex-notify.sh"]
+#   notify = ["/path/to/b12-codex-notify.sh"]
 #
-# The hook receives a JSON payload on argv (not stdin) with:
+# Codex passes a JSON payload as $1 (first argument) with:
 #   type, thread-id, turn-id, input-messages, last-assistant-message
 
 # Central data directory
@@ -17,24 +17,39 @@ B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.claude/hooks}/scripts"
 STATE_DIR="$B12_BASE/memory-logs"
 DEBOUNCE_FILE="$STATE_DIR/codex-notify-debounce.json"
 CODEX_SESSIONS="${CODEX_HOME:-$HOME/.codex}/sessions"
+DEBUG_LOG="$STATE_DIR/codex-notify-debug.log"
 
 mkdir -p "$STATE_DIR"
 
-# ── Extract thread ID from environment or args ──
-# Codex passes notify payload differently depending on version.
-# Try parsing JSON from stdin first, then args.
+# ── Extract thread ID ──
+# Codex passes JSON as $1 (argv). Fallback: try stdin.
 THREAD_ID=""
-if [ -t 0 ]; then
-  # No stdin, check args
+PAYLOAD=""
+
+# Try $1 first (Codex standard)
+if [ -n "$1" ]; then
+  PAYLOAD="$1"
+  THREAD_ID=$(echo "$PAYLOAD" | jq -r '.["thread-id"] // empty' 2>/dev/null)
+fi
+
+# Fallback: try remaining args
+if [ -z "$THREAD_ID" ]; then
   for arg in "$@"; do
-    # Try to extract thread-id from JSON arg
     tid=$(echo "$arg" | jq -r '.["thread-id"] // empty' 2>/dev/null)
     [ -n "$tid" ] && THREAD_ID="$tid" && break
   done
-else
-  INPUT=$(cat)
-  THREAD_ID=$(echo "$INPUT" | jq -r '.["thread-id"] // empty' 2>/dev/null)
 fi
+
+# Fallback: try stdin (if not a terminal)
+if [ -z "$THREAD_ID" ] && [ ! -t 0 ]; then
+  PAYLOAD=$(cat)
+  THREAD_ID=$(echo "$PAYLOAD" | jq -r '.["thread-id"] // empty' 2>/dev/null)
+fi
+
+# Debug: log every invocation
+{
+  echo "[$(date '+%Y-%m-%d %H:%M:%S')] args=$# thread=$THREAD_ID"
+} >> "$DEBUG_LOG" 2>/dev/null
 
 # If we still don't have a thread ID, exit silently
 [ -z "$THREAD_ID" ] && exit 0

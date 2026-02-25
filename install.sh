@@ -445,7 +445,7 @@ for i, line in enumerate(lines):
         has_notify = True
         # Update existing notify line to include B12 hook
         if notify_hook not in stripped:
-            lines[i] = f'notify = ["bash", "-lc", "{notify_hook}"]\n'
+            lines[i] = f'notify = ["{notify_hook}"]\n'
         break
 
 if not has_notify:
@@ -458,7 +458,7 @@ if not has_notify:
             break
     else:
         insert_at = len(lines)
-    lines.insert(insert_at, f'notify = ["bash", "-lc", "{notify_hook}"]\n')
+    lines.insert(insert_at, f'notify = ["{notify_hook}"]\n')
 
 with open(config_path, 'w') as f:
     f.writelines(lines)
