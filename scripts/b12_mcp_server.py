@@ -358,21 +358,36 @@ def memory_search(
 
     # ── FTS search (hybrid only) ─────────────────────────
     if mode == "hybrid" and query:
-        try:
-            fts_query = '"' + query.replace('"', '""') + '"'
-            fts_rows = db.execute(
-                f"""SELECT m.*, rank
-                    FROM memory_content_fts fts
-                    JOIN memories m ON m.id = fts.rowid
-                    WHERE fts.content MATCH ? AND {where_sql}
-                    ORDER BY rank LIMIT ?""",
-                [fts_query] + params + [limit],
-            ).fetchall()
-            for r in fts_rows:
-                score = 1.0 - min(abs(r["rank"]) / 20.0, 0.9)
-                results[r["content_hash"]] = (r, score)
-        except Exception:
-            pass  # FTS match syntax error
+        # Try phrase match first, fall back to OR match for broader results
+        for fts_attempt in ("phrase", "or"):
+            try:
+                if fts_attempt == "phrase":
+                    fts_query = '"' + query.replace('"', '""') + '"'
+                else:
+                    # Split into words, join with OR for broader matching
+                    words = [w.strip() for w in query.split() if len(w.strip()) > 1]
+                    if not words:
+                        break
+                    fts_query = " OR ".join(
+                        '"' + w.replace('"', '""') + '"' for w in words
+                    )
+                fts_rows = db.execute(
+                    f"""SELECT m.*, rank
+                        FROM memory_content_fts fts
+                        JOIN memories m ON m.id = fts.rowid
+                        WHERE fts.content MATCH ? AND {where_sql}
+                        ORDER BY rank LIMIT ?""",
+                    [fts_query] + params + [limit],
+                ).fetchall()
+                for r in fts_rows:
+                    h = r["content_hash"]
+                    # Phrase match scores higher than OR match
+                    bonus = 0.1 if fts_attempt == "phrase" else 0.0
+                    score = 1.0 - min(abs(r["rank"]) / 20.0, 0.9) + bonus
+                    if h not in results or results[h][1] < score:
+                        results[h] = (r, score)
+            except Exception:
+                continue  # FTS match syntax error, try next
 
     # ── Semantic search via daemon ───────────────────────────
     if mode in ("semantic", "hybrid") and query:
