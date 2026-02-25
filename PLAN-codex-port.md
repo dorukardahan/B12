@@ -227,7 +227,8 @@ Skill content instructs Codex to:
 - GitHub Discussion: https://github.com/openai/codex/discussions/2150
 
 ### Pre-Built Adapters (do now, wire later)
-- [ ] Create `scripts/hook_adapter.py` — abstract interface for platform-specific hooks
+- [x] Create `scripts/hook_adapter.py` — abstract interface for platform-specific hooks
+- [x] Create `scripts/embedding_backfill.py` — fill missing embeddings for hook-stored memories
 
 ```python
 class HookAdapter:
