@@ -697,7 +697,7 @@ try:
 except Exception as e:
     # Log error instead of silent failure
     import traceback
-    log_dir = os.path.expanduser("~/.claude/memory-logs")
+    log_dir = os.path.join(os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.claude')), 'memory-logs')
     os.makedirs(log_dir, exist_ok=True)
     with open(os.path.join(log_dir, "memory-errors.log"), 'a') as ef:
         ef.write(f"[{__import__('datetime').datetime.now().isoformat()}] SessionEnd embed error: {e}\n")

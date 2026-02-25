@@ -308,30 +308,31 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # ── Context hard cap — progressive trimming ──────────────────
   # Fixed instructions (~2120 chars) are always kept.
   # Variable sections trimmed in priority order (least valuable first).
-  # Note: CONTEXT has literal \n — expand with printf '%b' before sed.
+  # Expand literal \n once, then measure/trim in consistent units.
+  CONTEXT=$(printf '%b' "$CONTEXT")
   MAX_CONTEXT_CHARS=6000
   _ctx_len=${#CONTEXT}
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
     # Tier 1: Remove memory pre-fetch
-    CONTEXT=$(printf '%b' "$CONTEXT" | sed '/--- MEMORY PRE-FETCH ---/,/--- END PRE-FETCH ---/d')
+    CONTEXT=$(echo "$CONTEXT" | sed '/--- MEMORY PRE-FETCH ---/,/--- END PRE-FETCH ---/d')
     _ctx_len=${#CONTEXT}
   fi
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
     # Tier 2: Remove cross-project hints
-    CONTEXT=$(printf '%b' "$CONTEXT" | sed '/--- CROSS-PROJECT ---/,/--- END CROSS-PROJECT ---/d')
+    CONTEXT=$(echo "$CONTEXT" | sed '/--- CROSS-PROJECT ---/,/--- END CROSS-PROJECT ---/d')
     _ctx_len=${#CONTEXT}
   fi
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
     # Tier 3: Remove feedback digest
-    CONTEXT=$(printf '%b' "$CONTEXT" | sed '/--- MEMORY USAGE FEEDBACK ---/,/--- END FEEDBACK ---/d')
+    CONTEXT=$(echo "$CONTEXT" | sed '/--- MEMORY USAGE FEEDBACK ---/,/--- END FEEDBACK ---/d')
     _ctx_len=${#CONTEXT}
   fi
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
     # Tier 4: Truncate to hard cap (last resort — keeps fixed instructions intact)
-    CONTEXT=$(printf '%b' "$CONTEXT" | head -c "$MAX_CONTEXT_CHARS")
+    CONTEXT=$(echo "$CONTEXT" | head -c "$MAX_CONTEXT_CHARS")
   fi
 
-  ESCAPED_CONTEXT=$(printf '%b' "$CONTEXT" | escape_json)
+  ESCAPED_CONTEXT=$(echo "$CONTEXT" | escape_json)
 
   cat <<CONTEXT_EOF
 {

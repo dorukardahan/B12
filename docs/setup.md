@@ -29,6 +29,16 @@ The installer:
 
 For multiple setups: `./install.sh --all` installs to all `~/.claude*` directories.
 
+### Environment variables (multi-setup)
+
+| Variable | Controls | Default |
+|----------|----------|---------|
+| `B12_DATA_DIR` | Data/state: summaries, staging, logs | `~/.claude` |
+| `B12_HOOK_DIR` | Hook code: script imports, embed daemon | `~/.claude/hooks` |
+| `B12_WORK_PATTERN` | Work setup detection pattern | (none) |
+
+Set per-setup in each `settings.json` `env` block. `B12_DATA_DIR` and `B12_HOOK_DIR` are separate — data can be per-setup while hook code stays shared.
+
 ## Step-by-Step Install
 
 ### Step 1: Clone the repository
