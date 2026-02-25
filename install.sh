@@ -354,28 +354,40 @@ inject_codex_mcp_config() {
     info "Created $CONFIG_TOML"
   fi
 
-  # Check if B12 already configured
-  if grep -q '^\[mcp_servers\.B12\]' "$CONFIG_TOML" 2>/dev/null; then
-    # Update existing B12 config
-    if ! python3 - "$CONFIG_TOML" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
-import sys, re
+  # Always use Python for TOML manipulation (handles both add and update)
+  if ! python3 - "$CONFIG_TOML" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys
 
 config_path = sys.argv[1]
 venv_python = sys.argv[2]
 server_script = sys.argv[3]
 
 with open(config_path, 'r') as f:
-    content = f.read()
+    lines = f.readlines()
 
-# Remove existing B12 block (mcp_servers.B12 and its sub-tables)
-# Match [mcp_servers.B12] and everything until the next non-B12 section
-content = re.sub(
-    r'\[mcp_servers\.B12\][^\[]*(?:\[mcp_servers\.B12\.[^\]]*\][^\[]*)*',
-    '', content
-)
+# Remove all B12-related sections using line-by-line section tracking.
+# A TOML section header is a line starting with [ (not [[).
+# We skip lines belonging to [mcp_servers.B12] or [mcp_servers.B12.*].
+filtered = []
+in_b12_section = False
+for line in lines:
+    stripped = line.strip()
+    # Detect TOML section headers (but not array-of-tables [[...]])
+    if stripped.startswith('[') and not stripped.startswith('[['):
+        # Extract table name: everything between first [ and last ]
+        table_name = stripped.split(']')[0].lstrip('[').strip()
+        if table_name == 'mcp_servers.B12' or table_name.startswith('mcp_servers.B12.'):
+            in_b12_section = True
+            continue
+        else:
+            in_b12_section = False
+    if in_b12_section:
+        continue
+    filtered.append(line)
 
-# Append fresh B12 config
-b12_block = f'''
+# Remove trailing blank lines, then append B12 block
+content = ''.join(filtered).rstrip() + '\n'
+content += f'''
 [mcp_servers.B12]
 command = "{venv_python}"
 args = ["{server_script}"]
@@ -387,31 +399,19 @@ MCP_EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
 MCP_MAX_RESPONSE_CHARS = "40000"
 '''
 
-content = content.rstrip() + '\n' + b12_block
-
 with open(config_path, 'w') as f:
     f.write(content)
 
 PYEOF
-    then
-      error "Failed to update B12 config in $CONFIG_TOML"
-    fi
-    info "Updated B12 MCP server in $CONFIG_TOML"
+  then
+    error "Failed to update B12 config in $CONFIG_TOML"
+  fi
+
+  # Report add vs update
+  if grep -q '^\[mcp_servers\.B12\]' "$CONFIG_TOML" 2>/dev/null; then
+    info "B12 MCP server configured in $CONFIG_TOML"
   else
-    # Append new B12 config
-    cat >> "$CONFIG_TOML" << EOF
-
-[mcp_servers.B12]
-command = "$VENV_PYTHON"
-args = ["$SERVER_SCRIPT"]
-enabled = true
-startup_timeout_sec = 30
-
-[mcp_servers.B12.env]
-MCP_EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
-MCP_MAX_RESPONSE_CHARS = "40000"
-EOF
-    info "Added B12 MCP server to $CONFIG_TOML"
+    error "B12 config injection failed"
   fi
 
   echo "     command: $VENV_PYTHON"
