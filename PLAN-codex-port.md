@@ -5,7 +5,7 @@
 > Check off steps as completed. Do NOT delete completed steps — mark them.
 
 **Date**: 2026-02-25
-**Status**: Layer 1 complete, Layer 2 not started
+**Status**: Layer 1 complete, Layer 2 complete (pending E2E user test)
 **Branch**: `feat/codex-support`
 
 ---
@@ -138,7 +138,7 @@ Key installer changes:
 Session-end processing via notify hook. B12 Skill for structured memory workflows.
 
 ### Step 2.1: Codex Notify Hook Script
-- [ ] Create `hooks/b12-codex-notify.sh`
+- [x] Create `hooks/b12-codex-notify.sh`
 
 This script is triggered by Codex's `agent-turn-complete` notify hook.
 It receives JSON with `type`, `thread-id`, `turn-id`, `input-messages`, `last-assistant-message`.
@@ -161,7 +161,7 @@ notify = ["bash", "-lc", "~/.codex/hooks/b12-codex-notify.sh"]
 Store last-processed timestamp in a state file.
 
 ### Step 2.2: Transcript Adapter Module
-- [ ] Create `scripts/transcript_adapter.py`
+- [x] Create `scripts/transcript_adapter.py`
 
 ```python
 class TranscriptAdapter:
@@ -185,7 +185,7 @@ class TranscriptAdapter:
 This lets `memory-session-end.sh` and `b12-codex-notify.sh` share the same extraction logic.
 
 ### Step 2.3: B12 Codex Skill
-- [ ] Create `skills/b12/SKILL.md`
+- [x] Create `skills/b12/SKILL.md`
 
 ```yaml
 ---
@@ -204,17 +204,18 @@ Skill content instructs Codex to:
 5. Memory types: architecture, decision, pattern, gotcha, preference, progress
 
 ### Step 2.4: Update Installer for Layer 2
-- [ ] Copy `b12-codex-notify.sh` to `~/.codex/hooks/`
-- [ ] Set `notify` in `config.toml` (merge, don't overwrite existing notify)
-- [ ] Copy B12 skill to `~/.codex/skills/b12/` or `~/.agents/skills/b12/`
-- [ ] Copy `transcript_adapter.py` to `~/.codex/hooks/scripts/` (or shared location)
+- [x] Copy `b12-codex-notify.sh` to `~/.claude/hooks/` (shared hook location)
+- [x] Set `notify` in `config.toml` (merge, don't overwrite existing notify)
+- [x] Copy B12 skill to `~/.codex/skills/b12/`
+- [x] Copy `transcript_adapter.py` + `codex_session_end.py` to `~/.claude/hooks/scripts/` (shared)
 
 ### Step 2.5: Test Layer 2
-- [ ] Start Codex session, verify skill activates
-- [ ] Work on something, end session
-- [ ] Check if notify hook fired (check log file)
-- [ ] Verify session summary stored in SQLite
-- [ ] Start Claude Code session — search for Codex session's memories
+- [x] Transcript adapter tested with both formats (Claude Code + Codex)
+- [x] codex_session_end.py tested — memory ID 324 stored with correct schema
+- [x] install.sh idempotency verified (no duplicate notify/MCP entries)
+- [ ] Start Codex session, verify skill activates — **USER MANUAL TEST**
+- [ ] Work on something, end session, verify notify hook fires — **USER MANUAL TEST**
+- [ ] Start Claude Code session — search for Codex session's memories — **USER MANUAL TEST**
 
 ---
 

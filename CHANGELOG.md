@@ -2,22 +2,25 @@
 
 All notable changes to B12 are documented in this file.
 
-## v10.2 (2026-02-25) — Codex CLI Support
+## v10.3 (2026-02-25) — Codex CLI Full Support
 
-### Added
+### Added (Layer 2)
+- **Notify hook** (`hooks/b12-codex-notify.sh`): Triggered by Codex's `agent-turn-complete` event. Uses 2-minute debounce to detect session end, then processes rollout JSONL to extract session summaries and micro-memories.
+- **Transcript adapter** (`scripts/transcript_adapter.py`): Unified parser for both Claude Code and Codex CLI transcript formats. Normalizes to common `Message` and `SessionInfo` dataclasses.
+- **Session end processor** (`scripts/codex_session_end.py`): Extracts decisions, errors, learnings, preferences from Codex rollouts using `shared_patterns.py`. Stores session summaries and micro-memories to shared SQLite with correct schema.
+- **B12 Codex Skill** (`skills/b12/SKILL.md`): Instructs Codex to proactively search memory at session start and store findings before session end.
+- Installer now configures `notify` in `config.toml` and installs B12 skill to `~/.codex/skills/b12/`
+
+### Added (Layer 1)
 - **Codex CLI support**: B12 MCP server now works with OpenAI's Codex CLI. Same SQLite database is shared between Claude Code and Codex — memories are cross-platform.
 - **`--codex` installer flag**: `./install.sh --codex` injects B12 MCP server into `~/.codex/config.toml` and appends memory instructions to `~/.codex/AGENTS.md`.
 - **`config/codex-config-template.toml`**: TOML config template for Codex MCP server registration.
-- **`config/codex-agents-template.md`**: Memory behavioral instructions for Codex's AGENTS.md (proactive search/store guidance since Codex lacks lifecycle hooks).
+- **`config/codex-agents-template.md`**: Memory behavioral instructions for Codex's AGENTS.md.
 
 ### Changed
-- Installer banner bumped to v10.2
+- Installer banner bumped to v10.3
 - README updated with Codex CLI setup section
 - Setup docs updated with Codex installation steps
-
-### Notes
-- Codex CLI has no lifecycle hooks — memory retrieval and storage are instruction-based via AGENTS.md
-- The `notify` hook (`agent-turn-complete`) will be used for session summaries in a future Layer 2 update
 
 ## v10.1 (2026-02-25) — Path Isolation + Context Cap
 

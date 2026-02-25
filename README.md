@@ -145,9 +145,9 @@ B12 also works with OpenAI's Codex CLI. The same MCP server and SQLite database 
 ./install.sh --full --codex
 ```
 
-This adds the B12 MCP server to `~/.codex/config.toml` and appends memory instructions to `~/.codex/AGENTS.md`. Restart Codex CLI and type `/mcp` to verify.
+This adds the B12 MCP server to `~/.codex/config.toml`, appends memory instructions to `~/.codex/AGENTS.md`, configures the notify hook for session-end processing, and installs the B12 skill. Restart Codex CLI and type `/mcp` to verify.
 
-**Note:** Codex CLI does not have lifecycle hooks like Claude Code. Memory retrieval and storage are instruction-based (via AGENTS.md) rather than automatic. The model is instructed to search memory at session start and store findings before session end.
+**How it works:** The `notify` hook fires after each agent turn. A 2-minute debounce detects session end, then processes the rollout JSONL to extract session summaries, decisions, errors, and learnings. The B12 Codex Skill also instructs the model to proactively search/store memory.
 
 ### 4. Optional — Automated tasks
 
@@ -179,7 +179,8 @@ B12/
 │   ├── memory-quality-audit.sh     #   Scheduled — weekly health score
 │   ├── memory-feedback-digest.sh   #   Scheduled — weekly usage digest
 │   ├── memory-browse.sh            #   Manual — CLI memory browser
-│   └── memory-upgrade.sh           #   Manual — upgrade + migration
+│   ├── memory-upgrade.sh           #   Manual — upgrade + migration
+│   └── b12-codex-notify.sh         #   Codex — notify hook (session-end debounce)
 ├── scripts/                        # Support modules
 │   ├── b12_mcp_server.py           #   Custom FastMCP server (replaces mcp-memory-service)
 │   ├── embed_daemon.py             #   Background embedding daemon (Unix socket)
@@ -188,11 +189,17 @@ B12/
 │   ├── contradiction_resolver.py   #   ONNX NLI contradiction detection
 │   ├── graph_enrich.py             #   Memory graph enrichment
 │   ├── shared_patterns.py          #   Shared regex patterns (EN + TR)
+│   ├── transcript_adapter.py       #   Unified transcript parser (Claude + Codex)
+│   ├── codex_session_end.py        #   Codex session-end memory extraction
 │   ├── migrate_ebbinghaus.py       #   Migration: add strength fields
 │   └── migrate_v10_13.py           #   Migration: create native FTS5 table
+├── skills/                         # Agent skills
+│   └── b12/SKILL.md               #   B12 Codex Skill (memory workflow)
 ├── config/                         # Template configuration files
 │   ├── mcp-b12-template.json       #   MCP server config for ~/.claude.json
 │   ├── settings-template.json      #   Hook config for settings.json
+│   ├── codex-config-template.toml  #   MCP server config for Codex config.toml
+│   ├── codex-agents-template.md    #   B12 instructions for Codex AGENTS.md
 │   └── launchd-*.plist             #   macOS scheduled task agents
 ├── templates/
 │   └── user-profile.md             #   User profile template

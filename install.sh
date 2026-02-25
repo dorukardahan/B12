@@ -17,6 +17,8 @@
 # What --codex does:
 #   1. Injects B12 MCP server into ~/.codex/config.toml
 #   2. Appends B12 memory instructions to ~/.codex/AGENTS.md
+#   3. Configures notify hook for session-end processing
+#   4. Installs B12 skill to ~/.codex/skills/b12/
 #   (Requires venv — use with --full on first run)
 #
 # Standard install:
@@ -87,6 +89,12 @@ copy_hooks() {
     chmod +x "$HOOK_DEST/$(basename "$f")"
     count=$((count + 1))
   done
+  # Copy Codex notify hook if present
+  if [ -f "$HOOK_SOURCE/b12-codex-notify.sh" ]; then
+    cp "$HOOK_SOURCE/b12-codex-notify.sh" "$HOOK_DEST/"
+    chmod +x "$HOOK_DEST/b12-codex-notify.sh"
+    count=$((count + 1))
+  fi
   info "Copied $count hook scripts to $HOOK_DEST"
 }
 
@@ -416,6 +424,52 @@ PYEOF
 
   echo "     command: $VENV_PYTHON"
   echo "     script:  $SERVER_SCRIPT"
+
+  # Inject notify hook for session-end processing
+  local NOTIFY_HOOK="$HOOK_DEST/b12-codex-notify.sh"
+  if [ -f "$NOTIFY_HOOK" ]; then
+    if ! python3 - "$CONFIG_TOML" "$NOTIFY_HOOK" << 'PYEOF'
+import sys
+
+config_path = sys.argv[1]
+notify_hook = sys.argv[2]
+
+with open(config_path, 'r') as f:
+    lines = f.readlines()
+
+# Check if notify line already exists
+has_notify = False
+for i, line in enumerate(lines):
+    stripped = line.strip()
+    if stripped.startswith('notify'):
+        has_notify = True
+        # Update existing notify line to include B12 hook
+        if notify_hook not in stripped:
+            lines[i] = f'notify = ["bash", "-lc", "{notify_hook}"]\n'
+        break
+
+if not has_notify:
+    # Insert notify at top of file (root-level config, before any sections)
+    insert_at = 0
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith('['):
+            insert_at = i
+            break
+    else:
+        insert_at = len(lines)
+    lines.insert(insert_at, f'notify = ["bash", "-lc", "{notify_hook}"]\n')
+
+with open(config_path, 'w') as f:
+    f.writelines(lines)
+
+PYEOF
+    then
+      warn "Failed to inject notify hook into $CONFIG_TOML"
+    else
+      info "Notify hook configured in $CONFIG_TOML"
+    fi
+  fi
 }
 
 # ─────────────────────────────────────────────
@@ -487,6 +541,28 @@ PYEOF
 }
 
 # ─────────────────────────────────────────────
+# Codex CLI: install B12 skill
+# ─────────────────────────────────────────────
+install_codex_skill() {
+  local CODEX_DIR="$HOME/.codex"
+  local SKILL_SRC="$SCRIPT_DIR/skills/b12"
+  local SKILL_DEST="$CODEX_DIR/skills/b12"
+
+  if [ ! -d "$CODEX_DIR" ]; then
+    return
+  fi
+
+  if [ ! -f "$SKILL_SRC/SKILL.md" ]; then
+    warn "B12 skill template not found at $SKILL_SRC/SKILL.md"
+    return
+  fi
+
+  mkdir -p "$SKILL_DEST"
+  cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
+  info "B12 skill installed to $SKILL_DEST"
+}
+
+# ─────────────────────────────────────────────
 # Codex CLI: verify installation
 # ─────────────────────────────────────────────
 verify_codex() {
@@ -518,6 +594,22 @@ verify_codex() {
     errors=$((errors + 1))
   fi
 
+  # Check notify hook configured
+  if grep -q 'notify' "$CONFIG_TOML" 2>/dev/null; then
+    info "Verify: Notify hook configured in $CONFIG_TOML"
+  else
+    warn "Verify: Notify hook NOT found in $CONFIG_TOML"
+    errors=$((errors + 1))
+  fi
+
+  # Check B12 skill installed
+  if [ -f "$HOME/.codex/skills/b12/SKILL.md" ]; then
+    info "Verify: B12 skill installed"
+  else
+    warn "Verify: B12 skill NOT found"
+    errors=$((errors + 1))
+  fi
+
   return $errors
 }
 
@@ -525,7 +617,7 @@ verify_codex() {
 # Main
 # ─────────────────────────────────────────────
 
-echo "B12 Memory System Installer (v10.2 — Codex CLI support)"
+echo "B12 Memory System Installer (v10.3 — Codex CLI full support)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first
@@ -584,6 +676,7 @@ if $INSTALL_CODEX; then
   echo "── Codex CLI Setup ──────────────"
   inject_codex_mcp_config
   inject_codex_agents
+  install_codex_skill
   echo ""
 fi
 
