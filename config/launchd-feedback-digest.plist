@@ -17,7 +17,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/path/to/home/.claude/hooks/memory-feedback-digest.sh</string>
+        <string>/path/to/home/.B12/hooks/memory-feedback-digest.sh</string>
         <string>--quiet</string>
     </array>
     <key>StartCalendarInterval</key>
@@ -30,9 +30,9 @@
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/path/to/home/.claude/memory-logs/digest-stdout.log</string>
+    <string>/path/to/home/.B12/memory-logs/digest-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/path/to/home/.claude/memory-logs/digest-stderr.log</string>
+    <string>/path/to/home/.B12/memory-logs/digest-stderr.log</string>
     <key>RunAtLoad</key>
     <false/>
 </dict>

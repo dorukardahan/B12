@@ -81,8 +81,8 @@ Session lifecycle:
 ### Layer 4: Session summaries (continuity bridge)
 
 Per-project markdown files that bridge between sessions:
-- `~/.claude/memory-summaries/{project}-latest.md` — last session's summary
-- `~/.claude/memory-summaries/{project}-history.md` — rolling last 5 sessions
+- `~/.B12/memory-summaries/{project}-latest.md` — last session's summary
+- `~/.B12/memory-summaries/{project}-history.md` — rolling last 5 sessions
 - Separated by `<!-- SESSION_BREAK -->` markers
 - Loaded by SessionStart into the next session's context
 - Best for: Short-term continuity ("what did we do last time?")
@@ -99,7 +99,7 @@ A markdown file in the project memory directory:
 ### Layer 6: Working Memory (conversation momentum)
 
 Tracks the files and patterns you're actively working with:
-- `~/.claude/memory-staging/working-memory.json`
+- `~/.B12/memory-staging/working-memory.json`
 - Populated by PostToolUse hook on Read/Edit/Write/Glob/Grep
 - Loaded by SessionStart after context compaction
 - Contains: active files (read), modified files (edited/written), search patterns

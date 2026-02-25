@@ -2,6 +2,23 @@
 
 All notable changes to B12 are documented in this file.
 
+## v10.4 (2026-02-25) — ~/.B12 Migration
+
+### Breaking Changes
+- **All B12 data/hooks moved from `~/.claude/` to `~/.B12/`** — platform-agnostic, no longer tied to Claude Code directory
+- `B12_DATA_DIR` default: `~/.claude` → `~/.B12`
+- `B12_HOOK_DIR` default: `~/.claude/hooks` → `~/.B12/hooks`
+- Hooks, scripts, summaries, staging, logs, backups all live under `~/.B12/`
+
+### Added
+- **Auto-migration** in `install.sh`: copies existing data from `~/.claude/` to `~/.B12/` using `cp -rn` (safe, doesn't delete originals)
+- Codex-only users can now install B12 without needing a `~/.claude/` directory
+
+### Changed
+- All 9 hook scripts, 5 Python scripts, 5 launchd plists, and 4 documentation files updated
+- `settings-template.json` hook commands now point to `~/.B12/hooks/`
+- `install.sh` deploys to `~/.B12/hooks/` and creates data dirs under `~/.B12/`
+
 ## v10.3 (2026-02-25) — Codex CLI Full Support
 
 ### Added (Layer 2)

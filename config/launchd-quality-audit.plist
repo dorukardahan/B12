@@ -16,7 +16,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/bin/bash</string>
-        <string>/path/to/home/.claude/hooks/memory-quality-audit.sh</string>
+        <string>/path/to/home/.B12/hooks/memory-quality-audit.sh</string>
         <string>--quiet</string>
     </array>
     <key>StartCalendarInterval</key>
@@ -29,9 +29,9 @@
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/path/to/home/.claude/memory-logs/quality-audit-stdout.log</string>
+    <string>/path/to/home/.B12/memory-logs/quality-audit-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/path/to/home/.claude/memory-logs/quality-audit-stderr.log</string>
+    <string>/path/to/home/.B12/memory-logs/quality-audit-stderr.log</string>
     <key>RunAtLoad</key>
     <false/>
 </dict>

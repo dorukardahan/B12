@@ -3,14 +3,14 @@
 # Parses feedback.jsonl and generates feedback-digest.md
 # Designed to run weekly (via launchd or manually)
 #
-# Output: ~/.claude/memory-logs/feedback-digest.md
+# Output: ~/.B12/memory-logs/feedback-digest.md
 # SessionStart v4 loads the "## Alerts" section from this file
 #
 # Usage:
 #   ./memory-feedback-digest.sh              # Generate digest
 #   ./memory-feedback-digest.sh --quiet      # No stdout output
 
-B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 FEEDBACK_FILE="$B12_BASE/memory-logs/feedback.jsonl"
 DIGEST_FILE="$B12_BASE/memory-logs/feedback-digest.md"
 QUIET=false

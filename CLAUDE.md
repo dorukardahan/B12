@@ -80,7 +80,7 @@ This repo is the **source of truth** for all hook files. The workflow:
 3. **Test** the changes (start a Claude session, trigger the hook)
 4. **Commit & push** when satisfied
 
-The `install.sh` script copies hook files to `~/.claude/hooks/` (the shared
+The `install.sh` script copies hook files to `~/.B12/hooks/` (the shared
 location all Claude setups reference). Multiple setups (e.g., `.claude`,
 `.claude-work`) share the same hooks directory.
 

@@ -16,7 +16,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/path/to/home/.local/b12-venv/bin/python3</string>
-        <string>/path/to/home/.claude/hooks/memory-consolidate.py</string>
+        <string>/path/to/home/.B12/hooks/memory-consolidate.py</string>
         <string>--auto</string>
     </array>
     <key>StartCalendarInterval</key>
@@ -27,9 +27,9 @@
         <integer>0</integer>
     </dict>
     <key>StandardOutPath</key>
-    <string>/path/to/home/.claude/memory-logs/consolidate-stdout.log</string>
+    <string>/path/to/home/.B12/memory-logs/consolidate-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/path/to/home/.claude/memory-logs/consolidate-stderr.log</string>
+    <string>/path/to/home/.B12/memory-logs/consolidate-stderr.log</string>
     <key>RunAtLoad</key>
     <false/>
 </dict>

@@ -2,7 +2,7 @@
 # B12 Memory System - MCP Memory Service Upgrade Script
 # Upgrades mcp-memory-service via pipx and runs DB migration
 #
-# Usage: bash ~/.claude/hooks/memory-upgrade.sh
+# Usage: bash ~/.B12/hooks/memory-upgrade.sh
 #
 # What it does:
 #   1. pipx upgrade mcp-memory-service

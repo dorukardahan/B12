@@ -17,7 +17,7 @@
     <key>ProgramArguments</key>
     <array>
         <string>/path/to/home/.local/b12-venv/bin/python3</string>
-        <string>/path/to/home/.claude/hooks/scripts/graph_enrich.py</string>
+        <string>/path/to/home/.B12/hooks/scripts/graph_enrich.py</string>
         <string>--apply</string>
         <string>--nli</string>
         <string>--quiet</string>
@@ -37,9 +37,9 @@
         <string>paraphrase-multilingual-MiniLM-L12-v2</string>
     </dict>
     <key>StandardOutPath</key>
-    <string>/path/to/home/.claude/memory-logs/graph-enrich-stdout.log</string>
+    <string>/path/to/home/.B12/memory-logs/graph-enrich-stdout.log</string>
     <key>StandardErrorPath</key>
-    <string>/path/to/home/.claude/memory-logs/graph-enrich-stderr.log</string>
+    <string>/path/to/home/.B12/memory-logs/graph-enrich-stderr.log</string>
     <key>RunAtLoad</key>
     <false/>
 </dict>

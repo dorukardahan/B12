@@ -44,7 +44,7 @@ def get_db_path():
 
 def get_data_dir():
     """Get the B12 data directory."""
-    return os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.claude'))
+    return os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.B12'))
 
 
 def get_state_file():

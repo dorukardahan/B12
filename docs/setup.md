@@ -22,8 +22,8 @@ For multiple Claude Code setups: `./install.sh --full --all`
 
 The installer:
 1. Creates required directories (`hooks/`, `memory-staging/`, `memory-logs/`, `memory-summaries/`)
-2. Copies all hook scripts to `~/.claude/hooks/`
-3. Copies support scripts to `~/.claude/hooks/scripts/` (includes `b12_mcp_server.py`)
+2. Copies all hook scripts to `~/.B12/hooks/`
+3. Copies support scripts to `~/.B12/hooks/scripts/` (includes `b12_mcp_server.py`)
 4. Merges hook configuration into `~/.claude/settings.json`
 5. Runs database migration (if existing database found)
 
@@ -33,8 +33,8 @@ For multiple setups: `./install.sh --all` installs to all `~/.claude*` directori
 
 | Variable | Controls | Default |
 |----------|----------|---------|
-| `B12_DATA_DIR` | Data/state: summaries, staging, logs | `~/.claude` |
-| `B12_HOOK_DIR` | Hook code: script imports, embed daemon | `~/.claude/hooks` |
+| `B12_DATA_DIR` | Data/state: summaries, staging, logs | `~/.B12` |
+| `B12_HOOK_DIR` | Hook code: script imports, embed daemon | `~/.B12/hooks` |
 | `B12_WORK_PATTERN` | Work setup detection pattern | (none) |
 
 Set per-setup in each `settings.json` `env` block. `B12_DATA_DIR` and `B12_HOOK_DIR` are separate — data can be per-setup while hook code stays shared.
@@ -77,7 +77,7 @@ chmod +x install.sh
 ./install.sh
 ```
 
-This copies all hooks and scripts to `~/.claude/hooks/` and merges the hook configuration into your `settings.json`.
+This copies all hooks and scripts to `~/.B12/hooks/` and merges the hook configuration into your `settings.json`.
 
 ### Step 4: Configure the MCP server
 
@@ -90,7 +90,7 @@ This copies all hooks and scripts to `~/.claude/hooks/` and merges the hook conf
   "mcpServers": {
     "B12": {
       "command": "/Users/yourname/.local/b12-venv/bin/python3",
-      "args": ["/Users/yourname/.claude/hooks/scripts/b12_mcp_server.py"],
+      "args": ["/Users/yourname/.B12/hooks/scripts/b12_mcp_server.py"],
       "env": {
         "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
         "MCP_MAX_RESPONSE_CHARS": "40000"
@@ -119,7 +119,7 @@ B12 · connected
 
 If the server shows as disconnected, check:
 - Python path exists: `ls ~/.local/b12-venv/bin/python3`
-- Script path exists: `ls ~/.claude/hooks/scripts/b12_mcp_server.py`
+- Script path exists: `ls ~/.B12/hooks/scripts/b12_mcp_server.py`
 - MCP package is installed: `~/.local/b12-venv/bin/python3 -c "import mcp"`
 
 ### Step 6: Configure hooks (usually automatic)
@@ -139,7 +139,7 @@ If you prefer manual setup, edit `~/.claude/settings.json` (or `~/.claude-<setup
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-session-start.sh",
+            "command": "~/.B12/hooks/memory-session-start.sh",
             "timeout": 20
           }
         ]
@@ -151,7 +151,7 @@ If you prefer manual setup, edit `~/.claude/settings.json` (or `~/.claude-<setup
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-precompact.sh",
+            "command": "~/.B12/hooks/memory-precompact.sh",
             "timeout": 30
           }
         ]
@@ -162,7 +162,7 @@ If you prefer manual setup, edit `~/.claude/settings.json` (or `~/.claude-<setup
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-session-end.sh",
+            "command": "~/.B12/hooks/memory-session-end.sh",
             "timeout": 35
           }
         ]
@@ -173,7 +173,7 @@ If you prefer manual setup, edit `~/.claude/settings.json` (or `~/.claude-<setup
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-retrieval.sh",
+            "command": "~/.B12/hooks/memory-retrieval.sh",
             "timeout": 15
           }
         ]
@@ -185,7 +185,7 @@ If you prefer manual setup, edit `~/.claude/settings.json` (or `~/.claude-<setup
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-tag-enforce.sh",
+            "command": "~/.B12/hooks/memory-tag-enforce.sh",
             "timeout": 8
           }
         ]
@@ -197,7 +197,7 @@ If you prefer manual setup, edit `~/.claude/settings.json` (or `~/.claude-<setup
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-feedback.sh",
+            "command": "~/.B12/hooks/memory-feedback.sh",
             "timeout": 8
           }
         ]
@@ -207,7 +207,7 @@ If you prefer manual setup, edit `~/.claude/settings.json` (or `~/.claude-<setup
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-working-context.sh",
+            "command": "~/.B12/hooks/memory-working-context.sh",
             "timeout": 8
           }
         ]
@@ -274,10 +274,10 @@ launchctl load ~/Library/LaunchAgents/com.b12.graph-enrich.plist
 
 ```bash
 # Add to crontab -e
-0 1 * * * /bin/bash ~/.claude/hooks/memory-backup.sh --quiet
-0 2 * * * /usr/bin/python3 ~/.claude/hooks/memory-consolidate.py --auto
-0 3 * * 1 /bin/bash ~/.claude/hooks/memory-feedback-digest.sh --quiet
-0 3 * * 3 /bin/bash ~/.claude/hooks/memory-quality-audit.sh --quiet
+0 1 * * * /bin/bash ~/.B12/hooks/memory-backup.sh --quiet
+0 2 * * * /usr/bin/python3 ~/.B12/hooks/memory-consolidate.py --auto
+0 3 * * 1 /bin/bash ~/.B12/hooks/memory-feedback-digest.sh --quiet
+0 3 * * 3 /bin/bash ~/.B12/hooks/memory-quality-audit.sh --quiet
 ```
 
 ## Verify Installation
@@ -303,26 +303,26 @@ launchctl load ~/Library/LaunchAgents/com.b12.graph-enrich.plist
 After your first session ends:
 
 ```bash
-ls ~/.claude/memory-summaries/
-cat ~/.claude/memory-summaries/<your-project>-latest.md
+ls ~/.B12/memory-summaries/
+cat ~/.B12/memory-summaries/<your-project>-latest.md
 ```
 
 ### Test hooks manually
 
 ```bash
 # Test SessionStart
-echo '{"source":"startup","cwd":"/tmp","session_id":"test"}' | ~/.claude/hooks/memory-session-start.sh
+echo '{"source":"startup","cwd":"/tmp","session_id":"test"}' | ~/.B12/hooks/memory-session-start.sh
 
 # Test retrieval
-echo '{"prompt":"how does authentication work","cwd":"/tmp","session_id":"test"}' | ~/.claude/hooks/memory-retrieval.sh
+echo '{"prompt":"how does authentication work","cwd":"/tmp","session_id":"test"}' | ~/.B12/hooks/memory-retrieval.sh
 ```
 
 ### Check database
 
 ```bash
 # Browse memories
-~/.claude/hooks/memory-browse.sh stats
-~/.claude/hooks/memory-browse.sh search "your query"
+~/.B12/hooks/memory-browse.sh stats
+~/.B12/hooks/memory-browse.sh search "your query"
 
 # Database location (macOS)
 ls -la ~/Library/Application\ Support/mcp-memory/
@@ -337,10 +337,10 @@ ls -la ~/Library/Application\ Support/mcp-memory/
 ls ~/.local/b12-venv/bin/python3
 
 # Check if the server script exists
-ls ~/.claude/hooks/scripts/b12_mcp_server.py
+ls ~/.B12/hooks/scripts/b12_mcp_server.py
 
 # Test the server manually (should print nothing and wait for stdin)
-~/.local/b12-venv/bin/python3 ~/.claude/hooks/scripts/b12_mcp_server.py
+~/.local/b12-venv/bin/python3 ~/.B12/hooks/scripts/b12_mcp_server.py
 # Press Ctrl+C to stop
 
 # Check if MCP package is installed
@@ -355,7 +355,7 @@ ls ~/.claude/hooks/scripts/b12_mcp_server.py
 # Look for [User] tagged hooks
 
 # Test hook manually
-echo '{"source":"startup","cwd":"/tmp","session_id":"test"}' | ~/.claude/hooks/memory-session-start.sh
+echo '{"source":"startup","cwd":"/tmp","session_id":"test"}' | ~/.B12/hooks/memory-session-start.sh
 ```
 
 ### SessionEnd not creating summaries
@@ -432,7 +432,7 @@ If you prefer manual configuration, add to `~/.codex/config.toml`:
 ```toml
 [mcp_servers.B12]
 command = "/Users/yourname/.local/b12-venv/bin/python3"
-args = ["/Users/yourname/.claude/hooks/scripts/b12_mcp_server.py"]
+args = ["/Users/yourname/.B12/hooks/scripts/b12_mcp_server.py"]
 enabled = true
 startup_timeout_sec = 30
 

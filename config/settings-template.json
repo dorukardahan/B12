@@ -1,7 +1,7 @@
 {
-  "_comment": "Merge these into your ~/.claude/settings.json or ~/.claude-<setup>/settings.json",
+  "_comment": "Merge these into your Claude Code settings.json (e.g. ~/.claude/settings.json)",
   "env": {
-    "_comment_env": "B12_WORK_PATTERN: work dir pattern. B12_DATA_DIR: per-setup data path (default ~/.claude). B12_HOOK_DIR: hook code path (default ~/.claude/hooks, rarely needed).",
+    "_comment_env": "B12_WORK_PATTERN: work dir pattern. B12_DATA_DIR: data path (default ~/.B12). B12_HOOK_DIR: hook code path (default ~/.B12/hooks, rarely needed).",
     "B12_WORK_PATTERN": "",
     "B12_DATA_DIR": "",
     "B12_HOOK_DIR": ""
@@ -13,7 +13,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-session-start.sh",
+            "command": "~/.B12/hooks/memory-session-start.sh",
             "timeout": 20
           }
         ]
@@ -25,7 +25,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-precompact.sh",
+            "command": "~/.B12/hooks/memory-precompact.sh",
             "timeout": 30
           }
         ]
@@ -36,7 +36,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-session-end.sh",
+            "command": "~/.B12/hooks/memory-session-end.sh",
             "timeout": 35
           }
         ]
@@ -47,7 +47,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-retrieval.sh",
+            "command": "~/.B12/hooks/memory-retrieval.sh",
             "timeout": 15
           }
         ]
@@ -59,7 +59,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-tag-enforce.sh",
+            "command": "~/.B12/hooks/memory-tag-enforce.sh",
             "timeout": 8
           }
         ]
@@ -71,7 +71,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-feedback.sh",
+            "command": "~/.B12/hooks/memory-feedback.sh",
             "timeout": 8
           }
         ]
@@ -81,7 +81,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "~/.claude/hooks/memory-working-context.sh",
+            "command": "~/.B12/hooks/memory-working-context.sh",
             "timeout": 8
           }
         ]

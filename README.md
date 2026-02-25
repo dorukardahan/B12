@@ -61,7 +61,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 
 **Verification checklist for AI assistants:**
 - `~/.local/b12-venv/bin/python3 -c "import mcp; print('OK')"` → should print OK
-- `ls ~/.claude/hooks/memory-session-start.sh` → should exist
+- `ls ~/.B12/hooks/memory-session-start.sh` → should exist
 - `python3 -c "import json; c=json.load(open('$HOME/.claude.json')); print('B12' in c.get('mcpServers',{}))"` → should print True
 
 ## Features
@@ -94,7 +94,7 @@ chmod +x install.sh
 
 This single command:
 - Creates `~/.local/b12-venv` with all Python dependencies
-- Deploys hooks and scripts to `~/.claude/hooks/`
+- Deploys hooks and scripts to `~/.B12/hooks/`
 - Adds the B12 MCP server to `~/.claude.json` (with correct absolute paths)
 - Verifies the installation
 
@@ -108,7 +108,7 @@ Start a new session. Run `/mcp` — you should see `B12 · connected` with 4 too
 
 **First run note:** The embedding model (~90MB) downloads automatically on the first session. This is a one-time download — subsequent sessions start instantly.
 
-The database and all tables are created automatically on first use. After your first session ends, check `~/.claude/memory-summaries/` for the generated summary.
+The database and all tables are created automatically on first use. After your first session ends, check `~/.B12/memory-summaries/` for the generated summary.
 
 ### 3. Manual setup (alternative)
 
@@ -121,7 +121,7 @@ If you prefer step-by-step control, see [docs/setup.md](docs/setup.md) for the f
   "mcpServers": {
     "B12": {
       "command": "/Users/yourname/.local/b12-venv/bin/python3",
-      "args": ["/Users/yourname/.claude/hooks/scripts/b12_mcp_server.py"],
+      "args": ["/Users/yourname/.B12/hooks/scripts/b12_mcp_server.py"],
       "env": {
         "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
         "MCP_MAX_RESPONSE_CHARS": "40000"
@@ -166,7 +166,7 @@ See `docs/setup.md` for the full installation guide.
 
 ```
 B12/
-├── hooks/                          # Lifecycle hook scripts (deployed to ~/.claude/hooks/)
+├── hooks/                          # Lifecycle hook scripts (deployed to ~/.B12/hooks/)
 │   ├── memory-session-start.sh     #   SessionStart — inject context
 │   ├── memory-retrieval.sh         #   UserPromptSubmit — per-message retrieval
 │   ├── memory-tag-enforce.sh       #   PreToolUse — auto-inject scope tags
@@ -222,7 +222,7 @@ Environment variables:
 - `MCP_EMBEDDING_MODEL` — sentence-transformer model name (default: `paraphrase-multilingual-MiniLM-L12-v2`)
 - `MCP_MAX_RESPONSE_CHARS` — max chars in search results (default: `40000`)
 
-### Hooks (`~/.claude/settings.json`)
+### Hooks (Claude Code `settings.json`)
 
 All 7 hook events are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically. See `docs/setup.md` for manual configuration.
 
@@ -230,7 +230,7 @@ All 7 hook events are configured via `config/settings-template.json`. The instal
 
 If you run multiple Claude Code setups (e.g., personal + work):
 - **MCP server** is global (configured in `~/.claude.json`)
-- **Hooks** are deployed to `~/.claude/hooks/` (shared location)
+- **Hooks** are deployed to `~/.B12/hooks/` (shared location)
 - **Database** is shared — memories from any project are available everywhere
 - **Session summaries** are per-project, so they don't overwrite each other
 - **Hook config** needs to be in each setup's `settings.json`
@@ -240,15 +240,15 @@ If you run multiple Claude Code setups (e.g., personal + work):
 
 | Variable | Controls | Default | Example |
 |----------|----------|---------|---------|
-| `B12_DATA_DIR` | Data/state: summaries, staging, logs | `~/.claude` | `~/.claude-work` |
-| `B12_HOOK_DIR` | Hook code: script imports, embed daemon | `~/.claude/hooks` | (rarely needed) |
+| `B12_DATA_DIR` | Data/state: summaries, staging, logs | `~/.B12` | `~/.B12-work` |
+| `B12_HOOK_DIR` | Hook code: script imports, embed daemon | `~/.B12/hooks` | (rarely needed) |
 | `B12_WORK_PATTERN` | Work setup detection pattern | (none) | `mycompany` |
 
 **Important:** `B12_DATA_DIR` and `B12_HOOK_DIR` are separate by design. Data can be per-setup while hook code stays shared. Set them in your setup's `settings.json`:
 ```json
 {
   "env": {
-    "B12_DATA_DIR": "~/.claude-work"
+    "B12_DATA_DIR": "~/.B12-work"
   }
 }
 ```
@@ -273,10 +273,10 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 |-------|------|-------|----------|
 | **MEMORY.md** | Built-in auto-memory | `~/.claude/projects/*/memory/` | Stable project knowledge |
 | **B12 MCP Server** | Semantic search DB | `~/Library/Application Support/mcp-memory/` | Detailed learnings, decisions |
-| **Smart hooks** | Lifecycle automation | `~/.claude/hooks/` | Glue between all layers |
-| **Session summaries** | Per-project latest + history | `~/.claude/memory-summaries/` | Short-term continuity |
+| **Smart hooks** | Lifecycle automation | `~/.B12/hooks/` | Glue between all layers |
+| **Session summaries** | Per-project latest + history | `~/.B12/memory-summaries/` | Short-term continuity |
 | **User profile** | Persistent identity | `~/.claude/projects/*/memory/user-profile.md` | Personalization |
-| **Working Memory** | Conversation momentum | `~/.claude/memory-staging/working-memory.json` | Post-compaction recovery |
+| **Working Memory** | Conversation momentum | `~/.B12/memory-staging/working-memory.json` | Post-compaction recovery |
 
 ## Changelog (recent)
 

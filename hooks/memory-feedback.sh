@@ -26,7 +26,7 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 
 # Central data directory — override with B12_DATA_DIR env var for custom setups
-B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 FEEDBACK_DIR="$B12_BASE/memory-logs"

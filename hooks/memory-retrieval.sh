@@ -92,7 +92,7 @@ if [ ! -f "$DB_PATH" ]; then
   exit 0
 fi
 
-B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 FEEDBACK_DIR="$B12_BASE/memory-logs"
 
 # ── Embedding daemon helpers (Phase 1) ───────────────────────

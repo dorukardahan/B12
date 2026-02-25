@@ -3,7 +3,7 @@
 #
 # Placeholders replaced by installer:
 #   __VENV_PYTHON__  → absolute path to b12-venv Python (e.g., /Users/you/.local/b12-venv/bin/python3)
-#   __SCRIPT_PATH__  → absolute path to b12_mcp_server.py (e.g., /Users/you/.claude/hooks/scripts/b12_mcp_server.py)
+#   __SCRIPT_PATH__  → absolute path to b12_mcp_server.py (e.g., /Users/you/.B12/hooks/scripts/b12_mcp_server.py)
 
 [mcp_servers.B12]
 command = "__VENV_PYTHON__"

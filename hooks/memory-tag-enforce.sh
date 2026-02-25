@@ -16,7 +16,7 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 TAGS_RAW=$(echo "$INPUT" | jq -r '.tool_input.tags // empty' 2>/dev/null)
 
 # Central data directory
-B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 

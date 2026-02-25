@@ -220,7 +220,7 @@ class HookAdapter:
     def _log_tool_usage(self, tool_name: str, tool_input: dict):
         """Log memory tool usage for feedback analysis."""
         log_dir = os.path.join(
-            os.environ.get("B12_DATA_DIR", os.path.expanduser("~/.claude")),
+            os.environ.get("B12_DATA_DIR", os.path.expanduser("~/.B12")),
             "memory-logs"
         )
         os.makedirs(log_dir, exist_ok=True)

@@ -31,7 +31,7 @@ _UID=$(id -u 2>/dev/null || echo $$)
 EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
 EMBED_LOCK="/tmp/b12-embed-${_UID}.lock"
 VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
-B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.claude/hooks}/scripts"
+B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.B12/hooks}/scripts"
 DAEMON_SCRIPT="$B12_SCRIPTS/embed_daemon.py"
 
 _DAEMON_NEEDED=true
@@ -68,7 +68,7 @@ SOURCE=$(echo "$INPUT" | jq -r '.source // "startup"')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 
 # Central data directory — override with B12_DATA_DIR env var for custom setups
-B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 
 # Portable stat: macOS uses -f %m, Linux uses -c %Y
 file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "0"; }

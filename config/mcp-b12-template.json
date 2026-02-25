@@ -3,7 +3,7 @@
   "_note_python": "Set VENV_PYTHON to the Python interpreter that has the 'mcp' package installed",
   "_note_script": "Set MCP_SERVER_SCRIPT to the deployed b12_mcp_server.py path",
   "_example_python": "$HOME/.local/b12-venv/bin/python3",
-  "_example_script": "$HOME/.claude/hooks/scripts/b12_mcp_server.py",
+  "_example_script": "$HOME/.B12/hooks/scripts/b12_mcp_server.py",
   "B12": {
     "command": "/path/to/python3-with-mcp-package",
     "args": ["/path/to/b12_mcp_server.py"],

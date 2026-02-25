@@ -47,7 +47,7 @@ except ImportError:
         DB_PATH = os.path.join(_home, "AppData", "Local", "mcp-memory", "sqlite_vec.db")
     else:
         DB_PATH = os.path.join(_home, ".local", "share", "mcp-memory", "sqlite_vec.db")
-LOG_DIR = os.path.expanduser("~/.claude/memory-logs")
+LOG_DIR = os.path.join(os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.B12')), 'memory-logs')
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
 # Hardcode /tmp/ — macOS TMPDIR varies per session
 DAEMON_SOCK = f"/tmp/b12-embed-{_UID}.sock"
@@ -117,7 +117,7 @@ def start_daemon_if_needed():
     venv_python = os.path.expanduser(
         "~/.local/b12-venv/bin/python3"
     )
-    _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.claude/hooks'))
+    _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
     daemon_script = os.path.join(_hook_dir, 'scripts', 'embed_daemon.py')
     if not os.path.exists(daemon_script):
         # Try B12 source location

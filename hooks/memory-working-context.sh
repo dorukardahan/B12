@@ -16,7 +16,7 @@ INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
 
-B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 STAGING_DIR="$B12_BASE/memory-staging"
 WM_FILE="$STAGING_DIR/working-memory.json"
 mkdir -p "$STAGING_DIR" 2>/dev/null

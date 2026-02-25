@@ -8,7 +8,7 @@
 #   --fix       Auto-remediate: clean stale embeddings, regen orphans,
 #               flag short memories, clean orphaned graph edges
 #
-# Output: ~/.claude/memory-logs/quality-audit-{date}.md
+# Output: ~/.B12/memory-logs/quality-audit-{date}.md
 
 set -e
 
@@ -22,7 +22,7 @@ for arg in "$@"; do
 done
 
 VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
-LOG_DIR="$HOME/.claude/memory-logs"
+LOG_DIR="${B12_DATA_DIR:-$HOME/.B12}/memory-logs"
 mkdir -p "$LOG_DIR"
 
 DATE=$(date -u +%Y-%m-%d)

@@ -315,7 +315,7 @@ def build_cross_project_index(memories):
 def generate_cross_project_index(memories):
     """Generate and save cross-project-index.json."""
     index = build_cross_project_index(memories)
-    index_dir = os.path.expanduser("~/.claude/memory-summaries")
+    index_dir = os.path.join(os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.B12')), 'memory-summaries')
     os.makedirs(index_dir, exist_ok=True)
     index_path = os.path.join(index_dir, "cross-project-index.json")
 

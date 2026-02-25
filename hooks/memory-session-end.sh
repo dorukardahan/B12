@@ -24,7 +24,7 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""')
 
 # Central data directory — override with B12_DATA_DIR env var for custom setups
-B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
+B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 SUMMARY_DIR="$B12_BASE/memory-summaries"
@@ -54,7 +54,7 @@ signal.alarm(25)
 
 # Import shared patterns (DRY — same patterns used in precompact.sh)
 # B12_HOOK_DIR controls code location; B12_DATA_DIR controls data only
-_hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.claude/hooks'))
+_hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
 sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
 from shared_patterns import DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE
 
@@ -637,7 +637,7 @@ try:
         # Try to import write-time merge (graceful degradation if unavailable)
         _USE_MERGE = False
         try:
-            _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.claude/hooks'))
+            _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
             sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
             from write_time_merge import merge_or_insert
             _USE_MERGE = True
@@ -697,7 +697,7 @@ try:
 except Exception as e:
     # Log error instead of silent failure
     import traceback
-    log_dir = os.path.join(os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.claude')), 'memory-logs')
+    log_dir = os.path.join(os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.B12')), 'memory-logs')
     os.makedirs(log_dir, exist_ok=True)
     with open(os.path.join(log_dir, "memory-errors.log"), 'a') as ef:
         ef.write(f"[{__import__('datetime').datetime.now().isoformat()}] SessionEnd embed error: {e}\n")

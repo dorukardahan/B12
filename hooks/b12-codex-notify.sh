@@ -12,8 +12,8 @@
 #   type, thread-id, turn-id, input-messages, last-assistant-message
 
 # Central data directory
-B12_BASE="${B12_DATA_DIR:-$HOME/.claude}"
-B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.claude/hooks}/scripts"
+B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
+B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.B12/hooks}/scripts"
 STATE_DIR="$B12_BASE/memory-logs"
 DEBOUNCE_FILE="$STATE_DIR/codex-notify-debounce.json"
 CODEX_SESSIONS="${CODEX_HOME:-$HOME/.codex}/sessions"

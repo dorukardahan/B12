@@ -120,8 +120,8 @@ case "$CMD" in
     done
 
     echo ""
-    BACKUP_COUNT=$(ls -1 "$HOME/.claude/memory-backups"/sqlite_vec-*.db 2>/dev/null | wc -l | tr -d ' ')
-    LATEST_BACKUP=$(ls -1t "$HOME/.claude/memory-backups"/sqlite_vec-*.db 2>/dev/null | head -1)
+    BACKUP_COUNT=$(ls -1 "${B12_DATA_DIR:-$HOME/.B12}/memory-backups"/sqlite_vec-*.db 2>/dev/null | wc -l | tr -d ' ')
+    LATEST_BACKUP=$(ls -1t "${B12_DATA_DIR:-$HOME/.B12}/memory-backups"/sqlite_vec-*.db 2>/dev/null | head -1)
     if [ -n "$LATEST_BACKUP" ]; then
       echo -e "${BOLD}Backups:${RESET} ${BACKUP_COUNT} (latest: $(basename "$LATEST_BACKUP"))"
     else

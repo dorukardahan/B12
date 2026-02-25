@@ -22,18 +22,18 @@
 #   (Requires venv — use with --full on first run)
 #
 # Standard install:
-#   1. Copies hook scripts to ~/.claude/hooks/ (shared location)
-#   2. Copies support scripts to ~/.claude/hooks/scripts/
+#   1. Copies hook scripts to ~/.B12/hooks/ (shared location)
+#   2. Copies support scripts to ~/.B12/hooks/scripts/
 #   3. Merges hook config into target setup's settings.json
-#   4. Creates required directories
+#   4. Creates required directories (migrates from ~/.claude/ if needed)
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 HOOK_SOURCE="$SCRIPT_DIR/hooks"
 SCRIPT_SOURCE="$SCRIPT_DIR/scripts"
-HOOK_DEST="$HOME/.claude/hooks"
-SCRIPT_DEST="$HOME/.claude/hooks/scripts"
+HOOK_DEST="$HOME/.B12/hooks"
+SCRIPT_DEST="$HOME/.B12/hooks/scripts"
 VENV_PATH="$HOME/.local/b12-venv"
 # Windows/Git Bash uses Scripts/python instead of bin/python3
 if [ -f "$VENV_PATH/Scripts/python.exe" ]; then
@@ -72,9 +72,29 @@ done
 create_dirs() {
   mkdir -p "$HOOK_DEST"
   mkdir -p "$SCRIPT_DEST"
-  mkdir -p "$HOME/.claude/memory-staging"
-  mkdir -p "$HOME/.claude/memory-logs"
-  mkdir -p "$HOME/.claude/memory-summaries"
+  mkdir -p "$HOME/.B12/memory-staging"
+  mkdir -p "$HOME/.B12/memory-logs"
+  mkdir -p "$HOME/.B12/memory-summaries"
+
+  # Migrate data from old ~/.claude/ location (safe: copies, doesn't delete)
+  local migrated=0
+  for subdir in memory-staging memory-logs memory-summaries memory-backups memory-state; do
+    local old_dir="$HOME/.claude/$subdir"
+    local new_dir="$HOME/.B12/$subdir"
+    if [ -d "$old_dir" ] && [ "$(ls -A "$old_dir" 2>/dev/null)" ]; then
+      mkdir -p "$new_dir"
+      cp -rn "$old_dir"/* "$new_dir"/ 2>/dev/null && migrated=$((migrated + 1))
+    fi
+  done
+  # Migrate hooks from old location
+  if [ -d "$HOME/.claude/hooks" ] && [ ! -d "$HOME/.B12/hooks" -o -z "$(ls -A "$HOME/.B12/hooks" 2>/dev/null)" ]; then
+    mkdir -p "$HOME/.B12/hooks"
+    cp -rn "$HOME/.claude/hooks"/* "$HOME/.B12/hooks"/ 2>/dev/null && migrated=$((migrated + 1))
+  fi
+  if [ "$migrated" -gt 0 ]; then
+    info "Migrated $migrated directories from ~/.claude/ to ~/.B12/"
+  fi
+
   info "Created required directories"
 }
 
@@ -617,7 +637,7 @@ verify_codex() {
 # Main
 # ─────────────────────────────────────────────
 
-echo "B12 Memory System Installer (v10.3 — Codex CLI full support)"
+echo "B12 Memory System Installer (v10.4 — ~/.B12 migration)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first

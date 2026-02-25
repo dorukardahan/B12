@@ -2,7 +2,7 @@
 # B12 Memory System - Daily DB Backup (v1)
 # Creates rotated backups of the memory SQLite database
 #
-# Usage: bash ~/.claude/hooks/memory-backup.sh
+# Usage: bash ~/.B12/hooks/memory-backup.sh
 # Schedule: Daily 1:00 AM via launchd (com.b12.memory-backup)
 #
 # Keeps last 7 backups. Uses sqlite3 .backup for WAL-safe copies.
@@ -14,16 +14,16 @@ elif [ -d "$HOME/AppData" ]; then
 else
   DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
 fi
-BACKUP_DIR="$HOME/.claude/memory-backups"
+BACKUP_DIR="${B12_DATA_DIR:-$HOME/.B12}/memory-backups"
 MAX_BACKUPS=7
 
 # Portable stat: macOS uses -f%z, Linux uses -c %s
 file_size() { stat -f%z "$1" 2>/dev/null || stat -c %s "$1" 2>/dev/null || echo "unknown"; }
 TIMESTAMP=$(date +"%Y-%m-%d")
 BACKUP_FILE="$BACKUP_DIR/sqlite_vec-${TIMESTAMP}.db"
-LOG_FILE="$HOME/.claude/memory-logs/backup-${TIMESTAMP}.log"
+LOG_FILE="${B12_DATA_DIR:-$HOME/.B12}/memory-logs/backup-${TIMESTAMP}.log"
 
-mkdir -p "$BACKUP_DIR" "$HOME/.claude/memory-logs" 2>/dev/null
+mkdir -p "$BACKUP_DIR" "${B12_DATA_DIR:-$HOME/.B12}/memory-logs" 2>/dev/null
 
 log() { echo "[$(date +%H:%M:%S)] $1" | tee -a "$LOG_FILE"; }
 
@@ -79,9 +79,10 @@ if [ "$BACKUP_COUNT" -gt "$MAX_BACKUPS" ]; then
 fi
 
 # Clean old log files (keep last 14)
-LOG_COUNT=$(ls -1 "$HOME/.claude/memory-logs"/backup-*.log 2>/dev/null | wc -l | tr -d ' ')
+B12_LOG_DIR="${B12_DATA_DIR:-$HOME/.B12}/memory-logs"
+LOG_COUNT=$(ls -1 "$B12_LOG_DIR"/backup-*.log 2>/dev/null | wc -l | tr -d ' ')
 if [ "$LOG_COUNT" -gt 14 ]; then
-  ls -1t "$HOME/.claude/memory-logs"/backup-*.log | tail -n $((LOG_COUNT - 14)) | while read -r old; do
+  ls -1t "$B12_LOG_DIR"/backup-*.log | tail -n $((LOG_COUNT - 14)) | while read -r old; do
     rm -f "$old"
   done
 fi
