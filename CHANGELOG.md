@@ -2,6 +2,23 @@
 
 All notable changes to B12 are documented in this file.
 
+## v10.2 (2026-02-25) — Codex CLI Support
+
+### Added
+- **Codex CLI support**: B12 MCP server now works with OpenAI's Codex CLI. Same SQLite database is shared between Claude Code and Codex — memories are cross-platform.
+- **`--codex` installer flag**: `./install.sh --codex` injects B12 MCP server into `~/.codex/config.toml` and appends memory instructions to `~/.codex/AGENTS.md`.
+- **`config/codex-config-template.toml`**: TOML config template for Codex MCP server registration.
+- **`config/codex-agents-template.md`**: Memory behavioral instructions for Codex's AGENTS.md (proactive search/store guidance since Codex lacks lifecycle hooks).
+
+### Changed
+- Installer banner bumped to v10.2
+- README updated with Codex CLI setup section
+- Setup docs updated with Codex installation steps
+
+### Notes
+- Codex CLI has no lifecycle hooks — memory retrieval and storage are instruction-based via AGENTS.md
+- The `notify` hook (`agent-turn-complete`) will be used for session summaries in a future Layer 2 update
+
 ## v10.1 (2026-02-25) — Path Isolation + Context Cap
 
 ### Fixed

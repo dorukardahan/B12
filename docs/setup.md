@@ -405,3 +405,60 @@ git pull
 ./install.sh --all    # Re-deploys hooks and scripts
 # Restart Claude Code to pick up changes
 ```
+
+## Codex CLI Setup
+
+B12 also works with OpenAI's Codex CLI. The same MCP server and SQLite database are shared — memories from Claude Code sessions appear in Codex searches, and vice versa.
+
+### Quick Install (Codex)
+
+```bash
+# If you already have the venv from Claude Code setup:
+./install.sh --codex
+
+# Fresh install (creates venv + Claude Code + Codex):
+./install.sh --full --codex
+```
+
+### What `--codex` Does
+
+1. Injects B12 MCP server config into `~/.codex/config.toml`
+2. Appends B12 memory instructions to `~/.codex/AGENTS.md` (between `<!-- B12-MEMORY-START -->` and `<!-- B12-MEMORY-END -->` markers)
+
+### Manual Codex Setup
+
+If you prefer manual configuration, add to `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.B12]
+command = "/Users/yourname/.local/b12-venv/bin/python3"
+args = ["/Users/yourname/.claude/hooks/scripts/b12_mcp_server.py"]
+enabled = true
+startup_timeout_sec = 30
+
+[mcp_servers.B12.env]
+MCP_EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+MCP_MAX_RESPONSE_CHARS = "40000"
+```
+
+Replace `/Users/yourname` with your actual home directory.
+
+### Verify Codex Installation
+
+```bash
+# Start Codex CLI, then type:
+/mcp
+# Should show: B12 · connected
+```
+
+### Differences from Claude Code
+
+| Feature | Claude Code | Codex CLI |
+|---------|-------------|-----------|
+| MCP tools (store/search/update/quality) | Automatic | Automatic |
+| Per-prompt memory retrieval | Automatic (hook) | Manual (model follows AGENTS.md instructions) |
+| Session summary extraction | Automatic (hook) | Not yet (planned for Layer 2) |
+| Tag auto-injection | Automatic (hook) | Manual (model follows instructions) |
+| Working context tracking | Automatic (hook) | Not available |
+
+The 4 MCP tools work identically on both platforms. The difference is in automation — Claude Code hooks handle retrieval and storage silently, while Codex relies on AGENTS.md instructions to guide the model.

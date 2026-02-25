@@ -76,6 +76,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Working Memory** — tracks active files and search patterns, restored after context compaction
 - **B12 pill notifications** — visible inline indicators when memories are stored or retrieved
 - **Multi-setup support** — works across `.claude`, `.claude-work`, etc. with shared database
+- **Codex CLI support** — same MCP server works with OpenAI Codex CLI (shared memory database)
 - **Zero config after install** — hooks handle everything silently in the background
 - **Fully local** — no cloud, no API calls, all data stays on your machine
 
@@ -131,6 +132,22 @@ If you prefer step-by-step control, see [docs/setup.md](docs/setup.md) for the f
 ```
 
 Replace `/Users/yourname` with your actual home directory (`echo $HOME`).
+
+### Codex CLI Support
+
+B12 also works with OpenAI's Codex CLI. The same MCP server and SQLite database are shared — memories stored in Claude Code sessions are searchable in Codex, and vice versa.
+
+```bash
+# Install B12 for Codex CLI (requires existing venv)
+./install.sh --codex
+
+# Or full setup from scratch (creates venv + Claude Code + Codex)
+./install.sh --full --codex
+```
+
+This adds the B12 MCP server to `~/.codex/config.toml` and appends memory instructions to `~/.codex/AGENTS.md`. Restart Codex CLI and type `/mcp` to verify.
+
+**Note:** Codex CLI does not have lifecycle hooks like Claude Code. Memory retrieval and storage are instruction-based (via AGENTS.md) rather than automatic. The model is instructed to search memory at session start and store findings before session end.
 
 ### 4. Optional — Automated tasks
 

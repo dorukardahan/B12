@@ -6,11 +6,18 @@
 #   ./install.sh --all              # Install to all ~/.claude* setups
 #   ./install.sh --full             # Full setup: venv + deps + hooks + MCP config
 #   ./install.sh --full --all       # Full setup for all setups
+#   ./install.sh --codex            # Install B12 MCP server to Codex CLI
+#   ./install.sh --full --codex     # Full setup + Codex CLI support
 #
 # What --full does (in addition to standard install):
 #   1. Creates ~/.local/b12-venv if it doesn't exist
 #   2. Installs Python dependencies (mcp, sentence-transformers, sqlite-vec)
 #   3. Adds B12 MCP server config to ~/.claude.json (with correct absolute paths)
+#
+# What --codex does:
+#   1. Injects B12 MCP server into ~/.codex/config.toml
+#   2. Appends B12 memory instructions to ~/.codex/AGENTS.md
+#   (Requires venv — use with --full on first run)
 #
 # Standard install:
 #   1. Copies hook scripts to ~/.claude/hooks/ (shared location)
@@ -46,12 +53,14 @@ error() { echo -e "${RED}[ERR]${NC} $1"; exit 1; }
 # Parse flags
 FULL_SETUP=false
 INSTALL_ALL=false
+INSTALL_CODEX=false
 TARGET_DIR=""
 for arg in "$@"; do
   case "$arg" in
-    --full) FULL_SETUP=true ;;
-    --all)  INSTALL_ALL=true ;;
-    *)      TARGET_DIR="$arg" ;;
+    --full)  FULL_SETUP=true ;;
+    --all)   INSTALL_ALL=true ;;
+    --codex) INSTALL_CODEX=true ;;
+    *)       TARGET_DIR="$arg" ;;
   esac
 done
 
@@ -316,10 +325,207 @@ verify() {
 }
 
 # ─────────────────────────────────────────────
+# Codex CLI: inject MCP config into config.toml
+# ─────────────────────────────────────────────
+inject_codex_mcp_config() {
+  local CODEX_DIR="$HOME/.codex"
+  local CONFIG_TOML="$CODEX_DIR/config.toml"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$CODEX_DIR" ]; then
+    warn "Codex directory not found at $CODEX_DIR — is Codex CLI installed?"
+    return 1
+  fi
+
+  # Verify paths exist
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --codex"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+
+  # Create config.toml if it doesn't exist
+  if [ ! -f "$CONFIG_TOML" ]; then
+    touch "$CONFIG_TOML"
+    info "Created $CONFIG_TOML"
+  fi
+
+  # Check if B12 already configured
+  if grep -q '^\[mcp_servers\.B12\]' "$CONFIG_TOML" 2>/dev/null; then
+    # Update existing B12 config
+    if ! python3 - "$CONFIG_TOML" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, re
+
+config_path = sys.argv[1]
+venv_python = sys.argv[2]
+server_script = sys.argv[3]
+
+with open(config_path, 'r') as f:
+    content = f.read()
+
+# Remove existing B12 block (mcp_servers.B12 and its sub-tables)
+# Match [mcp_servers.B12] and everything until the next non-B12 section
+content = re.sub(
+    r'\[mcp_servers\.B12\][^\[]*(?:\[mcp_servers\.B12\.[^\]]*\][^\[]*)*',
+    '', content
+)
+
+# Append fresh B12 config
+b12_block = f'''
+[mcp_servers.B12]
+command = "{venv_python}"
+args = ["{server_script}"]
+enabled = true
+startup_timeout_sec = 30
+
+[mcp_servers.B12.env]
+MCP_EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+MCP_MAX_RESPONSE_CHARS = "40000"
+'''
+
+content = content.rstrip() + '\n' + b12_block
+
+with open(config_path, 'w') as f:
+    f.write(content)
+
+PYEOF
+    then
+      error "Failed to update B12 config in $CONFIG_TOML"
+    fi
+    info "Updated B12 MCP server in $CONFIG_TOML"
+  else
+    # Append new B12 config
+    cat >> "$CONFIG_TOML" << EOF
+
+[mcp_servers.B12]
+command = "$VENV_PYTHON"
+args = ["$SERVER_SCRIPT"]
+enabled = true
+startup_timeout_sec = 30
+
+[mcp_servers.B12.env]
+MCP_EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+MCP_MAX_RESPONSE_CHARS = "40000"
+EOF
+    info "Added B12 MCP server to $CONFIG_TOML"
+  fi
+
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+# ─────────────────────────────────────────────
+# Codex CLI: append B12 instructions to AGENTS.md
+# ─────────────────────────────────────────────
+inject_codex_agents() {
+  local CODEX_DIR="$HOME/.codex"
+  local AGENTS_MD="$CODEX_DIR/AGENTS.md"
+  local TEMPLATE="$SCRIPT_DIR/config/codex-agents-template.md"
+
+  if [ ! -d "$CODEX_DIR" ]; then
+    warn "Codex directory not found at $CODEX_DIR"
+    return 1
+  fi
+
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "Codex AGENTS.md template not found at $TEMPLATE"
+    return 1
+  fi
+
+  # Create AGENTS.md if it doesn't exist
+  if [ ! -f "$AGENTS_MD" ]; then
+    touch "$AGENTS_MD"
+  fi
+
+  # Check if B12 section already exists
+  if grep -q '<!-- B12-MEMORY-START -->' "$AGENTS_MD" 2>/dev/null; then
+    # Replace existing B12 section
+    if ! python3 - "$AGENTS_MD" "$TEMPLATE" << 'PYEOF'
+import sys, re
+
+agents_path = sys.argv[1]
+template_path = sys.argv[2]
+
+with open(agents_path, 'r') as f:
+    content = f.read()
+
+with open(template_path, 'r') as f:
+    template = f.read()
+
+# Replace between markers
+b12_section = f'\n<!-- B12-MEMORY-START -->\n{template}\n<!-- B12-MEMORY-END -->\n'
+content = re.sub(
+    r'<!-- B12-MEMORY-START -->.*?<!-- B12-MEMORY-END -->',
+    b12_section.strip(),
+    content,
+    flags=re.DOTALL
+)
+
+with open(agents_path, 'w') as f:
+    f.write(content)
+
+PYEOF
+    then
+      error "Failed to update B12 section in $AGENTS_MD"
+    fi
+    info "Updated B12 section in $AGENTS_MD"
+  else
+    # Append B12 section with markers
+    {
+      echo ""
+      echo "<!-- B12-MEMORY-START -->"
+      cat "$TEMPLATE"
+      echo ""
+      echo "<!-- B12-MEMORY-END -->"
+    } >> "$AGENTS_MD"
+    info "Added B12 memory instructions to $AGENTS_MD"
+  fi
+}
+
+# ─────────────────────────────────────────────
+# Codex CLI: verify installation
+# ─────────────────────────────────────────────
+verify_codex() {
+  local errors=0
+  local CONFIG_TOML="$HOME/.codex/config.toml"
+  local AGENTS_MD="$HOME/.codex/AGENTS.md"
+
+  # Check config.toml has B12
+  if grep -q '^\[mcp_servers\.B12\]' "$CONFIG_TOML" 2>/dev/null; then
+    info "Verify: B12 MCP server configured in $CONFIG_TOML"
+  else
+    warn "Verify: B12 NOT found in $CONFIG_TOML"
+    errors=$((errors + 1))
+  fi
+
+  # Check AGENTS.md has B12
+  if grep -q 'B12-MEMORY-START' "$AGENTS_MD" 2>/dev/null; then
+    info "Verify: B12 instructions present in $AGENTS_MD"
+  else
+    warn "Verify: B12 instructions NOT found in $AGENTS_MD"
+    errors=$((errors + 1))
+  fi
+
+  # Check venv accessible
+  if [ -x "$VENV_PYTHON" ]; then
+    info "Verify: B12 venv accessible at $VENV_PATH"
+  else
+    warn "Verify: B12 venv NOT found (Codex MCP server will fail)"
+    errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ─────────────────────────────────────────────
 # Main
 # ─────────────────────────────────────────────
 
-echo "B12 Memory System Installer (v10.1 — path isolation + context cap)"
+echo "B12 Memory System Installer (v10.2 — Codex CLI support)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first
@@ -328,7 +534,7 @@ if $FULL_SETUP; then
   echo ""
 fi
 
-# Always create dirs and copy files
+# Always create dirs and copy files (Claude Code hooks + scripts)
 create_dirs
 copy_hooks
 copy_scripts
@@ -349,7 +555,7 @@ else
   fi
 fi
 
-# Install hooks to setups
+# Install hooks to Claude Code setups
 if $INSTALL_ALL; then
   for dir in "$HOME"/.claude*; do
     [ -d "$dir" ] || continue
@@ -366,9 +572,18 @@ fi
 
 echo ""
 
-# Full setup: inject MCP config
+# Full setup: inject Claude Code MCP config
 if $FULL_SETUP; then
   inject_mcp_config
+  echo ""
+fi
+
+# Codex CLI setup
+if $INSTALL_CODEX; then
+  echo ""
+  echo "── Codex CLI Setup ──────────────"
+  inject_codex_mcp_config
+  inject_codex_agents
   echo ""
 fi
 
@@ -382,18 +597,36 @@ echo "────────────────────────�
 verify
 VERIFY_RESULT=$?
 
+# Codex verification (additive)
+if $INSTALL_CODEX; then
+  echo ""
+  echo "── Codex Verification ───────────"
+  verify_codex
+  CODEX_RESULT=$?
+  VERIFY_RESULT=$((VERIFY_RESULT + CODEX_RESULT))
+fi
+
 echo ""
 echo "─────────────────────────────────"
 if [ $VERIFY_RESULT -eq 0 ]; then
-  info "Installation complete! Restart Claude Code to activate B12."
+  if $INSTALL_CODEX; then
+    info "Installation complete! Restart Claude Code and Codex CLI to activate B12."
+  else
+    info "Installation complete! Restart Claude Code to activate B12."
+  fi
 else
   warn "Installation complete with $VERIFY_RESULT warning(s). See above."
 fi
 
-if ! $FULL_SETUP; then
+if ! $FULL_SETUP && ! $INSTALL_CODEX; then
   echo ""
   echo "Tip: Run './install.sh --full' for automatic venv + MCP config setup."
+  echo "     Run './install.sh --codex' to add Codex CLI support."
 fi
 
 echo ""
-echo "Next: Restart Claude Code, then run /mcp to verify B12 is connected."
+if $INSTALL_CODEX; then
+  echo "Next: Restart Codex CLI, then type /mcp to verify B12 is connected."
+else
+  echo "Next: Restart Claude Code, then run /mcp to verify B12 is connected."
+fi
