@@ -90,14 +90,20 @@ with open(debounce_file, 'w') as f:
 (
   sleep "$DEBOUNCE_SECONDS"
 
-  # Re-read state to check if a newer turn arrived
+  # Re-read state to check if a newer turn arrived since we started
   LAST_SEEN=$(python3 -c "
 import json
 try:
     state = json.load(open('$DEBOUNCE_FILE'))
-    print(state.get('$THREAD_ID', 0))
+    print(int(state.get('$THREAD_ID', 0)))
 except: print(0)
 " 2>/dev/null)
+
+  # If a newer turn arrived after us (LAST_SEEN > our NOW), skip
+  # Only the last turn's background process should fire
+  if [ "$LAST_SEEN" -gt "$NOW" ]; then
+    exit 0
+  fi
 
   CURRENT=$(date +%s)
   ELAPSED=$((CURRENT - LAST_SEEN))
