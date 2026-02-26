@@ -1,5 +1,12 @@
 # Changelog
 
+# [10.6.0](https://github.com/dorukardahan/B12/compare/v10.5.1...v10.6.0) (2026-02-26)
+
+
+### Features
+
+* **hooks:** Inject full behavioral instructions after context compression ([3746b7e](https://github.com/dorukardahan/B12/commit/3746b7e042e25f44c5e517d3896f174037f76312))
+
 ## [10.5.1](https://github.com/dorukardahan/B12/compare/v10.5.0...v10.5.1) (2026-02-26)
 
 
