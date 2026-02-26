@@ -129,6 +129,3 @@ When adding new patterns, always add both English and Turkish variants.
 - NO API keys or secrets
 - Use generic examples and placeholders
 - User profile template should be empty/generic — users fill in their own info
-
-# currentDate
-Today's date is 2026-02-26.
