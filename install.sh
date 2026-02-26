@@ -888,7 +888,7 @@ verify_vscode() {
     errors=$((errors + 1))
   fi
 
-  if grep -q 'B12-MEMORY-START' "$COPILOT_MD" 2>/dev/null || [ -f "$COPILOT_MD" ]; then
+  if grep -q 'B12 Memory System' "$COPILOT_MD" 2>/dev/null; then
     info "Verify: B12 instructions present in $COPILOT_MD"
   else
     warn "Verify: B12 instructions NOT found in copilot-instructions.md"
@@ -1387,7 +1387,7 @@ config['mcpServers']['B12'] = {
         "memory_update",
         "memory_quality"
     ],
-    "disabled": False
+    "disabled": False  # Python False -> JSON false via json.dump()
 }
 
 with open(settings_path, 'w') as f:
@@ -1758,7 +1758,9 @@ run_migration
 echo ""
 echo "─────────────────────────────────"
 
-# Run verification
+# Run verification (disable set -e: verify functions return non-zero to count warnings)
+set +e
+
 verify
 VERIFY_RESULT=$?
 
@@ -1767,65 +1769,59 @@ if $INSTALL_CODEX; then
   echo ""
   echo "── Codex Verification ───────────"
   verify_codex
-  CODEX_RESULT=$?
-  VERIFY_RESULT=$((VERIFY_RESULT + CODEX_RESULT))
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
 if $INSTALL_GEMINI; then
   echo ""
   echo "── Gemini Verification ──────────"
   verify_gemini
-  GEMINI_RESULT=$?
-  VERIFY_RESULT=$((VERIFY_RESULT + GEMINI_RESULT))
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
 if $INSTALL_VSCODE; then
   echo ""
   echo "── VS Code Verification ─────────"
   verify_vscode
-  VSCODE_RESULT=$?
-  VERIFY_RESULT=$((VERIFY_RESULT + VSCODE_RESULT))
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
 if $INSTALL_CURSOR; then
   echo ""
   echo "── Cursor Verification ──────────"
   verify_cursor
-  CURSOR_RESULT=$?
-  VERIFY_RESULT=$((VERIFY_RESULT + CURSOR_RESULT))
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
 if $INSTALL_KIMI; then
   echo ""
   echo "── Kimi Verification ────────────"
   verify_kimi
-  KIMI_RESULT=$?
-  VERIFY_RESULT=$((VERIFY_RESULT + KIMI_RESULT))
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
 if $INSTALL_WINDSURF; then
   echo ""
   echo "── Windsurf Verification ────────"
   verify_windsurf
-  WINDSURF_RESULT=$?
-  VERIFY_RESULT=$((VERIFY_RESULT + WINDSURF_RESULT))
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
 if $INSTALL_CLINE; then
   echo ""
   echo "── Cline Verification ───────────"
   verify_cline
-  CLINE_RESULT=$?
-  VERIFY_RESULT=$((VERIFY_RESULT + CLINE_RESULT))
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
 if $INSTALL_OPENCODE; then
   echo ""
   echo "── OpenCode Verification ────────"
   verify_opencode
-  OPENCODE_RESULT=$?
-  VERIFY_RESULT=$((VERIFY_RESULT + OPENCODE_RESULT))
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
+
+set -e
 
 echo ""
 echo "─────────────────────────────────"

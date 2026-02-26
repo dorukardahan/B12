@@ -9,7 +9,7 @@
       "changelogTitle": "# Changelog"
     }],
     ["@semantic-release/exec", {
-      "prepareCmd": "sed -i '' \"s/Installer (v[0-9.]*[^)]*)/Installer (v${nextRelease.version})/\" install.sh || sed -i \"s/Installer (v[0-9.]*[^)]*)/Installer (v${nextRelease.version})/\" install.sh"
+      "prepareCmd": "sed -i '' \"s/Installer (v[0-9.]*[^)]*)/Installer (v${nextRelease.version} — multi-platform)/\" install.sh || sed -i \"s/Installer (v[0-9.]*[^)]*)/Installer (v${nextRelease.version} — multi-platform)/\" install.sh"
     }],
     ["@semantic-release/git", {
       "assets": ["CHANGELOG.md", "package.json", "install.sh"],
