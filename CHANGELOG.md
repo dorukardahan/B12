@@ -1,5 +1,12 @@
 # Changelog
 
+# [10.7.0](https://github.com/dorukardahan/B12/compare/v10.6.0...v10.7.0) (2026-02-26)
+
+
+### Features
+
+* **templates:** Rewrite all platform instruction templates with full B12 API ([bb337c9](https://github.com/dorukardahan/B12/commit/bb337c9ad6e9e71fe722141c647c539b96bd9b64))
+
 # [10.6.0](https://github.com/dorukardahan/B12/compare/v10.5.1...v10.6.0) (2026-02-26)
 
 
