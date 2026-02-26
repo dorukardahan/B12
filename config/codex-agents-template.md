@@ -43,14 +43,14 @@ mcp__B12__memory_search(query="recent work", tags="proj:myproject")
 mcp__B12__memory_store(
   content="PostgreSQL connection pool exhaustion was caused by unclosed cursors in the batch job. Fix: added context manager wrapper.",
   metadata="type:gotcha, importance:0.9",
-  tags="proj:myproject, user:doruk"
+  tags="proj:myproject, user:yourname"
 )
 
 # Before ending session
 mcp__B12__memory_store(
   content="Session summary: Implemented OAuth2 flow, fixed pool exhaustion bug, updated API docs.",
   metadata="type:progress, importance:0.7",
-  tags="proj:myproject, user:doruk"
+  tags="proj:myproject, user:yourname"
 )
 ```
 

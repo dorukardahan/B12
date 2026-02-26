@@ -34,7 +34,8 @@ mkdir -p "$SUMMARY_DIR" "$LOG_DIR"
 
 # Setup detection (set B12_WORK_PATTERN env var to match your work dirs)
 _WORK_PAT="${B12_WORK_PATTERN:-}"
-if [ -n "$_WORK_PAT" ] && { [[ "$B12_BASE" == *"$_WORK_PAT"* ]] || [[ "$CWD" == *"/$_WORK_PAT"* ]] || [[ "$CWD" == *"/${_WORK_PAT,,}"* ]]; }; then
+_WORK_PAT_LOWER=$(echo "$_WORK_PAT" | tr '[:upper:]' '[:lower:]')
+if [ -n "$_WORK_PAT" ] && { [[ "$B12_BASE" == *"$_WORK_PAT"* ]] || [[ "$CWD" == *"/$_WORK_PAT"* ]] || [[ "$CWD" == *"/${_WORK_PAT_LOWER}"* ]]; }; then
   SETUP_CONTEXT="work"
 else
   SETUP_CONTEXT="personal"

@@ -239,16 +239,16 @@ Edit the profile with your actual preferences. Claude will also update it automa
 
 ```bash
 # Copy plist templates
-cp config/launchd-*.plist ~/Library/LaunchAgents/
+cp config/launchd-*.plist config/com.b12.graph-enrich.plist ~/Library/LaunchAgents/
 
 # Edit each plist to replace /path/to/home with your actual home directory
-sed -i '' "s|/path/to/home|$HOME|g" ~/Library/LaunchAgents/com.b12.memory-*.plist
+sed -i '' "s|/path/to/home|$HOME|g" ~/Library/LaunchAgents/launchd-*.plist ~/Library/LaunchAgents/com.b12.graph-enrich.plist
 
 # Load the agents
-launchctl load ~/Library/LaunchAgents/com.b12.memory-backup.plist
-launchctl load ~/Library/LaunchAgents/com.b12.memory-consolidate.plist
-launchctl load ~/Library/LaunchAgents/com.b12.memory-feedback-digest.plist
-launchctl load ~/Library/LaunchAgents/com.b12.memory-quality-audit.plist
+launchctl load ~/Library/LaunchAgents/launchd-backup.plist
+launchctl load ~/Library/LaunchAgents/launchd-consolidate.plist
+launchctl load ~/Library/LaunchAgents/launchd-feedback-digest.plist
+launchctl load ~/Library/LaunchAgents/launchd-quality-audit.plist
 ```
 
 | Agent | Schedule | What it does |

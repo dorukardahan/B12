@@ -89,7 +89,8 @@ def get_embedding(text):
 def _get_embedding_daemon(text):
     """Get embedding via embed daemon Unix socket."""
     import socket
-    sock_path = f"/tmp/b12-embed-{os.getuid()}.sock"
+    _uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
+    sock_path = f"/tmp/b12-embed-{_uid}.sock"
     if not os.path.exists(sock_path):
         return None
     try:
@@ -141,7 +142,7 @@ def _get_embedding_direct(text):
 
 def store_memory(db_path, content, metadata_str, tags, embedding=None):
     """Store a memory in the B12 database."""
-    content_hash = hashlib.md5(content.encode()).hexdigest()
+    content_hash = hashlib.sha256(content.strip().lower().encode()).hexdigest()
     now = datetime.now(timezone.utc).isoformat()
 
     now_epoch = time.time()

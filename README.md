@@ -44,14 +44,21 @@ B12 MCP Server (b12_mcp_server.py)
     └── Auto-backup (daily, 7-day rotation)
 ```
 
+## Prerequisites
+
+- **Python 3.11+** — required for the MCP server and embedding model
+- **Claude Code** or **Codex CLI** — the AI coding assistant B12 extends
+- **jq** — used by hooks for JSON processing (`brew install jq` on macOS)
+- **sqlite3** — used for memory database operations (pre-installed on macOS)
+
 ## Setup via AI Assistant
 
 If you're feeding this repo to Claude Code, Cursor, or another AI coding assistant to set it up for you, here's what the AI needs to do:
 
 ```bash
 # 1. Clone and run full installer (one command does everything)
-git clone https://github.com/dorukardahan/B12.git ~/Desktop/B12
-cd ~/Desktop/B12 && chmod +x install.sh && ./install.sh --full
+git clone https://github.com/dorukardahan/B12.git
+cd B12 && chmod +x install.sh && ./install.sh --full
 
 # 2. Restart Claude Code and verify
 # Run /mcp in Claude Code — should show: B12 · connected (4 tools)
@@ -154,10 +161,10 @@ This adds the B12 MCP server to `~/.codex/config.toml`, appends memory instructi
 Copy the launchd plists to enable daily backup, consolidation, and weekly audits:
 
 ```bash
-cp config/launchd-*.plist ~/Library/LaunchAgents/
+cp config/launchd-*.plist config/com.b12.graph-enrich.plist ~/Library/LaunchAgents/
 # Edit each plist to replace /path/to/home with your actual home directory
-sed -i '' "s|/path/to/home|$HOME|g" ~/Library/LaunchAgents/com.b12.memory-*.plist
-launchctl load ~/Library/LaunchAgents/com.b12.memory-*.plist
+sed -i '' "s|/path/to/home|$HOME|g" ~/Library/LaunchAgents/launchd-*.plist ~/Library/LaunchAgents/com.b12.graph-enrich.plist
+launchctl load ~/Library/LaunchAgents/launchd-*.plist ~/Library/LaunchAgents/com.b12.graph-enrich.plist
 ```
 
 See `docs/setup.md` for the full installation guide.
@@ -179,7 +186,6 @@ B12/
 │   ├── memory-quality-audit.sh     #   Scheduled — weekly health score
 │   ├── memory-feedback-digest.sh   #   Scheduled — weekly usage digest
 │   ├── memory-browse.sh            #   Manual — CLI memory browser
-│   ├── memory-upgrade.sh           #   Manual — upgrade + migration
 │   └── b12-codex-notify.sh         #   Codex — notify hook (session-end debounce)
 ├── scripts/                        # Support modules
 │   ├── b12_mcp_server.py           #   Custom FastMCP server (replaces mcp-memory-service)
@@ -191,6 +197,8 @@ B12/
 │   ├── shared_patterns.py          #   Shared regex patterns (EN + TR)
 │   ├── transcript_adapter.py       #   Unified transcript parser (Claude + Codex)
 │   ├── codex_session_end.py        #   Codex session-end memory extraction
+│   ├── hook_adapter.py             #   Codex CLI hook adapter (translates Codex events to B12)
+│   ├── embedding_backfill.py       #   Backfills embeddings for memories without vectors
 │   ├── migrate_ebbinghaus.py       #   Migration: add strength fields
 │   └── migrate_v10_13.py           #   Migration: create native FTS5 table
 ├── skills/                         # Agent skills
@@ -200,7 +208,8 @@ B12/
 │   ├── settings-template.json      #   Hook config for settings.json
 │   ├── codex-config-template.toml  #   MCP server config for Codex config.toml
 │   ├── codex-agents-template.md    #   B12 instructions for Codex AGENTS.md
-│   └── launchd-*.plist             #   macOS scheduled task agents
+│   ├── launchd-*.plist             #   macOS scheduled task agents
+│   └── com.b12.graph-enrich.plist  #   launchd plist for graph enrichment
 ├── templates/
 │   └── user-profile.md             #   User profile template
 ├── benchmarks/

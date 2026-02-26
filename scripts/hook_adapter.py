@@ -242,7 +242,8 @@ class HookAdapter:
     @staticmethod
     def _daemon_request(op: str, **kwargs) -> dict | None:
         """Send a request to the embed daemon."""
-        sock_path = f"/tmp/b12-embed-{os.getuid()}.sock"
+        _uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
+        sock_path = f"/tmp/b12-embed-{_uid}.sock"
         if not os.path.exists(sock_path):
             return None
         try:
