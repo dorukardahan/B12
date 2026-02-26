@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.7.2](https://github.com/dorukardahan/B12/compare/v10.7.1...v10.7.2) (2026-02-26)
+
+
+### Bug Fixes
+
+* **docs:** Update branding from Claude Code-only to multi-platform ([4e794a6](https://github.com/dorukardahan/B12/commit/4e794a6dad296bb9683a8d52b41a49a6d5b30a28))
+
 ## [10.7.1](https://github.com/dorukardahan/B12/compare/v10.7.0...v10.7.1) (2026-02-26)
 
 
