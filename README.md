@@ -1,13 +1,15 @@
-# B12 — Persistent Memory System for Claude Code
+# B12 — Persistent Memory System for AI Coding Assistants
 
-A local-first, fully automated memory system that makes Claude Code remember everything across sessions. No cloud, no API keys, no manual effort — just persistent context that gets smarter over time.
+A local-first, fully automated memory system that makes your AI coding assistant remember everything across sessions. No cloud, no API keys, no manual effort — just persistent context that gets smarter over time.
 
-Built for developers who use Claude Code daily and want it to remember their decisions, patterns, preferences, and lessons learned — without ever being asked.
+Works with Claude Code, Codex CLI, Gemini CLI, VS Code/Copilot, Cursor, Kimi Code, Windsurf, Cline, and OpenCode — all sharing the same memory database.
 
 ## How It Works
 
+The hook-based automation below runs in Claude Code. Other platforms use the MCP server directly with static instruction files — see [Supported Platforms](#supported-platforms).
+
 ```
-Claude Code Session
+Claude Code Session (full hook automation)
     │
     ├── SessionStart ──────────> Inject: user profile + last session summary
     │                             + scope instructions + memory pre-fetch
@@ -126,9 +128,9 @@ This single command:
 - Adds the B12 MCP server to `~/.claude.json` (with correct absolute paths)
 - Verifies the installation
 
-### 2. Restart Claude Code
+### 2. Restart your AI assistant
 
-Start a new session. Run `/mcp` — you should see `B12 · connected` with 4 tools:
+Start a new Claude Code session. Run `/mcp` — you should see `B12 · connected` with 4 tools:
 - `memory_store` — store a memory with metadata and tags
 - `memory_search` — hybrid semantic + full-text search
 - `memory_update` — update metadata, tags, or strength

@@ -1,6 +1,6 @@
 # B12 Project Instructions
 
-This is a memory system project for Claude Code CLI.
+This is a multi-platform persistent memory system for AI coding assistants (Claude Code, Codex, Gemini, VS Code, Cursor, Kimi, Windsurf, Cline, OpenCode).
 
 ## For AI assistants: Setting up B12 for a user
 
@@ -23,7 +23,7 @@ Then restart Claude Code and run `/mcp` to verify `B12 · connected`.
 ## Project structure
 - `hooks/` — Shell/Python scripts that fire at Claude Code lifecycle events
 - `scripts/` — Support modules (b12_mcp_server, embed_daemon, write_time_merge, Ebbinghaus decay, etc.)
-- `config/` — Template configuration files for Claude Code settings + launchd plists
+- `config/` — Template configuration files for all supported platforms + launchd plists
 - `templates/` — User-facing template files (user profile, etc.)
 - `docs/` — Architecture documentation and setup guide
 - `benchmarks/` — Retrieval quality evaluation (LoCoMo)
@@ -55,7 +55,7 @@ Documentation lives in: `README.md`, `docs/setup.md`, `docs/architecture.md`, `C
 - SessionStart context injection has a 6000-char hard cap with progressive trimming (pre-fetch → cross-project → feedback → truncation).
 - PreCompact hooks cannot inject context — they can only run side effects
 - SessionStart hooks CAN inject context via `additionalContext` in JSON output
-- The B12 MCP server (`scripts/b12_mcp_server.py`) runs as a child process spawned by Claude Code
+- The B12 MCP server (`scripts/b12_mcp_server.py`) runs as a child process spawned by the host application (Claude Code, Cursor, etc.)
 - The embed daemon (`scripts/embed_daemon.py`) runs as a background process, communicates via Unix socket
 - Hook scripts receive JSON on stdin and must output valid JSON on stdout
 - `b12_mcp_server.py` creates all tables via `_ensure_schema()` on startup — no external migration needed for fresh installs
