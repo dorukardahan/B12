@@ -1,9 +1,14 @@
 #!/bin/bash
-# B12 Memory System - SessionStart Hook (v5 — Memory Pre-fetch)
+# B12 Memory System - SessionStart Hook (v6 — Compact Context Rebuild)
 # Loads: setup context + compressed instructions + user profile (lazy)
 #        + session summary + cross-project hints + memory pre-fetch
 # Fires on: startup, resume, compact
 #
+# v6 changes (2026-02-26):
+# - Behavioral instructions + memory pre-fetch now injected on BOTH startup AND compact
+# - Extracted BEHAVIORAL_INSTR as shared variable (DRY between paths)
+# - Compact path rebuilt to match startup path structure with progressive trimming
+# - Fixes: after context compression, LLM retains full B12 knowledge
 # v5 changes (2026-02-08):
 # - FTS5 + tag-based memory pre-fetch (project-relevant + universal)
 # - Direct SQLite queries (no embedding model needed)
@@ -248,34 +253,40 @@ escape_json() {
   jq -Rs '.' 2>/dev/null | sed 's/^"//;s/"$//'
 }
 
+
+# ═══════════════════════════════════════════════════════════════
+# SHARED VARIABLES — used by both startup and compact paths
+# ═══════════════════════════════════════════════════════════════
+PARENT_INFO=""
+[ -n "$PARENT_PROJECT" ] && PARENT_INFO=" (parent: ${PARENT_PROJECT})"
+
+STORE_TAG="proj:${PROJECT_NAME}"
+SEARCH_HINT="Default: tags=[\"proj:${PROJECT_NAME}\"] to get project context."
+if [ -n "$PARENT_PROJECT" ]; then
+  STORE_TAG="proj:${PARENT_PROJECT}"
+  SEARCH_HINT="Default: tags=[\"proj:${PARENT_PROJECT}\"] (parent project). Also try proj:${PROJECT_NAME} for subdir-specific."
+fi
+
+# Behavioral instructions (~2000 chars) — injected on both startup AND compact
+# v6: extracted from startup-only to shared variable so compact path also gets them
+BEHAVIORAL_INSTR="MEMORY TOOLS: memory_search (mode=hybrid, after/before=ISO date, max_response_chars=40000), memory_store (always include metadata), memory_update, memory_quality.\nTIME SEARCH: When user says approximate time (\"2 days ago\", \"last week\", \"this morning\"), use wide buffer: \u00b11 day for days, \u00b12 days for weeks. Example: \"2 days ago\" \u2192 after=3_days_ago, before=1_day_ago. If few results, widen range."
+
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nSCOPE SYSTEM:\nSetup: ${SETUP_CONTEXT} | Project: ${PROJECT_NAME}${PARENT_INFO}\nWhen STORING: Always include tags [${STORE_TAG}, user:${SETUP_CONTEXT}] and metadata {project:\"${PARENT_PROJECT:-${PROJECT_NAME}}\", setup:\"${SETUP_CONTEXT}\", scope:\"<type>\"}.\nScope types:\n- project: codebase-specific (architecture, decisions, bugs) -> tag: ${STORE_TAG}\n- universal: applies everywhere (patterns, CLI tricks, lessons) -> tag: user:universal\n- preference: user preferences (always global) -> tag: user:pref\n- setup: team/workflow specific to ${SETUP_CONTEXT} -> tag: user:${SETUP_CONTEXT}\nWhen SEARCHING:\n- ${SEARCH_HINT} Add user:universal for general knowledge.\n- Cross-project: no tag filter. Mentally deprioritize results from unrelated proj: tags.\n- Few results (<3): widen scope, remove tag filter."
+
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nDUAL MEMORY LAYERS:\n- MEMORY.md = active project state (current architecture, decisions, conventions). Updated each session.\n- MCP memory = historical knowledge (past errors, cross-project patterns, resolved issues, preferences). Searched on demand.\nDo NOT duplicate between them."
+
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nIMPORTANCE: Set importance_score in metadata (2.0=critical, 1.5=important, 1.0=normal, 0.7=temporary). Use tags: critical, important, reference, temporary."
+
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nAUTO BEHAVIOR: 1) Search memory on startup with project + task keywords. 2) Store silently when learning something important \u2014 categorize by type (architecture/decision/pattern/gotcha/progress/preference). 3) Update user-profile.md at ${MEMORY_DIR}/user-profile.md when learning new preferences. 4) At session start, print ONE short line with the B12 pill format. 5) When retrieval hook returns relevant memories or when storing, use these EXACT formats:\nRetrieval: ( \ud83d\udc8a B12 \ud83e\udde0 : found N memories about [topic], stored [date] \u2705 )\nStore: ( \ud83d\udc8a B12 \ud83e\udde0 : saved to memory \u2705 )\nNot found (only when user explicitly asks): ( \ud83d\udc8a B12 \ud83e\udde0 : searched but nothing found \u274c ) \u2014 then try wider time range or different keywords before giving up.\nKeep under 15 words. Only \u2705 or \u274c at the end, no other emojis after the colon."
+
 if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # ═══════════════════════════════════════════════════════════
   # BUILD CONTEXT — scope-aware, token-efficient
   # ═══════════════════════════════════════════════════════════
-  PARENT_INFO=""
-  [ -n "$PARENT_PROJECT" ] && PARENT_INFO=" (parent: ${PARENT_PROJECT})"
   CONTEXT="MEMORY SYSTEM ACTIVE (b12-memory v1.0). Setup: ${SETUP_CONTEXT}. Project: ${PROJECT_NAME}${PARENT_INFO} (${CWD})."
 
-  # --- Compact behavioral instructions (v4 — ~120 tokens vs ~512 in v3) ---
-  CONTEXT="${CONTEXT}\n\nMEMORY TOOLS: memory_search (mode=hybrid, after/before=ISO date, max_response_chars=40000), memory_store (always include metadata), memory_update, memory_quality.\nTIME SEARCH: When user says approximate time (\"2 days ago\", \"last week\", \"this morning\"), use wide buffer: ±1 day for days, ±2 days for weeks. Example: \"2 days ago\" → after=3_days_ago, before=1_day_ago. If few results, widen range."
-
-  # --- Scope classification rules ---
-  STORE_TAG="proj:${PROJECT_NAME}"
-  SEARCH_HINT="Default: tags=[\"proj:${PROJECT_NAME}\"] to get project context."
-  if [ -n "$PARENT_PROJECT" ]; then
-    STORE_TAG="proj:${PARENT_PROJECT}"
-    SEARCH_HINT="Default: tags=[\"proj:${PARENT_PROJECT}\"] (parent project). Also try proj:${PROJECT_NAME} for subdir-specific."
-  fi
-  CONTEXT="${CONTEXT}\n\nSCOPE SYSTEM:\nSetup: ${SETUP_CONTEXT} | Project: ${PROJECT_NAME}${PARENT_INFO}\nWhen STORING: Always include tags [${STORE_TAG}, user:${SETUP_CONTEXT}] and metadata {project:\"${PARENT_PROJECT:-${PROJECT_NAME}}\", setup:\"${SETUP_CONTEXT}\", scope:\"<type>\"}.\nScope types:\n- project: codebase-specific (architecture, decisions, bugs) -> tag: ${STORE_TAG}\n- universal: applies everywhere (patterns, CLI tricks, lessons) -> tag: user:universal\n- preference: user preferences (always global) -> tag: user:pref\n- setup: team/workflow specific to ${SETUP_CONTEXT} -> tag: user:${SETUP_CONTEXT}\nWhen SEARCHING:\n- ${SEARCH_HINT} Add user:universal for general knowledge.\n- Cross-project: no tag filter. Mentally deprioritize results from unrelated proj: tags.\n- Few results (<3): widen scope, remove tag filter."
-
-  # --- Dual-layer deconfliction ---
-  CONTEXT="${CONTEXT}\n\nDUAL MEMORY LAYERS:\n- MEMORY.md = active project state (current architecture, decisions, conventions). Updated each session.\n- MCP memory = historical knowledge (past errors, cross-project patterns, resolved issues, preferences). Searched on demand.\nDo NOT duplicate between them."
-
-  # --- Importance scoring hint ---
-  CONTEXT="${CONTEXT}\n\nIMPORTANCE: Set importance_score in metadata (2.0=critical, 1.5=important, 1.0=normal, 0.7=temporary). Use tags: critical, important, reference, temporary."
-
-  # --- Automatic behavior (compressed) ---
-  CONTEXT="${CONTEXT}\n\nAUTO BEHAVIOR: 1) Search memory on startup with project + task keywords. 2) Store silently when learning something important — categorize by type (architecture/decision/pattern/gotcha/progress/preference). 3) Update user-profile.md at ${MEMORY_DIR}/user-profile.md when learning new preferences. 4) At session start, print ONE short line with the B12 pill format. 5) When retrieval hook returns relevant memories or when storing, use these EXACT formats:\nRetrieval: ( \ud83d\udc8a B12 \ud83e\udde0 : found N memories about [topic], stored [date] \u2705 )\nStore: ( \ud83d\udc8a B12 \ud83e\udde0 : saved to memory \u2705 )\nNot found (only when user explicitly asks): ( \ud83d\udc8a B12 \ud83e\udde0 : searched but nothing found \u274c ) — then try wider time range or different keywords before giving up.\nKeep under 15 words. Only \u2705 or \u274c at the end, no other emojis after the colon."
+  # --- Behavioral instructions (shared variable, injected on startup + compact) ---
+  CONTEXT="${CONTEXT}\n\n${BEHAVIORAL_INSTR}"
 
   # Add user profile (if recent)
   if [ -n "$USER_PROFILE" ]; then
@@ -346,7 +357,9 @@ CONTEXT_EOF
 
 elif [ "$SOURCE" = "compact" ]; then
   # ═══════════════════════════════════════════════════════════
-  # POST-COMPACTION — load staged context or fallback
+  # POST-COMPACTION — full context rebuild (v6)
+  # v6: includes behavioral instructions + memory pre-fetch
+  # so the LLM retains B12 knowledge after context compression
   # ═══════════════════════════════════════════════════════════
   STAGING_DIR="$B12_BASE/memory-staging"
   STAGED_CONTEXT=""
@@ -360,9 +373,6 @@ elif [ "$SOURCE" = "compact" ]; then
       fi
     done
   fi
-
-  # Always include scope context after compaction
-  SCOPE_REMINDER="Setup: ${SETUP_CONTEXT} | Project: ${PROJECT_NAME}. Scope tags: proj:${PROJECT_NAME}, user:${SETUP_CONTEXT}."
 
   # Load working memory (active files, modified files, search patterns)
   WORKING_MEM=""
@@ -383,45 +393,71 @@ elif [ "$SOURCE" = "compact" ]; then
     fi
   fi
 
-  if [ -n "$STAGED_CONTEXT" ]; then
-    ESCAPED=$(echo "$STAGED_CONTEXT" | escape_json)
-    WM_ESCAPED=""
-    if [ -n "$WORKING_MEM" ]; then
-      WM_ESCAPED=$(printf '%b' "$WORKING_MEM" | escape_json)
-      WM_ESCAPED="\\n${WM_ESCAPED}"
-    fi
-    cat <<CONTEXT_EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "SessionStart",
-    "additionalContext": "MEMORY SYSTEM: Context compacted. ${SCOPE_REMINDER}${WM_ESCAPED}\nPre-compaction summary:\n${ESCAPED}\n\nStore key learnings to permanent memory. Update user-profile.md if needed. Continue working."
-  }
-}
-CONTEXT_EOF
-  else
-    # No staged context - minimal fallback with scope reminder
-    FALLBACK=""
-    if [ -n "$USER_PROFILE" ]; then
-      FALLBACK="USER PROFILE:\n$(echo "$USER_PROFILE" | escape_json)\n\n"
-    fi
-    if [ -n "$LAST_SESSION" ]; then
-      FALLBACK="${FALLBACK}LAST SESSION:\n$(echo "$LAST_SESSION" | escape_json)"
-    fi
+  # Build comprehensive context (same structure as startup, with staged summary replacing last session)
+  CONTEXT="MEMORY SYSTEM: Context compacted. Setup: ${SETUP_CONTEXT}. Project: ${PROJECT_NAME}${PARENT_INFO} (${CWD})."
 
-    WM_ESCAPED=""
-    if [ -n "$WORKING_MEM" ]; then
-      WM_ESCAPED=$(printf '%b' "$WORKING_MEM" | escape_json)
-      WM_ESCAPED="\\n${WM_ESCAPED}"
-    fi
-    cat <<CONTEXT_EOF
+  # Full behavioral instructions — critical for proper B12 tool usage after compaction
+  CONTEXT="${CONTEXT}\n\n${BEHAVIORAL_INSTR}"
+
+  # Pre-compaction summary (what the LLM was working on)
+  if [ -n "$STAGED_CONTEXT" ]; then
+    CONTEXT="${CONTEXT}\n\n--- PRE-COMPACTION SUMMARY ---\n${STAGED_CONTEXT}\n--- END PRE-COMPACTION ---"
+  fi
+
+  # Working memory (file context from the session)
+  if [ -n "$WORKING_MEM" ]; then
+    CONTEXT="${CONTEXT}\n\n${WORKING_MEM}"
+  fi
+
+  # Memory pre-fetch (project-relevant + universal knowledge)
+  if [ -n "$MEMORY_PREFETCH" ]; then
+    CONTEXT="${CONTEXT}\n\n--- MEMORY PRE-FETCH ---\n${MEMORY_PREFETCH}\n--- END PRE-FETCH ---"
+  fi
+
+  # Cross-project hints (if available)
+  if [ -n "$CROSS_PROJECT_HINT" ]; then
+    CONTEXT="${CONTEXT}\n\n--- CROSS-PROJECT ---\n${CROSS_PROJECT_HINT}\nSearch without tag filter to explore these.\n--- END CROSS-PROJECT ---"
+  fi
+
+  # ── Context hard cap — progressive trimming (compact path) ──
+  # Priority: behavioral instructions > staged summary > working memory > pre-fetch > cross-project
+  CONTEXT=$(printf '%b' "$CONTEXT")
+  MAX_CONTEXT_CHARS=6000
+  _ctx_len=${#CONTEXT}
+  if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
+    # Tier 1: Remove cross-project hints
+    CONTEXT=$(echo "$CONTEXT" | sed '/--- CROSS-PROJECT ---/,/--- END CROSS-PROJECT ---/d')
+    _ctx_len=${#CONTEXT}
+  fi
+  if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
+    # Tier 2: Remove memory pre-fetch
+    CONTEXT=$(echo "$CONTEXT" | sed '/--- MEMORY PRE-FETCH ---/,/--- END PRE-FETCH ---/d')
+    _ctx_len=${#CONTEXT}
+  fi
+  if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
+    # Tier 3: Truncate staged summary (keep first 2000 chars of it)
+    CONTEXT=$(echo "$CONTEXT" | sed '/--- PRE-COMPACTION SUMMARY ---/,/--- END PRE-COMPACTION ---/{
+      /--- PRE-COMPACTION SUMMARY ---/b
+      /--- END PRE-COMPACTION ---/b
+      d
+    }')
+    _ctx_len=${#CONTEXT}
+  fi
+  if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
+    # Tier 4: Hard truncate
+    CONTEXT=$(echo "$CONTEXT" | head -c "$MAX_CONTEXT_CHARS")
+  fi
+
+  ESCAPED_CONTEXT=$(echo "$CONTEXT" | escape_json)
+
+  cat <<CONTEXT_EOF
 {
   "hookSpecificOutput": {
     "hookEventName": "SessionStart",
-    "additionalContext": "MEMORY SYSTEM: Context compacted. ${SCOPE_REMINDER}${WM_ESCAPED}\nSearch memory for context about current task.\n\n${FALLBACK}\n\nContinue where you left off."
+    "additionalContext": "${ESCAPED_CONTEXT}\n\nStore key learnings to permanent memory. Continue where you left off."
   }
 }
 CONTEXT_EOF
-  fi
 fi
 
 exit 0
