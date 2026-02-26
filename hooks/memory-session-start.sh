@@ -435,7 +435,7 @@ elif [ "$SOURCE" = "compact" ]; then
     _ctx_len=${#CONTEXT}
   fi
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
-    # Tier 3: Truncate staged summary (keep first 2000 chars of it)
+    # Tier 3: Remove staged summary entirely (behavioral instructions take priority)
     CONTEXT=$(echo "$CONTEXT" | sed '/--- PRE-COMPACTION SUMMARY ---/,/--- END PRE-COMPACTION ---/{
       /--- PRE-COMPACTION SUMMARY ---/b
       /--- END PRE-COMPACTION ---/b

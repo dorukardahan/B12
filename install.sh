@@ -349,8 +349,7 @@ run_migration() {
     return
   fi
 
-  python3 "$MIGRATE_SCRIPT" --db "$DB_PATH"
-  if [ $? -eq 0 ]; then
+  if python3 "$MIGRATE_SCRIPT" --db "$DB_PATH"; then
     info "Database migration check passed"
   else
     warn "Database migration had issues (see output above)"
@@ -1678,6 +1677,10 @@ if $FULL_SETUP; then
   echo ""
 fi
 
+# Disable set -e for platform setup: inject functions return 1 on warnings
+# (e.g., "directory not found") which should not kill the script
+set +e
+
 # Codex CLI setup
 if $INSTALL_CODEX; then
   echo ""
@@ -1758,9 +1761,7 @@ run_migration
 echo ""
 echo "─────────────────────────────────"
 
-# Run verification (disable set -e: verify functions return non-zero to count warnings)
-set +e
-
+# Run verification (set +e already active from platform setup block above)
 verify
 VERIFY_RESULT=$?
 
