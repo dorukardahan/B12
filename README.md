@@ -47,9 +47,27 @@ B12 MCP Server (b12_mcp_server.py)
 ## Prerequisites
 
 - **Python 3.11+** — required for the MCP server and embedding model
-- **Claude Code** or **Codex CLI** — the AI coding assistant B12 extends
+- **Claude Code** or any supported AI coding assistant (see table below)
 - **jq** — used by hooks for JSON processing (`brew install jq` on macOS)
 - **sqlite3** — used for memory database operations (pre-installed on macOS)
+
+## Supported Platforms
+
+B12's MCP server works with any tool that supports MCP stdio. The installer handles config for all of these:
+
+| Platform | Flag | MCP Config Location | Instructions File |
+|----------|------|--------------------|--------------------|
+| Claude Code | (default) | ~/.claude.json | Built-in |
+| Codex CLI | `--codex` | ~/.codex/config.toml | ~/.codex/AGENTS.md |
+| Gemini CLI | `--gemini` | ~/.gemini/settings.json | ~/.gemini/GEMINI.md |
+| VS Code / Copilot | `--vscode` | ~/Library/.../Code/User/mcp.json | .github/copilot-instructions.md |
+| Cursor | `--cursor` | ~/.cursor/mcp.json | ~/.cursor/rules/b12-memory.mdc |
+| Kimi Code | `--kimi` | ~/.kimi/mcp.json | ~/.kimi/AGENTS.md |
+| Windsurf | `--windsurf` | ~/.codeium/windsurf/mcp_config.json | ~/.codeium/.../global_rules.md |
+| Cline | `--cline` | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md |
+| OpenCode | `--opencode` | ~/.config/opencode/opencode.json | ~/.config/opencode/AGENTS.md |
+
+All platforms share the same SQLite database — memories stored in one session are searchable in all others.
 
 ## Setup via AI Assistant
 
@@ -83,7 +101,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Working Memory** — tracks active files and search patterns, restored after context compaction
 - **B12 pill notifications** — visible inline indicators when memories are stored or retrieved
 - **Multi-setup support** — works across `.claude`, `.claude-work`, etc. with shared database
-- **Codex CLI support** — same MCP server works with OpenAI Codex CLI (shared memory database)
+- **Multi-platform support** — Claude Code, Codex, Gemini, VS Code, Cursor, Kimi, Windsurf, Cline, OpenCode
 - **Zero config after install** — hooks handle everything silently in the background
 - **Fully local** — no cloud, no API calls, all data stays on your machine
 
@@ -96,7 +114,8 @@ git clone https://github.com/dorukardahan/B12.git
 cd B12
 chmod +x install.sh
 ./install.sh --full       # Creates venv, installs deps, deploys hooks, configures MCP
-# or: ./install.sh --full --all   # Same, but for all ~/.claude* setups
+# or: ./install.sh --full --all           # Same, but for all ~/.claude* setups
+# or: ./install.sh --full --gemini --cursor  # Setup + Gemini CLI + Cursor
 ```
 
 This single command:
@@ -140,21 +159,28 @@ If you prefer step-by-step control, see [docs/setup.md](docs/setup.md) for the f
 
 Replace `/Users/yourname` with your actual home directory (`echo $HOME`).
 
-### Codex CLI Support
+### Multi-Platform Support
 
-B12 also works with OpenAI's Codex CLI. The same MCP server and SQLite database are shared — memories stored in Claude Code sessions are searchable in Codex, and vice versa.
+B12 works with any MCP-compatible coding assistant. The same MCP server and SQLite database are shared — memories stored in one platform are searchable in all others.
 
 ```bash
-# Install B12 for Codex CLI (requires existing venv)
-./install.sh --codex
+# Install B12 for additional platforms (requires existing venv)
+./install.sh --codex         # OpenAI Codex CLI
+./install.sh --gemini        # Google Gemini CLI
+./install.sh --vscode        # VS Code / GitHub Copilot
+./install.sh --cursor        # Cursor
+./install.sh --kimi          # Kimi Code
+./install.sh --windsurf      # Windsurf (Codeium)
+./install.sh --cline         # Cline (VS Code extension)
+./install.sh --opencode      # OpenCode
 
-# Or full setup from scratch (creates venv + Claude Code + Codex)
-./install.sh --full --codex
+# Or full setup from scratch with multiple platforms
+./install.sh --full --codex --gemini --cursor
 ```
 
-This adds the B12 MCP server to `~/.codex/config.toml`, appends memory instructions to `~/.codex/AGENTS.md`, configures the notify hook for session-end processing, and installs the B12 skill. Restart Codex CLI and type `/mcp` to verify.
+Each flag configures the platform's MCP config and injects B12 memory instructions into the platform's instruction file. Restart the platform and check its MCP status to verify.
 
-**How it works:** The `notify` hook fires after each agent turn. A 2-minute debounce detects session end, then processes the rollout JSONL to extract session summaries, decisions, errors, and learnings. The B12 Codex Skill also instructs the model to proactively search/store memory.
+**Codex CLI specifics:** The `notify` hook fires after each agent turn. A 2-minute debounce detects session end, then processes the rollout JSONL to extract session summaries, decisions, errors, and learnings. The B12 Codex Skill also instructs the model to proactively search/store memory.
 
 ### 4. Optional — Automated tasks
 
@@ -208,6 +234,13 @@ B12/
 │   ├── settings-template.json      #   Hook config for settings.json
 │   ├── codex-config-template.toml  #   MCP server config for Codex config.toml
 │   ├── codex-agents-template.md    #   B12 instructions for Codex AGENTS.md
+│   ├── gemini-*-template.*         #   Gemini CLI config + instructions
+│   ├── vscode-*-template.*         #   VS Code / Copilot config + instructions
+│   ├── cursor-*-template.*         #   Cursor config + rules
+│   ├── kimi-*-template.*           #   Kimi Code config + instructions
+│   ├── windsurf-*-template.*       #   Windsurf config + rules
+│   ├── cline-*-template.*          #   Cline config + rules
+│   ├── opencode-*-template.*       #   OpenCode config + instructions
 │   ├── launchd-*.plist             #   macOS scheduled task agents
 │   └── com.b12.graph-enrich.plist  #   launchd plist for graph enrichment
 ├── templates/
@@ -288,6 +321,15 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 | **Working Memory** | Conversation momentum | `~/.B12/memory-staging/working-memory.json` | Post-compaction recovery |
 
 ## Changelog (recent)
+
+### v10.5 (2026-02-26) — Multi-Platform Support
+
+- **7 new platform integrations**: Gemini CLI, VS Code/Copilot, Cursor, Kimi Code, Windsurf, Cline, OpenCode
+- Each platform gets its own `--flag` for install.sh (`--gemini`, `--vscode`, `--cursor`, etc.)
+- Shared `inject_b12_section()` helper eliminates duplicated marker-injection code
+- All platforms share the same SQLite database — cross-platform memory
+- 14 config templates in `config/` for MCP configs + instruction files
+- Fixed Cursor tool naming bug (single → double underscore)
 
 ### v10.0 (2026-02-20) — Custom MCP Server & Documentation Overhaul
 

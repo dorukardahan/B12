@@ -7,7 +7,15 @@
 #   ./install.sh --full             # Full setup: venv + deps + hooks + MCP config
 #   ./install.sh --full --all       # Full setup for all setups
 #   ./install.sh --codex            # Install B12 MCP server to Codex CLI
+#   ./install.sh --gemini           # Install B12 MCP server to Gemini CLI
+#   ./install.sh --vscode           # Install B12 MCP server to VS Code / Copilot
+#   ./install.sh --cursor           # Install B12 MCP server to Cursor
+#   ./install.sh --kimi             # Install B12 MCP server to Kimi Code
+#   ./install.sh --windsurf         # Install B12 MCP server to Windsurf
+#   ./install.sh --cline            # Install B12 MCP server to Cline (VS Code ext)
+#   ./install.sh --opencode         # Install B12 MCP server to OpenCode
 #   ./install.sh --full --codex     # Full setup + Codex CLI support
+#   ./install.sh --full --gemini --cursor  # Full setup + Gemini + Cursor
 #
 # What --full does (in addition to standard install):
 #   1. Creates ~/.local/b12-venv if it doesn't exist
@@ -52,17 +60,72 @@ info()  { echo -e "${GREEN}[OK]${NC} $1"; }
 warn()  { echo -e "${YELLOW}[!]${NC} $1"; }
 error() { echo -e "${RED}[ERR]${NC} $1"; exit 1; }
 
+# ─────────────────────────────────────────────
+# Shared helper: inject B12 section into a file
+# ─────────────────────────────────────────────
+# Injects content between <!-- B12-MEMORY-START/END --> markers.
+# If markers exist, replaces the section. Otherwise appends.
+# Usage: inject_b12_section TARGET_FILE TEMPLATE_FILE DISPLAY_NAME
+inject_b12_section() {
+  local TARGET="$1"
+  local TEMPLATE="$2"
+  local NAME="$3"
+
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "$NAME template not found at $TEMPLATE"
+    return 1
+  fi
+
+  [ -f "$TARGET" ] || touch "$TARGET"
+
+  if grep -q '<!-- B12-MEMORY-START -->' "$TARGET" 2>/dev/null; then
+    # Replace existing section
+    if ! python3 - "$TARGET" "$TEMPLATE" << 'PYEOF'
+import sys, re
+target_path, template_path = sys.argv[1], sys.argv[2]
+with open(target_path, 'r') as f: content = f.read()
+with open(template_path, 'r') as f: template = f.read()
+b12_section = f'\n<!-- B12-MEMORY-START -->\n{template}\n<!-- B12-MEMORY-END -->\n'
+content = re.sub(r'<!-- B12-MEMORY-START -->.*?<!-- B12-MEMORY-END -->', b12_section.strip(), content, flags=re.DOTALL)
+with open(target_path, 'w') as f: f.write(content)
+PYEOF
+    then
+      warn "Failed to update B12 section in $TARGET"
+      return 1
+    fi
+    info "Updated B12 section in $TARGET"
+  else
+    # Append new section
+    { echo ""; echo "<!-- B12-MEMORY-START -->"; cat "$TEMPLATE"; echo ""; echo "<!-- B12-MEMORY-END -->"; } >> "$TARGET"
+    info "Added B12 memory instructions to $TARGET"
+  fi
+}
+
 # Parse flags
 FULL_SETUP=false
 INSTALL_ALL=false
 INSTALL_CODEX=false
+INSTALL_GEMINI=false
+INSTALL_VSCODE=false
+INSTALL_CURSOR=false
+INSTALL_KIMI=false
+INSTALL_WINDSURF=false
+INSTALL_CLINE=false
+INSTALL_OPENCODE=false
 TARGET_DIR=""
 for arg in "$@"; do
   case "$arg" in
-    --full)  FULL_SETUP=true ;;
-    --all)   INSTALL_ALL=true ;;
-    --codex) INSTALL_CODEX=true ;;
-    *)       TARGET_DIR="$arg" ;;
+    --full)      FULL_SETUP=true ;;
+    --all)       INSTALL_ALL=true ;;
+    --codex)     INSTALL_CODEX=true ;;
+    --gemini)    INSTALL_GEMINI=true ;;
+    --vscode)    INSTALL_VSCODE=true ;;
+    --cursor)    INSTALL_CURSOR=true ;;
+    --kimi)      INSTALL_KIMI=true ;;
+    --windsurf)  INSTALL_WINDSURF=true ;;
+    --cline)     INSTALL_CLINE=true ;;
+    --opencode)  INSTALL_OPENCODE=true ;;
+    *)           TARGET_DIR="$arg" ;;
   esac
 done
 
@@ -352,6 +415,10 @@ verify() {
   return $errors
 }
 
+# ═════════════════════════════════════════════
+# Codex CLI
+# ═════════════════════════════════════════════
+
 # ─────────────────────────────────────────────
 # Codex CLI: inject MCP config into config.toml
 # ─────────────────────────────────────────────
@@ -497,67 +564,8 @@ PYEOF
 # ─────────────────────────────────────────────
 inject_codex_agents() {
   local CODEX_DIR="$HOME/.codex"
-  local AGENTS_MD="$CODEX_DIR/AGENTS.md"
-  local TEMPLATE="$SCRIPT_DIR/config/codex-agents-template.md"
-
-  if [ ! -d "$CODEX_DIR" ]; then
-    warn "Codex directory not found at $CODEX_DIR"
-    return 1
-  fi
-
-  if [ ! -f "$TEMPLATE" ]; then
-    warn "Codex AGENTS.md template not found at $TEMPLATE"
-    return 1
-  fi
-
-  # Create AGENTS.md if it doesn't exist
-  if [ ! -f "$AGENTS_MD" ]; then
-    touch "$AGENTS_MD"
-  fi
-
-  # Check if B12 section already exists
-  if grep -q '<!-- B12-MEMORY-START -->' "$AGENTS_MD" 2>/dev/null; then
-    # Replace existing B12 section
-    if ! python3 - "$AGENTS_MD" "$TEMPLATE" << 'PYEOF'
-import sys, re
-
-agents_path = sys.argv[1]
-template_path = sys.argv[2]
-
-with open(agents_path, 'r') as f:
-    content = f.read()
-
-with open(template_path, 'r') as f:
-    template = f.read()
-
-# Replace between markers
-b12_section = f'\n<!-- B12-MEMORY-START -->\n{template}\n<!-- B12-MEMORY-END -->\n'
-content = re.sub(
-    r'<!-- B12-MEMORY-START -->.*?<!-- B12-MEMORY-END -->',
-    b12_section.strip(),
-    content,
-    flags=re.DOTALL
-)
-
-with open(agents_path, 'w') as f:
-    f.write(content)
-
-PYEOF
-    then
-      error "Failed to update B12 section in $AGENTS_MD"
-    fi
-    info "Updated B12 section in $AGENTS_MD"
-  else
-    # Append B12 section with markers
-    {
-      echo ""
-      echo "<!-- B12-MEMORY-START -->"
-      cat "$TEMPLATE"
-      echo ""
-      echo "<!-- B12-MEMORY-END -->"
-    } >> "$AGENTS_MD"
-    info "Added B12 memory instructions to $AGENTS_MD"
-  fi
+  [ -d "$CODEX_DIR" ] || { warn "Codex directory not found"; return 1; }
+  inject_b12_section "$CODEX_DIR/AGENTS.md" "$SCRIPT_DIR/config/codex-agents-template.md" "Codex AGENTS.md"
 }
 
 # ─────────────────────────────────────────────
@@ -633,11 +641,991 @@ verify_codex() {
   return $errors
 }
 
-# ─────────────────────────────────────────────
-# Main
-# ─────────────────────────────────────────────
+# ═════════════════════════════════════════════
+# Gemini CLI
+# ═════════════════════════════════════════════
 
-echo "B12 Memory System Installer (v10.4 — ~/.B12 migration)"
+# ─────────────────────────────────────────────
+# Gemini CLI: inject MCP config into settings.json
+# ─────────────────────────────────────────────
+inject_gemini_mcp_config() {
+  local GEMINI_DIR="$HOME/.gemini"
+  local SETTINGS_JSON="$GEMINI_DIR/settings.json"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$GEMINI_DIR" ]; then
+    warn "Gemini directory not found at $GEMINI_DIR — is Gemini CLI installed?"
+    warn "Install with: npm install -g @google/gemini-cli"
+    return 1
+  fi
+
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --gemini"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+
+  if [ ! -f "$SETTINGS_JSON" ]; then
+    echo '{}' > "$SETTINGS_JSON"
+    info "Created $SETTINGS_JSON"
+  fi
+
+  if ! python3 - "$SETTINGS_JSON" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, json
+
+settings_path = sys.argv[1]
+venv_python = sys.argv[2]
+server_script = sys.argv[3]
+
+with open(settings_path, 'r') as f:
+    try:
+        settings = json.load(f)
+    except json.JSONDecodeError:
+        settings = {}
+
+if 'mcpServers' not in settings:
+    settings['mcpServers'] = {}
+
+settings['mcpServers']['B12'] = {
+    'command': venv_python,
+    'args': [server_script],
+    'env': {
+        'MCP_EMBEDDING_MODEL': 'paraphrase-multilingual-MiniLM-L12-v2',
+        'MCP_MAX_RESPONSE_CHARS': '40000'
+    },
+    'timeout': 30000
+}
+
+with open(settings_path, 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+
+PYEOF
+  then
+    error "Failed to update B12 config in $SETTINGS_JSON"
+  fi
+
+  info "B12 MCP server configured in $SETTINGS_JSON"
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+# ─────────────────────────────────────────────
+# Gemini CLI: append B12 instructions to GEMINI.md
+# ─────────────────────────────────────────────
+inject_gemini_instructions() {
+  local GEMINI_DIR="$HOME/.gemini"
+  [ -d "$GEMINI_DIR" ] || { warn "Gemini directory not found"; return 1; }
+  inject_b12_section "$GEMINI_DIR/GEMINI.md" "$SCRIPT_DIR/config/gemini-instructions-template.md" "Gemini GEMINI.md"
+}
+
+# ─────────────────────────────────────────────
+# Gemini CLI: verify installation
+# ─────────────────────────────────────────────
+verify_gemini() {
+  local errors=0
+  local SETTINGS_JSON="$HOME/.gemini/settings.json"
+  local GEMINI_MD="$HOME/.gemini/GEMINI.md"
+
+  if python3 -c "import json; d=json.load(open('$SETTINGS_JSON')); assert 'B12' in d.get('mcpServers', {})" 2>/dev/null; then
+    info "Verify: B12 MCP server configured in $SETTINGS_JSON"
+  else
+    warn "Verify: B12 NOT found in $SETTINGS_JSON"
+    errors=$((errors + 1))
+  fi
+
+  if grep -q 'B12-MEMORY-START' "$GEMINI_MD" 2>/dev/null; then
+    info "Verify: B12 instructions present in $GEMINI_MD"
+  else
+    warn "Verify: B12 instructions NOT found in $GEMINI_MD"
+    errors=$((errors + 1))
+  fi
+
+  if [ -x "$VENV_PYTHON" ]; then
+    info "Verify: B12 venv accessible at $VENV_PATH"
+  else
+    warn "Verify: B12 venv NOT found (Gemini MCP server will fail)"
+    errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ═════════════════════════════════════════════
+# VS Code / GitHub Copilot
+# ═════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# VS Code: inject MCP config into user-level mcp.json
+# ─────────────────────────────────────────────
+inject_vscode_mcp_config() {
+  local VSCODE_USER_DIR
+  case "$(uname -s)" in
+    Darwin)  VSCODE_USER_DIR="$HOME/Library/Application Support/Code/User" ;;
+    Linux)   VSCODE_USER_DIR="$HOME/.config/Code/User" ;;
+    MINGW*|MSYS*|CYGWIN*) VSCODE_USER_DIR="$APPDATA/Code/User" ;;
+    *)       warn "Unknown OS for VS Code config path"; return 1 ;;
+  esac
+
+  local MCP_JSON="$VSCODE_USER_DIR/mcp.json"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$VSCODE_USER_DIR" ]; then
+    warn "VS Code user directory not found at $VSCODE_USER_DIR"
+    warn "Launch VS Code at least once, then re-run this installer."
+    return 1
+  fi
+
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --vscode"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+
+  if [ ! -f "$MCP_JSON" ]; then
+    echo '{}' > "$MCP_JSON"
+    info "Created $MCP_JSON"
+  fi
+
+  if ! python3 - "$MCP_JSON" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, json
+
+mcp_path = sys.argv[1]
+venv_python = sys.argv[2]
+server_script = sys.argv[3]
+
+with open(mcp_path, 'r') as f:
+    try:
+        config = json.load(f)
+    except json.JSONDecodeError:
+        config = {}
+
+if "servers" not in config:
+    config["servers"] = {}
+
+config["servers"]["B12"] = {
+    "type": "stdio",
+    "command": venv_python,
+    "args": [server_script],
+    "env": {
+        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_MAX_RESPONSE_CHARS": "40000"
+    }
+}
+
+with open(mcp_path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+
+PYEOF
+  then
+    error "Failed to update B12 config in $MCP_JSON"
+  fi
+
+  info "B12 MCP server configured in $MCP_JSON"
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+# ─────────────────────────────────────────────
+# VS Code: create copilot-instructions.md in B12 repo
+# ─────────────────────────────────────────────
+inject_vscode_instructions() {
+  local TEMPLATE="$SCRIPT_DIR/config/vscode-instructions-template.md"
+
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "VS Code instructions template not found at $TEMPLATE"
+    return 1
+  fi
+
+  local COPILOT_DIR="$SCRIPT_DIR/.github"
+  local COPILOT_MD="$COPILOT_DIR/copilot-instructions.md"
+
+  mkdir -p "$COPILOT_DIR"
+
+  if [ -f "$COPILOT_MD" ]; then
+    inject_b12_section "$COPILOT_MD" "$TEMPLATE" "VS Code copilot-instructions.md"
+  else
+    cp "$TEMPLATE" "$COPILOT_MD"
+    info "Created $COPILOT_MD with B12 instructions"
+  fi
+
+  echo ""
+  echo "     To enable B12 in other projects, copy the instructions:"
+  echo "       mkdir -p YOUR_PROJECT/.github"
+  echo "       cp $COPILOT_MD YOUR_PROJECT/.github/copilot-instructions.md"
+}
+
+# ─────────────────────────────────────────────
+# VS Code: verify installation
+# ─────────────────────────────────────────────
+verify_vscode() {
+  local errors=0
+
+  local VSCODE_USER_DIR
+  case "$(uname -s)" in
+    Darwin)  VSCODE_USER_DIR="$HOME/Library/Application Support/Code/User" ;;
+    Linux)   VSCODE_USER_DIR="$HOME/.config/Code/User" ;;
+    MINGW*|MSYS*|CYGWIN*) VSCODE_USER_DIR="$APPDATA/Code/User" ;;
+    *)       VSCODE_USER_DIR="" ;;
+  esac
+
+  local MCP_JSON="$VSCODE_USER_DIR/mcp.json"
+  local COPILOT_MD="$SCRIPT_DIR/.github/copilot-instructions.md"
+
+  if [ -f "$MCP_JSON" ] && grep -q '"B12"' "$MCP_JSON" 2>/dev/null; then
+    info "Verify: B12 MCP server configured in $MCP_JSON"
+  else
+    warn "Verify: B12 NOT found in VS Code mcp.json"
+    errors=$((errors + 1))
+  fi
+
+  if grep -q 'B12-MEMORY-START' "$COPILOT_MD" 2>/dev/null || [ -f "$COPILOT_MD" ]; then
+    info "Verify: B12 instructions present in $COPILOT_MD"
+  else
+    warn "Verify: B12 instructions NOT found in copilot-instructions.md"
+    errors=$((errors + 1))
+  fi
+
+  if [ -x "$VENV_PYTHON" ]; then
+    info "Verify: B12 venv accessible at $VENV_PATH"
+  else
+    warn "Verify: B12 venv NOT found (VS Code MCP server will fail)"
+    errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ═════════════════════════════════════════════
+# Cursor
+# ═════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# Cursor: inject MCP config into ~/.cursor/mcp.json
+# ─────────────────────────────────────────────
+inject_cursor_mcp_config() {
+  local CURSOR_DIR="$HOME/.cursor"
+  local MCP_JSON="$CURSOR_DIR/mcp.json"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$CURSOR_DIR" ]; then
+    warn "Cursor directory not found at $CURSOR_DIR — is Cursor installed?"
+    return 1
+  fi
+
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --cursor"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+
+  if [ ! -f "$MCP_JSON" ]; then
+    echo '{}' > "$MCP_JSON"
+    info "Created $MCP_JSON"
+  fi
+
+  if ! python3 - "$MCP_JSON" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, json
+
+mcp_json_path = sys.argv[1]
+venv_python = sys.argv[2]
+server_script = sys.argv[3]
+
+with open(mcp_json_path, 'r') as f:
+    try:
+        config = json.load(f)
+    except json.JSONDecodeError:
+        config = {}
+
+if 'mcpServers' not in config:
+    config['mcpServers'] = {}
+
+config['mcpServers']['B12'] = {
+    'command': venv_python,
+    'args': [server_script],
+    'env': {
+        'MCP_EMBEDDING_MODEL': 'paraphrase-multilingual-MiniLM-L12-v2',
+        'MCP_MAX_RESPONSE_CHARS': '40000'
+    }
+}
+
+with open(mcp_json_path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+
+PYEOF
+  then
+    error "Failed to update B12 config in $MCP_JSON"
+  fi
+
+  info "B12 MCP server configured in $MCP_JSON"
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+# ─────────────────────────────────────────────
+# Cursor: install B12 rule as .mdc file
+# ─────────────────────────────────────────────
+inject_cursor_rules() {
+  local CURSOR_DIR="$HOME/.cursor"
+  local RULES_DIR="$CURSOR_DIR/rules"
+  local RULE_FILE="$RULES_DIR/b12-memory.mdc"
+  local TEMPLATE="$SCRIPT_DIR/config/cursor-rules-template.md"
+
+  if [ ! -d "$CURSOR_DIR" ]; then
+    warn "Cursor directory not found at $CURSOR_DIR"
+    return 1
+  fi
+
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "Cursor rules template not found at $TEMPLATE"
+    return 1
+  fi
+
+  mkdir -p "$RULES_DIR"
+
+  # Build .mdc file with YAML frontmatter
+  {
+    echo '---'
+    echo 'description: B12 persistent memory system — MCP tools for storing and searching memories across sessions'
+    echo 'globs:'
+    echo 'alwaysApply: true'
+    echo '---'
+    echo ''
+    cat "$TEMPLATE"
+  } > "$RULE_FILE"
+
+  info "B12 rule installed to $RULE_FILE"
+}
+
+# ─────────────────────────────────────────────
+# Cursor: verify installation
+# ─────────────────────────────────────────────
+verify_cursor() {
+  local errors=0
+  local MCP_JSON="$HOME/.cursor/mcp.json"
+  local RULE_FILE="$HOME/.cursor/rules/b12-memory.mdc"
+
+  if [ -f "$MCP_JSON" ] && grep -q '"B12"' "$MCP_JSON" 2>/dev/null; then
+    info "Verify: B12 MCP server configured in $MCP_JSON"
+  else
+    warn "Verify: B12 NOT found in $MCP_JSON"
+    errors=$((errors + 1))
+  fi
+
+  if [ -f "$RULE_FILE" ]; then
+    info "Verify: B12 rule installed at $RULE_FILE"
+  else
+    warn "Verify: B12 rule NOT found at $RULE_FILE"
+    errors=$((errors + 1))
+  fi
+
+  if [ -x "$VENV_PYTHON" ]; then
+    info "Verify: B12 venv accessible at $VENV_PATH"
+  else
+    warn "Verify: B12 venv NOT found (Cursor MCP server will fail)"
+    errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ═════════════════════════════════════════════
+# Kimi Code
+# ═════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# Kimi Code: inject MCP config into mcp.json
+# ─────────────────────────────────────────────
+inject_kimi_mcp_config() {
+  local KIMI_DIR="$HOME/.kimi"
+  local MCP_JSON="$KIMI_DIR/mcp.json"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$KIMI_DIR" ]; then
+    warn "Kimi directory not found at $KIMI_DIR — is Kimi Code CLI installed?"
+    warn "Install with: pip install kimi-cli  (or pipx install kimi-cli)"
+    return 1
+  fi
+
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --kimi"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+
+  if [ ! -f "$MCP_JSON" ]; then
+    echo '{"mcpServers":{}}' > "$MCP_JSON"
+    info "Created $MCP_JSON"
+  fi
+
+  if ! python3 - "$MCP_JSON" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, json
+
+mcp_path = sys.argv[1]
+venv_python = sys.argv[2]
+server_script = sys.argv[3]
+
+with open(mcp_path, 'r') as f:
+    try:
+        config = json.load(f)
+    except json.JSONDecodeError:
+        config = {}
+
+if 'mcpServers' not in config:
+    config['mcpServers'] = {}
+
+config['mcpServers']['B12'] = {
+    "command": venv_python,
+    "args": [server_script],
+    "env": {
+        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_MAX_RESPONSE_CHARS": "40000"
+    }
+}
+
+with open(mcp_path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+
+PYEOF
+  then
+    error "Failed to update B12 config in $MCP_JSON"
+  fi
+
+  info "B12 MCP server configured in $MCP_JSON"
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+# ─────────────────────────────────────────────
+# Kimi Code: append B12 instructions to AGENTS.md
+# ─────────────────────────────────────────────
+inject_kimi_agents() {
+  local KIMI_DIR="$HOME/.kimi"
+  [ -d "$KIMI_DIR" ] || { warn "Kimi directory not found"; return 1; }
+  inject_b12_section "$KIMI_DIR/AGENTS.md" "$SCRIPT_DIR/config/kimi-agents-template.md" "Kimi AGENTS.md"
+}
+
+# ─────────────────────────────────────────────
+# Kimi Code: verify installation
+# ─────────────────────────────────────────────
+verify_kimi() {
+  local errors=0
+  local MCP_JSON="$HOME/.kimi/mcp.json"
+  local AGENTS_MD="$HOME/.kimi/AGENTS.md"
+
+  if [ -f "$MCP_JSON" ] && grep -q '"B12"' "$MCP_JSON" 2>/dev/null; then
+    info "Verify: B12 MCP server configured in $MCP_JSON"
+  else
+    warn "Verify: B12 NOT found in $MCP_JSON"
+    errors=$((errors + 1))
+  fi
+
+  if grep -q 'B12-MEMORY-START' "$AGENTS_MD" 2>/dev/null; then
+    info "Verify: B12 instructions present in $AGENTS_MD"
+  else
+    warn "Verify: B12 instructions NOT found in $AGENTS_MD"
+    errors=$((errors + 1))
+  fi
+
+  if [ -x "$VENV_PYTHON" ]; then
+    info "Verify: B12 venv accessible at $VENV_PATH"
+  else
+    warn "Verify: B12 venv NOT found (Kimi MCP server will fail)"
+    errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ═════════════════════════════════════════════
+# Windsurf
+# ═════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# Windsurf: inject MCP config into mcp_config.json
+# ─────────────────────────────────────────────
+inject_windsurf_mcp_config() {
+  local WINDSURF_DIR="$HOME/.codeium/windsurf"
+  local MCP_CONFIG="$WINDSURF_DIR/mcp_config.json"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$HOME/.codeium" ]; then
+    warn "Codeium directory not found at $HOME/.codeium — is Windsurf installed?"
+    return 1
+  fi
+
+  mkdir -p "$WINDSURF_DIR"
+
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --windsurf"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+
+  if [ ! -f "$MCP_CONFIG" ]; then
+    echo '{"mcpServers":{}}' > "$MCP_CONFIG"
+    info "Created $MCP_CONFIG"
+  fi
+
+  if ! python3 - "$MCP_CONFIG" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, json
+
+config_path = sys.argv[1]
+venv_python = sys.argv[2]
+server_script = sys.argv[3]
+
+with open(config_path, 'r') as f:
+    try:
+        config = json.load(f)
+    except json.JSONDecodeError:
+        config = {}
+
+if 'mcpServers' not in config:
+    config['mcpServers'] = {}
+
+config['mcpServers']['B12'] = {
+    'command': venv_python,
+    'args': [server_script],
+    'env': {
+        'MCP_EMBEDDING_MODEL': 'paraphrase-multilingual-MiniLM-L12-v2',
+        'MCP_MAX_RESPONSE_CHARS': '40000'
+    }
+}
+
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+
+PYEOF
+  then
+    error "Failed to update B12 config in $MCP_CONFIG"
+  fi
+
+  info "B12 MCP server configured in $MCP_CONFIG"
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+# ─────────────────────────────────────────────
+# Windsurf: add B12 rules to global_rules.md
+# ─────────────────────────────────────────────
+inject_windsurf_rules() {
+  local WINDSURF_DIR="$HOME/.codeium/windsurf"
+  local MEMORIES_DIR="$WINDSURF_DIR/memories"
+  local GLOBAL_RULES="$MEMORIES_DIR/global_rules.md"
+
+  if [ ! -d "$HOME/.codeium" ]; then
+    warn "Codeium directory not found"
+    return 1
+  fi
+
+  mkdir -p "$MEMORIES_DIR"
+  inject_b12_section "$GLOBAL_RULES" "$SCRIPT_DIR/config/windsurf-rules-template.md" "Windsurf global_rules.md"
+}
+
+# ─────────────────────────────────────────────
+# Windsurf: verify installation
+# ─────────────────────────────────────────────
+verify_windsurf() {
+  local errors=0
+  local MCP_CONFIG="$HOME/.codeium/windsurf/mcp_config.json"
+  local GLOBAL_RULES="$HOME/.codeium/windsurf/memories/global_rules.md"
+
+  if [ -f "$MCP_CONFIG" ] && grep -q '"B12"' "$MCP_CONFIG" 2>/dev/null; then
+    info "Verify: B12 MCP server configured in $MCP_CONFIG"
+  else
+    warn "Verify: B12 NOT found in $MCP_CONFIG"
+    errors=$((errors + 1))
+  fi
+
+  if grep -q 'B12-MEMORY-START' "$GLOBAL_RULES" 2>/dev/null; then
+    info "Verify: B12 instructions present in $GLOBAL_RULES"
+  else
+    warn "Verify: B12 instructions NOT found in $GLOBAL_RULES"
+    errors=$((errors + 1))
+  fi
+
+  if [ -x "$VENV_PYTHON" ]; then
+    info "Verify: B12 venv accessible at $VENV_PATH"
+  else
+    warn "Verify: B12 venv NOT found (Windsurf MCP server will fail)"
+    errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ═════════════════════════════════════════════
+# Cline (VS Code Extension)
+# ═════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# Cline: detect MCP settings file path
+# ─────────────────────────────────────────────
+get_cline_mcp_settings_path() {
+  local VSCODE_STORAGE=""
+  case "$(uname -s)" in
+    Darwin)
+      VSCODE_STORAGE="$HOME/Library/Application Support/Code/User/globalStorage"
+      ;;
+    Linux)
+      VSCODE_STORAGE="$HOME/.config/Code/User/globalStorage"
+      ;;
+    MINGW*|CYGWIN*|MSYS*)
+      VSCODE_STORAGE="$APPDATA/Code/User/globalStorage"
+      ;;
+  esac
+
+  local CLINE_DIR="$VSCODE_STORAGE/saoudrizwan.claude-dev/settings"
+  local CLINE_SETTINGS="$CLINE_DIR/cline_mcp_settings.json"
+
+  # Also check VS Code Insiders
+  if [ ! -d "$CLINE_DIR" ]; then
+    local INSIDERS_STORAGE=""
+    case "$(uname -s)" in
+      Darwin)
+        INSIDERS_STORAGE="$HOME/Library/Application Support/Code - Insiders/User/globalStorage"
+        ;;
+      Linux)
+        INSIDERS_STORAGE="$HOME/.config/Code - Insiders/User/globalStorage"
+        ;;
+      MINGW*|CYGWIN*|MSYS*)
+        INSIDERS_STORAGE="$APPDATA/Code - Insiders/User/globalStorage"
+        ;;
+    esac
+    local INSIDERS_DIR="$INSIDERS_STORAGE/saoudrizwan.claude-dev/settings"
+    if [ -d "$INSIDERS_DIR" ]; then
+      CLINE_DIR="$INSIDERS_DIR"
+      CLINE_SETTINGS="$CLINE_DIR/cline_mcp_settings.json"
+    fi
+  fi
+
+  echo "$CLINE_SETTINGS"
+}
+
+# ─────────────────────────────────────────────
+# Cline: inject B12 MCP server configuration
+# ─────────────────────────────────────────────
+inject_cline_mcp_config() {
+  local CLINE_SETTINGS
+  CLINE_SETTINGS="$(get_cline_mcp_settings_path)"
+  local CLINE_DIR
+  CLINE_DIR="$(dirname "$CLINE_SETTINGS")"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$(dirname "$CLINE_DIR")" ]; then
+    warn "Cline extension not found — is Cline (saoudrizwan.claude-dev) installed in VS Code?"
+    return 1
+  fi
+
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --cline"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+
+  mkdir -p "$CLINE_DIR"
+
+  if [ ! -f "$CLINE_SETTINGS" ]; then
+    echo '{"mcpServers":{}}' > "$CLINE_SETTINGS"
+    info "Created $CLINE_SETTINGS"
+  fi
+
+  if ! python3 - "$CLINE_SETTINGS" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, json
+
+settings_path = sys.argv[1]
+venv_python = sys.argv[2]
+server_script = sys.argv[3]
+
+try:
+    with open(settings_path, 'r') as f:
+        config = json.load(f)
+except (json.JSONDecodeError, FileNotFoundError):
+    config = {}
+
+if 'mcpServers' not in config:
+    config['mcpServers'] = {}
+
+config['mcpServers']['B12'] = {
+    "command": venv_python,
+    "args": [server_script],
+    "env": {
+        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_MAX_RESPONSE_CHARS": "40000"
+    },
+    "alwaysAllow": [
+        "memory_store",
+        "memory_search",
+        "memory_update",
+        "memory_quality"
+    ],
+    "disabled": False
+}
+
+with open(settings_path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+
+PYEOF
+  then
+    error "Failed to update B12 config in $CLINE_SETTINGS"
+  fi
+
+  info "B12 MCP server configured in $CLINE_SETTINGS"
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+# ─────────────────────────────────────────────
+# Cline: install B12 rules
+# ─────────────────────────────────────────────
+inject_cline_rules() {
+  local TEMPLATE="$SCRIPT_DIR/config/cline-rules-template.md"
+
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "Cline rules template not found at $TEMPLATE"
+    return 1
+  fi
+
+  local GLOBAL_RULES_DIR="$HOME/Documents/Cline/Rules"
+  mkdir -p "$GLOBAL_RULES_DIR"
+
+  local GLOBAL_RULE="$GLOBAL_RULES_DIR/b12-memory.md"
+  cp "$TEMPLATE" "$GLOBAL_RULE"
+  info "B12 rules installed to $GLOBAL_RULE"
+  echo "     Copy to your project: cp \"$TEMPLATE\" .clinerules/b12-memory.md"
+}
+
+# ─────────────────────────────────────────────
+# Cline: verify installation
+# ─────────────────────────────────────────────
+verify_cline() {
+  local errors=0
+  local CLINE_SETTINGS
+  CLINE_SETTINGS="$(get_cline_mcp_settings_path)"
+
+  if [ -f "$CLINE_SETTINGS" ] && grep -q '"B12"' "$CLINE_SETTINGS" 2>/dev/null; then
+    info "Verify: B12 MCP server configured in Cline settings"
+  else
+    warn "Verify: B12 NOT found in $CLINE_SETTINGS"
+    errors=$((errors + 1))
+  fi
+
+  local GLOBAL_RULE="$HOME/Documents/Cline/Rules/b12-memory.md"
+  if [ -f "$GLOBAL_RULE" ]; then
+    info "Verify: B12 global rules present at $GLOBAL_RULE"
+  else
+    warn "Verify: B12 global rules NOT found at $GLOBAL_RULE"
+    errors=$((errors + 1))
+  fi
+
+  if [ -x "$VENV_PYTHON" ]; then
+    info "Verify: B12 venv accessible at $VENV_PATH"
+  else
+    warn "Verify: B12 venv NOT found (Cline MCP server will fail)"
+    errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ═════════════════════════════════════════════
+# OpenCode
+# ═════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# OpenCode: inject MCP config into opencode.json
+# ─────────────────────────────────────────────
+inject_opencode_mcp_config() {
+  local OPENCODE_DIR="$HOME/.config/opencode"
+  local CONFIG_JSON="$OPENCODE_DIR/opencode.json"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$OPENCODE_DIR" ]; then
+    warn "OpenCode config directory not found at $OPENCODE_DIR — creating it"
+    mkdir -p "$OPENCODE_DIR"
+  fi
+
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --opencode"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+
+  if [ ! -f "$CONFIG_JSON" ]; then
+    echo '{}' > "$CONFIG_JSON"
+    info "Created $CONFIG_JSON"
+  fi
+
+  if ! python3 - "$CONFIG_JSON" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, json
+
+config_path = sys.argv[1]
+venv_python = sys.argv[2]
+server_script = sys.argv[3]
+
+with open(config_path, 'r') as f:
+    content = f.read().strip()
+    if not content:
+        content = '{}'
+    config = json.loads(content)
+
+if 'mcp' not in config:
+    config['mcp'] = {}
+
+config['mcp']['B12'] = {
+    'type': 'local',
+    'command': [venv_python, server_script],
+    'enabled': True,
+    'environment': {
+        'MCP_EMBEDDING_MODEL': 'paraphrase-multilingual-MiniLM-L12-v2',
+        'MCP_MAX_RESPONSE_CHARS': '40000'
+    }
+}
+
+if '$schema' not in config:
+    config['$schema'] = 'https://opencode.ai/config.json'
+
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+
+PYEOF
+  then
+    error "Failed to update B12 config in $CONFIG_JSON"
+  fi
+
+  info "B12 MCP server configured in $CONFIG_JSON"
+}
+
+# ─────────────────────────────────────────────
+# OpenCode: append B12 instructions to AGENTS.md
+# ─────────────────────────────────────────────
+inject_opencode_agents() {
+  local OPENCODE_DIR="$HOME/.config/opencode"
+  [ -d "$OPENCODE_DIR" ] || mkdir -p "$OPENCODE_DIR"
+  inject_b12_section "$OPENCODE_DIR/AGENTS.md" "$SCRIPT_DIR/config/opencode-instructions-template.md" "OpenCode AGENTS.md"
+}
+
+# ─────────────────────────────────────────────
+# OpenCode: install B12 skill
+# ─────────────────────────────────────────────
+install_opencode_skill() {
+  local OPENCODE_DIR="$HOME/.config/opencode"
+  local SKILL_DEST="$OPENCODE_DIR/skills/b12"
+
+  mkdir -p "$SKILL_DEST"
+
+  cat > "$SKILL_DEST/SKILL.md" << 'SKILLEOF'
+---
+name: b12
+description: B12 persistent memory system — search, store, and manage cross-session memories
+---
+
+# B12 Memory Skill
+
+Use B12 memory tools to persist knowledge across sessions.
+
+## Tools
+
+- `mcp__B12__memory_search` — Find past memories by query, tags, or semantic similarity
+- `mcp__B12__memory_store` — Save decisions, patterns, errors, preferences
+- `mcp__B12__memory_update` — Update existing memory metadata or tags
+- `mcp__B12__memory_quality` — Check memory quality or system health
+
+## Usage Pattern
+
+1. At session start: search for project context
+2. During work: store important findings as you go
+3. Before session end: store a session summary
+
+## Tagging
+
+Always tag memories with:
+- `proj:{directory_name}` — project scope
+- `user:{username}` — user scope
+- Type: `architecture`, `decision`, `pattern`, `gotcha`, `preference`, `progress`
+SKILLEOF
+
+  info "B12 skill installed to $SKILL_DEST/SKILL.md"
+}
+
+# ─────────────────────────────────────────────
+# OpenCode: verify installation
+# ─────────────────────────────────────────────
+verify_opencode() {
+  local errors=0
+  local CONFIG_JSON="$HOME/.config/opencode/opencode.json"
+  local AGENTS_MD="$HOME/.config/opencode/AGENTS.md"
+
+  if [ -f "$CONFIG_JSON" ] && grep -q '"B12"' "$CONFIG_JSON" 2>/dev/null; then
+    info "Verify: B12 MCP server configured in $CONFIG_JSON"
+  else
+    warn "Verify: B12 NOT found in $CONFIG_JSON"
+    errors=$((errors + 1))
+  fi
+
+  if grep -q 'B12-MEMORY-START' "$AGENTS_MD" 2>/dev/null; then
+    info "Verify: B12 instructions present in $AGENTS_MD"
+  else
+    warn "Verify: B12 instructions NOT found in $AGENTS_MD"
+    errors=$((errors + 1))
+  fi
+
+  if [ -x "$VENV_PYTHON" ]; then
+    info "Verify: B12 venv accessible at $VENV_PATH"
+  else
+    warn "Verify: B12 venv NOT found (OpenCode MCP server will fail)"
+    errors=$((errors + 1))
+  fi
+
+  if [ -f "$HOME/.config/opencode/skills/b12/SKILL.md" ]; then
+    info "Verify: B12 skill installed"
+  else
+    warn "Verify: B12 skill NOT found"
+    errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ═════════════════════════════════════════════
+# Main
+# ═════════════════════════════════════════════
+
+echo "B12 Memory System Installer (v10.5 — multi-platform)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first
@@ -700,6 +1688,70 @@ if $INSTALL_CODEX; then
   echo ""
 fi
 
+# Gemini CLI setup
+if $INSTALL_GEMINI; then
+  echo ""
+  echo "── Gemini CLI Setup ─────────────"
+  inject_gemini_mcp_config
+  inject_gemini_instructions
+  echo ""
+fi
+
+# VS Code / Copilot setup
+if $INSTALL_VSCODE; then
+  echo ""
+  echo "── VS Code / Copilot Setup ──────"
+  inject_vscode_mcp_config
+  inject_vscode_instructions
+  echo ""
+fi
+
+# Cursor setup
+if $INSTALL_CURSOR; then
+  echo ""
+  echo "── Cursor Setup ─────────────────"
+  inject_cursor_mcp_config
+  inject_cursor_rules
+  echo ""
+fi
+
+# Kimi Code setup
+if $INSTALL_KIMI; then
+  echo ""
+  echo "── Kimi Code Setup ──────────────"
+  inject_kimi_mcp_config
+  inject_kimi_agents
+  echo ""
+fi
+
+# Windsurf setup
+if $INSTALL_WINDSURF; then
+  echo ""
+  echo "── Windsurf Setup ───────────────"
+  inject_windsurf_mcp_config
+  inject_windsurf_rules
+  echo ""
+fi
+
+# Cline setup
+if $INSTALL_CLINE; then
+  echo ""
+  echo "── Cline (VS Code) Setup ────────"
+  inject_cline_mcp_config
+  inject_cline_rules
+  echo ""
+fi
+
+# OpenCode setup
+if $INSTALL_OPENCODE; then
+  echo ""
+  echo "── OpenCode Setup ───────────────"
+  inject_opencode_mcp_config
+  inject_opencode_agents
+  install_opencode_skill
+  echo ""
+fi
+
 # Run migration
 run_migration
 
@@ -710,7 +1762,7 @@ echo "────────────────────────�
 verify
 VERIFY_RESULT=$?
 
-# Codex verification (additive)
+# Platform verifications
 if $INSTALL_CODEX; then
   echo ""
   echo "── Codex Verification ───────────"
@@ -719,11 +1771,79 @@ if $INSTALL_CODEX; then
   VERIFY_RESULT=$((VERIFY_RESULT + CODEX_RESULT))
 fi
 
+if $INSTALL_GEMINI; then
+  echo ""
+  echo "── Gemini Verification ──────────"
+  verify_gemini
+  GEMINI_RESULT=$?
+  VERIFY_RESULT=$((VERIFY_RESULT + GEMINI_RESULT))
+fi
+
+if $INSTALL_VSCODE; then
+  echo ""
+  echo "── VS Code Verification ─────────"
+  verify_vscode
+  VSCODE_RESULT=$?
+  VERIFY_RESULT=$((VERIFY_RESULT + VSCODE_RESULT))
+fi
+
+if $INSTALL_CURSOR; then
+  echo ""
+  echo "── Cursor Verification ──────────"
+  verify_cursor
+  CURSOR_RESULT=$?
+  VERIFY_RESULT=$((VERIFY_RESULT + CURSOR_RESULT))
+fi
+
+if $INSTALL_KIMI; then
+  echo ""
+  echo "── Kimi Verification ────────────"
+  verify_kimi
+  KIMI_RESULT=$?
+  VERIFY_RESULT=$((VERIFY_RESULT + KIMI_RESULT))
+fi
+
+if $INSTALL_WINDSURF; then
+  echo ""
+  echo "── Windsurf Verification ────────"
+  verify_windsurf
+  WINDSURF_RESULT=$?
+  VERIFY_RESULT=$((VERIFY_RESULT + WINDSURF_RESULT))
+fi
+
+if $INSTALL_CLINE; then
+  echo ""
+  echo "── Cline Verification ───────────"
+  verify_cline
+  CLINE_RESULT=$?
+  VERIFY_RESULT=$((VERIFY_RESULT + CLINE_RESULT))
+fi
+
+if $INSTALL_OPENCODE; then
+  echo ""
+  echo "── OpenCode Verification ────────"
+  verify_opencode
+  OPENCODE_RESULT=$?
+  VERIFY_RESULT=$((VERIFY_RESULT + OPENCODE_RESULT))
+fi
+
 echo ""
 echo "─────────────────────────────────"
+
+# Build dynamic list of installed platforms
+PLATFORMS_INSTALLED=""
+$INSTALL_CODEX && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Codex"
+$INSTALL_GEMINI && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Gemini"
+$INSTALL_VSCODE && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED VS-Code"
+$INSTALL_CURSOR && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Cursor"
+$INSTALL_KIMI && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Kimi"
+$INSTALL_WINDSURF && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Windsurf"
+$INSTALL_CLINE && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Cline"
+$INSTALL_OPENCODE && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED OpenCode"
+
 if [ $VERIFY_RESULT -eq 0 ]; then
-  if $INSTALL_CODEX; then
-    info "Installation complete! Restart Claude Code and Codex CLI to activate B12."
+  if [ -n "$PLATFORMS_INSTALLED" ]; then
+    info "Installation complete! Restart Claude Code and$PLATFORMS_INSTALLED to activate B12."
   else
     info "Installation complete! Restart Claude Code to activate B12."
   fi
@@ -731,15 +1851,19 @@ else
   warn "Installation complete with $VERIFY_RESULT warning(s). See above."
 fi
 
-if ! $FULL_SETUP && ! $INSTALL_CODEX; then
+# Show helpful tips
+ANY_PLATFORM=false
+$INSTALL_CODEX || $INSTALL_GEMINI || $INSTALL_VSCODE || $INSTALL_CURSOR || $INSTALL_KIMI || $INSTALL_WINDSURF || $INSTALL_CLINE || $INSTALL_OPENCODE && ANY_PLATFORM=true
+
+if ! $FULL_SETUP && ! $ANY_PLATFORM; then
   echo ""
   echo "Tip: Run './install.sh --full' for automatic venv + MCP config setup."
-  echo "     Run './install.sh --codex' to add Codex CLI support."
+  echo "     Flags: --codex --gemini --vscode --cursor --kimi --windsurf --cline --opencode"
 fi
 
 echo ""
-if $INSTALL_CODEX; then
-  echo "Next: Restart Codex CLI, then type /mcp to verify B12 is connected."
+if [ -n "$PLATFORMS_INSTALLED" ]; then
+  echo "Next: Restart Claude Code and$PLATFORMS_INSTALLED, then run /mcp to verify B12 is connected."
 else
   echo "Next: Restart Claude Code, then run /mcp to verify B12 is connected."
 fi

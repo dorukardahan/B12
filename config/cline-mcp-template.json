@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "B12": {
+      "command": "__VENV_PYTHON__",
+      "args": ["__SCRIPT_PATH__"],
+      "env": {
+        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_MAX_RESPONSE_CHARS": "40000"
+      },
+      "alwaysAllow": [
+        "memory_store",
+        "memory_search",
+        "memory_update",
+        "memory_quality"
+      ],
+      "disabled": false
+    }
+  }
+}

@@ -1,0 +1,14 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "mcp": {
+    "B12": {
+      "type": "local",
+      "command": ["__VENV_PYTHON__", "__SCRIPT_PATH__"],
+      "enabled": true,
+      "environment": {
+        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_MAX_RESPONSE_CHARS": "40000"
+      }
+    }
+  }
+}
