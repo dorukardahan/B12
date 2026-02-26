@@ -20,6 +20,10 @@ Thumbs.db
 .vscode/
 .idea/
 
+# Node.js (semantic-release)
+node_modules/
+package-lock.json
+
 # Python
 __pycache__/
 *.pyc
