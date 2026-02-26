@@ -10,6 +10,15 @@ You have access to a persistent memory system (B12) via MCP tools. Use it proact
 | `memory_search` | Search memories by keywords, tags, dates, or semantic similarity |
 | `memory_update` | Update tags, metadata, or strength of existing memories |
 | `memory_quality` | Rate memory quality, get stats, or analyze system health |
+| `memory_session_context` | Get session start context — project memories, last summary, instructions |
+
+### Session Start (REQUIRED)
+
+Your **FIRST action** in every new session MUST be:
+```
+memory_session_context(project_name="<project>")
+```
+This returns pre-fetched project memories, last session summary, and behavioral instructions in a single call.
 
 ### Tool Parameters
 

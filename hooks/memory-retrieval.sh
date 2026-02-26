@@ -165,20 +165,74 @@ if [ "$WORD_COUNT" -lt 1 ]; then
   exit 0
 fi
 
+# ── Query alias expansion ──────────────────────────────────────
+# Expand common abbreviations: db→database, k8s→kubernetes, etc.
+_ALIAS_FILE="${B12_HOOK_DIR:-$HOME/.B12/hooks}/scripts/query_aliases.json"
+_ALIAS_MAP=""
+if [ -f "$_ALIAS_FILE" ]; then
+  _ALIAS_MAP=$(cat "$_ALIAS_FILE" 2>/dev/null)
+fi
+
+# expand_kw: returns "kw" or "(kw OR alias1 OR alias2)" if aliases exist
+expand_kw() {
+  local kw="$1"
+  if [ -z "$_ALIAS_MAP" ]; then
+    printf '%s' "$kw"
+    return
+  fi
+  local aliases
+  aliases=$(echo "$_ALIAS_MAP" | jq -r --arg k "$kw" '.[$k] // [] | .[]' 2>/dev/null)
+  if [ -z "$aliases" ]; then
+    printf '%s' "$kw"
+  else
+    local parts="$kw"
+    while IFS= read -r a; do
+      [ -n "$a" ] && parts="$parts OR $a"
+    done <<< "$aliases"
+    printf '(%s)' "$parts"
+  fi
+}
+
 # ── Phrase detection (bigrams) ─────────────────────────────────
 SAFE_KEYWORDS=$(echo "$KEYWORDS" | sed "s/['\";(){}*^:\\\\]//g" | sed 's/--//g' | sed 's|/\*||g' | sed 's|\*/||g' | sed 's/\bNEAR\b//gI')
 KEYWORD_ARRAY=($SAFE_KEYWORDS)
 
 if [ "$WORD_COUNT" -ge 3 ]; then
-  # AND logic: require all keywords (precision over recall)
-  FTS_PARTS=""
-  for kw in "${KEYWORD_ARRAY[@]}"; do
-    if [ -z "$FTS_PARTS" ]; then
-      FTS_PARTS="${kw}"
-    else
-      FTS_PARTS="${FTS_PARTS} AND ${kw}"
-    fi
-  done
+  if [ "$WORD_COUNT" -ge 4 ]; then
+    # Relaxed AND: require N-1 of N keywords (cap at 5 keywords for combinations)
+    # Each keyword gets alias expansion: db → (db OR database)
+    _COMBO_KWS=("${KEYWORD_ARRAY[@]:0:5}")
+    _COMBO_COUNT=${#_COMBO_KWS[@]}
+    FTS_PARTS=""
+    for (( _skip=0; _skip<_COMBO_COUNT; _skip++ )); do
+      _COMBO=""
+      for (( _j=0; _j<_COMBO_COUNT; _j++ )); do
+        [ "$_j" -eq "$_skip" ] && continue
+        _expanded=$(expand_kw "${_COMBO_KWS[$_j]}")
+        if [ -z "$_COMBO" ]; then
+          _COMBO="$_expanded"
+        else
+          _COMBO="${_COMBO} AND $_expanded"
+        fi
+      done
+      if [ -z "$FTS_PARTS" ]; then
+        FTS_PARTS="(${_COMBO})"
+      else
+        FTS_PARTS="${FTS_PARTS} OR (${_COMBO})"
+      fi
+    done
+  else
+    # 3 keywords: strict AND with alias expansion
+    FTS_PARTS=""
+    for kw in "${KEYWORD_ARRAY[@]}"; do
+      _expanded=$(expand_kw "$kw")
+      if [ -z "$FTS_PARTS" ]; then
+        FTS_PARTS="$_expanded"
+      else
+        FTS_PARTS="${FTS_PARTS} AND $_expanded"
+      fi
+    done
+  fi
   # Add bigrams as OR boost for recall
   PREV=""
   for kw in "${KEYWORD_ARRAY[@]}"; do
@@ -191,13 +245,14 @@ if [ "$WORD_COUNT" -ge 3 ]; then
     PREV="$kw"
   done
 else
-  # 1-2 keywords: keep OR (need recall)
+  # 1-2 keywords: keep OR with alias expansion (need recall)
   FTS_PARTS=""
   for kw in "${KEYWORD_ARRAY[@]}"; do
+    _expanded=$(expand_kw "$kw")
     if [ -z "$FTS_PARTS" ]; then
-      FTS_PARTS="${kw}"
+      FTS_PARTS="$_expanded"
     else
-      FTS_PARTS="${FTS_PARTS} OR ${kw}"
+      FTS_PARTS="${FTS_PARTS} OR $_expanded"
     fi
   done
 fi
@@ -208,7 +263,7 @@ RESULTS=$(sqlite3 "$DB_PATH" "
     SELECT m.id,
            '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') as display,
            (
-             0.3 * max(COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / COALESCE(m.strength, 1.0)), 0.5), 0.1)
+             0.3 * max(COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / COALESCE(m.strength, 1.0)), 0.5), 0.01)
              + 0.3 * COALESCE(json_extract(m.metadata, '$.importance_score'), 1.0) / 2.0
              + 0.4 * (1.0 / (1.0 + abs(f.rank)))
            ) as score
@@ -242,9 +297,12 @@ VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
 RERANK_DONE=false
 SKIP_REASON=""
 SEARCH_SOURCE="fts5"  # Track for feedback log
+_FTS_COUNT="$RESULT_COUNT"
 
-NEEDS_SEMANTIC=false
-[ "$RESULT_COUNT" -eq 0 ] && NEEDS_SEMANTIC=true
+# Semantic search: always try via daemon (parallel path, not fallback)
+# Cold fallback only when daemon is down AND FTS returned 0
+NEEDS_COLD_SEMANTIC=false
+[ "$RESULT_COUNT" -eq 0 ] && NEEDS_COLD_SEMANTIC=true
 
 # Query-adaptive re-rank decision
 SHOULD_RERANK=false
@@ -268,23 +326,37 @@ if [ "$SHOULD_RERANK" = true ] && [ "$RESULT_COUNT" -ge 3 ]; then
   fi
 fi
 
-# ── Daemon-first path with cold fallback (Phase 1) ───────────
+# ── Daemon path: parallel semantic + rerank (Phase 1 + v11) ───
 if daemon_alive; then
-  # Fast daemon path (~50ms per operation)
-  if [ "$NEEDS_SEMANTIC" = true ]; then
-    _REQ=$(jq -nc --arg q "$PROMPT" --arg db "$DB_PATH" '{op:"semantic_search",query:$q,db_path:$db,limit:5}')
-    _RESP=$(daemon_request "$_REQ")
-    if echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
-      _SEM_DATA=$(echo "$_RESP" | jq -r '.results[] | "\(.id)|\(.display)"')
-      while IFS='|' read -r _id _display; do
-        if [ -n "$_id" ]; then
-          RESULT_IDS="${RESULT_IDS}${_id},"
-          RESULT_DISPLAY="${RESULT_DISPLAY}${_display}\n"
-          RESULT_COUNT=$((RESULT_COUNT + 1))
+  # Always run semantic search (~50ms) as parallel retrieval path
+  _REQ=$(jq -nc --arg q "$PROMPT" --arg db "$DB_PATH" '{op:"semantic_search",query:$q,db_path:$db,limit:5}')
+  _RESP=$(daemon_request "$_REQ")
+  if echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+    _SEM_DATA=$(echo "$_RESP" | jq -r '.results[] | "\(.id)|\(.display)"')
+    _EXISTING_IDS=",${RESULT_IDS}"
+    _SEM_ADDED=0
+    while IFS='|' read -r _id _display; do
+      if [ -n "$_id" ]; then
+        # Deduplicate: skip if already in FTS results (rerank handles scoring)
+        if echo "$_EXISTING_IDS" | grep -q ",${_id},"; then
+          continue
         fi
-      done <<< "$_SEM_DATA"
-      NEEDS_SEMANTIC=false
+        RESULT_IDS="${RESULT_IDS}${_id},"
+        RESULT_DISPLAY="${RESULT_DISPLAY}${_display}\n"
+        RESULT_COUNT=$((RESULT_COUNT + 1))
+        _SEM_ADDED=$((_SEM_ADDED + 1))
+      fi
+    done <<< "$_SEM_DATA"
+    NEEDS_COLD_SEMANTIC=false
+    if [ "$_FTS_COUNT" -gt 0 ]; then
+      SEARCH_SOURCE="fts5+daemon_semantic"
+    else
       SEARCH_SOURCE="daemon_semantic"
+    fi
+    # If semantic added new results to FTS pool, enable reranking for merged pool
+    if [ "$_SEM_ADDED" -gt 0 ] && [ "$_FTS_COUNT" -gt 0 ] && [ "$SHOULD_RERANK" = false ]; then
+      SHOULD_RERANK=true
+      SKIP_REASON=""
     fi
   fi
 
@@ -315,10 +387,11 @@ fi
 
 # ── Cold fallback: single Python process for remaining ops ────
 # Loads model ONCE for both semantic search and rerank (saves ~4.5s vs two heredocs)
-if { [ "$NEEDS_SEMANTIC" = true ] || [ "$SHOULD_RERANK" = true ]; } && [ -x "$VENV_PYTHON" ]; then
+# Cold semantic only fires when daemon is down AND FTS returned 0 (too slow otherwise)
+if { [ "$NEEDS_COLD_SEMANTIC" = true ] || [ "$SHOULD_RERANK" = true ]; } && [ -x "$VENV_PYTHON" ]; then
   _ID_LIST=$(echo "$RESULT_IDS" | sed 's/,$//')
 
-  _COLD_OUTPUT=$("$VENV_PYTHON" - "$DB_PATH" "$PROMPT" "$NEEDS_SEMANTIC" "$SHOULD_RERANK" "$_ID_LIST" 2>/dev/null << 'COLDEOF'
+  _COLD_OUTPUT=$("$VENV_PYTHON" - "$DB_PATH" "$PROMPT" "$NEEDS_COLD_SEMANTIC" "$SHOULD_RERANK" "$_ID_LIST" 2>/dev/null << 'COLDEOF'
 import sys, struct, sqlite3, signal
 signal.alarm(3)  # Fail fast if daemon is down — cold model load takes 5-12s anyway
 
@@ -442,7 +515,10 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
     PRAGMA busy_timeout=5000;
     UPDATE memories
     SET strength = min(COALESCE(strength, 1.0) + 0.3, 5.0),
-        last_accessed_at = unixepoch('now')
+        last_accessed_at = unixepoch('now'),
+        metadata = json_set(COALESCE(metadata, '{}'),
+          '\$.access_count',
+          COALESCE(json_extract(metadata, '\$.access_count'), 0) + 1)
     WHERE id IN (${BOOST_IDS})
   " >/dev/null 2>&1
 fi

@@ -129,6 +129,38 @@ lines.append(f"- **Graph edges**: {graph_edges}")
 lines.append(f"- **Embedding coverage**: {embeddings/total*100:.0f}%" if total > 0 else "- **Embedding coverage**: N/A")
 lines.append("")
 
+# Growth rate tracking (last 4 weeks)
+growth_file = os.path.join(os.path.dirname(report_file), "growth-history.jsonl")
+weekly_counts = []
+for i in range(4):
+    week_start = now.timestamp() - ((i + 1) * 7 * 86400)
+    week_end = now.timestamp() - (i * 7 * 86400)
+    wc = conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE created_at >= ? AND created_at < ? AND deleted_at IS NULL",
+        (week_start, week_end)
+    ).fetchone()[0]
+    weekly_counts.append(wc)
+
+# Append current audit snapshot to growth history
+try:
+    with open(growth_file, 'a') as gf:
+        gf.write(json.dumps({
+            "date": now.strftime('%Y-%m-%d'),
+            "total": total, "deleted": deleted,
+            "this_week": weekly_counts[0] if weekly_counts else 0
+        }) + '\n')
+except Exception:
+    pass
+
+lines.append("## Growth Rate")
+if weekly_counts:
+    avg_weekly = sum(weekly_counts) / len(weekly_counts)
+    projected_6mo = total + int(avg_weekly * 26)
+    lines.append(f"- This week: +{weekly_counts[0]}")
+    lines.append(f"- 4-week avg: +{avg_weekly:.0f}/week")
+    lines.append(f"- Projected 6-month total: ~{projected_6mo} memories")
+lines.append("")
+
 # Memory type distribution
 types = conn.execute("SELECT memory_type, COUNT(*) FROM memories WHERE deleted_at IS NULL GROUP BY memory_type ORDER BY COUNT(*) DESC").fetchall()
 lines.append("## Type Distribution")
@@ -295,6 +327,23 @@ if orphaned_edges > 0:
         conn.commit()
         fix_actions.append(f"Deleted {orphaned_edges} orphaned graph edges")
         issues.append(f"  - **FIXED**: Deleted {orphaned_edges} orphaned graph edges")
+    issues.append("")
+
+# ── Check 8: Tombstone hard-delete (soft-deleted >30 days ago) ──
+old_tombstones = conn.execute("""
+    SELECT COUNT(*) FROM memories
+    WHERE deleted_at IS NOT NULL AND deleted_at < unixepoch('now') - 2592000
+""").fetchone()[0]
+if old_tombstones > 0:
+    issues.append(f"### Old tombstones (>30 days): {old_tombstones}")
+    if fix_mode:
+        conn.execute("""
+            DELETE FROM memories
+            WHERE deleted_at IS NOT NULL AND deleted_at < unixepoch('now') - 2592000
+        """)
+        conn.commit()
+        fix_actions.append(f"Hard-deleted {old_tombstones} tombstones (>30 days)")
+        issues.append(f"  - **FIXED**: Hard-deleted {old_tombstones} tombstones")
     issues.append("")
 
 if not issues:

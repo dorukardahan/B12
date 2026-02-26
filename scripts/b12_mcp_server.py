@@ -239,6 +239,26 @@ def _require_db() -> sqlite3.Connection:
     return _db
 
 
+def _unified_score(row, relevance: float) -> float:
+    """Compute unified score: 0.3*decay + 0.3*importance + 0.4*relevance.
+    Matches the hook's scoring formula for consistent cross-path results."""
+    import math
+    now_ts = time.time()
+    accessed = row["last_accessed_at"] or row["created_at"] or now_ts
+    age_days = max((now_ts - accessed) / 86400.0, 0.001)
+    strength = row["strength"] or 1.0
+    decay = max(math.exp(-age_days / strength), 0.01)
+
+    meta = {}
+    try:
+        meta = json.loads(row["metadata"] or "{}")
+    except (json.JSONDecodeError, TypeError):
+        pass
+    importance = min(float(meta.get("importance_score", 1.0)) / 2.0, 1.0)
+
+    return 0.3 * decay + 0.3 * importance + 0.4 * relevance
+
+
 def _fmt_memory(row, score=None) -> str:
     p = [f"[{row['memory_type'] or 'general'}] {row['content'][:500]}"]
     if row["tags"]: p.append(f"  Tags: {row['tags']}")
@@ -354,7 +374,7 @@ def memory_search(
             [f"%{query}%"] + params + [limit],
         ).fetchall()
         for r in exact_rows:
-            results[r["content_hash"]] = (r, 0.9)
+            results[r["content_hash"]] = (r, _unified_score(r, 0.9))
 
     # ── FTS search (hybrid only) ─────────────────────────
     if mode == "hybrid" and query:
@@ -383,7 +403,8 @@ def memory_search(
                     h = r["content_hash"]
                     # Phrase match scores higher than OR match
                     bonus = 0.1 if fts_attempt == "phrase" else 0.0
-                    score = 1.0 - min(abs(r["rank"]) / 20.0, 0.9) + bonus
+                    raw_relevance = 1.0 - min(abs(r["rank"]) / 20.0, 0.9) + bonus
+                    score = _unified_score(r, raw_relevance)
                     if h not in results or results[h][1] < score:
                         results[h] = (r, score)
             except Exception:
@@ -403,11 +424,11 @@ def memory_search(
                 if row:
                     ch = row["content_hash"]
                     old_score = results.get(ch, (None, 0))[1]
-                    new_score = hit["score"]
+                    new_score = _unified_score(row, hit["score"])
                     # In hybrid, boost items found by both methods
                     combined = max(old_score, new_score)
                     if ch in results:
-                        combined = min(1.0, old_score + new_score * 0.3)
+                        combined = max(old_score, new_score) + min(old_score, new_score) * 0.3
                     results[ch] = (row, combined)
 
     # ── Fallback: recent memories if no query ────────────────
@@ -572,6 +593,114 @@ def memory_quality(
         return "\n".join(lines)
 
     return f"Unknown action: {action}. Use rate, get, or analyze."
+
+
+# ── Tool: memory_session_context ─────────────────────────────────
+
+@server.tool()
+def memory_session_context(
+    project_name: str = "",
+    cwd: str = "",
+) -> str:
+    """Get session start context: pre-fetched project memories, last session summary,
+    and behavioral instructions. Call this FIRST in every new session."""
+    db = _require_db()
+    now_ts = time.time()
+    sections: list[str] = []
+
+    # Detect project from cwd if not provided
+    if not project_name and cwd:
+        project_name = os.path.basename(cwd)
+
+    # 1. Pre-fetched project memories (top 3 by importance × strength)
+    if project_name:
+        proj_memories = db.execute("""
+            SELECT id, content, memory_type, tags, metadata, strength
+            FROM memories
+            WHERE deleted_at IS NULL AND valid_until IS NULL
+              AND tags LIKE ?
+              AND memory_type NOT IN ('session_summary', 'progress')
+            ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0)
+                     * COALESCE(strength, 1.0) DESC
+            LIMIT 3
+        """, (f"%proj:{project_name}%",)).fetchall()
+        if proj_memories:
+            sections.append(f"## Project Memories ({project_name})")
+            boost_ids = []
+            for m in proj_memories:
+                sections.append(f"- [{m['memory_type']}] {m['content'][:300]}")
+                boost_ids.append(m['id'])
+            # Spaced repetition: boost retrieved memories
+            if boost_ids:
+                placeholders = ",".join("?" * len(boost_ids))
+                db.execute(f"""
+                    UPDATE memories
+                    SET strength = min(COALESCE(strength, 1.0) + 0.2, 5.0),
+                        last_accessed_at = ?,
+                        metadata = json_set(COALESCE(metadata, '{{}}'),
+                          '$.access_count',
+                          COALESCE(json_extract(metadata, '$.access_count'), 0) + 1)
+                    WHERE id IN ({placeholders})
+                """, [now_ts] + boost_ids)
+
+    # 2. Universal memories (top 2, not project-specific)
+    universal = db.execute("""
+        SELECT content, memory_type FROM memories
+        WHERE deleted_at IS NULL AND valid_until IS NULL
+          AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
+          AND memory_type NOT IN ('session_summary', 'progress')
+        ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0)
+                 * COALESCE(strength, 1.0) DESC
+        LIMIT 2
+    """).fetchall()
+    if universal:
+        sections.append("## Universal Memories")
+        for m in universal:
+            sections.append(f"- [{m['memory_type']}] {m['content'][:300]}")
+
+    # 3. Last session summary for this project
+    if project_name:
+        last_summary = db.execute("""
+            SELECT content FROM memories
+            WHERE memory_type = 'session_summary'
+              AND deleted_at IS NULL
+              AND tags LIKE ?
+            ORDER BY created_at DESC LIMIT 1
+        """, (f"%proj:{project_name}%",)).fetchone()
+        if last_summary:
+            sections.append("## Last Session Summary")
+            sections.append(last_summary['content'][:800])
+
+    # 4. User profile (from templates directory)
+    profile_path = os.path.join(
+        os.environ.get("B12_DATA_DIR", os.path.expanduser("~/.B12")),
+        "user-profile.md"
+    )
+    if os.path.exists(profile_path):
+        try:
+            with open(profile_path) as f:
+                profile = f.read().strip()
+            if profile:
+                sections.append("## User Profile")
+                sections.append(profile[:500])
+        except Exception:
+            pass
+
+    # 5. Behavioral instructions
+    sections.append("## Instructions")
+    sections.append(
+        "- Search memory before answering questions about past work\n"
+        "- Store decisions, errors/fixes, and learnings as memories\n"
+        "- Include tags (proj:<name>) and metadata (scope, importance_score) when storing\n"
+        "- Update existing memories instead of creating duplicates"
+    )
+
+    db.commit()
+
+    if not sections:
+        return "No context available. Start storing memories to build your knowledge base."
+
+    return "\n\n".join(sections)
 
 
 # ── Entry point ──────────────────────────────────────────────────

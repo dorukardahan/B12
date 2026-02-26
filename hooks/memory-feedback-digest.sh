@@ -129,6 +129,15 @@ for q in all_queries:
         query_freq[q] += 1
 repeated_queries = {q: c for q, c in query_freq.items() if c >= 2}
 
+# Retrieval latency percentiles (from hook_retrieval entries)
+hook_retrievals = [e for e in recent if e.get('type') == 'hook_retrieval']
+latencies = sorted([e['latency_ms'] for e in hook_retrievals if e.get('latency_ms', 0) > 0])
+latency_p50 = latency_p95 = latency_p99 = 0
+if latencies:
+    latency_p50 = latencies[len(latencies) // 2]
+    latency_p95 = latencies[int(len(latencies) * 0.95)]
+    latency_p99 = latencies[min(int(len(latencies) * 0.99), len(latencies) - 1)]
+
 # Project distribution
 projects = defaultdict(int)
 for e in stats_entries:
@@ -175,6 +184,10 @@ if len(session_search_counts) >= 5 and refinement_rate > 60:
 if search_result_counts and avg_result_count < 1.5 and len(searches) >= 5:
     alerts.append(f"Low average results per search ({avg_result_count:.1f}). Memory DB may need more entries.")
 
+# Alert: High retrieval latency
+if latencies and latency_p95 > 500:
+    alerts.append(f"Retrieval latency high: p95={latency_p95}ms (target <500ms). Check if embed daemon is running.")
+
 # ═══════════════════════════════════════════════════
 # BUILD DIGEST
 # ═══════════════════════════════════════════════════
@@ -202,6 +215,15 @@ lines.append(f"- Updates: {len(updates)}")
 lines.append(f"- Quality checks: {len(quality_checks)}")
 lines.append(f"- Search sessions: {len(session_search_counts)} ({len(refined_sessions)} with refinement, {refinement_rate:.0f}% rate)")
 lines.append("")
+
+# Retrieval latency
+if latencies:
+    lines.append("## Retrieval Latency (last 7 days)")
+    lines.append(f"- Samples: {len(latencies)}")
+    lines.append(f"- p50: {latency_p50}ms, p95: {latency_p95}ms, p99: {latency_p99}ms")
+    if latency_p95 > 500:
+        lines.append(f"- **[WARN]** p95 > 500ms — check embed daemon")
+    lines.append("")
 
 # Quality metrics
 if stores:
@@ -234,6 +256,55 @@ if len(projects) > 1:
     lines.append("## Projects")
     for proj, count in sorted(projects.items(), key=lambda x: -x[1])[:10]:
         lines.append(f"- {proj}: {count} ops")
+    lines.append("")
+
+# ═══════════════════════════════════════════════════
+# RETRIEVAL USEFULNESS PROXY
+# If hook_retrieval (result_count>0) is followed by a manual search
+# within 120s, the retrieval was likely insufficient.
+# ═══════════════════════════════════════════════════
+
+# Build timeline of retrieval and search events per session
+_session_events = defaultdict(list)
+for e in recent:
+    _type = e.get('type', e.get('action', ''))
+    _ts = e.get('ts', 0)
+    _sid = e.get('session', e.get('project', ''))
+    if _type == 'hook_retrieval' and e.get('result_count', 0) > 0:
+        _session_events[_sid].append(('retrieval', _ts, e.get('keywords', '')))
+    elif _type in ('search', 'hook_retrieval') and e.get('action') == 'search':
+        _session_events[_sid].append(('search', _ts, e.get('query_text', '')))
+
+_sufficient = 0
+_insufficient = 0
+for sid, events in _session_events.items():
+    events.sort(key=lambda x: x[1])
+    for i, (etype, ets, edata) in enumerate(events):
+        if etype != 'retrieval':
+            continue
+        # Check if followed by manual search within 120s
+        followed_by_search = False
+        for j in range(i + 1, len(events)):
+            ntype, nts, ndata = events[j]
+            if nts - ets > 120:
+                break
+            if ntype == 'search':
+                followed_by_search = True
+                break
+        if followed_by_search:
+            _insufficient += 1
+        else:
+            _sufficient += 1
+
+_total_assessed = _sufficient + _insufficient
+if _total_assessed > 0:
+    _sufficiency_pct = _sufficient / _total_assessed * 100
+    lines.append("## Retrieval Usefulness")
+    lines.append(f"- Assessed: {_total_assessed} retrievals with results")
+    lines.append(f"- Sufficient (no follow-up search): {_sufficient} ({_sufficiency_pct:.0f}%)")
+    lines.append(f"- Insufficient (manual search within 120s): {_insufficient}")
+    if _sufficiency_pct < 50 and _total_assessed >= 5:
+        lines.append(f"- **[WARN]** Low sufficiency — retrieval quality needs improvement")
     lines.append("")
 
 # ═══════════════════════════════════════════════════
@@ -273,6 +344,19 @@ if os.path.exists(DB_PATH):
         """, (week_ago_ts,))
         decay_count = decayed.rowcount
 
+        # Dormancy: strength-floor memories not accessed in 60+ days become dormant
+        sixty_days_ago_ts = (now - timedelta(days=60)).timestamp()
+        dormant = conn.execute("""
+            UPDATE memories
+            SET valid_until = datetime('now')
+            WHERE strength <= 0.3
+              AND COALESCE(last_accessed_at, created_at) < ?
+              AND valid_until IS NULL
+              AND deleted_at IS NULL
+              AND memory_type NOT IN ('session_summary', 'pattern', 'association')
+        """, (sixty_days_ago_ts,))
+        dormant_count = dormant.rowcount
+
         # Report: memories with extreme strength values
         high_strength = conn.execute("""
             SELECT substr(content_hash, 1, 8), strength, memory_type,
@@ -295,6 +379,7 @@ if os.path.exists(DB_PATH):
 
         lines.append("## Self-Improving Retrieval")
         lines.append(f"- Decayed {decay_count} memories not accessed in 7 days (-0.05 strength)")
+        lines.append(f"- Made {dormant_count} memories dormant (strength=0.3, not accessed in 60+ days)")
         if high_strength:
             lines.append("### Frequently Retrieved (high strength)")
             for h, s, t, preview in high_strength:

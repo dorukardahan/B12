@@ -1,0 +1,22 @@
+{
+  "db": ["database"],
+  "k8s": ["kubernetes"],
+  "js": ["javascript"],
+  "ts": ["typescript"],
+  "py": ["python"],
+  "api": ["endpoint", "route"],
+  "cli": ["command line"],
+  "ui": ["interface", "frontend"],
+  "fe": ["frontend"],
+  "be": ["backend"],
+  "ci": ["pipeline", "github actions"],
+  "pr": ["pull request"],
+  "mr": ["merge request"],
+  "env": ["environment"],
+  "deps": ["dependencies"],
+  "auth": ["authentication"],
+  "config": ["configuration"],
+  "mcp": ["model context protocol"],
+  "fts": ["full text search"],
+  "nli": ["natural language inference"]
+}

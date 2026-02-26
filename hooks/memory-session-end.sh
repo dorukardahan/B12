@@ -692,6 +692,37 @@ try:
                 conn.execute("INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
                              (m_row, m_emb))
 
+    # ─── Progress memory TTL: expire progress entries after 14 days ───
+    try:
+        _ttl_cutoff = (now + timedelta(days=14)).isoformat()
+        conn.execute("""
+            UPDATE memories SET valid_until = ?
+            WHERE memory_type = 'progress'
+              AND valid_until IS NULL
+              AND deleted_at IS NULL
+              AND tags LIKE ?
+        """, (_ttl_cutoff, f'%proj:{project_name}%'))
+    except Exception:
+        pass  # Non-critical
+
+    # ─── Session summary cap: keep only 5 most recent per project ───
+    try:
+        conn.execute("""
+            UPDATE memories SET deleted_at = unixepoch('now')
+            WHERE memory_type = 'session_summary'
+              AND deleted_at IS NULL
+              AND tags LIKE ?
+              AND id NOT IN (
+                SELECT id FROM memories
+                WHERE memory_type = 'session_summary'
+                  AND deleted_at IS NULL
+                  AND tags LIKE ?
+                ORDER BY created_at DESC LIMIT 5
+              )
+        """, (f'%proj:{project_name}%', f'%proj:{project_name}%'))
+    except Exception:
+        pass  # Non-critical — don't block session end
+
     conn.commit()
     conn.close()
 
