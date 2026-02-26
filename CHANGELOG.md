@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.7.1](https://github.com/dorukardahan/B12/compare/v10.7.0...v10.7.1) (2026-02-26)
+
+
+### Bug Fixes
+
+* Address agent team review findings — set-e safety and comment accuracy ([9d4b703](https://github.com/dorukardahan/B12/commit/9d4b703d8e359d9ae76f3cd85c4f7e28c2025d9f))
+
 # [10.7.0](https://github.com/dorukardahan/B12/compare/v10.6.0...v10.7.0) (2026-02-26)
 
 
