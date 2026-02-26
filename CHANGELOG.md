@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.5.1](https://github.com/dorukardahan/B12/compare/v10.5.0...v10.5.1) (2026-02-26)
+
+
+### Bug Fixes
+
+* Address code review issues from multi-platform integration ([73df115](https://github.com/dorukardahan/B12/commit/73df1152f761e4059bd75bba49de5c7bbf729c2c))
+
 All notable changes to B12 are documented in this file.
 
 ## v10.4 (2026-02-25) — ~/.B12 Migration
