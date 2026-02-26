@@ -1,5 +1,12 @@
 # Changelog
 
+# [10.8.0](https://github.com/dorukardahan/B12/compare/v10.7.2...v10.8.0) (2026-02-26)
+
+
+### Features
+
+* B12 v11 — retrieval, lifecycle, and observability improvements ([e6a94d3](https://github.com/dorukardahan/B12/commit/e6a94d3f66dca149ebee93dacb5cfcdabea9a3dd))
+
 ## [10.7.2](https://github.com/dorukardahan/B12/compare/v10.7.1...v10.7.2) (2026-02-26)
 
 
