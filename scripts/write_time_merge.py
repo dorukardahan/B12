@@ -416,7 +416,7 @@ def check_contradictions(
     import sqlite3 as _sqlite3
     try:
         conn = _sqlite3.connect(db_path, timeout=5)
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=10000")
     except Exception:
         return []
 

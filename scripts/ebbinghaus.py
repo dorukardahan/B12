@@ -65,7 +65,7 @@ def boost_strength(current_strength: float) -> float:
     """
     Increase memory strength per retrieval, capped at 5.0.
     """
-    return min(current_strength + 0.3, 5.0)
+    return min(current_strength + 0.2, 5.0)
 
 
 if __name__ == "__main__":

@@ -328,7 +328,7 @@ if os.path.exists(DB_PATH):
         import sqlite3
         conn = sqlite3.connect(DB_PATH, timeout=10)
         conn.execute("PRAGMA journal_mode=WAL")
-        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA busy_timeout=10000")
 
         week_ago_ts = (now - timedelta(days=7)).timestamp()
 
@@ -348,13 +348,13 @@ if os.path.exists(DB_PATH):
         sixty_days_ago_ts = (now - timedelta(days=60)).timestamp()
         dormant = conn.execute("""
             UPDATE memories
-            SET valid_until = datetime('now')
+            SET valid_until = ?
             WHERE strength <= 0.3
               AND COALESCE(last_accessed_at, created_at) < ?
               AND valid_until IS NULL
               AND deleted_at IS NULL
               AND memory_type NOT IN ('session_summary', 'pattern', 'association')
-        """, (sixty_days_ago_ts,))
+        """, (now.isoformat(), sixty_days_ago_ts))
         dormant_count = dormant.rowcount
 
         # Report: memories with extreme strength values

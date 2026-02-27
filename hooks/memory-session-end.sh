@@ -502,7 +502,7 @@ try:
         conn.close()
         sys.exit(0)
 
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
     import numpy as np
 
     embedding_bytes = encode_texts([content])[0]

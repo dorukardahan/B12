@@ -187,7 +187,15 @@ expand_kw() {
   else
     local parts="$kw"
     while IFS= read -r a; do
-      [ -n "$a" ] && parts="$parts OR $a"
+      # Sanitize aliases (same rules as user keywords — defense in depth)
+      a=$(echo "$a" | sed "s/['\";(){}*^:\\\\]//g" | sed 's/--//g')
+      [ -z "$a" ] && continue
+      # Quote multi-word aliases for FTS5 phrase matching
+      if echo "$a" | grep -q ' '; then
+        parts="$parts OR \"$a\""
+      else
+        parts="$parts OR $a"
+      fi
     done <<< "$aliases"
     printf '(%s)' "$parts"
   fi
@@ -201,18 +209,22 @@ if [ "$WORD_COUNT" -ge 3 ]; then
   if [ "$WORD_COUNT" -ge 4 ]; then
     # Relaxed AND: require N-1 of N keywords (cap at 5 keywords for combinations)
     # Each keyword gets alias expansion: db → (db OR database)
+    # Pre-compute expanded forms to avoid O(N^2) jq spawns
     _COMBO_KWS=("${KEYWORD_ARRAY[@]:0:5}")
     _COMBO_COUNT=${#_COMBO_KWS[@]}
+    _EXPANDED=()
+    for (( _i=0; _i<_COMBO_COUNT; _i++ )); do
+      _EXPANDED+=("$(expand_kw "${_COMBO_KWS[$_i]}")")
+    done
     FTS_PARTS=""
     for (( _skip=0; _skip<_COMBO_COUNT; _skip++ )); do
       _COMBO=""
       for (( _j=0; _j<_COMBO_COUNT; _j++ )); do
         [ "$_j" -eq "$_skip" ] && continue
-        _expanded=$(expand_kw "${_COMBO_KWS[$_j]}")
         if [ -z "$_COMBO" ]; then
-          _COMBO="$_expanded"
+          _COMBO="${_EXPANDED[$_j]}"
         else
-          _COMBO="${_COMBO} AND $_expanded"
+          _COMBO="${_COMBO} AND ${_EXPANDED[$_j]}"
         fi
       done
       if [ -z "$FTS_PARTS" ]; then
@@ -264,7 +276,7 @@ RESULTS=$(sqlite3 "$DB_PATH" "
            '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') as display,
            (
              0.3 * max(COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / COALESCE(m.strength, 1.0)), 0.5), 0.01)
-             + 0.3 * COALESCE(json_extract(m.metadata, '$.importance_score'), 1.0) / 2.0
+             + 0.3 * min(COALESCE(json_extract(m.metadata, '$.importance_score'), 1.0) / 2.0, 1.0)
              + 0.4 * (1.0 / (1.0 + abs(f.rank)))
            ) as score
     FROM memories m
@@ -328,7 +340,8 @@ fi
 
 # ── Daemon path: parallel semantic + rerank (Phase 1 + v11) ───
 if daemon_alive; then
-  # Always run semantic search (~50ms) as parallel retrieval path
+  # Run semantic search (~50ms) as parallel retrieval path (skip in keyword-only mode)
+  if [ "$QUERY_MODE" != "keyword" ]; then
   _REQ=$(jq -nc --arg q "$PROMPT" --arg db "$DB_PATH" '{op:"semantic_search",query:$q,db_path:$db,limit:5}')
   _RESP=$(daemon_request "$_REQ")
   if echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
@@ -359,6 +372,7 @@ if daemon_alive; then
       SKIP_REASON=""
     fi
   fi
+  fi  # end QUERY_MODE != keyword
 
   if [ "$SHOULD_RERANK" = true ] && [ "$RESULT_COUNT" -gt 0 ]; then
     _IDS_JSON=$(echo "$RESULT_IDS" | sed 's/,$//' | tr ',' '\n' | grep -E '^[0-9]+$' | head -10 | jq -Rn '[inputs | tonumber]')
@@ -512,9 +526,9 @@ fi
 if [ "$RESULT_COUNT" -gt 0 ]; then
   BOOST_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | head -5 | tr '\n' ',' | sed 's/,$//')
   sqlite3 "$DB_PATH" "
-    PRAGMA busy_timeout=5000;
+    PRAGMA busy_timeout=10000;
     UPDATE memories
-    SET strength = min(COALESCE(strength, 1.0) + 0.3, 5.0),
+    SET strength = min(COALESCE(strength, 1.0) + 0.2, 5.0),
         last_accessed_at = unixepoch('now'),
         metadata = json_set(COALESCE(metadata, '{}'),
           '\$.access_count',

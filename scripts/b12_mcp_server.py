@@ -180,7 +180,7 @@ async def lifespan(server: FastMCP):
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
     _db = sqlite3.connect(DB_PATH, timeout=10)
     _db.execute("PRAGMA journal_mode=WAL")
-    _db.execute("PRAGMA busy_timeout=5000")
+    _db.execute("PRAGMA busy_timeout=10000")
     _db.row_factory = sqlite3.Row
     if _HAS_VEC:
         _db.enable_load_extension(True)
@@ -244,9 +244,15 @@ def _unified_score(row, relevance: float) -> float:
     Matches the hook's scoring formula for consistent cross-path results."""
     import math
     now_ts = time.time()
-    accessed = row["last_accessed_at"] or row["created_at"] or now_ts
+    # Explicit None checks — 0.0 is a valid value for both fields
+    accessed = row["last_accessed_at"] if row["last_accessed_at"] is not None else row["created_at"]
+    if accessed is None:
+        accessed = now_ts
     age_days = max((now_ts - accessed) / 86400.0, 0.001)
-    strength = row["strength"] or 1.0
+    strength = row["strength"] if row["strength"] is not None else 1.0
+    # Guard against zero strength (would cause ZeroDivisionError)
+    if strength <= 0:
+        strength = 0.01
     decay = max(math.exp(-age_days / strength), 0.01)
 
     meta = {}
@@ -428,7 +434,7 @@ def memory_search(
                     # In hybrid, boost items found by both methods
                     combined = max(old_score, new_score)
                     if ch in results:
-                        combined = max(old_score, new_score) + min(old_score, new_score) * 0.3
+                        combined = min(1.0, max(old_score, new_score) + min(old_score, new_score) * 0.3)
                     results[ch] = (row, combined)
 
     # ── Fallback: recent memories if no query ────────────────
