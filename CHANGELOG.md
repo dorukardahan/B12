@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.8.2](https://github.com/dorukardahan/B12/compare/v10.8.1...v10.8.2) (2026-02-27)
+
+
+### Bug Fixes
+
+* Update stale +0.3 references to +0.2 after strength boost alignment ([5cd5ad6](https://github.com/dorukardahan/B12/commit/5cd5ad60c9583a038208ab6f156c0cb86340651a))
+
 ## [10.8.1](https://github.com/dorukardahan/B12/compare/v10.8.0...v10.8.1) (2026-02-27)
 
 
