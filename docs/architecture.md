@@ -139,7 +139,7 @@ Process:
 2. Extract keywords from user prompt (stop-word removal, 12-word limit)
 3. Build FTS5 query with OR operators
 4. Run hybrid scoring: `0.3×decay + 0.3×importance + 0.4×FTS5_relevance`
-5. Boost strength of top 3 results (+0.3, max 5.0) via CTE-aligned UPDATE
+5. Boost strength of top 3 results (+0.2, max 5.0) via CTE-aligned UPDATE
 6. Return results as `additionalContext`
 
 **SQL injection protection**: All keywords stripped of `'"();{}` characters before SQL interpolation.
@@ -197,7 +197,7 @@ Process:
 
 Every memory has a `strength` field (0.3–5.0, default 1.0):
 
-- **Retrieval boost**: +0.3 per access (capped at 5.0)
+- **Retrieval boost**: +0.2 per access (capped at 5.0)
 - **Weekly decay**: -0.05 for memories not accessed in 7 days (floor at 0.3)
 - **Combined scoring**: `0.3 × exp(-age/strength) + 0.3 × importance/2 + 0.4 × FTS5_rank`
 

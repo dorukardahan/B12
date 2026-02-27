@@ -15,7 +15,7 @@ Functions
         S = strength                        (higher means slower decay)
 
 - boost_strength(current_strength) -> float
-    Increments strength by 0.3 each retrieval, capped at 5.0.
+    Increments strength by 0.2 each retrieval, capped at 5.0.
 """
 
 from __future__ import annotations
@@ -85,6 +85,6 @@ if __name__ == "__main__":
     print("\nboost_strength examples:")
     print("  1.0 ->", boost_strength(1.0))
     print("  4.9 ->", boost_strength(4.9))
-    assert abs(boost_strength(1.0) - 1.3) < 1e-9
+    assert abs(boost_strength(1.0) - 1.2) < 1e-9
     assert boost_strength(4.9) == 5.0
 
