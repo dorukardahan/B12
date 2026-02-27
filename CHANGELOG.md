@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.8.1](https://github.com/dorukardahan/B12/compare/v10.8.0...v10.8.1) (2026-02-27)
+
+
+### Bug Fixes
+
+* Address cross-audit findings — FTS5 injection, falsy eval, type consistency ([3ba9740](https://github.com/dorukardahan/B12/commit/3ba9740c8f4385c0d999c53c63b89601d3858096))
+
 # [10.8.0](https://github.com/dorukardahan/B12/compare/v10.7.2...v10.8.0) (2026-02-26)
 
 
