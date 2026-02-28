@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.8.3](https://github.com/dorukardahan/B12/compare/v10.8.2...v10.8.3) (2026-02-28)
+
+
+### Bug Fixes
+
+* Address 27 cross-audit findings — SQL safety, lifecycle, concurrency, docs ([eefe096](https://github.com/dorukardahan/B12/commit/eefe09620aff50f3063f26009aaa4f592f86ee99))
+
 ## [10.8.2](https://github.com/dorukardahan/B12/compare/v10.8.1...v10.8.2) (2026-02-27)
 
 
