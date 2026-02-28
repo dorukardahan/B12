@@ -179,9 +179,10 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
 async def lifespan(server: FastMCP):
     global _db
     os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    _db = sqlite3.connect(DB_PATH, timeout=10)
+    _db = sqlite3.connect(DB_PATH, timeout=30)
     _db.execute("PRAGMA journal_mode=WAL")
-    _db.execute("PRAGMA busy_timeout=10000")
+    _db.execute("PRAGMA busy_timeout=30000")
+    _db.execute("PRAGMA wal_autocheckpoint=100")
     _db.row_factory = sqlite3.Row
     if _HAS_VEC:
         _db.enable_load_extension(True)
