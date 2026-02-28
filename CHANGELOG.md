@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.8.4](https://github.com/dorukardahan/B12/compare/v10.8.3...v10.8.4) (2026-02-28)
+
+
+### Bug Fixes
+
+* Resolve 7 functional test findings — BM25 inversion, ghost memories, spaced repetition ([d01a0cc](https://github.com/dorukardahan/B12/commit/d01a0cc18cad2feb4ea150904dffbf11e2095958))
+
 ## [10.8.3](https://github.com/dorukardahan/B12/compare/v10.8.2...v10.8.3) (2026-02-28)
 
 
