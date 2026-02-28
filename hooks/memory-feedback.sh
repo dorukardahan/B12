@@ -31,7 +31,7 @@ B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 FEEDBACK_DIR="$B12_BASE/memory-logs"
 FEEDBACK_FILE="$FEEDBACK_DIR/feedback.jsonl"
-TIMESTAMP=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
+TIMESTAMP=$(date +%s)
 
 mkdir -p "$FEEDBACK_DIR" 2>/dev/null
 
@@ -53,7 +53,10 @@ if [ "$TOOL_NAME" = "mcp__B12__memory_store" ]; then
     HAS_SCOPE="true"
   fi
 
-  echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"store\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\",\"has_metadata\":$HAS_METADATA,\"has_tags\":$HAS_TAGS,\"content_length\":$CONTENT_LEN,\"has_proj_tag\":$HAS_PROJ_TAG,\"has_scope\":$HAS_SCOPE}" >> "$FEEDBACK_FILE"
+  jq -nc --argjson ts "$TIMESTAMP" --arg action "store" --arg project "$PROJECT_NAME" --arg session "$SESSION_ID" \
+    --argjson has_metadata "$HAS_METADATA" --argjson has_tags "$HAS_TAGS" --argjson content_length "$CONTENT_LEN" \
+    --argjson has_proj_tag "$HAS_PROJ_TAG" --argjson has_scope "$HAS_SCOPE" \
+    '{ts: $ts, action: $action, project: $project, session: $session, has_metadata: $has_metadata, has_tags: $has_tags, content_length: $content_length, has_proj_tag: $has_proj_tag, has_scope: $has_scope}' >> "$FEEDBACK_FILE"
 
 elif [ "$TOOL_NAME" = "mcp__B12__memory_search" ]; then
   # Track search patterns — query text, result count, sequence, empty detection
@@ -76,16 +79,22 @@ elif [ "$TOOL_NAME" = "mcp__B12__memory_search" ]; then
   SESSION_SEARCH_FILE="$FEEDBACK_DIR/.search-seq-${SESSION_ID}"
   SEARCH_SEQ=$(cat "$SESSION_SEARCH_FILE" 2>/dev/null || echo "0")
   SEARCH_SEQ=$((SEARCH_SEQ + 1))
-  echo "$SEARCH_SEQ" > "$SESSION_SEARCH_FILE"
+  echo "$SEARCH_SEQ" > "${SESSION_SEARCH_FILE}.tmp" && mv "${SESSION_SEARCH_FILE}.tmp" "$SESSION_SEARCH_FILE"
 
-  echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"search\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\",\"query_length\":$QUERY_LEN,\"query_text\":\"$QUERY_TEXT\",\"result_count\":$RESULT_COUNT,\"search_seq\":$SEARCH_SEQ,\"empty_result\":$IS_EMPTY}" >> "$FEEDBACK_FILE"
+  jq -nc --argjson ts "$TIMESTAMP" --arg action "search" --arg project "$PROJECT_NAME" --arg session "$SESSION_ID" \
+    --argjson query_length "$QUERY_LEN" --arg query_text "$QUERY_TEXT" --argjson result_count "$RESULT_COUNT" \
+    --argjson search_seq "$SEARCH_SEQ" --argjson empty_result "$IS_EMPTY" \
+    '{ts: $ts, action: $action, project: $project, session: $session, query_length: $query_length, query_text: $query_text, result_count: $result_count, search_seq: $search_seq, empty_result: $empty_result}' >> "$FEEDBACK_FILE"
 
 elif [ "$TOOL_NAME" = "mcp__B12__memory_quality" ]; then
   MEMORY_HASH=$(echo "$INPUT" | jq -r '.tool_input.content_hash // ""' 2>/dev/null)
-  echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"quality\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\",\"memory_hash\":\"$MEMORY_HASH\"}" >> "$FEEDBACK_FILE"
+  jq -nc --argjson ts "$TIMESTAMP" --arg action "quality" --arg project "$PROJECT_NAME" --arg session "$SESSION_ID" \
+    --arg memory_hash "$MEMORY_HASH" \
+    '{ts: $ts, action: $action, project: $project, session: $session, memory_hash: $memory_hash}' >> "$FEEDBACK_FILE"
 
 elif [ "$TOOL_NAME" = "mcp__B12__memory_update" ]; then
-  echo "{\"ts\":\"$TIMESTAMP\",\"action\":\"update\",\"project\":\"$PROJECT_NAME\",\"session\":\"$SESSION_ID\"}" >> "$FEEDBACK_FILE"
+  jq -nc --argjson ts "$TIMESTAMP" --arg action "update" --arg project "$PROJECT_NAME" --arg session "$SESSION_ID" \
+    '{ts: $ts, action: $action, project: $project, session: $session}' >> "$FEEDBACK_FILE"
 fi
 
 # Keep feedback file reasonable (max 5000 lines)

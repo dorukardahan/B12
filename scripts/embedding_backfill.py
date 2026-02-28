@@ -63,6 +63,8 @@ def daemon_request(texts):
 def find_missing(db_path):
     """Find active memories without embeddings."""
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     conn.row_factory = sqlite3.Row
     try:
         # sqlite-vec virtual table might not be queryable without extension
@@ -107,6 +109,8 @@ def store_embedding(db_path, memory_id, embedding_b64):
     """Store a single embedding in the vec0 virtual table."""
     blob = base64.b64decode(embedding_b64)
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     try:
         # Load sqlite-vec extension
         import sqlite_vec

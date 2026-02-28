@@ -562,13 +562,13 @@ try:
     MICRO_SECTIONS = {
         '## Decisions Made': ('decision', 1.5),
         '## Decisions': ('decision', 1.5),
-        '## Errors & Fixes': ('error_fix', 1.2),
-        '## Problems Fixed': ('error_fix', 1.2),
-        '## Bugs Fixed': ('error_fix', 1.2),
+        '## Errors & Fixes': ('error_fix', 1.5),
+        '## Problems Fixed': ('error_fix', 1.5),
+        '## Bugs Fixed': ('error_fix', 1.5),
         '## Key Learnings': ('learning', 1.0),
         '## Learned': ('learning', 1.0),
         '## Takeaways': ('learning', 1.0),
-        '## What Was Done': ('progress', 0.8),
+        '## What Was Done': ('progress', 0.7),
     }
     micro_texts = []
     micro_meta = []
@@ -698,7 +698,7 @@ try:
         conn.execute("""
             UPDATE memories SET valid_until = ?
             WHERE memory_type = 'progress'
-              AND valid_until IS NULL
+              AND (valid_until IS NULL OR valid_until > datetime('now'))
               AND deleted_at IS NULL
               AND tags LIKE ?
         """, (_ttl_cutoff, f'%proj:{project_name}%'))
@@ -720,8 +720,9 @@ try:
                 ORDER BY created_at DESC LIMIT 5
               )
         """, (f'%proj:{project_name}%', f'%proj:{project_name}%'))
-    except Exception:
-        pass  # Non-critical — don't block session end
+    except Exception as e:
+        import sys
+        print(f"[B12] summary cap warning: {e}", file=sys.stderr)
 
     conn.commit()
     conn.close()

@@ -51,7 +51,10 @@ This returns pre-fetched project memories, last session summary, and behavioral 
 ### Usage Examples
 
 ```
-# Search for project context at session start
+# FIRST: Load session context (required at session start)
+mcp__B12__memory_session_context(project_name="myproject")
+
+# Search for project context
 mcp__B12__memory_search(query="recent architecture decisions", tags=["proj:myproject"])
 
 # Store a decision with proper metadata dict

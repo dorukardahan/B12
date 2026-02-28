@@ -269,6 +269,12 @@ _session_events = defaultdict(list)
 for e in recent:
     _type = e.get('type', e.get('action', ''))
     _ts = e.get('ts', 0)
+    if isinstance(_ts, str):
+        from datetime import datetime as _dt
+        try:
+            _ts = int(_dt.fromisoformat(_ts.replace('Z', '+00:00')).timestamp())
+        except (ValueError, TypeError):
+            _ts = 0
     _sid = e.get('session', e.get('project', ''))
     if _type == 'hook_retrieval' and e.get('result_count', 0) > 0:
         _session_events[_sid].append(('retrieval', _ts, e.get('keywords', '')))
@@ -337,7 +343,7 @@ if os.path.exists(DB_PATH):
             UPDATE memories
             SET strength = MAX(0.3, COALESCE(strength, 1.0) - 0.05)
             WHERE deleted_at IS NULL
-              AND valid_until IS NULL
+              AND (valid_until IS NULL OR valid_until > datetime('now'))
               AND memory_type NOT IN ('session_summary', 'pattern', 'association')
               AND COALESCE(last_accessed_at, created_at) < ?
               AND COALESCE(strength, 1.0) > 0.3
@@ -351,7 +357,7 @@ if os.path.exists(DB_PATH):
             SET valid_until = ?
             WHERE strength <= 0.3
               AND COALESCE(last_accessed_at, created_at) < ?
-              AND valid_until IS NULL
+              AND (valid_until IS NULL OR valid_until > datetime('now'))
               AND deleted_at IS NULL
               AND memory_type NOT IN ('session_summary', 'pattern', 'association')
         """, (now.isoformat(), sixty_days_ago_ts))

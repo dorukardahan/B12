@@ -37,7 +37,7 @@ Claude Code Session (full hook automation)
                                   ▼
 B12 MCP Server (b12_mcp_server.py)
     │
-    ├── 4 tools: memory_store / memory_search / memory_update / memory_quality
+    ├── 5 tools: memory_store / memory_search / memory_update / memory_quality / memory_session_context
     ├── SQLite + sqlite-vec (local database, no cloud)
     ├── Embed daemon (sentence-transformers, Unix socket IPC)
     ├── FTS5 hybrid search (BM25 keyword + vector cosine)
@@ -83,7 +83,7 @@ git clone https://github.com/dorukardahan/B12.git
 cd B12 && chmod +x install.sh && ./install.sh --full
 
 # 2. Restart Claude Code and verify
-# Run /mcp in Claude Code — should show: B12 · connected (4 tools)
+# Run /mcp in Claude Code — should show: B12 · connected (5 tools)
 ```
 
 That's it. The `--full` flag creates the Python venv, installs all dependencies, deploys hooks, and configures the MCP server in `~/.claude.json` with correct absolute paths. The database and tables are created automatically on first use.
@@ -130,11 +130,12 @@ This single command:
 
 ### 2. Restart your AI assistant
 
-Start a new Claude Code session. Run `/mcp` — you should see `B12 · connected` with 4 tools:
+Start a new Claude Code session. Run `/mcp` — you should see `B12 · connected` with 5 tools:
 - `memory_store` — store a memory with metadata and tags
 - `memory_search` — hybrid semantic + full-text search
 - `memory_update` — update metadata, tags, or strength
 - `memory_quality` — rate, get, or analyze memory quality
+- `memory_session_context` — get session start context (project memories, last summary, instructions)
 
 **First run note:** The embedding model (~90MB) downloads automatically on the first session. This is a one-time download — subsequent sessions start instantly.
 

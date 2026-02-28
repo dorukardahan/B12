@@ -287,7 +287,7 @@ launchctl load ~/Library/LaunchAgents/com.b12.graph-enrich.plist
 ```bash
 # In a Claude Code session
 /mcp
-# Should show: B12 · connected (4 tools)
+# Should show: B12 · connected (5 tools)
 ```
 
 ### Check hooks

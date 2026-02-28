@@ -53,7 +53,10 @@ This returns pre-fetched project memories, last session summary, and behavioral 
 ### Usage Examples
 
 ```
-# Search for project context at session start
+# FIRST: Load session context (required at session start)
+memory_session_context(project_name="myproject")
+
+# Search for project context
 memory_search(query="recent architecture decisions", tags=["proj:myproject"])
 
 # Store a decision with proper metadata dict

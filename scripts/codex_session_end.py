@@ -148,6 +148,8 @@ def store_memory(db_path, content, metadata_str, tags, embedding=None):
     now_epoch = time.time()
 
     conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
     try:
         # Check for duplicate (deleted_at IS NULL = not soft-deleted)
         existing = conn.execute(
@@ -173,7 +175,7 @@ def store_memory(db_path, content, metadata_str, tags, embedding=None):
             blob = base64.b64decode(embedding) if isinstance(embedding, str) else embedding
             try:
                 conn.execute(
-                    "INSERT INTO memory_embeddings (id, embedding) VALUES (?, ?)",
+                    "INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
                     (memory_id, blob)
                 )
             except Exception:

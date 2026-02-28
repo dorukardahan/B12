@@ -40,8 +40,9 @@
 
 # ── Self-timeout watchdog ─────────────────────────────────────
 # Kills this script if it exceeds max runtime. Prevents orphan processes.
-( sleep 10 && kill -TERM $$ 2>/dev/null ) &
+( sleep 10 && kill -USR1 $$ 2>/dev/null ) &
 _WATCHDOG=$!
+trap 'echo "{}"; kill $_WATCHDOG 2>/dev/null; exit 0' USR1
 trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
 
 INPUT=$(cat)
@@ -188,7 +189,8 @@ expand_kw() {
     local parts="$kw"
     while IFS= read -r a; do
       # Sanitize aliases (same rules as user keywords — defense in depth)
-      a=$(echo "$a" | sed "s/['\";(){}*^:\\\\]//g" | sed 's/--//g')
+      a=$(echo "$a" | sed "s/['\";(){}*^:\\\\]//g" | sed 's/--//g' | sed -E 's/(^|[[:space:]])(AND|OR|NOT|NEAR)([[:space:]]|$)/\1\3/gI')
+      a=$(echo "$a" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
       [ -z "$a" ] && continue
       # Quote multi-word aliases for FTS5 phrase matching
       if echo "$a" | grep -q ' '; then
@@ -202,7 +204,7 @@ expand_kw() {
 }
 
 # ── Phrase detection (bigrams) ─────────────────────────────────
-SAFE_KEYWORDS=$(echo "$KEYWORDS" | sed "s/['\";(){}*^:\\\\]//g" | sed 's/--//g' | sed 's|/\*||g' | sed 's|\*/||g' | sed 's/\bNEAR\b//gI')
+SAFE_KEYWORDS=$(echo "$KEYWORDS" | sed "s/['\";(){}*^:\\\\]//g" | sed 's/--//g' | sed 's|/\*||g' | sed 's|\*/||g' | sed -E 's/(^|[[:space:]])NEAR([[:space:]]|$)/ /gI')
 KEYWORD_ARRAY=($SAFE_KEYWORDS)
 
 if [ "$WORD_COUNT" -ge 3 ]; then
@@ -283,7 +285,7 @@ RESULTS=$(sqlite3 "$DB_PATH" "
     JOIN memory_fts f ON m.id = f.rowid
     WHERE f.memory_fts MATCH '${FTS_PARTS}'
       AND m.deleted_at IS NULL
-      AND m.valid_until IS NULL
+      AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
       AND m.memory_type NOT IN ('session_summary', 'progress')
       AND m.tags NOT LIKE '%session-summary%'
     ORDER BY score DESC
@@ -433,7 +435,7 @@ try:
             FROM memories m
             JOIN memory_embeddings e ON m.id = e.rowid
             WHERE m.deleted_at IS NULL
-              AND m.valid_until IS NULL
+              AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
               AND m.memory_type NOT IN ('session_summary', 'progress')
               AND m.tags NOT LIKE '%session-summary%'
         """).fetchall()

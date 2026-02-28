@@ -100,6 +100,7 @@ def _semantic_search(model, data):
     q_emb = model.encode([query], normalize_embeddings=True)[0]
     conn = _open_db(db_path)
 
+    # TODO: migrate to sqlite-vec kNN (vec_distance_cosine) for O(log N) search
     rows = conn.execute("""
         SELECT m.id,
                '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' '),
@@ -107,9 +108,10 @@ def _semantic_search(model, data):
         FROM memories m
         JOIN memory_embeddings e ON m.id = e.rowid
         WHERE m.deleted_at IS NULL
-          AND m.valid_until IS NULL
+          AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
           AND m.memory_type NOT IN ('session_summary', 'progress')
           AND m.tags NOT LIKE '%session-summary%'
+        LIMIT 500
     """).fetchall()
 
     scores = []
@@ -458,11 +460,13 @@ def _find_neighbors(model, data):
     target_emb = struct.unpack(f'{dim}f', target_bytes)
 
     # Scan all active non-deleted memories
+    # TODO: migrate to sqlite-vec kNN (vec_distance_cosine) for O(log N) search
     rows = conn.execute("""
         SELECT m.id, e.content_embedding
         FROM memories m
         JOIN memory_embeddings e ON m.id = e.rowid
         WHERE m.deleted_at IS NULL AND m.id != ?
+        LIMIT 500
     """, (int(memory_id),)).fetchall()
 
     import math

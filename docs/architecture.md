@@ -9,7 +9,7 @@
 5. **Recoverable**: PreCompact hook preserves context before it's lost to compaction.
 6. **Session-aware**: Each session's summary carries forward to the next one.
 7. **Self-improving**: Unused memories decay, frequently accessed ones strengthen.
-8. **Secure**: All user inputs are sanitized before touching SQLite.
+8. **Secure**: User inputs in hook SQL queries are sanitized (keyword stripping, hex-only hashes, alphanumeric project names). The MCP server uses parameterized queries.
 
 ## System layers
 
@@ -23,7 +23,7 @@ Claude Code's built-in memory system:
 
 ### Layer 2: B12 MCP Server (`b12_mcp_server.py`)
 
-Custom FastMCP server providing 4 memory tools (`memory_store`, `memory_search`, `memory_update`, `memory_quality`). Replaces the old `mcp-memory-service` (pipx) with a lightweight ~400-line server that delegates ML operations to a background embed daemon via Unix socket.
+Custom FastMCP server providing 5 memory tools (`memory_store`, `memory_search`, `memory_update`, `memory_quality`, `memory_session_context`). Replaces the old `mcp-memory-service` (pipx) with a lightweight ~400-line server that delegates ML operations to a background embed daemon via Unix socket.
 
 - **Database**: SQLite + sqlite-vec (local file)
 - **Embeddings**: multilingual-MiniLM-L12-v2 via `embed_daemon.py` (runs locally, no API)
@@ -160,7 +160,7 @@ Process:
 **Purpose**: Capture comprehensive context before it's lost to compaction.
 
 Process:
-1. Parses the ENTIRE transcript JSONL file
+1. Parses the last ~3000 lines of the transcript JSONL file (optimized for large sessions)
 2. Categorizes content by priority (errors > decisions > preferences > general)
 3. Extracts within token budget (~8000 chars)
 4. Writes structured summary to `memory-staging/precompact-{session_id}.txt`
@@ -214,7 +214,8 @@ B12 hook search combines:
 
 - **BM25 keyword score** (FTS5 rank via `memory_fts`): Fast exact-match and phrase search
 - **Vector cosine similarity** (sqlite-vec): Semantic meaning match
-- **Weight**: 70% keyword + 30% vector (keyword-heavy because most searches use specific terms)
+- **Combined scoring**: `0.3 * decay + 0.3 * importance + 0.4 * relevance`
+- **Relevance source**: FTS5 BM25 keyword score, with parallel semantic search (cosine similarity) when the embed daemon is available
 
 The hybrid approach handles both precise technical queries ("FTS5 trigger") and semantic queries ("how to search memories").
 
@@ -248,7 +249,7 @@ The PreToolUse tag enforcement hook automatically injects `proj:` and `user:` ta
 
 ### SQL injection protection
 
-All hooks that interpolate user input into SQLite queries apply sanitization:
+Hooks that interpolate user input into SQLite queries apply character-level sanitization. The MCP server (`b12_mcp_server.py`) uses parameterized queries exclusively. Coverage details:
 - **Keywords** (retrieval): Strip `'"();{}` characters
 - **Hash prefixes** (browse): Allow only hex characters `[a-fA-F0-9]`
 - **Project names** (pre-fetch, browse): Allow only `[a-zA-Z0-9_-]`

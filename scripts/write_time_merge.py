@@ -237,7 +237,7 @@ def _best_match(
     params: List[Any] = [embedding_bytes]
 
     if has_valid_until:
-        where.append("m.valid_until IS NULL")
+        where.append("(m.valid_until IS NULL OR m.valid_until > datetime('now'))")
 
     if memory_type is None:
         where.append("m.memory_type IS NULL")

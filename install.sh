@@ -354,6 +354,9 @@ run_migration() {
   else
     warn "Database migration had issues (see output above)"
   fi
+
+  # Run Ebbinghaus migration (adds strength, last_accessed_at, valid_until columns)
+  python3 "$SCRIPT_DIR/scripts/migrate_ebbinghaus.py" "$DB_PATH" 2>/dev/null || true
 }
 
 # ─────────────────────────────────────────────
@@ -1559,6 +1562,7 @@ Use B12 memory tools to persist knowledge across sessions.
 
 ## Tools
 
+- `mcp__B12__memory_session_context` — Get session start context (project memories, last summary, instructions)
 - `mcp__B12__memory_search` — Find past memories by query, tags, or semantic similarity
 - `mcp__B12__memory_store` — Save decisions, patterns, errors, preferences
 - `mcp__B12__memory_update` — Update existing memory metadata or tags
@@ -1566,9 +1570,10 @@ Use B12 memory tools to persist knowledge across sessions.
 
 ## Usage Pattern
 
-1. At session start: search for project context
-2. During work: store important findings as you go
-3. Before session end: store a session summary
+1. At session start: call `mcp__B12__memory_session_context(project_name="<project>")` first
+2. Search for additional project context as needed
+3. During work: store important findings as you go
+4. Before session end: store a session summary
 
 ## Tagging
 

@@ -62,12 +62,12 @@ NOW=$(date +%s)
 DEBOUNCE_SECONDS=120
 
 # Update last-seen timestamp for this thread
-python3 -c "
-import json, sys, os
+python3 - "$DEBOUNCE_FILE" "$THREAD_ID" "$NOW" << 'PYEOF' 2>/dev/null
+import json, sys
 
-debounce_file = '$DEBOUNCE_FILE'
-thread_id = '$THREAD_ID'
-now = $NOW
+debounce_file = sys.argv[1]
+thread_id = sys.argv[2]
+now = int(sys.argv[3])
 
 try:
     with open(debounce_file, 'r') as f:
@@ -82,7 +82,7 @@ state = {k: v for k, v in state.items() if now - v < 3600}
 
 with open(debounce_file, 'w') as f:
     json.dump(state, f)
-" 2>/dev/null
+PYEOF
 
 # ── Background deferred processing ──
 # Fork a background process that waits DEBOUNCE_SECONDS, then checks
@@ -91,13 +91,14 @@ with open(debounce_file, 'w') as f:
   sleep "$DEBOUNCE_SECONDS"
 
   # Re-read state to check if a newer turn arrived since we started
-  LAST_SEEN=$(python3 -c "
-import json
+  LAST_SEEN=$(python3 - "$DEBOUNCE_FILE" "$THREAD_ID" << 'PYEOF' 2>/dev/null
+import json, sys
 try:
-    state = json.load(open('$DEBOUNCE_FILE'))
-    print(int(state.get('$THREAD_ID', 0)))
+    state = json.load(open(sys.argv[1]))
+    print(int(state.get(sys.argv[2], 0)))
 except: print(0)
-" 2>/dev/null)
+PYEOF
+)
 
   # If a newer turn arrived after us (LAST_SEEN > our NOW), skip
   # Only the last turn's background process should fire
@@ -127,14 +128,14 @@ except: print(0)
     fi
 
     # Remove this thread from debounce state
-    python3 -c "
-import json
+    python3 - "$DEBOUNCE_FILE" "$THREAD_ID" << 'PYEOF' 2>/dev/null
+import json, sys
 try:
-    state = json.load(open('$DEBOUNCE_FILE'))
-    state.pop('$THREAD_ID', None)
-    json.dump(state, open('$DEBOUNCE_FILE', 'w'))
+    state = json.load(open(sys.argv[1]))
+    state.pop(sys.argv[2], None)
+    json.dump(state, open(sys.argv[1], 'w'))
 except: pass
-" 2>/dev/null
+PYEOF
   fi
 ) &
 

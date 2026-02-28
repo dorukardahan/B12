@@ -6,7 +6,7 @@ Replaces the 804MB mcp-memory-service with 4 tools, zero ML deps.
 All embedding/search ops delegated to embed_daemon via Unix socket.
 """
 
-import base64, hashlib, json, os, socket, sqlite3, time
+import asyncio, base64, hashlib, json, os, socket, sqlite3, time
 try:
     import sqlite_vec
     _HAS_VEC = True
@@ -36,6 +36,7 @@ SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 
 # ── SQLite connection (set during lifespan) ──────────────────────
 _db: sqlite3.Connection | None = None
+_db_lock = asyncio.Lock()
 
 
 def _ensure_schema(db: sqlite3.Connection) -> None:
@@ -276,7 +277,7 @@ def _fmt_memory(row, score=None) -> str:
 # ── Tool: memory_store ───────────────────────────────────────────
 
 @server.tool()
-def memory_store(content: str, metadata: dict | None = None) -> str:
+async def memory_store(content: str, metadata: dict | None = None) -> str:
     """Store a new memory with optional metadata, tags, and type."""
     db = _require_db()
     metadata = metadata or {}
@@ -295,36 +296,38 @@ def memory_store(content: str, metadata: dict | None = None) -> str:
     base_meta.update(metadata)
     meta_json = json.dumps(base_meta, ensure_ascii=False)
 
-    db.execute(
-        """INSERT OR IGNORE INTO memories
-           (content_hash, content, tags, memory_type, metadata,
-            strength, created_at, created_at_iso, updated_at, updated_at_iso)
-           VALUES (?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?)""",
-        (content_hash, content, tags, memory_type, meta_json,
-         now_ts, now_iso, now_ts, now_iso),
-    )
-    db.commit()
+    async with _db_lock:
+        db.execute(
+            """INSERT OR IGNORE INTO memories
+               (content_hash, content, tags, memory_type, metadata,
+                strength, created_at, created_at_iso, updated_at, updated_at_iso)
+               VALUES (?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?)""",
+            (content_hash, content, tags, memory_type, meta_json,
+             now_ts, now_iso, now_ts, now_iso),
+        )
+        db.commit()
 
-    # Get the row id for embedding insertion
-    row = db.execute(
-        "SELECT id FROM memories WHERE content_hash = ?", (content_hash,)
-    ).fetchone()
-    if not row:
-        return f"Stored (hash: {content_hash[:16]}) but could not retrieve ID"
-    mem_id = row["id"]
+        # Get the row id for embedding insertion
+        row = db.execute(
+            "SELECT id FROM memories WHERE content_hash = ?", (content_hash,)
+        ).fetchone()
+        if not row:
+            return f"Stored (hash: {content_hash[:16]}) but could not retrieve ID"
+        mem_id = row["id"]
 
-    # Embed via daemon (graceful degradation)
+    # Embed via daemon (graceful degradation) — outside lock, daemon call is slow
     resp = daemon_request("encode_batch", texts=[content])
     if resp and resp.get("embeddings"):
         emb_bytes = base64.b64decode(resp["embeddings"][0])
-        try:
-            db.execute(
-                "INSERT OR REPLACE INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
-                (mem_id, emb_bytes),
-            )
-            db.commit()
-        except Exception:
-            pass  # embedding table may not exist in test DBs
+        async with _db_lock:
+            try:
+                db.execute(
+                    "INSERT OR REPLACE INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
+                    (mem_id, emb_bytes),
+                )
+                db.commit()
+            except Exception:
+                pass  # embedding table may not exist in test DBs
 
     return f"Stored memory (hash: {content_hash[:16]}, id: {mem_id})"
 
@@ -332,7 +335,7 @@ def memory_store(content: str, metadata: dict | None = None) -> str:
 # ── Tool: memory_search ─────────────────────────────────────────
 
 @server.tool()
-def memory_search(
+async def memory_search(
     query: str = "",
     mode: str = "hybrid",
     tags: list[str] | str | None = None,
@@ -349,7 +352,8 @@ def memory_search(
                 else tags if tags else [])
 
     # Build WHERE clause fragments
-    wheres = ["m.deleted_at IS NULL"]
+    wheres = ["m.deleted_at IS NULL",
+              "(m.valid_until IS NULL OR m.valid_until > datetime('now'))"]
     params: list = []
     for t in tag_list:
         wheres.append("m.tags LIKE ?")
@@ -371,82 +375,87 @@ def memory_search(
 
     where_sql = " AND ".join(wheres)
 
-    # ── Exact substring search ─────────────────────────────
-    if mode == "exact" and query:
-        exact_rows = db.execute(
-            f"""SELECT * FROM memories m
-                WHERE m.content LIKE ? AND {where_sql}
-                ORDER BY m.created_at DESC LIMIT ?""",
-            [f"%{query}%"] + params + [limit],
-        ).fetchall()
-        for r in exact_rows:
-            results[r["content_hash"]] = (r, _unified_score(r, 0.9))
+    async with _db_lock:
+        # ── Exact substring search ─────────────────────────────
+        if mode == "exact" and query:
+            exact_rows = db.execute(
+                f"""SELECT * FROM memories m
+                    WHERE m.content LIKE ? AND {where_sql}
+                    ORDER BY m.created_at DESC LIMIT ?""",
+                [f"%{query}%"] + params + [limit],
+            ).fetchall()
+            for r in exact_rows:
+                results[r["content_hash"]] = (r, _unified_score(r, 0.9))
 
-    # ── FTS search (hybrid only) ─────────────────────────
-    if mode == "hybrid" and query:
-        # Try phrase match first, fall back to OR match for broader results
-        for fts_attempt in ("phrase", "or"):
-            try:
-                if fts_attempt == "phrase":
-                    fts_query = '"' + query.replace('"', '""') + '"'
-                else:
-                    # Split into words, join with OR for broader matching
-                    words = [w.strip() for w in query.split() if len(w.strip()) > 1]
-                    if not words:
-                        break
-                    fts_query = " OR ".join(
-                        '"' + w.replace('"', '""') + '"' for w in words
-                    )
-                fts_rows = db.execute(
-                    f"""SELECT m.*, rank
-                        FROM memory_content_fts fts
-                        JOIN memories m ON m.id = fts.rowid
-                        WHERE fts.content MATCH ? AND {where_sql}
-                        ORDER BY rank LIMIT ?""",
-                    [fts_query] + params + [limit],
-                ).fetchall()
-                for r in fts_rows:
-                    h = r["content_hash"]
-                    # Phrase match scores higher than OR match
-                    bonus = 0.1 if fts_attempt == "phrase" else 0.0
-                    raw_relevance = 1.0 - min(abs(r["rank"]) / 20.0, 0.9) + bonus
-                    score = _unified_score(r, raw_relevance)
-                    if h not in results or results[h][1] < score:
-                        results[h] = (r, score)
-            except Exception:
-                continue  # FTS match syntax error, try next
+        # ── FTS search (hybrid only) ─────────────────────────
+        if mode == "hybrid" and query:
+            # Try phrase match first, fall back to OR match for broader results
+            for fts_attempt in ("phrase", "or"):
+                try:
+                    if fts_attempt == "phrase":
+                        fts_query = '"' + query.replace('"', '""') + '"'
+                    else:
+                        # Split into words, join with OR for broader matching
+                        words = [w.strip() for w in query.split() if len(w.strip()) > 1]
+                        if not words:
+                            break
+                        fts_query = " OR ".join(
+                            '"' + w.replace('"', '""') + '"' for w in words
+                        )
+                    fts_rows = db.execute(
+                        f"""SELECT m.*, rank
+                            FROM memory_content_fts fts
+                            JOIN memories m ON m.id = fts.rowid
+                            WHERE fts.content MATCH ? AND {where_sql}
+                            ORDER BY rank LIMIT ?""",
+                        [fts_query] + params + [limit],
+                    ).fetchall()
+                    for r in fts_rows:
+                        h = r["content_hash"]
+                        # Phrase match scores higher than OR match
+                        bonus = 0.1 if fts_attempt == "phrase" else 0.0
+                        raw_relevance = 1.0 - min(abs(r["rank"]) / 20.0, 0.9) + bonus
+                        score = _unified_score(r, raw_relevance)
+                        if h not in results or results[h][1] < score:
+                            results[h] = (r, score)
+                except Exception:
+                    continue  # FTS match syntax error, try next
 
-    # ── Semantic search via daemon ───────────────────────────
+    # ── Semantic search via daemon (outside lock — daemon call is slow) ──
     if mode in ("semantic", "hybrid") and query:
         resp = daemon_request(
             "semantic_search", query=query, db_path=DB_PATH, limit=limit * 2
         )
         if resp and resp.get("results"):
-            for hit in resp["results"]:
-                row = db.execute(
-                    f"SELECT * FROM memories m WHERE m.id = ? AND {where_sql}",
-                    [hit["id"]] + params,
-                ).fetchone()
-                if row:
-                    ch = row["content_hash"]
-                    old_score = results.get(ch, (None, 0))[1]
-                    new_score = _unified_score(row, hit["score"])
-                    # In hybrid, boost items found by both methods
-                    combined = max(old_score, new_score)
-                    if ch in results:
-                        combined = min(1.0, max(old_score, new_score) + min(old_score, new_score) * 0.3)
-                    results[ch] = (row, combined)
+            async with _db_lock:
+                for hit in resp["results"]:
+                    row = db.execute(
+                        f"SELECT * FROM memories m WHERE m.id = ? AND {where_sql}",
+                        [hit["id"]] + params,
+                    ).fetchone()
+                    if row:
+                        ch = row["content_hash"]
+                        old_score = results.get(ch, (None, 0))[1]
+                        new_score = _unified_score(row, hit["score"])
+                        # Intentional overlap bonus: memories found by BOTH FTS and semantic
+                        # search get a 30% boost from the weaker score. This rewards cross-method
+                        # agreement and is distinct from the hook's single-path scoring formula.
+                        combined = max(old_score, new_score)
+                        if ch in results:
+                            combined = min(1.0, max(old_score, new_score) + min(old_score, new_score) * 0.3)
+                        results[ch] = (row, combined)
 
-    # ── Fallback: recent memories if no query ────────────────
-    if not query:
-        rows = db.execute(
-            f"""SELECT * FROM memories m
-                WHERE {where_sql}
-                ORDER BY m.created_at DESC LIMIT ?""",
-            params + [limit],
-        ).fetchall()
-        for r in rows:
-            results[r["content_hash"]] = (r, 0.5)
+    async with _db_lock:
+        # ── Fallback: recent memories if no query ────────────────
+        if not query:
+            rows = db.execute(
+                f"""SELECT * FROM memories m
+                    WHERE {where_sql}
+                    ORDER BY m.created_at DESC LIMIT ?""",
+                params + [limit],
+            ).fetchall()
+            for r in rows:
+                results[r["content_hash"]] = (r, 0.5)
 
     # ── Sort and format ──────────────────────────────────────
     sorted_results = sorted(results.values(), key=lambda x: x[1], reverse=True)[:limit]
@@ -470,64 +479,71 @@ def memory_search(
 # ── Tool: memory_update ─────────────────────────────────────────
 
 @server.tool()
-def memory_update(
+async def memory_update(
     content_hash: str,
     updates: dict,
 ) -> str:
     """Update metadata, tags, or type of an existing memory. Content and hash are immutable."""
     db = _require_db()
-    row = db.execute(
-        "SELECT * FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
-        (content_hash,),
-    ).fetchone()
-    if not row:
-        return f"Memory not found: {content_hash[:16]}"
 
-    # Check protected fields first
-    protected = {"content", "content_hash", "embedding", "id"}
-    bad = set(updates.keys()) & protected
-    if bad:
-        return f"Cannot update protected fields: {bad}"
+    async with _db_lock:
+        row = db.execute(
+            "SELECT * FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+            (content_hash,),
+        ).fetchone()
+        if not row:
+            return f"Memory not found: {content_hash[:16]}"
 
-    sets: list[str] = []
-    vals: list = []
+        # Check protected fields first
+        protected = {"content", "content_hash", "embedding", "id"}
+        bad = set(updates.keys()) & protected
+        if bad:
+            return f"Cannot update protected fields: {bad}"
 
-    if "tags" in updates:
-        sets.append("tags = ?")
-        vals.append(_normalize_tags(updates["tags"]))
-    if "memory_type" in updates or "type" in updates:
-        sets.append("memory_type = ?")
-        vals.append(updates.get("memory_type", updates.get("type")))
-    if "metadata" in updates:
-        existing = json.loads(row["metadata"] or "{}")
-        existing.update(updates["metadata"])
-        sets.append("metadata = ?")
-        vals.append(json.dumps(existing, ensure_ascii=False))
-    if "strength" in updates:
-        sets.append("strength = ?")
-        vals.append(float(updates["strength"]))
+        sets: list[str] = []
+        vals: list = []
 
-    if not sets:
-        return "No valid fields to update."
+        if "tags" in updates:
+            sets.append("tags = ?")
+            vals.append(_normalize_tags(updates["tags"]))
+        if "memory_type" in updates or "type" in updates:
+            sets.append("memory_type = ?")
+            vals.append(updates.get("memory_type", updates.get("type")))
+        if "metadata" in updates:
+            try:
+                existing = json.loads(row["metadata"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                existing = {}
+            existing.update(updates["metadata"])
+            sets.append("metadata = ?")
+            vals.append(json.dumps(existing, ensure_ascii=False))
+        if "strength" in updates:
+            # Clamp to [0.3, 5.0] to prevent poisoning the Ebbinghaus decay formula
+            strength = max(0.3, min(5.0, float(updates["strength"])))
+            sets.append("strength = ?")
+            vals.append(strength)
 
-    now_ts, now_iso = _now()
-    sets.append("updated_at = ?")
-    vals.append(now_ts)
-    sets.append("updated_at_iso = ?")
-    vals.append(now_iso)
+        if not sets:
+            return "No valid fields to update."
 
-    vals.append(content_hash)
-    db.execute(
-        f"UPDATE memories SET {', '.join(sets)} WHERE content_hash = ?", vals
-    )
-    db.commit()
+        now_ts, now_iso = _now()
+        sets.append("updated_at = ?")
+        vals.append(now_ts)
+        sets.append("updated_at_iso = ?")
+        vals.append(now_iso)
+
+        vals.append(content_hash)
+        db.execute(
+            f"UPDATE memories SET {', '.join(sets)} WHERE content_hash = ?", vals
+        )
+        db.commit()
     return f"Updated memory {content_hash[:16]}"
 
 
 # ── Tool: memory_quality ─────────────────────────────────────────
 
 @server.tool()
-def memory_quality(
+async def memory_quality(
     action: str,
     content_hash: str | None = None,
     rating: str | None = None,
@@ -535,60 +551,70 @@ def memory_quality(
 ) -> str:
     """Rate, get, or analyze memory quality scores."""
     db = _require_db()
+
     if action == "rate":
         if not content_hash or rating is None:
             return "Need content_hash and rating (-1, 0, or 1)"
-        row = db.execute(
-            "SELECT metadata FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
-            (content_hash,),
-        ).fetchone()
-        if not row:
-            return f"Memory not found: {content_hash[:16]}"
+        async with _db_lock:
+            row = db.execute(
+                "SELECT metadata FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+                (content_hash,),
+            ).fetchone()
+            if not row:
+                return f"Memory not found: {content_hash[:16]}"
 
-        meta = json.loads(row["metadata"] or "{}")
-        user_score = {"1": 1.0, "0": 0.5, "-1": 0.0}.get(str(rating), 0.5)
-        existing = float(meta.get("quality_score", 0.5))
-        new_score = round(0.6 * user_score + 0.4 * existing, 4)
+            try:
+                meta = json.loads(row["metadata"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
+            user_score = {"1": 1.0, "0": 0.5, "-1": 0.0}.get(str(rating), 0.5)
+            existing = float(meta.get("quality_score", 0.5))
+            new_score = round(0.6 * user_score + 0.4 * existing, 4)
 
-        meta["quality_score"] = new_score
-        meta["quality_provider"] = "user"
-        if feedback:
-            meta["quality_feedback"] = feedback
+            meta["quality_score"] = new_score
+            meta["quality_provider"] = "user"
+            if feedback:
+                meta["quality_feedback"] = feedback
 
-        now_ts, now_iso = _now()
-        db.execute(
-            "UPDATE memories SET metadata = ?, updated_at = ?, updated_at_iso = ? WHERE content_hash = ?",
-            (json.dumps(meta, ensure_ascii=False), now_ts, now_iso, content_hash),
-        )
-        db.commit()
+            now_ts, now_iso = _now()
+            db.execute(
+                "UPDATE memories SET metadata = ?, updated_at = ?, updated_at_iso = ? WHERE content_hash = ?",
+                (json.dumps(meta, ensure_ascii=False), now_ts, now_iso, content_hash),
+            )
+            db.commit()
         return f"Quality updated to {new_score} for {content_hash[:16]}"
 
     elif action == "get":
         if not content_hash:
             return "Need content_hash"
-        row = db.execute(
-            "SELECT content, metadata, tags FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
-            (content_hash,),
-        ).fetchone()
-        if not row:
-            return f"Memory not found: {content_hash[:16]}"
-        meta = json.loads(row["metadata"] or "{}")
+        async with _db_lock:
+            row = db.execute(
+                "SELECT content, metadata, tags FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+                (content_hash,),
+            ).fetchone()
+            if not row:
+                return f"Memory not found: {content_hash[:16]}"
+            try:
+                meta = json.loads(row["metadata"] or "{}")
+            except (json.JSONDecodeError, TypeError):
+                meta = {}
         return (f"Quality: {meta.get('quality_score', 'N/A')}\n"
                 f"Provider: {meta.get('quality_provider', 'N/A')}\n"
                 f"Content: {row['content'][:200]}\n"
                 f"Tags: {row['tags'] or 'none'}")
 
     elif action == "analyze":
-        stats = db.execute("""
-            SELECT COUNT(*) as total,
-                   AVG(json_extract(metadata, '$.quality_score')) as avg_q,
-                   MIN(json_extract(metadata, '$.quality_score')) as min_q,
-                   MAX(json_extract(metadata, '$.quality_score')) as max_q
-            FROM memories WHERE deleted_at IS NULL
-        """).fetchone()
-        type_counts = db.execute(
-            "SELECT memory_type, COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL GROUP BY memory_type"
-        ).fetchall()
+        async with _db_lock:
+            stats = db.execute("""
+                SELECT COUNT(*) as total,
+                       AVG(json_extract(metadata, '$.quality_score')) as avg_q,
+                       MIN(json_extract(metadata, '$.quality_score')) as min_q,
+                       MAX(json_extract(metadata, '$.quality_score')) as max_q
+                FROM memories WHERE deleted_at IS NULL
+            """).fetchone()
+            type_counts = db.execute(
+                "SELECT memory_type, COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL GROUP BY memory_type"
+            ).fetchall()
         lines = [
             f"Total memories: {stats['total']}",
             f"Quality — avg: {(stats['avg_q'] or 0):.3f}, min: {(stats['min_q'] or 0):.3f}, max: {(stats['max_q'] or 0):.3f}",
@@ -604,7 +630,7 @@ def memory_quality(
 # ── Tool: memory_session_context ─────────────────────────────────
 
 @server.tool()
-def memory_session_context(
+async def memory_session_context(
     project_name: str = "",
     cwd: str = "",
 ) -> str:
@@ -618,66 +644,71 @@ def memory_session_context(
     if not project_name and cwd:
         project_name = os.path.basename(cwd)
 
-    # 1. Pre-fetched project memories (top 3 by importance × strength)
-    if project_name:
-        proj_memories = db.execute("""
-            SELECT id, content, memory_type, tags, metadata, strength
-            FROM memories
-            WHERE deleted_at IS NULL AND valid_until IS NULL
-              AND tags LIKE ?
+    async with _db_lock:
+        # 1. Pre-fetched project memories (top 3 by importance x strength)
+        if project_name:
+            proj_memories = db.execute("""
+                SELECT id, content, memory_type, tags, metadata, strength
+                FROM memories
+                WHERE deleted_at IS NULL
+                  AND (valid_until IS NULL OR valid_until > datetime('now'))
+                  AND tags LIKE ?
+                  AND memory_type NOT IN ('session_summary', 'progress')
+                ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0)
+                         * COALESCE(strength, 1.0) DESC
+                LIMIT 3
+            """, (f"%proj:{project_name}%",)).fetchall()
+            if proj_memories:
+                sections.append(f"## Project Memories ({project_name})")
+                boost_ids = []
+                for m in proj_memories:
+                    sections.append(f"- [{m['memory_type']}] {m['content'][:300]}")
+                    boost_ids.append(m['id'])
+                # Spaced repetition: boost retrieved memories
+                if boost_ids:
+                    placeholders = ",".join("?" * len(boost_ids))
+                    db.execute(f"""
+                        UPDATE memories
+                        SET strength = min(COALESCE(strength, 1.0) + 0.2, 5.0),
+                            last_accessed_at = ?,
+                            metadata = json_set(COALESCE(metadata, '{{}}'),
+                              '$.access_count',
+                              COALESCE(json_extract(metadata, '$.access_count'), 0) + 1)
+                        WHERE id IN ({placeholders})
+                    """, [now_ts] + boost_ids)
+
+        # 2. Universal memories (top 2, not project-specific)
+        universal = db.execute("""
+            SELECT content, memory_type FROM memories
+            WHERE deleted_at IS NULL
+              AND (valid_until IS NULL OR valid_until > datetime('now'))
+              AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
               AND memory_type NOT IN ('session_summary', 'progress')
             ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0)
                      * COALESCE(strength, 1.0) DESC
-            LIMIT 3
-        """, (f"%proj:{project_name}%",)).fetchall()
-        if proj_memories:
-            sections.append(f"## Project Memories ({project_name})")
-            boost_ids = []
-            for m in proj_memories:
+            LIMIT 2
+        """).fetchall()
+        if universal:
+            sections.append("## Universal Memories")
+            for m in universal:
                 sections.append(f"- [{m['memory_type']}] {m['content'][:300]}")
-                boost_ids.append(m['id'])
-            # Spaced repetition: boost retrieved memories
-            if boost_ids:
-                placeholders = ",".join("?" * len(boost_ids))
-                db.execute(f"""
-                    UPDATE memories
-                    SET strength = min(COALESCE(strength, 1.0) + 0.2, 5.0),
-                        last_accessed_at = ?,
-                        metadata = json_set(COALESCE(metadata, '{{}}'),
-                          '$.access_count',
-                          COALESCE(json_extract(metadata, '$.access_count'), 0) + 1)
-                    WHERE id IN ({placeholders})
-                """, [now_ts] + boost_ids)
 
-    # 2. Universal memories (top 2, not project-specific)
-    universal = db.execute("""
-        SELECT content, memory_type FROM memories
-        WHERE deleted_at IS NULL AND valid_until IS NULL
-          AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
-          AND memory_type NOT IN ('session_summary', 'progress')
-        ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0)
-                 * COALESCE(strength, 1.0) DESC
-        LIMIT 2
-    """).fetchall()
-    if universal:
-        sections.append("## Universal Memories")
-        for m in universal:
-            sections.append(f"- [{m['memory_type']}] {m['content'][:300]}")
+        # 3. Last session summary for this project
+        if project_name:
+            last_summary = db.execute("""
+                SELECT content FROM memories
+                WHERE memory_type = 'session_summary'
+                  AND deleted_at IS NULL
+                  AND tags LIKE ?
+                ORDER BY created_at DESC LIMIT 1
+            """, (f"%proj:{project_name}%",)).fetchone()
+            if last_summary:
+                sections.append("## Last Session Summary")
+                sections.append(last_summary['content'][:800])
 
-    # 3. Last session summary for this project
-    if project_name:
-        last_summary = db.execute("""
-            SELECT content FROM memories
-            WHERE memory_type = 'session_summary'
-              AND deleted_at IS NULL
-              AND tags LIKE ?
-            ORDER BY created_at DESC LIMIT 1
-        """, (f"%proj:{project_name}%",)).fetchone()
-        if last_summary:
-            sections.append("## Last Session Summary")
-            sections.append(last_summary['content'][:800])
+        db.commit()
 
-    # 4. User profile (from templates directory)
+    # 4. User profile (from templates directory) — no DB, outside lock
     profile_path = os.path.join(
         os.environ.get("B12_DATA_DIR", os.path.expanduser("~/.B12")),
         "user-profile.md"
@@ -700,8 +731,6 @@ def memory_session_context(
         "- Include tags (proj:<name>) and metadata (scope, importance_score) when storing\n"
         "- Update existing memories instead of creating duplicates"
     )
-
-    db.commit()
 
     if not sections:
         return "No context available. Start storing memories to build your knowledge base."

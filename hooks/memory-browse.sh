@@ -63,8 +63,7 @@ case "$CMD" in
       exit 1
     fi
     # Build FTS5 query (OR between words), sanitize SQL-dangerous chars + FTS5 operators
-    # Note: uses BSD sed -E with [[:<:]] word boundaries (macOS compatible)
-    SAFE_QUERY=$(echo "$QUERY" | sed -E "s/['\";(){}*]//g; s/[[:<:]]AND[[:>:]]//gI; s/[[:<:]]OR[[:>:]]//gI; s/[[:<:]]NOT[[:>:]]//gI; s/[[:<:]]NEAR[[:>:]]//gI")
+    SAFE_QUERY=$(echo "$QUERY" | sed -E "s/['\";(){}*^:\\\\]//g" | sed 's/--//g' | sed -E 's/(^|[[:space:]])(AND|OR|NOT|NEAR)([[:space:]]|$)/\1\3/gI')
     FTS_QUERY=$(echo "$SAFE_QUERY" | tr ' ' '\n' | awk 'length > 1 {printf "\"%s\" OR ", $0}' | sed 's/ OR $//')
 
     echo -e "${BOLD}Search: ${QUERY}${RESET} (FTS5: ${FTS_QUERY})\n"
@@ -200,6 +199,7 @@ case "$CMD" in
 
     if [ "$CONFIRM" = "y" ] || [ "$CONFIRM" = "Y" ]; then
       sqlite3 "$DB_PATH" "
+        PRAGMA busy_timeout=10000;
         UPDATE memories SET deleted_at = unixepoch()
         WHERE content_hash LIKE '${HASH_PREFIX}%' AND deleted_at IS NULL
       "

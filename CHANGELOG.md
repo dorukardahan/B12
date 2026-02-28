@@ -118,7 +118,7 @@ All notable changes to B12 are documented in this file.
 - Python environment: `pipx install mcp-memory-service` → `b12-venv` with `pip install mcp sentence-transformers sqlite-vec`
 
 ### Added
-- `b12_mcp_server.py` — minimal FastMCP server with 4 tools (memory_store, memory_search, memory_update, memory_quality)
+- `b12_mcp_server.py` — minimal FastMCP server with 5 tools (memory_store, memory_search, memory_update, memory_quality, memory_session_context)
 - `embed_daemon.py` — background embedding daemon with Unix socket IPC and `fcntl.flock` singleton
 - `contradiction_resolver.py` — ONNX NLI contradiction detection (83MB model vs 8GB Ollama)
 - `graph_enrich.py` — memory graph enrichment (related/follows/contradicts edges)

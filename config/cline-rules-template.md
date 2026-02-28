@@ -63,7 +63,14 @@ Cline uses XML syntax to invoke MCP tools:
 ### Usage Examples
 
 ```xml
-<!-- Search for project context at session start -->
+<!-- FIRST: Load session context (required at session start) -->
+<use_mcp_tool>
+  <server_name>B12</server_name>
+  <tool_name>memory_session_context</tool_name>
+  <arguments>{"project_name": "myproject"}</arguments>
+</use_mcp_tool>
+
+<!-- Search for project context -->
 <use_mcp_tool>
   <server_name>B12</server_name>
   <tool_name>memory_search</tool_name>
