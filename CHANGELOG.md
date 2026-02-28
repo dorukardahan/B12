@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.8.5](https://github.com/dorukardahan/B12/compare/v10.8.4...v10.8.5) (2026-02-28)
+
+
+### Bug Fixes
+
+* Preserve full tool_input in tag-enforce hook updatedInput ([4eefa15](https://github.com/dorukardahan/B12/commit/4eefa15ab7e544e70e152470dd74f382b50a8c60))
+
 ## [10.8.4](https://github.com/dorukardahan/B12/compare/v10.8.3...v10.8.4) (2026-02-28)
 
 
