@@ -79,12 +79,15 @@ def cleanup():
 
 
 def _open_db(db_path):
-    """Open SQLite DB with sqlite-vec extension loaded."""
+    """Open SQLite DB with sqlite-vec extension loaded.
+    Uses WAL mode + busy_timeout to avoid blocking MCP server writes."""
     import sqlite_vec
-    conn = sqlite3.connect(db_path, timeout=5)
+    conn = sqlite3.connect(db_path, timeout=10)
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=5000")
     return conn
 
 

@@ -75,7 +75,7 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
     # (fts_insert, fts_update, fts_softdel, fts_hardel). Check before creating to avoid
     # duplicate trigger firing which corrupts the FTS index.
     _existing_triggers = {r[0] for r in db.execute(
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%memory_fts%'"
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_fts_%'"
     ).fetchall()}
     if not _existing_triggers:
         # Fresh install — create B12 triggers with soft-delete awareness
@@ -283,6 +283,7 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
     metadata = metadata or {}
     tags_raw = metadata.pop("tags", None)
     memory_type = metadata.pop("type", metadata.pop("memory_type", "general"))
+    valid_until = metadata.pop("valid_until", None)
     tags = _normalize_tags(tags_raw)
 
     content_hash = compute_content_hash(content)
@@ -297,14 +298,30 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
     meta_json = json.dumps(base_meta, ensure_ascii=False)
 
     async with _db_lock:
-        db.execute(
-            """INSERT OR IGNORE INTO memories
-               (content_hash, content, tags, memory_type, metadata,
-                strength, created_at, created_at_iso, updated_at, updated_at_iso)
-               VALUES (?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?)""",
-            (content_hash, content, tags, memory_type, meta_json,
-             now_ts, now_iso, now_ts, now_iso),
-        )
+        # Check if a soft-deleted row with same hash exists — undelete it
+        existing = db.execute(
+            "SELECT id, deleted_at FROM memories WHERE content_hash = ?",
+            (content_hash,),
+        ).fetchone()
+        if existing and existing["deleted_at"] is not None:
+            db.execute(
+                """UPDATE memories SET deleted_at = NULL, strength = 1.0,
+                   tags = ?, memory_type = ?, metadata = ?,
+                   updated_at = ?, updated_at_iso = ?, valid_until = ?
+                   WHERE content_hash = ?""",
+                (tags, memory_type, meta_json, now_ts, now_iso,
+                 valid_until, content_hash),
+            )
+        else:
+            db.execute(
+                """INSERT OR IGNORE INTO memories
+                   (content_hash, content, tags, memory_type, metadata,
+                    strength, created_at, created_at_iso, updated_at, updated_at_iso,
+                    valid_until)
+                   VALUES (?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?)""",
+                (content_hash, content, tags, memory_type, meta_json,
+                 now_ts, now_iso, now_ts, now_iso, valid_until),
+            )
         db.commit()
 
         # Get the row id for embedding insertion
@@ -412,9 +429,10 @@ async def memory_search(
                     ).fetchall()
                     for r in fts_rows:
                         h = r["content_hash"]
-                        # Phrase match scores higher than OR match
+                        # FTS5 rank is negative BM25 (more negative = better match).
+                        # Normalize to 0..1 where higher = better relevance.
                         bonus = 0.1 if fts_attempt == "phrase" else 0.0
-                        raw_relevance = 1.0 - min(abs(r["rank"]) / 20.0, 0.9) + bonus
+                        raw_relevance = min(abs(r["rank"]) / 20.0, 1.0) + bonus
                         score = _unified_score(r, raw_relevance)
                         if h not in results or results[h][1] < score:
                             results[h] = (r, score)
@@ -462,6 +480,25 @@ async def memory_search(
 
     if not sorted_results:
         return "No memories found."
+
+    # ── Spaced repetition: boost strength + access_count for returned memories ──
+    if query and sorted_results:
+        async with _db_lock:
+            for row, _sc in sorted_results:
+                try:
+                    db.execute(
+                        """UPDATE memories
+                           SET strength = min(COALESCE(strength, 1.0) + 0.2, 5.0),
+                               last_accessed_at = ?,
+                               metadata = json_set(COALESCE(metadata, '{}'),
+                                 '$.access_count',
+                                 COALESCE(json_extract(metadata, '$.access_count'), 0) + 1)
+                           WHERE content_hash = ?""",
+                        (int(time.time()), row["content_hash"]),
+                    )
+                except Exception:
+                    pass  # non-critical; don't fail the search
+            db.commit()
 
     output_parts = [f"Found {len(sorted_results)} memories:\n"]
     total_chars = 0
@@ -522,6 +559,14 @@ async def memory_update(
             strength = max(0.3, min(5.0, float(updates["strength"])))
             sets.append("strength = ?")
             vals.append(strength)
+        if "valid_until" in updates:
+            # None clears dormancy/TTL, string sets it (ISO datetime or epoch)
+            sets.append("valid_until = ?")
+            vals.append(updates["valid_until"])
+        if "deleted_at" in updates:
+            # Soft-delete: set to epoch timestamp; None to un-delete
+            sets.append("deleted_at = ?")
+            vals.append(updates["deleted_at"])
 
         if not sets:
             return "No valid fields to update."
@@ -615,9 +660,15 @@ async def memory_quality(
             type_counts = db.execute(
                 "SELECT memory_type, COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL GROUP BY memory_type"
             ).fetchall()
+        total = stats["total"] or 0
+        if total == 0:
+            return "No memories in database."
+        avg_q = float(stats["avg_q"]) if stats["avg_q"] is not None else 0.0
+        min_q = float(stats["min_q"]) if stats["min_q"] is not None else 0.0
+        max_q = float(stats["max_q"]) if stats["max_q"] is not None else 0.0
         lines = [
-            f"Total memories: {stats['total']}",
-            f"Quality — avg: {(stats['avg_q'] or 0):.3f}, min: {(stats['min_q'] or 0):.3f}, max: {(stats['max_q'] or 0):.3f}",
+            f"Total memories: {total}",
+            f"Quality — avg: {avg_q:.3f}, min: {min_q:.3f}, max: {max_q:.3f}",
             "By type:",
         ]
         for tc in type_counts:
