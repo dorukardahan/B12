@@ -1,5 +1,38 @@
 # Changelog
 
+# [11.0.0](https://github.com/dorukardahan/B12/compare/v10.8.5...v11.0.0) (2026-02-28)
+
+Major quality milestone: 3 independent AI auditors (Claude, Gemini, Codex) + 4-tier cross-platform testing.
+
+### Breaking Changes
+
+* **BM25 scoring corrected** — MCP search results now rank correctly (best keyword matches rank highest). Previously inverted: best matches got lowest scores due to `1.0 - abs(rank)/20` formula.
+
+### Features
+
+* **Spaced repetition in MCP search** — `memory_search` now boosts `strength +0.2` and increments `access_count` for returned memories. Previously only hook-based retrieval did this, so non-Claude platforms (Gemini, Codex, Cursor, etc.) never reinforced memories.
+* **`valid_until` support in `memory_store`** — TTL/dormancy can now be set at store time via `metadata.valid_until`.
+* **`valid_until` and `deleted_at` in `memory_update`** — soft-delete and TTL management via MCP tool.
+* **Ghost memory fix** — re-storing a previously soft-deleted memory now undeletes it instead of silently failing via `INSERT OR IGNORE`.
+
+### Bug Fixes
+
+* **BM25 inversion** (CRITICAL) — `1.0 - min(abs(rank)/20, 0.9)` → `min(abs(rank)/20, 1.0)` in MCP server FTS scoring
+* **tag-enforce hook** — `updatedInput` now preserves all original tool_input fields (was dropping `content` and `metadata`)
+* **embed_daemon WAL mode** — added `journal_mode=WAL` + `busy_timeout=5000` to prevent blocking MCP writes
+* **MCP server busy_timeout** — increased from 10s to 30s for concurrent multi-CLI access, added `wal_autocheckpoint=100`
+* **FTS trigger detection** — changed `sql LIKE '%memory_fts%'` to `name LIKE 'memory_fts_%'` to prevent false matches
+* **`memory_quality analyze`** — explicit None→float conversion, early return for empty databases
+* 27 cross-audit findings fixed (SQL safety, lifecycle, concurrency, docs)
+
+### Verified
+
+* **i18n**: Turkish, Japanese, Chinese, Korean, Russian — store + search all pass
+* **Security**: SQL injection payloads safely stored and retrieved, tables intact
+* **Cross-platform**: Claude → Gemini → Codex store/search chain verified
+* **Spaced repetition**: Strength boost confirmed across all platforms (1.0 → 2.0+ after multiple searches)
+* **Stress**: 2KB+ metadata, mixed-script content, concurrent 3-CLI writes
+
 ## [10.8.6](https://github.com/dorukardahan/B12/compare/v10.8.5...v10.8.6) (2026-02-28)
 
 

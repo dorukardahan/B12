@@ -327,6 +327,17 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 
 ## Changelog (recent)
 
+### v11.0 (2026-02-28) — Audit, i18n & Cross-Platform Verification
+
+- **BM25 scoring corrected** — MCP search results now rank correctly (was inverted)
+- **Spaced repetition in MCP search** — strength boost works on all platforms, not just Claude Code hooks
+- **`valid_until` + `deleted_at` support** in `memory_store` and `memory_update`
+- **Ghost memory fix** — re-storing soft-deleted memories now works
+- **i18n verified** — Turkish, Japanese, Chinese, Korean, Russian store + search
+- **Cross-platform verified** — Claude → Gemini → Codex chain tested
+- **40+ audit findings** fixed across 3 independent auditor rounds
+- **Concurrent multi-CLI** — busy_timeout increased to 30s for parallel access
+
 ### v10.5 (2026-02-26) — Multi-Platform Support
 
 - **7 new platform integrations**: Gemini CLI, VS Code/Copilot, Cursor, Kimi Code, Windsurf, Cline, OpenCode
