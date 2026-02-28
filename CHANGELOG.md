@@ -1,5 +1,12 @@
 # Changelog
 
+## [10.8.6](https://github.com/dorukardahan/B12/compare/v10.8.5...v10.8.6) (2026-02-28)
+
+
+### Bug Fixes
+
+* Increase SQLite busy_timeout to 30s for concurrent multi-CLI access ([45fa696](https://github.com/dorukardahan/B12/commit/45fa696436de62204b0f0c81c8a20600673bdd32))
+
 ## [10.8.5](https://github.com/dorukardahan/B12/compare/v10.8.4...v10.8.5) (2026-02-28)
 
 
