@@ -76,55 +76,44 @@ if ! $HAS_USER; then
   fi
 fi
 
-# Determine updated tags value
+# Build complete updatedInput preserving ALL original fields.
+# updatedInput REPLACES the entire tool_input — we must include everything.
+ORIGINAL=$(echo "$INPUT" | jq '.tool_input')
+
+# Determine where tags live and update them in place
 if echo "$INPUT" | jq -e '.tool_input.tags | type == "array"' > /dev/null 2>&1; then
-  # Tags is an array — append missing tags as array elements
+  # Tags is a top-level array — append missing tags as array elements
   IFS=',' read -ra PARTS <<< "$MISSING"
   ADDITIONS=$(printf '%s\n' "${PARTS[@]}" | jq -R . | jq -s .)
-  UPDATED_TAGS=$(echo "$INPUT" | jq --argjson add "$ADDITIONS" '.tool_input.tags + $add')
+  UPDATED=$(echo "$ORIGINAL" | jq --argjson add "$ADDITIONS" '.tags = (.tags + $add)')
 
-  cat <<EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow",
-    "permissionDecisionReason": "Auto-injected scope tags: ${MISSING}",
-    "updatedInput": {
-      "tags": ${UPDATED_TAGS}
-    }
-  }
-}
-EOF
-elif [ -n "$TAGS_STR" ]; then
-  # Tags is a non-empty string — append
+elif echo "$INPUT" | jq -e '.tool_input.tags // empty | length > 0' > /dev/null 2>&1; then
+  # Tags is a top-level non-empty string — append
   NEW_TAGS="${TAGS_STR},${MISSING}"
+  UPDATED=$(echo "$ORIGINAL" | jq --arg t "$NEW_TAGS" '.tags = $t')
 
-  cat <<EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow",
-    "permissionDecisionReason": "Auto-injected scope tags: ${MISSING}",
-    "updatedInput": {
-      "tags": "${NEW_TAGS}"
-    }
-  }
-}
-EOF
+elif [ -n "$META_TAGS" ] && [ "$META_TAGS" != "null" ]; then
+  # Tags only in metadata.tags — update there
+  NEW_TAGS="${META_TAGS},${MISSING}"
+  UPDATED=$(echo "$ORIGINAL" | jq --arg t "$NEW_TAGS" '.metadata.tags = $t')
+
+elif echo "$INPUT" | jq -e '.tool_input.metadata' > /dev/null 2>&1; then
+  # Has metadata but no tags — inject into metadata.tags
+  UPDATED=$(echo "$ORIGINAL" | jq --arg t "$MISSING" '.metadata.tags = $t')
+
 else
-  # No tags at all — create new string
-  cat <<EOF
-{
-  "hookSpecificOutput": {
-    "hookEventName": "PreToolUse",
-    "permissionDecision": "allow",
-    "permissionDecisionReason": "Auto-injected scope tags: ${MISSING}",
-    "updatedInput": {
-      "tags": "${MISSING}"
-    }
-  }
-}
-EOF
+  # No metadata at all — inject top-level tags
+  UPDATED=$(echo "$ORIGINAL" | jq --arg t "$MISSING" '.tags = $t')
 fi
+
+# Emit the complete updatedInput (jq ensures valid JSON)
+echo "$UPDATED" | jq '{
+  hookSpecificOutput: {
+    hookEventName: "PreToolUse",
+    permissionDecision: "allow",
+    permissionDecisionReason: ("Auto-injected scope tags: " + $reason),
+    updatedInput: .
+  }
+}' --arg reason "$MISSING"
 
 exit 0
