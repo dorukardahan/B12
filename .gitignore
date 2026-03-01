@@ -45,3 +45,9 @@ feedback.jsonl
 
 # Benchmark data (large)
 benchmarks/locomo/locomo10.json
+
+# Audit reports (session artifacts)
+B12_audit_*.md
+
+# Claude Code local state
+.claude/
