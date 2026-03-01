@@ -230,6 +230,7 @@ B12/
 │   ├── codex_session_end.py        #   Codex session-end memory extraction
 │   ├── hook_adapter.py             #   Codex CLI hook adapter (translates Codex events to B12)
 │   ├── embedding_backfill.py       #   Backfills embeddings for memories without vectors
+│   ├── query_aliases.json          #   Search query alias mappings
 │   ├── migrate_ebbinghaus.py       #   Migration: add strength fields
 │   └── migrate_v10_13.py           #   Migration: create native FTS5 table
 ├── skills/                         # Agent skills
@@ -255,8 +256,12 @@ B12/
 ├── docs/
 │   ├── architecture.md             #   Detailed architecture documentation
 │   └── setup.md                    #   Step-by-step installation guide
+├── AGENTS.md                       #   Codex agent instructions (auto-deployed)
 ├── install.sh                      #   One-command installer
-└── CHANGELOG.md                    #   Version history
+├── check.sh                        #   Pre-commit validation script
+├── CHANGELOG.md                    #   Version history
+├── package.json                    #   semantic-release config (CI versioning)
+└── package-lock.json               #   npm lockfile
 ```
 
 ## Configuration
