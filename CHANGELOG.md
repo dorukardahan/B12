@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.1.0](https://github.com/dorukardahan/B12/compare/v11.0.0...v11.1.0) (2026-03-03)
+
+
+### Features
+
+* **consolidation:** Smart Consolidation engine with HDBSCAN clustering (v11.1.0) ([6259f5f](https://github.com/dorukardahan/B12/commit/6259f5f04b44ac60bd571f0e632ac17405b31cf3))
+
 # [11.0.0](https://github.com/dorukardahan/B12/compare/v10.8.5...v11.0.0) (2026-02-28)
 
 Major quality milestone: 3 independent AI auditors (Claude, Gemini, Codex) + 4-tier cross-platform testing.
