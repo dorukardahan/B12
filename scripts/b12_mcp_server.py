@@ -972,6 +972,117 @@ async def memory_surface(
     return "No relevant memories found."
 
 
+# ── Tool: memory_export ─────────────────────────────────────────
+
+# Export/Import engine (lazy import)
+try:
+    from export_import import (
+        export_memories as _export_memories,
+        import_memories as _import_memories,
+        ExportResult as _ExportResult,
+        ImportResult as _ImportResult,
+    )
+except ImportError:
+    _export_memories = None
+    _import_memories = None
+
+
+@server.tool()
+async def memory_export(
+    output_path: str = "",
+    project: str = "",
+    tags: str = "",
+    after: str = "",
+    before: str = "",
+) -> str:
+    """Export memories to a portable .b12 archive file.
+
+    Creates a gzip-compressed JSONL archive containing memories and graph edges.
+    Excludes embeddings (regenerated on import). Safe to run while B12 is active.
+
+    Args:
+        output_path: Output file path (auto-generated in ~/.B12/exports/ if empty)
+        project: Filter by project name
+        tags: Filter by tags (comma-separated)
+        after: Only memories created after this ISO date
+        before: Only memories created before this ISO date
+    """
+    if _export_memories is None:
+        return "Error: export_import module not available."
+
+    result = _export_memories(
+        db_path=DB_PATH,
+        output_path=output_path,
+        project=project,
+        tags=tags,
+        after=after,
+        before=before,
+    )
+
+    size_kb = result.file_size_bytes / 1024
+    return (
+        f"Export complete:\n"
+        f"  Memories: {result.memories_exported}\n"
+        f"  Edges:    {result.edges_exported}\n"
+        f"  File:     {result.output_path}\n"
+        f"  Size:     {size_kb:.1f} KB\n"
+        f"  Time:     {result.duration_seconds}s"
+    )
+
+
+@server.tool()
+async def memory_import(
+    input_path: str = "",
+    mode: str = "merge",
+    source_name: str = "",
+) -> str:
+    """Import memories from a .b12 archive file.
+
+    Reads a .b12 archive and imports memories into the database. In merge mode
+    (default), existing memories are skipped. In replace mode, all existing
+    memories are soft-deleted before import.
+
+    Args:
+        input_path: Path to the .b12 archive file
+        mode: "merge" (skip duplicates) or "replace" (soft-delete existing first)
+        source_name: Name of source machine for provenance tracking
+    """
+    if _import_memories is None:
+        return "Error: export_import module not available."
+
+    if not input_path:
+        return "Error: input_path is required"
+
+    if not input_path.endswith(".b12"):
+        return "Error: file must have .b12 extension"
+
+    if ".." in input_path:
+        return "Error: directory traversal not allowed"
+
+    if mode not in ("merge", "replace"):
+        return "Error: mode must be 'merge' or 'replace'"
+
+    result = _import_memories(
+        db_path=DB_PATH,
+        input_path=input_path,
+        mode=mode,
+        source_name=source_name,
+    )
+
+    lines = [
+        f"Import complete ({mode} mode):",
+        f"  Imported: {result.memories_imported}",
+        f"  Skipped:  {result.memories_skipped}",
+        f"  Edges:    {result.edges_imported}",
+        f"  Time:     {result.duration_seconds}s",
+    ]
+    if result.errors:
+        lines.append(f"  Errors ({len(result.errors)}):")
+        for e in result.errors[:5]:
+            lines.append(f"    - {e}")
+    return "\n".join(lines)
+
+
 # ── Entry point ──────────────────────────────────────────────────
 
 if __name__ == "__main__":
