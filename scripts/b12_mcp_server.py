@@ -1083,6 +1083,141 @@ async def memory_import(
     return "\n".join(lines)
 
 
+# ── Tool: memory_dashboard ──────────────────────────────────────
+
+import subprocess
+import signal
+
+
+@server.tool()
+async def memory_dashboard(
+    action: str = "start",
+) -> str:
+    """Start, stop, or check the B12 Web Dashboard.
+
+    The dashboard provides a browser-based UI for browsing memories,
+    visualizing the memory graph, viewing health stats, and managing
+    contradictions. Runs at http://127.0.0.1:8742 (localhost only).
+
+    Args:
+        action: "start", "stop", "status", or "restart"
+    """
+    if action not in ("start", "stop", "status", "restart"):
+        return "Error: action must be start, stop, status, or restart"
+
+    b12_data = os.environ.get("B12_DATA_DIR", os.path.expanduser("~/.B12"))
+    pid_file = os.path.join(b12_data, "dashboard.pid")
+    token_file = os.path.join(b12_data, "dashboard.token")
+    server_script = os.path.join(os.path.dirname(__file__), "dashboard_server.py")
+
+    # Load config
+    config_path = os.path.join(
+        os.path.dirname(os.path.dirname(__file__)), "config", "dashboard.json"
+    )
+    port = 8742
+    if os.path.exists(config_path):
+        try:
+            with open(config_path) as f:
+                cfg = json.load(f)
+            port = cfg.get("port", 8742)
+        except Exception:
+            pass
+
+    def _is_running():
+        """Check if dashboard process is alive."""
+        if not os.path.exists(pid_file):
+            return False
+        try:
+            pid = int(open(pid_file).read().strip())
+            os.kill(pid, 0)  # signal 0 = check existence
+            return True
+        except (ProcessLookupError, ValueError, OSError):
+            # Stale PID file
+            try:
+                os.remove(pid_file)
+            except OSError:
+                pass
+            return False
+
+    def _stop():
+        """Stop the dashboard process."""
+        if not os.path.exists(pid_file):
+            return False
+        try:
+            pid = int(open(pid_file).read().strip())
+            os.kill(pid, signal.SIGTERM)
+            # Wait briefly for clean shutdown
+            for _ in range(10):
+                try:
+                    os.kill(pid, 0)
+                    import time as _time
+                    _time.sleep(0.2)
+                except ProcessLookupError:
+                    break
+        except (ProcessLookupError, ValueError, OSError):
+            pass
+        # Clean up files
+        for f in (pid_file, token_file):
+            try:
+                os.remove(f)
+            except OSError:
+                pass
+        return True
+
+    if action == "stop":
+        if _is_running():
+            _stop()
+            return "Dashboard stopped."
+        return "Dashboard is not running."
+
+    if action == "status":
+        if _is_running():
+            token = ""
+            if os.path.exists(token_file):
+                token = open(token_file).read().strip()
+            url = f"http://127.0.0.1:{port}?token={token}"
+            pid = open(pid_file).read().strip()
+            return f"Dashboard is running (PID {pid}).\nURL: {url}"
+        return "Dashboard is not running."
+
+    if action == "restart":
+        _stop()
+        # Fall through to start
+
+    # ── Start ──
+    if _is_running():
+        token = ""
+        if os.path.exists(token_file):
+            token = open(token_file).read().strip()
+        url = f"http://127.0.0.1:{port}?token={token}"
+        return f"Dashboard already running.\nURL: {url}"
+
+    if not os.path.exists(server_script):
+        return f"Error: dashboard_server.py not found at {server_script}"
+
+    # Generate auth token
+    import secrets as _secrets
+    token = _secrets.token_urlsafe(32)
+
+    # Launch as background process
+    proc = subprocess.Popen(
+        [sys.executable, server_script, "--port", str(port), "--token", token],
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        start_new_session=True,
+    )
+
+    # Save PID and token
+    os.makedirs(b12_data, exist_ok=True)
+    with open(pid_file, "w") as f:
+        f.write(str(proc.pid))
+    with open(token_file, "w") as f:
+        f.write(token)
+
+    url = f"http://127.0.0.1:{port}?token={token}"
+    return f"Dashboard started (PID {proc.pid}).\nURL: {url}"
+
+
 # ── Entry point ──────────────────────────────────────────────────
 
 if __name__ == "__main__":

@@ -1,0 +1,9 @@
+{
+  "_comment": "B12 Web Dashboard configuration",
+  "port": 8742,
+  "max_graph_nodes": 500,
+  "theme": "dark",
+  "sse_poll_interval_seconds": 2,
+  "rate_limit_per_minute": 60,
+  "max_results": 200
+}
