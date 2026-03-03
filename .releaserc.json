@@ -11,6 +11,9 @@
     ["@semantic-release/exec", {
       "prepareCmd": "sed -i '' \"s/Installer (v[0-9.]*[^)]*)/Installer (v${nextRelease.version} — multi-platform)/\" install.sh || sed -i \"s/Installer (v[0-9.]*[^)]*)/Installer (v${nextRelease.version} — multi-platform)/\" install.sh"
     }],
+    ["@semantic-release/npm", {
+      "npmPublish": false
+    }],
     ["@semantic-release/git", {
       "assets": ["CHANGELOG.md", "package.json", "install.sh"],
       "message": "chore(release): v${nextRelease.version}\n\n${nextRelease.notes}"

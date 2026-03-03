@@ -1,6 +1,6 @@
 {
   "name": "b12-memory-system",
-  "version": "10.5.0",
+  "version": "11.7.0",
   "private": true,
   "description": "Persistent memory system for AI coding assistants",
   "repository": {
@@ -8,9 +8,10 @@
     "url": "https://github.com/dorukardahan/B12.git"
   },
   "devDependencies": {
-    "semantic-release": "^24.0.0",
     "@semantic-release/changelog": "^6.0.0",
+    "@semantic-release/exec": "^6.0.0",
     "@semantic-release/git": "^10.0.0",
-    "@semantic-release/exec": "^6.0.0"
+    "@semantic-release/npm": "^12.0.2",
+    "semantic-release": "^24.0.0"
   }
 }
