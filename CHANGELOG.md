@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.7.1](https://github.com/dorukardahan/B12/compare/v11.7.0...v11.7.1) (2026-03-03)
+
+
+### Bug Fixes
+
+* **release:** add @semantic-release/npm plugin for package.json version bumps ([0283d89](https://github.com/dorukardahan/B12/commit/0283d894cfd6c2341b086aa43441e63dacad8882))
+
 # [11.7.0](https://github.com/dorukardahan/B12/compare/v11.6.1...v11.7.0) (2026-03-03)
 
 
