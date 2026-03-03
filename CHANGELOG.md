@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.3.0](https://github.com/dorukardahan/B12/compare/v11.2.0...v11.3.0) (2026-03-03)
+
+
+### Features
+
+* **surfacing:** Proactive memory surfacing with rate limiting (v11.3.0) ([e2f5811](https://github.com/dorukardahan/B12/commit/e2f5811d92003ec28b42f4abcc4d2643997a8087))
+
 # [11.2.0](https://github.com/dorukardahan/B12/compare/v11.1.0...v11.2.0) (2026-03-03)
 
 
