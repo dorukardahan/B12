@@ -726,6 +726,97 @@ inject_gemini_instructions() {
 }
 
 # ─────────────────────────────────────────────
+# Gemini CLI: install B12 hook adapters
+# ─────────────────────────────────────────────
+install_gemini_hooks() {
+  local GEMINI_DIR="$HOME/.gemini"
+  local SETTINGS_JSON="$GEMINI_DIR/settings.json"
+  local GEMINI_HOOK_DEST="$HOOK_DEST/gemini"
+  local GEMINI_HOOK_SRC="$HOOK_SOURCE/gemini"
+
+  if [ ! -d "$GEMINI_DIR" ]; then
+    warn "Gemini directory not found at $GEMINI_DIR — skipping hook installation"
+    return 1
+  fi
+
+  if [ ! -d "$GEMINI_HOOK_SRC" ]; then
+    warn "Gemini hook adapters not found at $GEMINI_HOOK_SRC"
+    return 1
+  fi
+
+  # Copy adapter scripts to shared B12 hooks location
+  mkdir -p "$GEMINI_HOOK_DEST"
+  cp "$GEMINI_HOOK_SRC"/b12-gemini-*.sh "$GEMINI_HOOK_DEST/"
+  chmod +x "$GEMINI_HOOK_DEST"/b12-gemini-*.sh
+  info "Gemini hook adapters copied to $GEMINI_HOOK_DEST"
+
+  # Register hooks in ~/.gemini/settings.json
+  if [ ! -f "$SETTINGS_JSON" ]; then
+    echo '{}' > "$SETTINGS_JSON"
+  fi
+
+  if ! python3 - "$SETTINGS_JSON" "$GEMINI_HOOK_DEST" << 'PYEOF'
+import sys, json
+
+settings_path = sys.argv[1]
+hook_dir = sys.argv[2]
+
+with open(settings_path, 'r') as f:
+    try:
+        settings = json.load(f)
+    except json.JSONDecodeError:
+        settings = {}
+
+if 'hooks' not in settings:
+    settings['hooks'] = {}
+
+# SessionStart hook
+settings['hooks']['SessionStart'] = [{
+    "hooks": [{
+        "name": "b12-session-start",
+        "type": "command",
+        "command": f"{hook_dir}/b12-gemini-session-start.sh",
+        "timeout": 20000,
+        "description": "B12 memory system — inject session context"
+    }]
+}]
+
+# SessionEnd hook
+settings['hooks']['SessionEnd'] = [{
+    "hooks": [{
+        "name": "b12-session-end",
+        "type": "command",
+        "command": f"{hook_dir}/b12-gemini-session-end.sh",
+        "timeout": 35000,
+        "description": "B12 memory system — save session summary"
+    }]
+}]
+
+# AfterTool hook (memory retrieval on built-in tool calls)
+settings['hooks']['AfterTool'] = [{
+    "matcher": "read_file|list_directory|run_shell_command|write_file|search_files",
+    "hooks": [{
+        "name": "b12-tool-retrieval",
+        "type": "command",
+        "command": f"{hook_dir}/b12-gemini-tool-call.sh",
+        "timeout": 10000,
+        "description": "B12 memory system — contextual memory retrieval"
+    }]
+}]
+
+with open(settings_path, 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+
+PYEOF
+  then
+    error "Failed to register B12 hooks in $SETTINGS_JSON"
+  fi
+
+  info "B12 hooks registered in $SETTINGS_JSON"
+}
+
+# ─────────────────────────────────────────────
 # Gemini CLI: verify installation
 # ─────────────────────────────────────────────
 verify_gemini() {
@@ -751,6 +842,20 @@ verify_gemini() {
     info "Verify: B12 venv accessible at $VENV_PATH"
   else
     warn "Verify: B12 venv NOT found (Gemini MCP server will fail)"
+    errors=$((errors + 1))
+  fi
+
+  if python3 -c "import json; d=json.load(open('$SETTINGS_JSON')); assert 'SessionStart' in d.get('hooks', {})" 2>/dev/null; then
+    info "Verify: B12 hooks registered in $SETTINGS_JSON"
+  else
+    warn "Verify: B12 hooks NOT found in $SETTINGS_JSON (run with --gemini to install)"
+    errors=$((errors + 1))
+  fi
+
+  if [ -f "$HOME/.B12/hooks/gemini/b12-gemini-session-start.sh" ]; then
+    info "Verify: Gemini hook adapters installed"
+  else
+    warn "Verify: Gemini hook adapters NOT found"
     errors=$((errors + 1))
   fi
 
@@ -1702,6 +1807,7 @@ if $INSTALL_GEMINI; then
   echo "── Gemini CLI Setup ─────────────"
   inject_gemini_mcp_config
   inject_gemini_instructions
+  install_gemini_hooks
   echo ""
 fi
 

@@ -121,6 +121,52 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
                 VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
             END
         """)
+    # B12 FTS5 stemmed table (porter unicode61 tokenizer, for morphological matching)
+    # "running" matches "run", "configured" matches "config", etc.
+    db.execute("""
+        CREATE VIRTUAL TABLE IF NOT EXISTS memory_fts_stemmed USING fts5(
+            content,
+            tags,
+            content='memories',
+            content_rowid='id',
+            tokenize='porter unicode61'
+        )
+    """)
+    # FTS5 sync triggers for memory_fts_stemmed
+    _existing_stemmed_triggers = {r[0] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_fts_stemmed_%'"
+    ).fetchall()}
+    if not _existing_stemmed_triggers:
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memory_fts_stemmed_insert AFTER INSERT ON memories
+            WHEN new.deleted_at IS NULL BEGIN
+                INSERT INTO memory_fts_stemmed(rowid, content, tags)
+                VALUES (new.id, new.content, COALESCE(new.tags, ''));
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memory_fts_stemmed_delete AFTER DELETE ON memories BEGIN
+                INSERT INTO memory_fts_stemmed(memory_fts_stemmed, rowid, content, tags)
+                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memory_fts_stemmed_update AFTER UPDATE ON memories
+            WHEN new.deleted_at IS NULL BEGIN
+                INSERT INTO memory_fts_stemmed(memory_fts_stemmed, rowid, content, tags)
+                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
+                INSERT INTO memory_fts_stemmed(rowid, content, tags)
+                VALUES (new.id, new.content, COALESCE(new.tags, ''));
+            END
+        """)
+        db.execute("""
+            CREATE TRIGGER IF NOT EXISTS memory_fts_stemmed_softdel AFTER UPDATE ON memories
+            WHEN new.deleted_at IS NOT NULL AND old.deleted_at IS NULL BEGIN
+                INSERT INTO memory_fts_stemmed(memory_fts_stemmed, rowid, content, tags)
+                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
+            END
+        """)
+
     # Native FTS5 table (trigram tokenizer, used by MCP server search)
     db.execute("""
         CREATE VIRTUAL TABLE IF NOT EXISTS memory_content_fts USING fts5(
@@ -373,9 +419,11 @@ async def memory_search(
     limit: int = 10,
     after: str | None = None,
     before: str | None = None,
+    stemmed: bool = False,
     max_response_chars: int = int(os.environ.get("MCP_MAX_RESPONSE_CHARS", "40000")),
 ) -> str:
-    """Search memories by semantic similarity, full-text, or hybrid."""
+    """Search memories by semantic similarity, full-text, or hybrid.
+    Set stemmed=True to use porter-stemmed FTS (matches morphological variants: run/running/ran)."""
     db = _require_db()
     results: dict[str, tuple[dict, float]] = {}  # content_hash -> (row, score)
 
@@ -420,6 +468,10 @@ async def memory_search(
 
         # ── FTS search (hybrid only) ─────────────────────────
         if mode == "hybrid" and query:
+            # Choose FTS table: stemmed (porter) or default (trigram)
+            _fts_table = "memory_fts_stemmed" if stemmed else "memory_content_fts"
+            # memory_fts_stemmed has (content, tags); memory_content_fts has (content)
+            _fts_join_col = "fts.rowid"
             # Try phrase match first, fall back to OR match for broader results
             for fts_attempt in ("phrase", "or"):
                 try:
@@ -435,8 +487,8 @@ async def memory_search(
                         )
                     fts_rows = db.execute(
                         f"""SELECT m.*, rank
-                            FROM memory_content_fts fts
-                            JOIN memories m ON m.id = fts.rowid
+                            FROM {_fts_table} fts
+                            JOIN memories m ON m.id = {_fts_join_col}
                             WHERE fts.content MATCH ? AND {where_sql}
                             ORDER BY rank LIMIT ?""",
                         [fts_query] + params + [limit],
@@ -1224,6 +1276,175 @@ async def memory_dashboard(
 
     url = f"http://127.0.0.1:{port}?token={token}"
     return f"Dashboard started (PID {proc.pid}).\nURL: {url}"
+
+
+# ── MCP Resources (b12:// URIs) ─────────────────────────────────
+
+@server.resource("b12://context/project/{name}")
+async def resource_project_context(name: str) -> str:
+    """Pre-fetched project context: top memories, last session summary, instructions."""
+    db = _require_db()
+    sections: list[str] = []
+
+    async with _db_lock:
+        # Top 3 project memories by importance x strength
+        proj_memories = db.execute("""
+            SELECT content, memory_type, tags FROM memories
+            WHERE deleted_at IS NULL
+              AND (valid_until IS NULL OR valid_until > datetime('now'))
+              AND tags LIKE ?
+              AND memory_type NOT IN ('session_summary', 'progress')
+            ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0)
+                     * COALESCE(strength, 1.0) DESC
+            LIMIT 3
+        """, (f"%proj:{name}%",)).fetchall()
+        if proj_memories:
+            sections.append(f"## Project Memories ({name})")
+            for m in proj_memories:
+                sections.append(f"- [{m['memory_type']}] {m['content'][:300]}")
+
+        # Last session summary
+        last_summary = db.execute("""
+            SELECT content FROM memories
+            WHERE memory_type = 'session_summary'
+              AND deleted_at IS NULL
+              AND tags LIKE ?
+            ORDER BY created_at DESC LIMIT 1
+        """, (f"%proj:{name}%",)).fetchone()
+        if last_summary:
+            sections.append("## Last Session Summary")
+            sections.append(last_summary['content'][:800])
+
+    # Behavioral instructions (no DB needed)
+    sections.append("## Instructions")
+    sections.append(
+        "- Search memory before answering questions about past work\n"
+        "- Store decisions, errors/fixes, and learnings as memories\n"
+        "- Include tags (proj:<name>) and metadata when storing\n"
+        "- Update existing memories instead of creating duplicates"
+    )
+
+    return "\n\n".join(sections) if sections else "No project context available."
+
+
+@server.resource("b12://stats")
+async def resource_stats() -> str:
+    """Memory statistics: counts by status, type, and graph edges."""
+    db = _require_db()
+
+    async with _db_lock:
+        active = db.execute(
+            "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+        deleted = db.execute(
+            "SELECT COUNT(*) FROM memories WHERE deleted_at IS NOT NULL"
+        ).fetchone()[0]
+        # Counts by memory_type
+        type_rows = db.execute("""
+            SELECT memory_type, COUNT(*) as cnt FROM memories
+            WHERE deleted_at IS NULL
+            GROUP BY memory_type ORDER BY cnt DESC
+        """).fetchall()
+        # Graph edges
+        edge_count = db.execute("SELECT COUNT(*) FROM memory_graph").fetchone()[0]
+        edge_types = db.execute("""
+            SELECT relationship_type, COUNT(*) as cnt FROM memory_graph
+            GROUP BY relationship_type ORDER BY cnt DESC
+        """).fetchall()
+        # Embedding coverage
+        emb_count = 0
+        if _HAS_VEC:
+            try:
+                emb_count = db.execute(
+                    "SELECT COUNT(*) FROM memory_embeddings"
+                ).fetchone()[0]
+            except Exception:
+                pass
+
+    lines = [
+        "# B12 Memory Statistics",
+        f"Active memories: {active}",
+        f"Deleted memories: {deleted}",
+        f"Embeddings: {emb_count}",
+        f"Graph edges: {edge_count}",
+        "",
+        "## By Type",
+    ]
+    for r in type_rows:
+        lines.append(f"- {r['memory_type']}: {r['cnt']}")
+    if edge_types:
+        lines.append("")
+        lines.append("## Edge Types")
+        for r in edge_types:
+            lines.append(f"- {r['relationship_type']}: {r['cnt']}")
+
+    return "\n".join(lines)
+
+
+@server.resource("b12://profile")
+async def resource_profile() -> str:
+    """User profile from user-profile.md."""
+    profile_path = os.path.join(
+        os.environ.get("B12_DATA_DIR", os.path.expanduser("~/.B12")),
+        "user-profile.md"
+    )
+    if not os.path.exists(profile_path):
+        return "No user profile found. Create ~/.B12/user-profile.md to set one up."
+    try:
+        with open(profile_path) as f:
+            return f.read().strip() or "User profile is empty."
+    except Exception as e:
+        return f"Error reading profile: {e}"
+
+
+@server.resource("b12://health")
+async def resource_health() -> str:
+    """Quick health check: embedding coverage, stale count, recent growth."""
+    db = _require_db()
+
+    async with _db_lock:
+        active = db.execute(
+            "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL"
+        ).fetchone()[0]
+        # Embedding coverage
+        emb_count = 0
+        if _HAS_VEC:
+            try:
+                emb_count = db.execute(
+                    "SELECT COUNT(*) FROM memory_embeddings"
+                ).fetchone()[0]
+            except Exception:
+                pass
+        emb_pct = (emb_count / active * 100) if active > 0 else 0
+        # Stale memories (not accessed in 30+ days)
+        stale_threshold = time.time() - (30 * 86400)
+        stale = db.execute("""
+            SELECT COUNT(*) FROM memories
+            WHERE deleted_at IS NULL
+              AND COALESCE(last_accessed_at, created_at) < ?
+        """, (stale_threshold,)).fetchone()[0]
+        stale_pct = (stale / active * 100) if active > 0 else 0
+        # Recent growth (last 7 days)
+        week_ago = time.time() - (7 * 86400)
+        new_7d = db.execute("""
+            SELECT COUNT(*) FROM memories
+            WHERE deleted_at IS NULL AND created_at > ?
+        """, (week_ago,)).fetchone()[0]
+        # Graph edges
+        edges = db.execute("SELECT COUNT(*) FROM memory_graph").fetchone()[0]
+
+    lines = [
+        "# B12 Health Check",
+        f"Active memories: {active}",
+        f"Embedding coverage: {emb_count}/{active} ({emb_pct:.0f}%)",
+        f"Stale memories (30d+): {stale} ({stale_pct:.0f}%)",
+        f"New this week: {new_7d}",
+        f"Graph edges: {edges}",
+        "",
+        f"Status: {'healthy' if emb_pct > 80 and stale_pct < 30 else 'needs attention'}",
+    ]
+
+    return "\n".join(lines)
 
 
 # ── Entry point ──────────────────────────────────────────────────
