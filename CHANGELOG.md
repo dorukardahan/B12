@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.6.0](https://github.com/dorukardahan/B12/compare/v11.5.0...v11.6.0) (2026-03-03)
+
+
+### Features
+
+* **benchmark:** LoCoMo operationalization with MRR, NDCG, regression detection (v12.0.0) ([2fc72fc](https://github.com/dorukardahan/B12/commit/2fc72fc0aff77efa6a0d50d3fd82b3ff616daf68))
+
 # [11.5.0](https://github.com/dorukardahan/B12/compare/v11.4.0...v11.5.0) (2026-03-03)
 
 
