@@ -88,3 +88,77 @@ PREFERENCE_RE = re.compile(
     r'|(?:her zaman|hiçbir zaman|asla|daima)\s+(?:kullan|yap|kullanma|yapma)'
     r')'
 )
+
+# ── Extended patterns (v4.1) ─────────────────────────────────
+
+TOOL_PREF_RE = re.compile(
+    r'(?i)(?:'
+    # English patterns
+    r'(?:always use|prefer\s+\S+\s+over)\s+.{5,}'
+    r'|(?:works?\s+better\s+than)\s+.{5,}'
+    r'|(?:switched to|switching to)\s+\S+\s+(?:for|because)\s+.{5,}'
+    r'|(?:don.?t use|avoid using|stop using)\s+\S+\s+(?:because|for|since)\s+.{3,}'
+    r'|(?:prefer\s+\S+\s+for)\s+.{5,}'
+    # Turkish patterns
+    r'|(?:hep\s+\S+\s+kullan)\s*.{5,}'
+    r'|(?:\S+.?[ıi]\s+tercih\s+et)\s*.{5,}'
+    r'|(?:daha\s+iyi\s+çalışıyor)\s*.{3,}'
+    r'|(?:\S+\s+kullanma\s+çünkü)\s+.{5,}'
+    r')'
+)
+
+ARCH_RE = re.compile(
+    r'(?i)(?:'
+    # English patterns
+    r'(?:the\s+architecture\s+is)\s+.{5,}'
+    r'|(?:we\s+structured\s+it\s+as)\s+.{5,}'
+    r'|(?:the\s+pattern\s+we\s+use\s+is)\s+.{5,}'
+    r'|(?:built\s+on\s+top\s+of)\s+.{5,}'
+    r'|(?:the\s+design\s+is)\s+.{5,}'
+    r'|(?:using\s+\S+\s+(?:pattern|approach|architecture))\s+.{3,}'
+    r'|(?:the\s+(?:system|service|module|component)\s+(?:is structured|is designed|follows))\s+.{5,}'
+    # Turkish patterns
+    r'|(?:mimari(?:si|miz)?\s+(?:şöyle|böyle|olarak))\s*.{5,}'
+    r'|(?:yapı(?:sı|mız)?\s+(?:şöyle|böyle|olarak))\s*.{5,}'
+    r'|(?:tasarım(?:ı|ımız)?\s+(?:şöyle|böyle|olarak))\s*.{5,}'
+    r'|(?:bunun\s+üzerine\s+kurduk)\s*.{5,}'
+    r'|(?:yaklaşım\s+olarak)\s+.{5,}'
+    r')'
+)
+
+WORKFLOW_RE = re.compile(
+    r'(?i)(?:'
+    # English patterns
+    r'(?:the\s+workflow\s+is)\s*(?::)?\s+.{5,}'
+    r'|(?:the\s+process\s+is)\s*(?::)?\s+.{5,}'
+    r'|(?:first\s+\S+\s+then)\s+.{5,}'
+    r'|(?:deploy\s+with)\s+.{5,}'
+    r'|(?:run\s+\S+\s+before)\s+.{5,}'
+    r'|(?:the\s+pipeline\s+is)\s*(?::)?\s+.{5,}'
+    r'|(?:the\s+(?:build|release|test|ci)\s+(?:process|pipeline|flow)\s+(?:is|goes|works))\s+.{5,}'
+    r'|(?:step\s+\d+\s*(?::|is|,))\s+.{5,}'
+    # Turkish patterns
+    r'|(?:iş\s*akışı(?:mız)?\s*(?::|şöyle|böyle))\s*.{5,}'
+    r'|(?:süreç\s*(?::|şöyle|böyle))\s*.{5,}'
+    r'|(?:önce\s+\S+\s+sonra)\s+.{5,}'
+    r'|(?:deploy\s+için)\s+.{5,}'
+    r'|(?:sırasıyla)\s+.{5,}'
+    r')'
+)
+
+FILE_CONV_RE = re.compile(
+    r'(?i)(?:'
+    # English patterns
+    r'(?:files?\s+go\s+in)\s+.{5,}'
+    r'|(?:naming\s+convention\s+(?:is|for))\s+.{5,}'
+    r'|(?:put\s+\S+\s+in\s+(?:the\s+)?\S+\s+directory)\s*.{3,}'
+    r'|(?:file\s+structure\s+(?:is|looks))\s+.{5,}'
+    r'|(?:organized\s+as)\s+.{5,}'
+    r'|(?:(?:directory|folder)\s+(?:structure|layout|convention)\s+(?:is|for))\s+.{5,}'
+    # Turkish patterns
+    r'|(?:dosyalar\s+\S+.?[ea]\s+konur)\s*.{3,}'
+    r'|(?:isimlendirme\s+kuralı)\s*.{5,}'
+    r'|(?:dosya\s+yapısı)\s*.{5,}'
+    r'|(?:düzen\s+olarak)\s+.{5,}'
+    r')'
+)

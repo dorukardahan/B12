@@ -24,6 +24,12 @@ except ImportError:
     _consolidate = None
     ConsolidationResult = None
 
+# Refinement module (lazy import path — scripts/ is on sys.path)
+try:
+    from memory_refine import refine_candidates as _refine_candidates
+except ImportError:
+    _refine_candidates = None
+
 # ── Paths ────────────────────────────────────────────────────────
 import sys as _sys
 _home = os.path.expanduser("~")
@@ -854,6 +860,68 @@ async def memory_consolidate(
     elif not dry_run and not result.memories_deduplicated and not result.memories_merged:
         lines.append("")
         lines.append("No consolidation needed — database looks clean.")
+
+    return "\n".join(lines)
+
+
+# ── Tool: memory_refine ─────────────────────────────────────────
+
+@server.tool()
+async def memory_refine(
+    candidates: str = "[]",
+    project: str = "",
+    similarity_threshold: float = 0.85,
+) -> str:
+    """Refine and deduplicate raw memory candidates.
+
+    Accepts a JSON array of candidate memories, groups near-duplicates by
+    semantic similarity, picks the best representative from each group,
+    and scores quality. Returns refined candidates ready for storage.
+
+    Args:
+        candidates: JSON array of objects with {content, memory_type, tags}
+        project: Project name for tag generation
+        similarity_threshold: Cosine similarity threshold for grouping (0.0-1.0)
+    """
+    if _refine_candidates is None:
+        return "Error: memory_refine module not available. Check scripts/ directory."
+
+    try:
+        candidate_list = json.loads(candidates)
+    except (json.JSONDecodeError, TypeError):
+        return "Error: candidates must be a valid JSON array"
+
+    if not isinstance(candidate_list, list):
+        return "Error: candidates must be a JSON array"
+
+    if not candidate_list:
+        return "No candidates provided"
+
+    # Validate each candidate has at least 'content'
+    valid = []
+    for c in candidate_list:
+        if isinstance(c, dict) and c.get("content"):
+            valid.append({
+                "content": str(c["content"]),
+                "memory_type": str(c.get("memory_type", "general")),
+                "tags": str(c.get("tags", "")),
+            })
+
+    if not valid:
+        return "Error: no valid candidates (each must have 'content' field)"
+
+    refined = _refine_candidates(valid, similarity_threshold)
+
+    # Format output
+    lines = [f"Refined {len(valid)} candidates \u2192 {len(refined)} unique memories:\n"]
+    for r in refined:
+        quality_bar = "\u2588" * int(r["quality_score"] * 10) + "\u2591" * (10 - int(r["quality_score"] * 10))
+        lines.append(f"[{quality_bar}] {r['quality_score']:.2f} | {r['memory_type']} | {r['content'][:120]}")
+        if r["group_size"] > 1:
+            lines.append(f"  \u21b3 merged {r['group_size']} near-duplicates")
+
+    lines.append(f"\nTo store refined memories, call memory_store for each candidate above.")
+    lines.append(f"\nJSON output:\n{json.dumps(refined, ensure_ascii=False, indent=2)}")
 
     return "\n".join(lines)
 

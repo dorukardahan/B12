@@ -57,7 +57,8 @@ signal.alarm(25)
 # B12_HOOK_DIR controls code location; B12_DATA_DIR controls data only
 _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
 sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
-from shared_patterns import DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE
+from shared_patterns import (DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE,
+                             TOOL_PREF_RE, ARCH_RE, WORKFLOW_RE, FILE_CONV_RE)
 
 transcript_path = sys.argv[1]
 project_name = sys.argv[2]
@@ -81,6 +82,10 @@ decisions = []
 errors_fixes = []
 preferences = []
 learnings = []
+tool_prefs = []
+arch_decisions = []
+workflows = []
+file_conventions = []
 
 try:
     with open(transcript_path, 'r') as f:
@@ -133,6 +138,22 @@ try:
                                         m = LEARNING_RE.search(scan_text)
                                         start = max(0, m.start() - 50)
                                         learnings.append(scan_text[start:start+250])
+                                    if TOOL_PREF_RE.search(scan_text):
+                                        m = TOOL_PREF_RE.search(scan_text)
+                                        start = max(0, m.start() - 50)
+                                        tool_prefs.append(scan_text[start:start+250])
+                                    if ARCH_RE.search(scan_text):
+                                        m = ARCH_RE.search(scan_text)
+                                        start = max(0, m.start() - 50)
+                                        arch_decisions.append(scan_text[start:start+250])
+                                    if WORKFLOW_RE.search(scan_text):
+                                        m = WORKFLOW_RE.search(scan_text)
+                                        start = max(0, m.start() - 50)
+                                        workflows.append(scan_text[start:start+250])
+                                    if FILE_CONV_RE.search(scan_text):
+                                        m = FILE_CONV_RE.search(scan_text)
+                                        start = max(0, m.start() - 50)
+                                        file_conventions.append(scan_text[start:start+250])
 
                                 elif block.get('type') == 'tool_use':
                                     tool_name = block.get('name', '')
@@ -203,9 +224,41 @@ def score_extraction(text, category):
         if any(w in text_lower for w in ['user', '[user]', 'kullanıcı']):
             score += 2
 
+    elif category == 'tool_pref':
+        if any(w in text_lower for w in ['always', 'never', 'prefer', 'better', 'works better',
+                                          'hep', 'asla', 'tercih', 'daha iyi']):
+            score += 2
+        if any(w in text_lower for w in ['because', 'instead of', 'over', 'çünkü', 'yerine']):
+            score += 1
+
+    elif category == 'arch':
+        if any(w in text_lower for w in ['architecture', 'pattern', 'design', 'structure', 'layer',
+                                          'mimari', 'tasarım', 'yapı', 'katman']):
+            score += 1
+        if any(w in text_lower for w in ['because', 'so that', 'enables', 'çünkü', 'sağlar']):
+            score += 1
+
+    elif category == 'workflow':
+        if any(w in text_lower for w in ['first', 'then', 'before', 'after', 'step', 'pipeline',
+                                          'önce', 'sonra', 'adım', 'sırasıyla']):
+            score += 2
+
+    elif category == 'file_conv':
+        if any(w in text_lower for w in ['directory', 'folder', 'path', 'naming', 'convention',
+                                          'dizin', 'klasör', 'dosya', 'isimlendirme']):
+            score += 2
+
     # Penalty for very short text
     if len(text) < 40:
         score -= 1
+
+    # Universal specificity bonus: concrete values are more useful
+    if re.search(r'[/\\][\w.-]+\.\w+', text):  # file paths
+        score += 1
+    if re.search(r'v?\d+\.\d+', text):  # version numbers
+        score += 1
+    if re.search(r'(?:npm|pip|brew|cargo|go|docker|git|kubectl|yarn|bun)\s', text_lower):  # tool names
+        score += 1
 
     return score
 
@@ -225,6 +278,10 @@ decisions = [d for d in dedup(decisions) if score_extraction(d, 'decision') >= 1
 errors_fixes = [e for e in dedup(errors_fixes) if score_extraction(e, 'error') >= 1]
 learnings = [l for l in dedup(learnings) if score_extraction(l, 'learning') >= 1]
 preferences = [p for p in dedup(preferences) if score_extraction(p, 'preference') >= 1]
+tool_prefs = [t for t in dedup(tool_prefs) if score_extraction(t, 'tool_pref') >= 1]
+arch_decisions = [a for a in dedup(arch_decisions) if score_extraction(a, 'arch') >= 1]
+workflows = [w for w in dedup(workflows) if score_extraction(w, 'workflow') >= 1]
+file_conventions = [fc for fc in dedup(file_conventions) if score_extraction(fc, 'file_conv') >= 1]
 
 # ═══════════════════════════════════════════════════════════════
 # BUILD FULL SUMMARY
@@ -282,6 +339,30 @@ if preferences:
     lines.append("## User Preferences Observed")
     for p in preferences:
         lines.append(f"- {p}")
+    lines.append("")
+
+if tool_prefs:
+    lines.append("## Tool Preferences")
+    for t in tool_prefs:
+        lines.append(f"- {t}")
+    lines.append("")
+
+if arch_decisions:
+    lines.append("## Architecture Decisions")
+    for a in arch_decisions:
+        lines.append(f"- {a}")
+    lines.append("")
+
+if workflows:
+    lines.append("## Workflow Patterns")
+    for w in workflows:
+        lines.append(f"- {w}")
+    lines.append("")
+
+if file_conventions:
+    lines.append("## File Conventions")
+    for fc in file_conventions:
+        lines.append(f"- {fc}")
     lines.append("")
 
 # User requests (first 8, deduplicated)
@@ -415,7 +496,9 @@ if len(content) < 100:
 # Store any non-trivial session (removed strict has_insights gate)
 # Sessions with structured sections get higher importance
 INSIGHT_SECTIONS = ['## Decisions Made', '## Errors & Fixes', '## Key Learnings',
-                    '## User Preferences Observed', '## What Was Done']
+                    '## User Preferences Observed', '## What Was Done',
+                    '## Tool Preferences', '## Architecture Decisions',
+                    '## Workflow Patterns', '## File Conventions']
 has_insights = any(s in content for s in INSIGHT_SECTIONS)
 
 content_hash = hashlib.sha256(content.strip().lower().encode('utf-8')).hexdigest()
@@ -523,7 +606,8 @@ try:
         "scope": "project",
         "type": "session-summary",
         "session_id": session_id[:12],
-        "importance_score": importance
+        "importance_score": importance,
+        "extraction_method": "regex_v2"
     })
 
     conn.execute("""
@@ -569,6 +653,10 @@ try:
         '## Learned': ('learning', 1.0),
         '## Takeaways': ('learning', 1.0),
         '## What Was Done': ('progress', 0.7),
+        '## Tool Preferences': ('general', 1.2),
+        '## Architecture Decisions': ('general', 1.3),
+        '## Workflow Patterns': ('general', 1.1),
+        '## File Conventions': ('general', 1.1),
     }
     micro_texts = []
     micro_meta = []
@@ -626,13 +714,14 @@ try:
             return any(sig in tl for sig in SIGNALS)
 
         prefix_map = {'decision': 'Decision', 'error_fix': 'Error Fix',
-                      'learning': 'Learning', 'progress': 'Progress'}
+                      'learning': 'Learning', 'progress': 'Progress',
+                      'general': section_hdr.lstrip('# ')}
         for bullet in bullets[:5]:
             if not is_actionable(bullet):
                 continue
-            prefixed = f"[{prefix_map[mem_type]}] {bullet}"
+            prefixed = f"[{prefix_map.get(mem_type, mem_type)}] {bullet}"
             micro_texts.append(prefixed)
-            micro_meta.append((mem_type, imp))
+            micro_meta.append((mem_type, imp, section_hdr))
 
     if micro_texts:
         # Try to import write-time merge (graceful degradation if unavailable)
@@ -647,14 +736,16 @@ try:
 
         micro_emb_bytes = encode_texts(micro_texts)
         for i, text in enumerate(micro_texts):
-            mem_type, imp = micro_meta[i]
+            mem_type, imp, _section_hdr = micro_meta[i]
             m_hash = hashlib.sha256(text.strip().lower().encode('utf-8')).hexdigest()
             m_tags = f"proj:{project_name},user:{setup_context},{mem_type},{now.strftime('%Y-%m')}"
             m_metadata = json.dumps({
                 "project": project_name, "setup": setup_context,
                 "scope": "project", "type": mem_type,
                 "source_session": session_id[:12],
-                "importance_score": imp
+                "importance_score": imp,
+                "extraction_method": "regex_v2",
+                "extraction_patterns": [_section_hdr.lstrip('# ')]
             })
             m_emb = micro_emb_bytes[i]
 

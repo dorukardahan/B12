@@ -279,6 +279,8 @@ BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nIMPORTANCE: Set importance_score in met
 
 BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nAUTO BEHAVIOR: 1) Search memory on startup with project + task keywords. 2) Store silently when learning something important \u2014 categorize by type (architecture/decision/pattern/gotcha/progress/preference). 3) Update user-profile.md at ${MEMORY_DIR}/user-profile.md when learning new preferences. 4) At session start, print ONE short line with the B12 pill format. 5) When retrieval hook returns relevant memories or when storing, use these EXACT formats:\nRetrieval: ( \ud83d\udc8a B12 \ud83e\udde0 : found N memories about [topic], stored [date] \u2705 )\nStore: ( \ud83d\udc8a B12 \ud83e\udde0 : saved to memory \u2705 )\nNot found (only when user explicitly asks): ( \ud83d\udc8a B12 \ud83e\udde0 : searched but nothing found \u274c ) \u2014 then try wider time range or different keywords before giving up.\nKeep under 15 words. Only \u2705 or \u274c at the end, no other emojis after the colon."
 
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nSTORE KEY LEARNINGS: When you discover decisions, errors, preferences, or architectural patterns during this session, store them as memories. For batch refinement of multiple candidates, use memory_refine tool."
+
 if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # ═══════════════════════════════════════════════════════════
   # BUILD CONTEXT — scope-aware, token-efficient
