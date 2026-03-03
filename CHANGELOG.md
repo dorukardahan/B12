@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.7.0](https://github.com/dorukardahan/B12/compare/v11.6.1...v11.7.0) (2026-03-03)
+
+
+### Features
+
+* implement B12 v11 Tier 3 — stemming, health report, Gemini hooks, MCP resources ([6bfc937](https://github.com/dorukardahan/B12/commit/6bfc937324b075335adc5e6bacd5d851b4b9333f))
+
 ## [11.6.1](https://github.com/dorukardahan/B12/compare/v11.6.0...v11.6.1) (2026-03-03)
 
 
