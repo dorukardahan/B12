@@ -16,6 +16,7 @@ Operations:
   encode_batch     {texts}                       → {embeddings: [base64]}
   nli_check        {pairs: [[a,b], ...]}         → {results: [{label, scores}]}
   find_neighbors   {db_path, memory_id, k, min_sim} → {neighbors: [{id, similarity}]}
+  find_cluster     {db_path, threshold, min_size, project} → {clusters: [[ids]], count}
   health           {}                            → {uptime, requests_served}
   shutdown         {}                            → {} + daemon exits
 
@@ -494,6 +495,101 @@ def _find_neighbors(model, data):
     return {'ok': True, 'neighbors': neighbors[:k]}
 
 
+def _find_cluster(model, data):
+    """Find connected components of similar memories above a threshold.
+
+    Input:  {"op": "find_cluster", "threshold": 0.80, "min_size": 3,
+             "db_path": "...", "project": ""}
+    Output: {"clusters": [[id1, id2, id3], [id4, id5]], "count": 2}
+
+    Uses stored embeddings, computes pairwise cosine similarity,
+    groups into connected components where similarity >= threshold.
+    """
+    db_path = data.get('db_path', '')
+    threshold = data.get('threshold', 0.80)
+    min_size = data.get('min_size', 3)
+    project = data.get('project', '')
+
+    if not db_path:
+        return {'ok': False, 'error': 'missing db_path'}
+
+    conn = _open_db(db_path)
+
+    # Load all active memory embeddings
+    sql = """
+        SELECT m.id, e.content_embedding
+        FROM memories m
+        JOIN memory_embeddings e ON m.id = e.rowid
+        WHERE m.deleted_at IS NULL
+    """
+    params = []
+    if project:
+        sql += " AND m.tags LIKE ?"
+        params.append(f"%proj:{project}%")
+    sql += " LIMIT 500"
+
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+
+    if len(rows) < min_size:
+        return {'ok': True, 'clusters': [], 'count': 0}
+
+    # Parse embeddings
+    import math
+    mem_ids = []
+    embeddings = []
+    for row_id, emb_bytes in rows:
+        if not emb_bytes:
+            continue
+        dim = len(emb_bytes) // 4
+        emb = struct.unpack(f'{dim}f', emb_bytes)
+        mem_ids.append(row_id)
+        embeddings.append(emb)
+
+    n = len(mem_ids)
+    if n < min_size:
+        return {'ok': True, 'clusters': [], 'count': 0}
+
+    # Precompute norms
+    norms = []
+    for emb in embeddings:
+        norms.append(math.sqrt(sum(x * x for x in emb)))
+
+    # Build adjacency list via pairwise cosine similarity
+    adj = {i: set() for i in range(n)}
+    for i in range(n):
+        for j in range(i + 1, n):
+            dot = sum(a * b for a, b in zip(embeddings[i], embeddings[j]))
+            denom = norms[i] * norms[j]
+            if denom > 0:
+                cos_sim = dot / denom
+                if cos_sim >= threshold:
+                    adj[i].add(j)
+                    adj[j].add(i)
+
+    # Find connected components via BFS
+    visited = set()
+    clusters = []
+    for start in range(n):
+        if start in visited:
+            continue
+        # BFS
+        component = []
+        queue = [start]
+        visited.add(start)
+        while queue:
+            node = queue.pop(0)
+            component.append(mem_ids[node])
+            for neighbor in adj[node]:
+                if neighbor not in visited:
+                    visited.add(neighbor)
+                    queue.append(neighbor)
+        if len(component) >= min_size:
+            clusters.append(component)
+
+    return {'ok': True, 'clusters': clusters, 'count': len(clusters)}
+
+
 def handle_request(model, data, start_time, requests_served):
     """Route a JSON request to the appropriate handler."""
     op = data.get('op', '')
@@ -523,6 +619,8 @@ def handle_request(model, data, start_time, requests_served):
             return _nli_check(model, data)
         elif op == 'find_neighbors':
             return _find_neighbors(model, data)
+        elif op == 'find_cluster':
+            return _find_cluster(model, data)
         else:
             return {'ok': False, 'error': f'unknown_op: {op}'}
     except Exception as e:

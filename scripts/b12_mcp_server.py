@@ -17,6 +17,13 @@ from datetime import datetime, timezone
 
 from mcp.server.fastmcp import FastMCP
 
+# Consolidation engine (lazy import path — scripts/ is on sys.path)
+try:
+    from consolidation_engine import consolidate as _consolidate, ConsolidationResult
+except ImportError:
+    _consolidate = None
+    ConsolidationResult = None
+
 # ── Paths ────────────────────────────────────────────────────────
 import sys as _sys
 _home = os.path.expanduser("~")
@@ -788,6 +795,67 @@ async def memory_session_context(
         return "No context available. Start storing memories to build your knowledge base."
 
     return "\n\n".join(sections)
+
+
+# ── Tool: memory_consolidate ─────────────────────────────────────
+
+@server.tool()
+async def memory_consolidate(
+    project: str = "",
+    dry_run: bool = True,
+    min_cluster_size: int = 3,
+) -> str:
+    """Consolidate similar memories: deduplicate near-identical entries,
+    merge related memories, and flag contradictions for review.
+    Uses HDBSCAN clustering on embeddings for semantic grouping.
+    Defaults to dry_run=True (report only, no changes)."""
+    if _consolidate is None:
+        return "Error: consolidation_engine not available. Check scripts/ directory."
+
+    try:
+        result = _consolidate(
+            db_path=DB_PATH,
+            project=project or None,
+            dry_run=dry_run,
+            min_cluster_size=min_cluster_size,
+        )
+    except FileNotFoundError as e:
+        return f"Error: {e}"
+    except Exception as e:
+        return f"Consolidation error: {e}"
+
+    # Build human-readable summary
+    lines = []
+    mode = "DRY RUN" if dry_run else "APPLIED"
+    lines.append(f"Consolidation ({mode}):")
+    lines.append(f"  Memories processed:    {result.memories_processed}")
+    lines.append(f"  Clusters found:        {result.clusters_found}")
+    lines.append(f"  Deduplicated:          {result.memories_deduplicated}")
+    lines.append(f"  Merged:                {result.memories_merged}")
+    lines.append(f"  Contradictions flagged: {result.contradictions_flagged}")
+
+    if dry_run and result.dry_run_report:
+        lines.append("")
+        lines.append("Cluster details:")
+        for entry in result.dry_run_report:
+            action = entry['type'].upper()
+            ids = entry['ids']
+            sim = entry.get('similarity', 0)
+            nli = entry.get('nli_score', '')
+            nli_str = f" NLI:{nli}" if nli else ''
+            lines.append(f"  [{action}] #{ids[0]} <-> #{ids[1]}  "
+                         f"(cosine: {sim:.3f}{nli_str})")
+            for snippet in entry.get('snippets', []):
+                lines.append(f"    {snippet}")
+
+    if dry_run and (result.memories_deduplicated or result.memories_merged):
+        lines.append("")
+        lines.append("Run with dry_run=False to apply these changes.")
+    elif not dry_run and not result.memories_deduplicated and not result.memories_merged:
+        lines.append("")
+        lines.append("No consolidation needed — database looks clean.")
+
+    return "\n".join(lines)
 
 
 # ── Entry point ──────────────────────────────────────────────────
