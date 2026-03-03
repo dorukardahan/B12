@@ -23,11 +23,14 @@ Claude Code's built-in memory system:
 
 ### Layer 2: B12 MCP Server (`b12_mcp_server.py`)
 
-Custom FastMCP server providing 5 memory tools (`memory_store`, `memory_search`, `memory_update`, `memory_quality`, `memory_session_context`). Replaces the old `mcp-memory-service` (pipx) with a lightweight ~400-line server that delegates ML operations to a background embed daemon via Unix socket.
+Custom FastMCP server providing 5 memory tools and 4 MCP resources. Replaces the old `mcp-memory-service` (pipx) with a ~1400-line server that delegates ML operations to a background embed daemon via Unix socket.
 
+- **Tools**: `memory_store`, `memory_search`, `memory_update`, `memory_quality`, `memory_session_context`
+- **Resources**: `b12://context/project/{name}`, `b12://stats`, `b12://profile`, `b12://health`
 - **Database**: SQLite + sqlite-vec (local file)
 - **Embeddings**: multilingual-MiniLM-L12-v2 via `embed_daemon.py` (runs locally, no API)
-- **Search**: FTS5 hybrid — BM25 keyword + vector cosine
+- **Search**: FTS5 hybrid — BM25 keyword + vector cosine + optional porter stemming
+- **FTS5 tables**: `memory_fts` (unicode61, exact match), `memory_fts_stemmed` (porter unicode61, morphological), `memory_content_fts` (trigram, legacy)
 - **Scoring**: Ebbinghaus decay-aware — combines retention, importance, and relevance
 - **Dedup**: Write-time semantic merge (cosine > 0.85 = merge, not INSERT)
 - **Graph**: Association-based memory connections
@@ -205,9 +208,10 @@ This creates natural selection: memories that are frequently useful survive and 
 
 ## FTS5 hybrid search
 
-The database has two FTS5 virtual tables:
+The database has three FTS5 virtual tables:
 
 - **`memory_fts`** (B12): `unicode61` tokenizer, synced via 4 triggers. Used by B12 hooks for word-boundary keyword matching
+- **`memory_fts_stemmed`** (B12, v11.7): `porter unicode61` tokenizer, synced via 4 triggers. Enables morphological matching — "running" matches "run", "configured" matches "config". Activated via `--stemmed` flag in `memory_search`
 - **`memory_content_fts`** (legacy, originally from mcp-memory-service v10.13.0): `trigram` tokenizer, synced via 3 triggers. Kept for backward compatibility
 
 B12 hook search combines:
@@ -261,6 +265,71 @@ Hooks that interpolate user input into SQLite queries apply character-level sani
 - No secrets or credentials in hook scripts
 - MCP server config uses `env: {}` (no environment secrets needed)
 
+## Proactive surfacing engine
+
+`scripts/surfacing_engine.py` — automatically injects relevant past memories when the user interacts with files or encounters errors. Called from `hooks/memory-proactive-surface.sh` (PostToolUse event).
+
+- **Triggers**: `file` (file path → keywords), `error` (error message), `topic` (keywords)
+- **Pipeline**: Rate limit check → build query → daemon semantic search → filter (similarity > 0.80, strength > 0.5, age > 24h, not already surfaced) → format as `additionalContext`
+- **Rate limiting**: Max once per 5 tool calls, 60s cooldown between surfacings
+- **Batch optimization**: Single DB connection for all candidate lookups (N+1 → 1 query)
+- **State**: `~/.B12/surfacing-state.json` tracks surfaced IDs, cooldowns, tool call counts
+
+## Consolidation engine
+
+`scripts/consolidation_engine.py` — scheduled analysis that identifies duplicate groups, merge candidates, and contradictions across all memories.
+
+- **Three-pass approach**: (1) Dedup actions (mark losers consumed), (2) Contradiction flags, (3) Merge groups from unconsumed memories
+- **Contradiction detection**: ONNX NLI model via embed daemon (`nli_check` op)
+- **Output**: Candidates written to `~/.B12/memory-logs/consolidation-*.json` for review
+
+## Export/import
+
+`scripts/export_import.py` — portable `.b12` format for backup, migration, or sharing memory snapshots.
+
+- **Export**: Filters by tags, memory type, date range. Includes content hash for integrity
+- **Import**: Merges into existing database, skips duplicates by content hash
+- **Path security**: Export paths restricted to `~/.B12/exports/` (traversal protection)
+
+## Web dashboard
+
+`scripts/dashboard_server.py` (Flask) + `dashboard/dashboard.html` (Cytoscape.js) — visual memory browser.
+
+- **API endpoints**: `/api/memories`, `/api/graph`, `/api/stats`, `/api/memory/<id>`, SSE events
+- **Graph visualization**: Interactive Cytoscape.js graph of memory associations
+- **Real-time stats**: Memory counts by type, graph edge counts, strength distribution
+
+## Health report
+
+`scripts/b12_health_report.py` — comprehensive health assessment combining quality audit, feedback digest, and session logs.
+
+- **8 sections**: Executive summary, DB metrics, growth trends, retrieval performance (p50/p95/p99), retrieval quality, memory lifecycle, top issues, recommendations
+- **Health score**: 0–100, formula: `100 - stale%×30 - orphan%×20 - dup%×20 - latency_penalty - empty_search_penalty`
+- **Output**: Markdown or JSON to `~/.B12/memory-logs/health-report-YYYY-MM-DD.{md|json}`
+- **CLI**: `python3 scripts/b12_health_report.py --db-path DB --format md|json`
+
+## Gemini CLI hook integration
+
+`hooks/gemini/` — adapter scripts that give Gemini CLI full B12 hook coverage:
+
+- **`b12-gemini-session-start.sh`**: Converts Gemini `SessionStart` to Claude Code format, calls `memory-session-start.sh`
+- **`b12-gemini-session-end.sh`**: Converts Gemini session transcript (JSON → JSONL), calls `memory-session-end.sh` in background
+- **`b12-gemini-tool-call.sh`**: Triggers memory retrieval on built-in Gemini tool calls (read_file, search_files, run_shell_command)
+- **Installation**: `install.sh --gemini` registers hooks in `~/.gemini/settings.json`
+
+## MCP resources
+
+Four read-only resources registered via `@server.resource()` decorator, accessible via `b12://` URIs:
+
+| URI | Returns |
+|-----|---------|
+| `b12://context/project/{name}` | Pre-fetched project context (top memories, last summary, instructions) |
+| `b12://stats` | Memory statistics (counts by type, graph edges, embedding coverage) |
+| `b12://profile` | User profile from `user-profile.md` |
+| `b12://health` | Quick health check (stale count, embedding %, recent growth) |
+
+Resources complement tools by providing passive, cacheable content that any MCP client can read without triggering side effects.
+
 ## Limitations and future work
 
 ### Current limitations
@@ -272,7 +341,7 @@ Hooks that interpolate user input into SQLite queries apply character-level sani
 3. **Linear memory scan**: Write-time merge checks against all memories for similarity. As the database grows (10K+ memories), this may need index optimization.
 
 ### Planned improvements
-- **Graph-based traversal**: Walk memory associations for context expansion
-- **Memory clustering**: Group related memories for batch review
-- **Web dashboard**: Visual memory graph browser
+- **Graph-based traversal**: Walk memory associations for context expansion during retrieval
+- **Memory clustering**: Group related memories for batch review and consolidation
+- **LLM-assisted extraction**: Use MCP sampling (when supported) for higher-quality session-end extraction
 - **0G integration**: Decentralized storage + TEE-based embedding for privacy-preserving cloud memory

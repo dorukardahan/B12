@@ -38,9 +38,10 @@ Claude Code Session (full hook automation)
 B12 MCP Server (b12_mcp_server.py)
     │
     ├── 5 tools: memory_store / memory_search / memory_update / memory_quality / memory_session_context
+    ├── 4 resources: b12://context/project/{name} / b12://stats / b12://profile / b12://health
     ├── SQLite + sqlite-vec (local database, no cloud)
     ├── Embed daemon (sentence-transformers, Unix socket IPC)
-    ├── FTS5 hybrid search (BM25 keyword + vector cosine)
+    ├── FTS5 hybrid search (BM25 keyword + vector cosine + porter stemming)
     ├── Ebbinghaus strength decay (spaced repetition)
     ├── Write-time semantic merge (cosine > 0.85 = merge, not duplicate)
     └── Auto-backup (daily, 7-day rotation)
@@ -104,6 +105,15 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Scope system** — 4 scopes (project, universal, preference, setup) with automatic tagging
 - **Working Memory** — tracks active files and search patterns, restored after context compaction
 - **B12 pill notifications** — visible inline indicators when memories are stored or retrieved
+- **Proactive surfacing** — automatically injects relevant past memories when you open files or hit errors
+- **Smart consolidation** — deduplication, merge groups, and NLI contradiction detection across memories
+- **Export/import** — portable `.b12` format for backup, migration, or sharing memory snapshots
+- **Web dashboard** — Flask + Cytoscape.js visual browser for memory graph and statistics
+- **Health report** — comprehensive weekly report with health score, trends, and recommendations
+- **Porter stemming search** — `memory_fts_stemmed` table matches word variants ("running" → "run")
+- **MCP resources** — `b12://` URIs for protocol-standard context access (stats, profile, health)
+- **Gemini CLI hooks** — adapter scripts that give Gemini CLI full B12 hook integration
+- **LoCoMo benchmark** — retrieval quality evaluation with MRR, NDCG, and regression detection
 - **Multi-setup support** — works across `.claude`, `.claude-work`, etc. with shared database
 - **Multi-platform support** — Claude Code, Codex, Gemini, VS Code, Cursor, Kimi, Windsurf, Cline, OpenCode
 - **Zero config after install** — hooks handle everything silently in the background
@@ -212,26 +222,37 @@ B12/
 │   ├── memory-working-context.sh   #   PostToolUse — track active files
 │   ├── memory-precompact.sh        #   PreCompact — stage transcript summary
 │   ├── memory-session-end.sh       #   SessionEnd — extract & persist memories
+│   ├── memory-proactive-surface.sh #   PostToolUse — proactive memory surfacing
 │   ├── memory-backup.sh            #   Scheduled — daily WAL-safe backup
 │   ├── memory-consolidate.py       #   Scheduled — dedup, stale detection
 │   ├── memory-quality-audit.sh     #   Scheduled — weekly health score
 │   ├── memory-feedback-digest.sh   #   Scheduled — weekly usage digest
 │   ├── memory-browse.sh            #   Manual — CLI memory browser
-│   └── b12-codex-notify.sh         #   Codex — notify hook (session-end debounce)
+│   ├── b12-codex-notify.sh         #   Codex — notify hook (session-end debounce)
+│   └── gemini/                     #   Gemini CLI hook adapters
+│       ├── b12-gemini-session-start.sh  # SessionStart adapter
+│       ├── b12-gemini-session-end.sh    # SessionEnd adapter (transcript conversion)
+│       └── b12-gemini-tool-call.sh      # AfterTool adapter (memory retrieval)
 ├── scripts/                        # Support modules
-│   ├── b12_mcp_server.py           #   Custom FastMCP server (replaces mcp-memory-service)
+│   ├── b12_mcp_server.py           #   Custom FastMCP server (5 tools + 4 resources)
 │   ├── embed_daemon.py             #   Background embedding daemon (Unix socket)
 │   ├── write_time_merge.py         #   Semantic dedup at write time
 │   ├── ebbinghaus.py               #   Decay scoring utilities
 │   ├── contradiction_resolver.py   #   ONNX NLI contradiction detection
 │   ├── graph_enrich.py             #   Memory graph enrichment
-│   ├── shared_patterns.py          #   Shared regex patterns (EN + TR)
+│   ├── consolidation_engine.py     #   Smart consolidation (dedup, merge, contradictions)
+│   ├── surfacing_engine.py         #   Proactive memory surfacing engine
+│   ├── dashboard_server.py         #   Flask web dashboard backend
+│   ├── export_import.py            #   Memory export/import (.b12 format)
+│   ├── b12_health_report.py        #   Comprehensive health report generator
+│   ├── shared_patterns.py          #   Shared regex patterns + content hash (EN + TR)
 │   ├── transcript_adapter.py       #   Unified transcript parser (Claude + Codex)
 │   ├── codex_session_end.py        #   Codex session-end memory extraction
 │   ├── hook_adapter.py             #   Codex CLI hook adapter (translates Codex events to B12)
 │   ├── embedding_backfill.py       #   Backfills embeddings for memories without vectors
 │   ├── query_aliases.json          #   Search query alias mappings
 │   ├── migrate_ebbinghaus.py       #   Migration: add strength fields
+│   ├── migrate_stemmed_fts.py      #   Migration: backfill porter-stemmed FTS5 table
 │   └── migrate_v10_13.py           #   Migration: create native FTS5 table
 ├── skills/                         # Agent skills
 │   └── b12/SKILL.md               #   B12 Codex Skill (memory workflow)
@@ -251,8 +272,10 @@ B12/
 │   └── com.b12.graph-enrich.plist  #   launchd plist for graph enrichment
 ├── templates/
 │   └── user-profile.md             #   User profile template
+├── dashboard/
+│   └── dashboard.html              #   Web dashboard frontend (Cytoscape.js graph)
 ├── benchmarks/
-│   └── locomo/                     #   LoCoMo retrieval evaluation
+│   └── locomo/                     #   LoCoMo retrieval evaluation (MRR, NDCG)
 ├── docs/
 │   ├── architecture.md             #   Detailed architecture documentation
 │   └── setup.md                    #   Step-by-step installation guide
@@ -331,6 +354,34 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 | **Working Memory** | Conversation momentum | `~/.B12/memory-staging/working-memory.json` | Post-compaction recovery |
 
 ## Changelog (recent)
+
+### v11.7 (2026-03-03) — Tier 3: Stemming, Health Report, Gemini Hooks, MCP Resources
+
+- **Porter stemming FTS5** — `memory_fts_stemmed` table with `tokenize='porter unicode61'` for morphological matching
+- **B12 Health Report** — `scripts/b12_health_report.py` with 8 sections, health score 0-100, and recommendations
+- **Gemini CLI hooks** — adapter scripts in `hooks/gemini/` give Gemini CLI full B12 hook integration
+- **MCP Resources** — 4 `b12://` resources for protocol-standard context access (stats, profile, health, project context)
+- **Migration script** — `scripts/migrate_stemmed_fts.py` backfills stemmed FTS from existing memories
+
+### v11.6 (2026-03-03) — LoCoMo Benchmark & Code Review
+
+- **LoCoMo operationalization** — retrieval evaluation with MRR, NDCG, regression detection
+- **17 code review fixes** — crash/data-loss, dashboard, correctness, and performance improvements
+- **Content hash centralized** — `shared_patterns.content_hash()` eliminates hash mismatch across modules
+- **N+1 query fix** — batch DB fetch in surfacing engine
+- **Path traversal protection** — export paths restricted to `~/.B12/exports/`
+
+### v11.5 (2026-03-03) — Web Dashboard
+
+- **Web Dashboard** — Flask backend + Cytoscape.js frontend for visual memory graph browsing
+- **Memory statistics** — real-time counts, type distribution, graph edges
+
+### v11.1–v11.4 (2026-03-03) — Consolidation, Extraction, Surfacing, Export
+
+- **Smart consolidation engine** — dedup groups, merge candidates, NLI contradiction detection
+- **Enhanced session-end extraction** — 4 new memory patterns + `memory_refine` MCP tool
+- **Proactive memory surfacing** — context-aware injection on file opens and errors
+- **Memory export/import** — portable `.b12` format for backup and migration
 
 ### v11.0 (2026-02-28) — Audit, i18n & Cross-Platform Verification
 
