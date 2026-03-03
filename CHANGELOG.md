@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.2.0](https://github.com/dorukardahan/B12/compare/v11.1.0...v11.2.0) (2026-03-03)
+
+
+### Features
+
+* **extraction:** Enhanced session-end extraction with 4 new patterns + memory_refine tool (v11.2.0) ([88292f7](https://github.com/dorukardahan/B12/commit/88292f73749cbac6a0245aba24dab019681a9b67))
+
 # [11.1.0](https://github.com/dorukardahan/B12/compare/v11.0.0...v11.1.0) (2026-03-03)
 
 
