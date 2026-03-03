@@ -604,7 +604,11 @@ def retrieve_adaptive(conn, question, conv_id, top_k=5):
 
 def evaluate(data, conn, top_k_values, search_mode='keyword', use_vectors=False):
     """Run LoCoMo QA evaluation against B12 retrieval."""
-    results = {k: {cat: {'recall': 0, 'total': 0, 'f1_sum': 0.0}
+    # Import ranking metrics
+    from metrics import reciprocal_rank, ndcg_at_k, precision_at_k
+
+    results = {k: {cat: {'recall': 0, 'total': 0, 'f1_sum': 0.0,
+                          'rr_sum': 0.0, 'ndcg_sum': 0.0, 'precision_sum': 0.0}
                     for cat in CATEGORIES}
                for k in top_k_values}
 
@@ -647,9 +651,18 @@ def evaluate(data, conn, top_k_values, search_mode='keyword', use_vectors=False)
                 # Combine retrieved content
                 combined = " ".join([r[1] for r in retrieved])
 
+                # Per-item relevance for ranking metrics
+                retrieved_ids = list(range(len(retrieved)))
+                if category == 5:
+                    # Adversarial: "relevant" means NOT containing the answer
+                    relevant_ids = {i for i, r in enumerate(retrieved)
+                                    if not has_answer(r[1], answer)}
+                else:
+                    relevant_ids = {i for i, r in enumerate(retrieved)
+                                    if has_answer(r[1], answer)}
+
                 # Recall: does retrieved content contain the answer?
                 if category == 5:
-                    # Adversarial: correct if answer NOT found (question is unanswerable)
                     if not has_answer(combined, answer):
                         results[top_k][category]['recall'] += 1
                 else:
@@ -659,11 +672,78 @@ def evaluate(data, conn, top_k_values, search_mode='keyword', use_vectors=False)
                 # F1: token overlap between retrieved and answer
                 f1 = f1_score(combined, answer)
                 results[top_k][category]['f1_sum'] += f1
+
+                # Ranking metrics
+                results[top_k][category]['rr_sum'] += reciprocal_rank(retrieved_ids, relevant_ids)
+                results[top_k][category]['ndcg_sum'] += ndcg_at_k(retrieved_ids, relevant_ids, top_k)
+                results[top_k][category]['precision_sum'] += precision_at_k(retrieved_ids, relevant_ids, top_k)
+
                 results[top_k][category]['total'] += 1
 
     return results, total_qs, no_retrieval, classify_stats
 
 # ── Report ──────────────────────────────────────────────────────────────
+
+def compute_aggregates(results, top_k):
+    """Compute aggregate metrics for a given top_k from per-category results."""
+    total_recall = 0
+    total_count = 0
+    total_f1 = 0.0
+    total_rr = 0.0
+    total_ndcg = 0.0
+    total_precision = 0.0
+
+    for cat_id in CATEGORIES:
+        r = results[top_k][cat_id]
+        total_recall += r['recall']
+        total_count += r['total']
+        total_f1 += r['f1_sum']
+        total_rr += r['rr_sum']
+        total_ndcg += r['ndcg_sum']
+        total_precision += r['precision_sum']
+
+    if total_count == 0:
+        return {}
+
+    return {
+        f'recall@{top_k}': total_recall / total_count,
+        'token_f1': total_f1 / total_count,
+        'mrr': total_rr / total_count,
+        f'ndcg@{top_k}': total_ndcg / total_count,
+        f'precision@{top_k}': total_precision / total_count,
+    }
+
+
+def results_to_json(mode, search_mode, results, top_k_values, total_qs,
+                    no_retrieval, elapsed, category_detail=False):
+    """Convert results to JSON-serializable dict."""
+    key = f"{mode}-{search_mode}"
+    metrics = {}
+
+    for top_k in top_k_values:
+        agg = compute_aggregates(results, top_k)
+        metrics.update(agg)
+
+    output = {key: metrics}
+
+    if category_detail:
+        for top_k in top_k_values:
+            for cat_id in sorted(CATEGORIES.keys()):
+                cat_name = CATEGORIES[cat_id]
+                r = results[top_k][cat_id]
+                if r['total'] == 0:
+                    continue
+                cat_key = f"{key}/{cat_name}"
+                if cat_key not in output:
+                    output[cat_key] = {}
+                output[cat_key][f'recall@{top_k}'] = r['recall'] / r['total']
+                output[cat_key]['token_f1'] = r['f1_sum'] / r['total']
+                output[cat_key]['mrr'] = r['rr_sum'] / r['total']
+                output[cat_key][f'ndcg@{top_k}'] = r['ndcg_sum'] / r['total']
+                output[cat_key][f'precision@{top_k}'] = r['precision_sum'] / r['total']
+
+    return output
+
 
 def print_report(mode, mem_count, results, total_qs, no_retrieval, elapsed,
                  search_mode='keyword', classify_stats=None):
@@ -711,12 +791,47 @@ def print_report(mode, mem_count, results, total_qs, no_retrieval, elapsed,
         if answerable_count > 0:
             ans_recall = answerable_recall / answerable_count
             print(f"    {'ANSWERABLE':15s}  {'':20s}  {ans_recall*100:5.1f}%  n={answerable_count}")
+
+        # Print new metrics summary
+        agg = compute_aggregates(results, top_k)
+        if agg:
+            print(f"    MRR: {agg['mrr']:.4f}  |  NDCG@{top_k}: {agg.get(f'ndcg@{top_k}', 0):.4f}  |  P@{top_k}: {agg.get(f'precision@{top_k}', 0):.4f}")
         print()
+
+
+def check_regression(current_results, baseline_path, threshold=0.05):
+    """Compare current results against a baseline file.
+
+    Returns (passed, regressions) where regressions is a list of
+    (config, metric, baseline_val, current_val, drop) tuples.
+    """
+    with open(baseline_path) as f:
+        baseline = json.load(f)
+
+    baseline_results = baseline.get('results', {})
+    regressions = []
+
+    for config_key, metrics in current_results.items():
+        if '/' in config_key:  # Skip category detail entries
+            continue
+        if config_key not in baseline_results:
+            continue
+        base_metrics = baseline_results[config_key]
+        for metric_name, current_val in metrics.items():
+            base_val = base_metrics.get(metric_name)
+            if base_val is None or base_val == 0:
+                continue
+            drop = (base_val - current_val) / base_val
+            if drop > threshold:
+                regressions.append((config_key, metric_name, base_val, current_val, drop))
+
+    return len(regressions) == 0, regressions
 
 # ── Main ────────────────────────────────────────────────────────────────
 
 def main():
     import argparse
+    from datetime import date
     parser = argparse.ArgumentParser(description='B12 LoCoMo Benchmark')
     parser.add_argument('--mode', choices=['observations', 'summaries', 'dialogues', 'all'],
                        default='all', help='Storage mode')
@@ -724,6 +839,16 @@ def main():
                        default='keyword', help='Search mode (compare runs keyword+hybrid+adaptive)')
     parser.add_argument('--top-k', type=int, nargs='+', default=[1, 3, 5, 10],
                        help='Top-k values for recall')
+    parser.add_argument('--output', choices=['text', 'json'], default='text',
+                       help='Output format (default: text)')
+    parser.add_argument('--compare', metavar='FILE',
+                       help='Compare against baseline JSON file for regression detection')
+    parser.add_argument('--threshold', type=float, default=0.05,
+                       help='Max allowed metric drop for regression (default: 0.05 = 5%%)')
+    parser.add_argument('--save-baseline', metavar='FILE',
+                       help='Save current run results as a new baseline JSON file')
+    parser.add_argument('--category-detail', action='store_true',
+                       help='Include per-category breakdown in JSON output')
     args = parser.parse_args()
 
     # Load data
@@ -742,6 +867,7 @@ def main():
         get_embedding_model()
 
     modes = ['observations', 'summaries', 'dialogues'] if args.mode == 'all' else [args.mode]
+    all_json_results = {}
 
     for mode in modes:
         # Create fresh test DB (with vectors if needed)
@@ -772,9 +898,17 @@ def main():
             )
             elapsed = time.time() - t0
 
-            # Report
+            # Console report (always)
             print_report(mode, count, results, total_qs, no_retrieval, elapsed,
                         search_mode=effective_mode, classify_stats=classify_stats)
+
+            # Collect JSON results
+            json_data = results_to_json(
+                mode, effective_mode, results, args.top_k,
+                total_qs, no_retrieval, elapsed,
+                category_detail=args.category_detail
+            )
+            all_json_results.update(json_data)
 
         conn.close()
 
@@ -786,7 +920,41 @@ def main():
         if p.exists():
             p.unlink()
 
-    print("Done. Test database cleaned up.")
+    # JSON output
+    if args.output == 'json' or args.save_baseline or args.compare:
+        json_output = {
+            "version": "12.0.0",
+            "date": str(date.today()),
+            "results": all_json_results,
+        }
+
+        if args.output == 'json':
+            print(json.dumps(json_output, indent=2))
+
+        # Save baseline
+        if args.save_baseline:
+            with open(args.save_baseline, 'w') as f:
+                json.dump(json_output, f, indent=2)
+            print(f"\nBaseline saved to {args.save_baseline}")
+
+        # Regression detection
+        if args.compare:
+            if not os.path.exists(args.compare):
+                print(f"\nWARNING: Baseline file not found: {args.compare}")
+                print("  Run with --save-baseline to create one.")
+            else:
+                passed, regressions = check_regression(
+                    all_json_results, args.compare, args.threshold
+                )
+                if passed:
+                    print(f"\n  PASS: No regressions detected (threshold: {args.threshold*100:.0f}%)")
+                else:
+                    print(f"\n  FAIL: {len(regressions)} regression(s) detected!")
+                    for cfg, metric, base, curr, drop in regressions:
+                        print(f"    {cfg} / {metric}: {base:.4f} → {curr:.4f} (↓{drop*100:.1f}%)")
+                    sys.exit(1)
+
+    print("\nDone. Test database cleaned up.")
 
 if __name__ == '__main__':
     main()

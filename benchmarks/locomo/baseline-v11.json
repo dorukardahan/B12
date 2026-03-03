@@ -1,133 +1,22 @@
 {
-  "version": "v11.0.0",
+  "version": "12.0.0",
   "date": "2026-03-03",
-  "dataset": "locomo10.json",
-  "storage_mode": "observations",
-  "memories_ingested": 2541,
-  "total_qa_questions": 1986,
   "results": {
-    "keyword": {
-      "recall_at_1": {
-        "multi-hop": 3.9,
-        "single-hop": 9.3,
-        "temporal": 3.1,
-        "open-domain": 30.2,
-        "adversarial": 70.4,
-        "overall": 30.8,
-        "answerable": 19.4
-      },
-      "recall_at_3": {
-        "multi-hop": 7.8,
-        "single-hop": 14.6,
-        "temporal": 4.2,
-        "open-domain": 38.6,
-        "adversarial": 61.7,
-        "overall": 33.9,
-        "answerable": 25.8
-      },
-      "recall_at_5": {
-        "multi-hop": 11.0,
-        "single-hop": 17.4,
-        "temporal": 4.2,
-        "open-domain": 41.7,
-        "adversarial": 58.1,
-        "overall": 35.3,
-        "answerable": 28.7
-      },
-      "recall_at_10": {
-        "multi-hop": 14.5,
-        "single-hop": 23.4,
-        "temporal": 7.3,
-        "open-domain": 47.0,
-        "adversarial": 52.5,
-        "overall": 37.9,
-        "answerable": 33.6
-      }
-    },
-    "hybrid": {
-      "recall_at_1": {
-        "multi-hop": 5.0,
-        "single-hop": 10.6,
-        "temporal": 4.2,
-        "open-domain": 25.7,
-        "adversarial": 83.9,
-        "overall": 32.3,
-        "answerable": 17.4
-      },
-      "recall_at_3": {
-        "multi-hop": 9.6,
-        "single-hop": 15.6,
-        "temporal": 6.2,
-        "open-domain": 33.9,
-        "adversarial": 80.0,
-        "overall": 36.5,
-        "answerable": 23.9
-      },
-      "recall_at_5": {
-        "multi-hop": 11.3,
-        "single-hop": 21.2,
-        "temporal": 6.2,
-        "open-domain": 34.5,
-        "adversarial": 81.2,
-        "overall": 38.2,
-        "answerable": 25.7
-      },
-      "recall_at_10": {
-        "multi-hop": 12.8,
-        "single-hop": 23.7,
-        "temporal": 5.2,
-        "open-domain": 34.1,
-        "adversarial": 81.8,
-        "overall": 38.7,
-        "answerable": 26.2
-      }
-    },
-    "adaptive": {
-      "query_routing": {
-        "hybrid_pct": 80,
-        "keyword_pct": 19
-      },
-      "recall_at_1": {
-        "multi-hop": 5.0,
-        "single-hop": 10.0,
-        "temporal": 4.2,
-        "open-domain": 25.9,
-        "adversarial": 81.4,
-        "overall": 31.8,
-        "answerable": 17.4
-      },
-      "recall_at_3": {
-        "multi-hop": 9.2,
-        "single-hop": 15.6,
-        "temporal": 6.2,
-        "open-domain": 34.4,
-        "adversarial": 77.6,
-        "overall": 36.1,
-        "answerable": 24.1
-      },
-      "recall_at_5": {
-        "multi-hop": 11.7,
-        "single-hop": 21.2,
-        "temporal": 6.2,
-        "open-domain": 35.3,
-        "adversarial": 78.0,
-        "overall": 37.9,
-        "answerable": 26.2
-      },
-      "recall_at_10": {
-        "multi-hop": 14.2,
-        "single-hop": 24.0,
-        "temporal": 5.2,
-        "open-domain": 37.1,
-        "adversarial": 76.0,
-        "overall": 38.9,
-        "answerable": 28.2
-      }
+    "observations-keyword": {
+      "recall@1": 0.3081570996978852,
+      "token_f1": 0.02463219404900634,
+      "mrr": 0.36743234386738904,
+      "ndcg@1": 0.3081570996978852,
+      "precision@1": 0.3081570996978852,
+      "recall@3": 0.3388721047331319,
+      "ndcg@3": 0.3767925141881238,
+      "precision@3": 0.2700570661295737,
+      "recall@5": 0.35297079556898286,
+      "ndcg@5": 0.3880175342647198,
+      "precision@5": 0.2589123867069496,
+      "recall@10": 0.37865055387714,
+      "ndcg@10": 0.4005102202633323,
+      "precision@10": 0.24798590130916395
     }
-  },
-  "timing": {
-    "keyword_seconds": 6.7,
-    "hybrid_seconds": 266.4,
-    "adaptive_seconds": 233.7
   }
 }
