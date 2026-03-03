@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.4.0](https://github.com/dorukardahan/B12/compare/v11.3.0...v11.4.0) (2026-03-03)
+
+
+### Features
+
+* **export:** Memory export/import with portable .b12 format (v11.4.0) ([f6d3f6f](https://github.com/dorukardahan/B12/commit/f6d3f6f587f32b5ad6fec7c640aaf88353378eda))
+
 # [11.3.0](https://github.com/dorukardahan/B12/compare/v11.2.0...v11.3.0) (2026-03-03)
 
 
