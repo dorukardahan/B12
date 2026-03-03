@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.6.1](https://github.com/dorukardahan/B12/compare/v11.6.0...v11.6.1) (2026-03-03)
+
+
+### Bug Fixes
+
+* resolve 17 issues from v12 code review (crash, dashboard, correctness) ([4711a0c](https://github.com/dorukardahan/B12/commit/4711a0c8471280d62c6b633bd3204961655856fd))
+
 # [11.6.0](https://github.com/dorukardahan/B12/compare/v11.5.0...v11.6.0) (2026-03-03)
 
 
