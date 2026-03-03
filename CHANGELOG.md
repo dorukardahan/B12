@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.5.0](https://github.com/dorukardahan/B12/compare/v11.4.0...v11.5.0) (2026-03-03)
+
+
+### Features
+
+* **dashboard:** Web Dashboard with Flask backend + Cytoscape.js frontend (v11.5.0) ([8873029](https://github.com/dorukardahan/B12/commit/8873029f4cba25ade0932176ad37996861aed6cc)), closes [#11](https://github.com/dorukardahan/B12/issues/11)
+
 # [11.4.0](https://github.com/dorukardahan/B12/compare/v11.3.0...v11.4.0) (2026-03-03)
 
 
