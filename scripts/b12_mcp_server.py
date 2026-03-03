@@ -926,6 +926,52 @@ async def memory_refine(
     return "\n".join(lines)
 
 
+# ── Tool: memory_surface ─────────────────────────────────────────
+
+# Surfacing engine (lazy import path — scripts/ is on sys.path)
+try:
+    from surfacing_engine import surface as _surface, format_for_context as _format_surface
+except ImportError:
+    _surface = None
+    _format_surface = None
+
+
+@server.tool()
+async def memory_surface(
+    context: str = "",
+    trigger_type: str = "topic",
+) -> str:
+    """Proactively surface relevant memories based on context.
+
+    Searches for memories related to the given context (file path, error message,
+    or topic keywords) and returns relevant past knowledge. Useful on platforms
+    without hook support (Gemini CLI, Codex CLI, etc.).
+
+    Args:
+        context: The context to search for (file path, error text, or topic)
+        trigger_type: One of "file", "error", or "topic"
+    """
+    if _surface is None:
+        return "Error: surfacing_engine module not available. Check scripts/ directory."
+
+    if not context:
+        return "Error: context is required"
+
+    if trigger_type not in ("file", "error", "topic"):
+        return "Error: trigger_type must be 'file', 'error', or 'topic'"
+
+    result = _surface(trigger_type=trigger_type, context=context)
+
+    if not result.surfaced:
+        return f"No relevant memories found. ({result.reason})"
+
+    formatted = _format_surface(result)
+    if formatted:
+        return formatted
+
+    return "No relevant memories found."
+
+
 # ── Entry point ──────────────────────────────────────────────────
 
 if __name__ == "__main__":

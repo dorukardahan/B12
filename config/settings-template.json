@@ -63,6 +63,16 @@
             "timeout": 8
           }
         ]
+      },
+      {
+        "matcher": "Read|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.B12/hooks/memory-proactive-surface.sh",
+            "timeout": 10
+          }
+        ]
       }
     ],
     "PostToolUse": [
@@ -83,6 +93,16 @@
             "type": "command",
             "command": "~/.B12/hooks/memory-working-context.sh",
             "timeout": 8
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.B12/hooks/memory-proactive-surface.sh",
+            "timeout": 10
           }
         ]
       }
