@@ -642,32 +642,42 @@ def consolidate(
                         result.kept_separate += 1
                 continue
 
-            # Group merge actions: collect all memories that should merge together
-            # within this cluster into one merged memory
-            merge_group: List[MemoryRecord] = []
-            merge_ids: set = set()
+            # Two-pass: dedups first (consume losers), then merges from survivors.
+            # This prevents a memory consumed by dedup from lingering in a merge group.
 
+            # Pass 1: Deduplications
             for a, b, action_type in actions:
+                if action_type != 'dedup':
+                    continue
                 if a.id in consumed_ids or b.id in consumed_ids:
                     continue
+                kept_id = _apply_dedup(conn, a, b)
+                consumed_ids.add(a.id if kept_id != a.id else b.id)
+                result.memories_deduplicated += 1
 
-                if action_type == 'dedup':
-                    kept_id = _apply_dedup(conn, a, b)
-                    consumed_ids.add(a.id if kept_id != a.id else b.id)
-                    result.memories_deduplicated += 1
+            # Pass 2: Contradictions (before merges — contradicting pairs must not merge)
+            for a, b, action_type in actions:
+                if action_type != 'contradiction':
+                    continue
+                if a.id in consumed_ids or b.id in consumed_ids:
+                    continue
+                _flag_contradiction(conn, a, b)
+                result.contradictions_flagged += 1
 
-                elif action_type == 'merge':
-                    # Collect into merge group
-                    if a.id not in merge_ids:
-                        merge_group.append(a)
-                        merge_ids.add(a.id)
-                    if b.id not in merge_ids:
-                        merge_group.append(b)
-                        merge_ids.add(b.id)
-
-                elif action_type == 'contradiction':
-                    _flag_contradiction(conn, a, b)
-                    result.contradictions_flagged += 1
+            # Pass 3: Collect merge groups from unconsumed memories
+            merge_group: List[MemoryRecord] = []
+            merge_ids: set = set()
+            for a, b, action_type in actions:
+                if action_type != 'merge':
+                    continue
+                if a.id in consumed_ids or b.id in consumed_ids:
+                    continue
+                if a.id not in merge_ids:
+                    merge_group.append(a)
+                    merge_ids.add(a.id)
+                if b.id not in merge_ids:
+                    merge_group.append(b)
+                    merge_ids.add(b.id)
 
             # Apply merge group if we collected any
             if len(merge_group) >= 2:

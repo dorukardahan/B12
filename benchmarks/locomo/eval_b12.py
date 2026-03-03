@@ -375,6 +375,7 @@ def retrieve_fts5(conn, question, conv_id, top_k=5):
         """, (fts_query, conv_id, top_k)).fetchall()
     except Exception:
         # Fallback: try individual keywords
+        safe_keywords = [re.sub(r"['\";(){}]", "", k) for k in keywords]
         results = []
         for kw in safe_keywords[:3]:
             try:

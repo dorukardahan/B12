@@ -1010,6 +1010,13 @@ async def memory_export(
     if _export_memories is None:
         return "Error: export_import module not available."
 
+    # Validate output_path: must be within ~/.B12/exports/ if specified
+    if output_path:
+        b12_exports = os.path.join(os.path.expanduser("~"), ".B12", "exports")
+        resolved = os.path.realpath(os.path.expanduser(output_path))
+        if not resolved.startswith(os.path.realpath(b12_exports)):
+            return f"Error: output_path must be within {b12_exports}"
+
     result = _export_memories(
         db_path=DB_PATH,
         output_path=output_path,
@@ -1201,9 +1208,9 @@ async def memory_dashboard(
 
     # Launch as background process
     proc = subprocess.Popen(
-        [sys.executable, server_script, "--port", str(port), "--token", token],
+        [_sys.executable, server_script, "--port", str(port), "--token", token],
         stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
+        stderr=open(os.path.join(b12_data, "dashboard.log"), "a"),
         start_new_session=True,
     )
 
@@ -1211,7 +1218,8 @@ async def memory_dashboard(
     os.makedirs(b12_data, exist_ok=True)
     with open(pid_file, "w") as f:
         f.write(str(proc.pid))
-    with open(token_file, "w") as f:
+    fd = os.open(token_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         f.write(token)
 
     url = f"http://127.0.0.1:{port}?token={token}"

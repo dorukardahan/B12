@@ -154,10 +154,29 @@ def create_app(db_path: str | None = None, port: int = DEFAULT_PORT,
         q = request.args.get("q", "").strip()
         mem_type = request.args.get("type", "").strip()
         tags_filter = request.args.get("tags", "").strip()
-        before = request.args.get("before", "").strip()
-        after = request.args.get("after", "").strip()
-        limit = min(int(request.args.get("limit", DEFAULT_LIMIT)), MAX_LIMIT)
-        offset = int(request.args.get("offset", 0))
+        before_raw = request.args.get("before", "").strip()
+        after_raw = request.args.get("after", "").strip()
+        try:
+            limit = min(int(request.args.get("limit", DEFAULT_LIMIT)), MAX_LIMIT)
+        except (ValueError, TypeError):
+            limit = DEFAULT_LIMIT
+        try:
+            offset = max(int(request.args.get("offset", 0)), 0)
+        except (ValueError, TypeError):
+            offset = 0
+        # Validate before/after as integers (Unix epoch)
+        before = ""
+        after = ""
+        try:
+            if before_raw:
+                before = int(before_raw)
+        except (ValueError, TypeError):
+            pass
+        try:
+            if after_raw:
+                after = int(after_raw)
+        except (ValueError, TypeError):
+            pass
 
         conn = get_ro_connection(db_path)
         try:
@@ -199,13 +218,13 @@ def create_app(db_path: str | None = None, port: int = DEFAULT_PORT,
                 if before:
                     sql += " AND m.created_at < ?"
                     count_sql += " AND m.created_at < ?"
-                    params.append(int(before))
-                    count_params.append(int(before))
+                    params.append(before)
+                    count_params.append(before)
                 if after:
                     sql += " AND m.created_at > ?"
                     count_sql += " AND m.created_at > ?"
-                    params.append(int(after))
-                    count_params.append(int(after))
+                    params.append(after)
+                    count_params.append(after)
 
                 sql += " ORDER BY f.rank LIMIT ? OFFSET ?"
                 params.extend([limit, offset])
@@ -237,13 +256,13 @@ def create_app(db_path: str | None = None, port: int = DEFAULT_PORT,
                 if before:
                     sql += " AND created_at < ?"
                     count_sql += " AND created_at < ?"
-                    params.append(int(before))
-                    count_params.append(int(before))
+                    params.append(before)
+                    count_params.append(before)
                 if after:
                     sql += " AND created_at > ?"
                     count_sql += " AND created_at > ?"
-                    params.append(int(after))
-                    count_params.append(int(after))
+                    params.append(after)
+                    count_params.append(after)
 
                 sql += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
                 params.extend([limit, offset])
@@ -528,7 +547,8 @@ def create_app(db_path: str | None = None, port: int = DEFAULT_PORT,
                                    substr(content, 1, 80) AS preview,
                                    created_at, last_accessed_at, deleted_at
                             FROM memories
-                            WHERE created_at >= ? OR last_accessed_at >= ?
+                            WHERE deleted_at IS NULL
+                              AND (created_at >= ? OR last_accessed_at >= ?)
                             ORDER BY created_at DESC
                             LIMIT 20
                         """, [last_check, last_check]).fetchall()

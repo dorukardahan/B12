@@ -64,19 +64,33 @@ def surface(trigger_type: str, context: str, db_path: str = "",
     if not daemon_results:
         return SurfacingResult(surfaced=False, reason="Daemon unavailable or no results")
 
-    # 5. Filter results
+    # 5. Filter results (single DB connection for all lookups)
     state = _load_state(state_path)
     now = time.time()
     now_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
+    surfaced_set = set(state.get("surfaced_ids", []))
     filtered = []
 
+    # Pre-filter by similarity and already-surfaced before hitting DB
+    candidate_ids = []
+    candidates_by_id = {}
     for mem in daemon_results:
-        # Similarity threshold
         if mem.get("score", 0) < SIMILARITY_THRESHOLD:
             continue
+        if mem["id"] in surfaced_set:
+            continue
+        candidate_ids.append(mem["id"])
+        candidates_by_id[mem["id"]] = mem
 
-        # Need to check strength and age from DB
-        mem_info = _get_memory_info(db_path, mem["id"])
+    if not candidate_ids:
+        _increment_tool_calls(state_path, state)
+        return SurfacingResult(surfaced=False, reason="No memories passed similarity/surfaced filters")
+
+    # Batch fetch from DB with single connection
+    mem_infos = _get_memory_infos_batch(db_path, candidate_ids)
+
+    for mid in candidate_ids:
+        mem_info = mem_infos.get(mid)
         if not mem_info:
             continue
 
@@ -91,11 +105,6 @@ def surface(trigger_type: str, context: str, db_path: str = "",
         if now - created_at < AGE_THRESHOLD_SECONDS:
             continue
 
-        # Not already surfaced this session
-        surfaced_ids = state.get("surfaced_ids", [])
-        if mem["id"] in surfaced_ids:
-            continue
-
         # Skip soft-deleted
         if mem_info.get("deleted_at"):
             continue
@@ -105,8 +114,9 @@ def surface(trigger_type: str, context: str, db_path: str = "",
         if valid_until and valid_until != "" and valid_until < now_iso:
             continue
 
+        mem = candidates_by_id[mid]
         filtered.append({
-            "id": mem["id"],
+            "id": mid,
             "content": mem_info.get("content", mem.get("content", "")),
             "memory_type": mem_info.get("memory_type", "general"),
             "score": mem["score"],
@@ -185,7 +195,9 @@ def update_surfacing_state(state_path: str, surfaced_ids: list[int],
     state["last_surfaced_at"] = time.time()
     state["tool_calls_since"] = 0
     existing_ids = state.get("surfaced_ids", [])
-    state["surfaced_ids"] = existing_ids + surfaced_ids
+    combined = existing_ids + surfaced_ids
+    # Cap to prevent unbounded growth across long sessions
+    state["surfaced_ids"] = combined[-200:] if len(combined) > 200 else combined
 
     _save_state(state_path, state)
 
@@ -268,7 +280,7 @@ def _daemon_search(query: str, db_path: str, limit: int = 20) -> list[dict]:
 
 
 def _get_memory_info(db_path: str, memory_id: int) -> dict | None:
-    """Get memory details from the database."""
+    """Get memory details from the database (single lookup)."""
     try:
         conn = sqlite3.connect(db_path, timeout=2)
         conn.row_factory = sqlite3.Row
@@ -283,6 +295,25 @@ def _get_memory_info(db_path: str, memory_id: int) -> dict | None:
         return None
     except Exception:
         return None
+
+
+def _get_memory_infos_batch(db_path: str, memory_ids: list[int]) -> dict[int, dict]:
+    """Batch-fetch memory details with a single DB connection."""
+    if not memory_ids:
+        return {}
+    try:
+        conn = sqlite3.connect(db_path, timeout=2)
+        conn.row_factory = sqlite3.Row
+        placeholders = ",".join("?" for _ in memory_ids)
+        rows = conn.execute(
+            f"SELECT id, content, memory_type, tags, strength, created_at, "
+            f"deleted_at, valid_until, metadata FROM memories WHERE id IN ({placeholders})",
+            memory_ids,
+        ).fetchall()
+        conn.close()
+        return {row["id"]: dict(row) for row in rows}
+    except Exception:
+        return {}
 
 
 def _load_state(state_path: str) -> dict:

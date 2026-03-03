@@ -5,6 +5,7 @@ hooks/memory-session-end.sh, hooks/memory-precompact.sh, and all scripts.
 
 English + Turkish contextual patterns (v4 format).
 """
+import hashlib
 import os
 import re
 import sys
@@ -33,6 +34,15 @@ def get_db_path() -> str:
 
 
 DB_PATH = get_db_path()
+
+
+def content_hash(text: str) -> str:
+    """Canonical SHA-256 content hash for B12 memories.
+
+    Normalizes with strip().lower() before hashing.
+    ALL code that computes content hashes MUST use this function.
+    """
+    return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
 
 DECISION_RE = re.compile(
     r'(?i)(?:'

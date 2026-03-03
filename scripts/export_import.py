@@ -10,7 +10,6 @@ Excludes embeddings by default (regenerated on import).
 Import uses content_hash dedup — importing same file twice is safe.
 """
 import gzip
-import hashlib
 import json
 import os
 import sqlite3
@@ -19,6 +18,13 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Callable, Optional
+
+try:
+    from shared_patterns import content_hash as _content_hash
+except ImportError:
+    import hashlib
+    def _content_hash(text: str) -> str:
+        return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
 
 B12_VERSION = "11.4.0"
 SCHEMA_VERSION = 1
@@ -195,7 +201,8 @@ def export_memories(
             hash_list = list(exported_hashes)
             edge_rows = conn.execute(
                 f"""SELECT source_hash, target_hash, similarity,
-                           connection_types, relationship_type
+                           connection_types, relationship_type,
+                           created_at, metadata
                     FROM memory_graph
                     WHERE source_hash IN ({placeholders})
                       AND target_hash IN ({placeholders})""",
@@ -210,6 +217,8 @@ def export_memories(
                     "similarity": edge["similarity"],
                     "connection_types": edge["connection_types"],
                     "relationship_type": edge["relationship_type"],
+                    "created_at": edge["created_at"],
+                    "metadata": edge["metadata"],
                 }
                 f.write(json.dumps(edge_record, ensure_ascii=False) + "\n")
                 edges_exported += 1
@@ -339,7 +348,7 @@ def _import_memory(
 
     content_hash = record.get("content_hash", "")
     if not content_hash:
-        content_hash = hashlib.sha256(content.encode()).hexdigest()
+        content_hash = _content_hash(content)
 
     # Check if already exists
     existing = conn.execute(
@@ -355,7 +364,6 @@ def _import_memory(
                     "UPDATE memories SET deleted_at = NULL, strength = 1.0 WHERE content_hash = ?",
                     (content_hash,)
                 )
-                conn.commit()
                 return True
             return False  # Already exists, skip
         # Replace mode: already cleared above, but entry might exist from this import
@@ -402,8 +410,7 @@ def _import_memory(
             record.get("last_accessed_at"),
         ),
     )
-    conn.commit()
-    return True
+    return conn.total_changes > 0
 
 
 def _import_edge(conn: sqlite3.Connection, record: dict) -> bool:
@@ -416,18 +423,22 @@ def _import_edge(conn: sqlite3.Connection, record: dict) -> bool:
     try:
         conn.execute(
             """INSERT OR REPLACE INTO memory_graph
-               (source_hash, target_hash, similarity, connection_types, relationship_type)
-               VALUES (?, ?, ?, ?, ?)""",
+               (source_hash, target_hash, similarity, connection_types,
+                relationship_type, created_at, metadata)
+               VALUES (?, ?, ?, ?, ?, ?, ?)""",
             (
                 source,
                 target,
                 record.get("similarity", 0.0),
                 record.get("connection_types", ""),
                 record.get("relationship_type", "related"),
+                record.get("created_at", time.time()),
+                record.get("metadata", "{}"),
             ),
         )
         return True
-    except Exception:
+    except Exception as e:
+        sys.stderr.write(f"Edge import error: {e}\n")
         return False
 
 
