@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.8.1](https://github.com/dorukardahan/B12/compare/v11.8.0...v11.8.1) (2026-03-14)
+
+
+### Bug Fixes
+
+* **docs:** correct CHANGELOG version from 12.0.0 to 11.8.0 ([18fd448](https://github.com/dorukardahan/B12/commit/18fd448795cbbbb2a8a032d9b9615c7ff4bcb844))
+
 # [11.8.0](https://github.com/dorukardahan/B12/compare/v11.7.3...v11.8.0) (2026-03-14)
 
 ### Features
