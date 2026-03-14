@@ -205,7 +205,7 @@ copy_hooks() {
 copy_scripts() {
   local count=0
   local EXCLUDE="patch_validate_input.py fix_empty_tags.py"
-  for f in "$SCRIPT_SOURCE"/*.py; do
+  for f in "$SCRIPT_SOURCE"/*.py "$SCRIPT_SOURCE"/*.json; do
     [ -f "$f" ] || continue
     local base=$(basename "$f")
     case " $EXCLUDE " in *" $base "*) continue ;; esac
