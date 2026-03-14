@@ -1,0 +1,9 @@
+{
+  "known_issues": {
+    "1.0.0": "Early version — memory_store tool schema may differ",
+    "1.0.1": "",
+    "1.0.2": ""
+  },
+  "min_supported": "1.0.0",
+  "notes": "Add known issues for specific Claude Code versions here. Empty string = no issues."
+}

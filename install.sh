@@ -16,6 +16,7 @@
 #   ./install.sh --opencode         # Install B12 MCP server to OpenCode
 #   ./install.sh --full --codex     # Full setup + Codex CLI support
 #   ./install.sh --full --gemini --cursor  # Full setup + Gemini + Cursor
+#   ./install.sh --health           # Run B12 health check diagnostics
 #
 # What --full does (in addition to standard install):
 #   1. Creates ~/.local/b12-venv if it doesn't exist
@@ -125,6 +126,18 @@ for arg in "$@"; do
     --windsurf)  INSTALL_WINDSURF=true ;;
     --cline)     INSTALL_CLINE=true ;;
     --opencode)  INSTALL_OPENCODE=true ;;
+    --health)
+      # Run health check and exit
+      if [ -x "$VENV_PYTHON" ]; then
+        "$VENV_PYTHON" "$SCRIPT_SOURCE/b12_health.py" "${@:2}"
+      elif command -v python3 &>/dev/null; then
+        python3 "$SCRIPT_SOURCE/b12_health.py" "${@:2}"
+      else
+        echo "Python 3 required for health check"
+        exit 1
+      fi
+      exit $?
+      ;;
     *)           TARGET_DIR="$arg" ;;
   esac
 done
@@ -138,6 +151,7 @@ create_dirs() {
   mkdir -p "$HOME/.B12/memory-staging"
   mkdir -p "$HOME/.B12/memory-logs"
   mkdir -p "$HOME/.B12/memory-summaries"
+  mkdir -p "$HOME/.B12/memory-state"
 
   # Migrate data from old ~/.claude/ location (safe: copies, doesn't delete)
   local migrated=0

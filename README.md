@@ -11,9 +11,11 @@ The hook-based automation below runs in Claude Code. Other platforms use the MCP
 ```
 Claude Code Session (full hook automation)
     │
-    ├── SessionStart ──────────> Inject: user profile + last session summary
+    ├── SessionStart ──────────> Inject: sprint handoff / last session summary
     │                             + scope instructions + memory pre-fetch
     │                             + cross-project hints + feedback alerts
+    │                             + content guardrails + version compat
+    │                             + setup routing warnings
     │
     ├── UserPromptSubmit ──────> Ebbinghaus decay-aware memory retrieval
     │                             (FTS5 hybrid: 0.3×decay + 0.3×importance + 0.4×BM25)
@@ -28,11 +30,16 @@ Claude Code Session (full hook automation)
     │
     ├── PreCompact ────────────> Stage comprehensive transcript summary
     │                             (priority-weighted, token-budgeted)
+    │                             + direct SQLite store for high-value items
     │
     ├── SessionStart(compact) ─> Recover staged context + Working Memory
     │
     └── SessionEnd ────────────> Extract session summary (latest + rolling)
                                   + micro-memory extraction via write-time merge
+                                  + sprint handoff generation
+                                  + identity correction cascade
+                                  + infra/content pattern extraction
+                                  + host version tracking
                                   + background embedding generation
                                   ▼
 B12 MCP Server (b12_mcp_server.py)
@@ -245,6 +252,8 @@ B12/
 │   ├── dashboard_server.py         #   Flask web dashboard backend
 │   ├── export_import.py            #   Memory export/import (.b12 format)
 │   ├── b12_health_report.py        #   Comprehensive health report generator
+│   ├── b12_health.py               #   CLI health check diagnostics (v12)
+│   ├── compat.json                 #   Host version compatibility database (v12)
 │   ├── shared_patterns.py          #   Shared regex patterns + content hash (EN + TR)
 │   ├── transcript_adapter.py       #   Unified transcript parser (Claude + Codex)
 │   ├── codex_session_end.py        #   Codex session-end memory extraction

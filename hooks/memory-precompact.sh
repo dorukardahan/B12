@@ -174,6 +174,161 @@ with open(stage_file, 'w') as f:
 PYEOF
 fi
 
+# ═══════════════════════════════════════════════════════════════
+# DIRECT SQLITE STORE — high-value items survive compaction (v12)
+# Only stores items with priority >= 8 (decision, error_fix, learning, preference)
+# Uses embed daemon for embeddings; gracefully skips if unavailable.
+# ═══════════════════════════════════════════════════════════════
+
+VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
+_UID=$(id -u 2>/dev/null || echo $$)
+EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
+
+if [ -f "$STAGING_DIR/precompact-${SESSION_ID}.txt" ] && [ -x "$VENV_PYTHON" ]; then
+  python3 - "$STAGING_DIR/precompact-${SESSION_ID}.txt" "$PROJECT_NAME" "$CWD" "$EMBED_SOCK" << 'PCPYEOF'
+import sys, os, json, hashlib, sqlite3, socket as _sock, base64
+
+staging_file = sys.argv[1]
+project_name = sys.argv[2]
+cwd = sys.argv[3]
+daemon_sock = sys.argv[4]
+
+# Read staging file and extract high-value items (priority >= 8)
+high_value = []
+try:
+    with open(staging_file, 'r') as f:
+        in_work = False
+        for line in f:
+            line = line.rstrip('\n')
+            if line.startswith('RECENT WORK:'):
+                in_work = True
+                continue
+            if in_work and line.startswith('  ['):
+                # Parse: "  [category] text"
+                bracket_end = line.index(']', 3)
+                category = line[3:bracket_end]
+                text = line[bracket_end+2:]
+                # Priority mapping (must match precompact scoring)
+                priority_map = {'decision': 10, 'error_fix': 9, 'learning': 8, 'preference': 8}
+                priority = priority_map.get(category, 0)
+                if priority >= 8 and len(text) > 30:
+                    high_value.append((category, text))
+            elif in_work and not line.startswith('  '):
+                in_work = False
+except Exception:
+    sys.exit(0)
+
+if not high_value:
+    sys.exit(0)
+
+# Limit to 5 items
+high_value = high_value[:5]
+
+# Platform-aware DB path
+home = os.path.expanduser("~")
+if sys.platform == "darwin":
+    db_path = os.path.join(home, "Library", "Application Support", "mcp-memory", "sqlite_vec.db")
+elif sys.platform == "win32":
+    db_path = os.path.join(home, "AppData", "Local", "mcp-memory", "sqlite_vec.db")
+else:
+    db_path = os.path.join(home, ".local", "share", "mcp-memory", "sqlite_vec.db")
+
+if not os.path.exists(db_path):
+    sys.exit(0)
+
+# Try daemon for embeddings
+def daemon_encode(texts):
+    try:
+        if not os.path.exists(daemon_sock):
+            return None
+        s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+        s.settimeout(10)
+        s.connect(daemon_sock)
+        req = json.dumps({'op': 'encode_batch', 'texts': texts}) + '\n'
+        s.sendall(req.encode())
+        data = b''
+        while True:
+            chunk = s.recv(1048576)
+            if not chunk:
+                break
+            data += chunk
+            if b'\n' in data:
+                break
+        s.close()
+        resp = json.loads(data.decode().strip())
+        if resp.get('ok'):
+            return [base64.b64decode(e) for e in resp['embeddings']]
+    except Exception:
+        pass
+    return None
+
+from datetime import datetime, timezone
+now = datetime.now(timezone.utc)
+texts = [f"[{cat}] {text}" for cat, text in high_value]
+
+# Get embeddings (skip entirely if daemon unavailable)
+embeddings = daemon_encode(texts)
+if embeddings is None:
+    sys.exit(0)  # No daemon = skip permanent store, staging file still exists
+
+try:
+    conn = sqlite3.connect(db_path, timeout=10)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+
+    # Load sqlite_vec for embedding storage
+    try:
+        import sqlite_vec
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+        conn.enable_load_extension(False)
+    except Exception:
+        conn.close()
+        sys.exit(0)
+
+    stored = 0
+    for i, (category, text) in enumerate(high_value):
+        prefixed = texts[i]
+        m_hash = hashlib.sha256(prefixed.strip().lower().encode('utf-8')).hexdigest()
+
+        # Skip duplicates
+        if conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (m_hash,)).fetchone():
+            continue
+
+        m_tags = f"proj:{project_name},precompact-save,{category},{now.strftime('%Y-%m')}"
+        m_metadata = json.dumps({
+            "project": project_name,
+            "type": category,
+            "importance_score": 1.5,
+            "source": "precompact",
+            "extraction_method": "precompact_v12"
+        })
+
+        conn.execute("""
+            INSERT INTO memories (content, content_hash, tags, memory_type, metadata,
+                                  created_at, updated_at, created_at_iso, updated_at_iso)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (prefixed, m_hash, m_tags, category, m_metadata,
+              now.timestamp(), now.timestamp(), now.isoformat(), now.isoformat()))
+
+        row_id = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (m_hash,)).fetchone()
+        if row_id and i < len(embeddings):
+            try:
+                conn.execute("INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
+                             (row_id[0], embeddings[i]))
+            except Exception:
+                pass
+        stored += 1
+
+    if stored > 0:
+        conn.commit()
+    conn.close()
+except Exception:
+    pass  # Never block compaction
+
+PCPYEOF
+fi
+
 # Clean up old staging files (older than 2 hours)
 find "$STAGING_DIR" -name "precompact-*.txt" -mmin +120 -delete 2>/dev/null
 

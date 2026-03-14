@@ -172,3 +172,33 @@ FILE_CONV_RE = re.compile(
     r'|(?:düzen\s+olarak)\s+.{5,}'
     r')'
 )
+
+# ── v12 patterns ─────────────────────────────────────────────
+
+CORRECTION_RE = re.compile(
+    r'(?i)(?:'
+    r'(?:not\s+.{3,30}(?:,\s*|\s+but\s+)(?:it.?s|actually)\s+.{3,30})'       # not X, actually Y
+    r'|(?:(?:wrong|incorrect)\s+.{0,20}(?:should be|is actually)\s+.{3,30})'  # X wrong, should be Y
+    r'|(?:changed?\s+(?:from|my)\s+.{3,30}\s+to\s+.{3,30})'                  # changed from X to Y
+    r'|(?:(?:yanlış|hatalı)\s+.{3,30}(?:aslında|artık|olarak)\s+.{3,30})'     # Turkish
+    r'|(?:(?:değil)\s+.{3,30}(?:artık|şimdi)\s+.{3,30})'                      # X değil, Y
+    r')'
+)
+
+INFRA_RE = re.compile(
+    r'(?i)(?:'
+    r'(?:(?:server|host|ip|vps|ssh)\s+.{0,30}(?:\d{1,3}\.){3}\d{1,3})'   # IP with context
+    r'|(?:ssh\s+[-\w]+@[\w.-]+)'                                           # SSH connections
+    r'|(?:(?:version|sürüm)\s+.{0,10}v?\d+\.\d+)'                         # Version strings
+    r'|(?:port\s+\d{2,5})'                                                 # Port numbers
+    r')'
+)
+
+CONTENT_RE = re.compile(
+    r'(?i)(?:'
+    r'(?:(?:blog|article)\s+.{0,30}(?:published|approved|rejected|hazır|onaylandı))'
+    r'|(?:(?:editorial|content)\s+decision\s*:\s+.{5,})'
+    r'|(?:(?:do not|never|asla)\s+(?:write|post|publish|mention)\s+.{5,})'
+    r'|(?:(?:review|feedback)\s*:\s+.{5,})'
+    r')'
+)

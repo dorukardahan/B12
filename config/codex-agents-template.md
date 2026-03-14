@@ -2,6 +2,22 @@
 
 You have access to a persistent memory system (B12) via MCP tools. Use it proactively to remember decisions, patterns, errors, and preferences across sessions.
 
+### B12 Memory (MANDATORY)
+
+These rituals are **required** at every session boundary:
+
+- **BEFORE first response**: Search for project context:
+  ```
+  mcp__B12__memory_search(query="recent work in {project}", tags=["proj:{project}"])
+  ```
+- **AFTER last response** (before session ends): Store a session summary:
+  ```
+  mcp__B12__memory_store(
+      content="Session summary: [what was done, key decisions, pending items]",
+      metadata={"tags": ["proj:{project}", "user:codex"], "type": "session_summary", "importance_score": 0.7}
+  )
+  ```
+
 ### Available Tools
 
 | Tool | Purpose |

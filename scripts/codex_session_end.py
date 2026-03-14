@@ -140,7 +140,7 @@ def _get_embedding_direct(text):
         return None
 
 
-def store_memory(db_path, content, metadata_str, tags, embedding=None):
+def store_memory(db_path, content, metadata_str, tags, embedding=None, memory_type='general'):
     """Store a memory in the B12 database."""
     content_hash = hashlib.sha256(content.strip().lower().encode()).hexdigest()
     now = datetime.now(timezone.utc).isoformat()
@@ -160,11 +160,11 @@ def store_memory(db_path, content, metadata_str, tags, embedding=None):
             return existing[0]  # Already stored
 
         cursor = conn.execute(
-            """INSERT INTO memories (content, metadata, tags, content_hash,
+            """INSERT INTO memories (content, metadata, tags, content_hash, memory_type,
                created_at, updated_at, created_at_iso, updated_at_iso,
                strength, deleted_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0.5, NULL)""",
-            (content, metadata_str, tags, content_hash,
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0.5, NULL)""",
+            (content, metadata_str, tags, content_hash, memory_type,
              now_epoch, now_epoch, now, now)
         )
         memory_id = cursor.lastrowid
@@ -291,10 +291,16 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         return {"status": "error", "reason": "database not found"}
 
     # Store session summary
-    tags = f"proj:{project_name}, user:codex, type:session_summary, platform:codex"
-    metadata = f"type:progress, importance:0.6, session_id:{info.session_id[:12]}"
+    tags = f"proj:{project_name},user:codex,session-summary,platform:codex"
+    metadata = json.dumps({
+        "type": "session_summary",
+        "importance_score": 0.6,
+        "platform": "codex",
+        "extraction_method": "codex_v2",
+        "session_id": info.session_id[:12]
+    })
     embedding = get_embedding(summary[:1000])
-    summary_id = store_memory(db_path, summary, metadata, tags, embedding)
+    summary_id = store_memory(db_path, summary, metadata, tags, embedding, memory_type='session_summary')
 
     # Store micro-memories (decisions, learnings, errors)
     micro_count = 0
@@ -305,10 +311,15 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         ("preference", preferences, 0.7),
     ]:
         for item in items[:3]:  # Max 3 per category
-            micro_tags = f"proj:{project_name}, user:codex, type:{category}, platform:codex"
-            micro_meta = f"type:{category}, importance:{importance}"
+            micro_tags = f"proj:{project_name},user:codex,{category},platform:codex"
+            micro_meta = json.dumps({
+                "type": category,
+                "importance_score": importance,
+                "platform": "codex",
+                "extraction_method": "codex_v2"
+            })
             micro_emb = get_embedding(item)
-            mid = store_memory(db_path, item, micro_meta, micro_tags, micro_emb)
+            mid = store_memory(db_path, item, micro_meta, micro_tags, micro_emb, memory_type=category)
             if mid:
                 micro_count += 1
 

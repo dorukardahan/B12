@@ -58,7 +58,8 @@ signal.alarm(25)
 _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
 sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
 from shared_patterns import (DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE,
-                             TOOL_PREF_RE, ARCH_RE, WORKFLOW_RE, FILE_CONV_RE)
+                             TOOL_PREF_RE, ARCH_RE, WORKFLOW_RE, FILE_CONV_RE,
+                             CORRECTION_RE, INFRA_RE, CONTENT_RE)
 
 transcript_path = sys.argv[1]
 project_name = sys.argv[2]
@@ -86,6 +87,11 @@ tool_prefs = []
 arch_decisions = []
 workflows = []
 file_conventions = []
+corrections = []
+infra_items = []
+content_items = []
+
+host_version = ''
 
 try:
     with open(transcript_path, 'r') as f:
@@ -95,6 +101,17 @@ try:
                 continue
             try:
                 obj = json.loads(line)
+
+                # Extract host version from early transcript entries (v12 — F8)
+                if not host_version and 'version' in obj:
+                    host_version = str(obj['version'])
+                elif not host_version:
+                    # Try nested locations
+                    for key in ('metadata', 'session', 'info'):
+                        if isinstance(obj.get(key), dict) and 'version' in obj[key]:
+                            host_version = str(obj[key]['version'])
+                            break
+
                 msg_type = obj.get('type', '')
 
                 if msg_type == 'human':
@@ -154,6 +171,14 @@ try:
                                         m = FILE_CONV_RE.search(scan_text)
                                         start = max(0, m.start() - 50)
                                         file_conventions.append(scan_text[start:start+250])
+                                    if INFRA_RE.search(scan_text):
+                                        m = INFRA_RE.search(scan_text)
+                                        start = max(0, m.start() - 50)
+                                        infra_items.append(scan_text[start:start+250])
+                                    if CONTENT_RE.search(scan_text):
+                                        m = CONTENT_RE.search(scan_text)
+                                        start = max(0, m.start() - 50)
+                                        content_items.append(scan_text[start:start+250])
 
                                 elif block.get('type') == 'tool_use':
                                     tool_name = block.get('name', '')
@@ -176,6 +201,10 @@ try:
                         m = PREFERENCE_RE.search(text[:1000])
                         start = max(0, m.start() - 30)
                         preferences.append(f"[user] {text[start:start+250]}")
+                    if text and CORRECTION_RE.search(text[:1000]):
+                        m = CORRECTION_RE.search(text[:1000])
+                        start = max(0, m.start() - 30)
+                        corrections.append(f"[user] {text[start:start+250]}")
 
             except (json.JSONDecodeError, KeyError, TypeError):
                 continue
@@ -248,6 +277,29 @@ def score_extraction(text, category):
                                           'dizin', 'klasör', 'dosya', 'isimlendirme']):
             score += 2
 
+    elif category == 'correction':
+        if any(w in text_lower for w in ['not', 'actually', 'wrong', 'incorrect', 'should be',
+                                          'değil', 'yanlış', 'hatalı', 'aslında']):
+            score += 2
+        if any(w in text_lower for w in ['changed', 'updated', 'renamed', 'değiştirdik']):
+            score += 1
+
+    elif category == 'infra':
+        if re.search(r'(?:\d{1,3}\.){3}\d{1,3}', text):  # IP address
+            score += 2
+        if re.search(r'port\s+\d{2,5}', text_lower):
+            score += 1
+        if re.search(r'v?\d+\.\d+', text):
+            score += 1
+        if any(w in text_lower for w in ['trying', 'test', 'debug', 'attempt']):
+            score -= 2
+
+    elif category == 'content':
+        if any(w in text_lower for w in ['approved', 'published', 'onaylandı', 'yayınlandı']):
+            score += 2
+        if any(w in text_lower for w in ['never', 'always', 'asla', 'her zaman']):
+            score += 1
+
     # Penalty for very short text
     if len(text) < 40:
         score -= 1
@@ -282,6 +334,9 @@ tool_prefs = [t for t in dedup(tool_prefs) if score_extraction(t, 'tool_pref') >
 arch_decisions = [a for a in dedup(arch_decisions) if score_extraction(a, 'arch') >= 1]
 workflows = [w for w in dedup(workflows) if score_extraction(w, 'workflow') >= 1]
 file_conventions = [fc for fc in dedup(file_conventions) if score_extraction(fc, 'file_conv') >= 1]
+corrections = [c for c in dedup(corrections) if score_extraction(c, 'correction') >= 1]
+infra_items = [i for i in dedup(infra_items) if score_extraction(i, 'infra') >= 1]
+content_items = [ci for ci in dedup(content_items) if score_extraction(ci, 'content') >= 1]
 
 # ═══════════════════════════════════════════════════════════════
 # BUILD FULL SUMMARY
@@ -365,6 +420,24 @@ if file_conventions:
         lines.append(f"- {fc}")
     lines.append("")
 
+if infra_items:
+    lines.append("## Infrastructure")
+    for ii in infra_items:
+        lines.append(f"- {ii}")
+    lines.append("")
+
+if content_items:
+    lines.append("## Content Decisions")
+    for ci in content_items:
+        lines.append(f"- {ci}")
+    lines.append("")
+
+if corrections:
+    lines.append("## Identity Corrections")
+    for c in corrections:
+        lines.append(f"- {c}")
+    lines.append("")
+
 # User requests (first 8, deduplicated)
 if user_messages:
     lines.append("## What the user asked")
@@ -414,6 +487,68 @@ if files_modified:
 executive_summary = '\n'.join(exec_lines[:6])
 
 # ═══════════════════════════════════════════════════════════════
+# SPRINT HANDOFF — compact state for next session (v12)
+# ═══════════════════════════════════════════════════════════════
+
+NEXT_STEP_RE = re.compile(
+    r'(?i)(?:TODO|next step|yapılacak|sonra|sıradaki|remaining|kalan|pending)\s*[:—-]?\s+(.{10,150})'
+)
+
+handoff_lines = []
+handoff_lines.append(f"## Sprint Handoff: {project_name}")
+handoff_lines.append(f"**Date**: {now}")
+
+# Current tasks: last 3 user messages
+if user_messages:
+    handoff_lines.append("**Tasks**:")
+    for msg in user_messages[-3:]:
+        handoff_lines.append(f"  - {msg[:150]}")
+
+# Completed work
+completed_parts = []
+if files_modified:
+    completed_parts.append(f"{len(files_modified)} files modified")
+if decisions[:2]:
+    for d in decisions[:2]:
+        completed_parts.append(d[:120])
+if completed_parts:
+    handoff_lines.append(f"**Completed**: {'; '.join(completed_parts)}")
+
+# Pending items (scan assistant messages for NEXT_STEP patterns)
+pending = []
+for msg in assistant_messages[-10:]:
+    m = NEXT_STEP_RE.search(msg)
+    if m:
+        pending.append(m.group(1).strip()[:120])
+if pending:
+    seen_p = set()
+    handoff_lines.append("**Pending**:")
+    for p in pending:
+        if p[:50] not in seen_p:
+            handoff_lines.append(f"  - {p}")
+            seen_p.add(p[:50])
+
+# Blockers (errors without resolution)
+blockers = []
+for e in errors_fixes:
+    e_lower = e.lower()
+    has_fix = any(w in e_lower for w in ['fixed', 'resolved', 'solved', 'workaround',
+                                          'düzelttik', 'çözdük', 'giderdik'])
+    if not has_fix:
+        blockers.append(e[:120])
+if blockers:
+    handoff_lines.append("**Blockers**:")
+    for b in blockers[:3]:
+        handoff_lines.append(f"  - {b}")
+
+# Active files (last 5 modified)
+if files_modified:
+    active = sorted(files_modified)[-5:]
+    handoff_lines.append(f"**Active files**: {', '.join(os.path.basename(f) for f in active)}")
+
+handoff_text = '\n'.join(handoff_lines)
+
+# ═══════════════════════════════════════════════════════════════
 # WRITE OUTPUT FILES
 # ═══════════════════════════════════════════════════════════════
 
@@ -435,6 +570,19 @@ with open(exec_file, 'w') as f:
 global_exec_file = os.path.join(summary_dir, "global-exec.md")
 with open(global_exec_file, 'w') as f:
     f.write(executive_summary)
+
+# Sprint handoff file (v12)
+handoff_file = os.path.join(summary_dir, f"{project_name}-handoff.md")
+with open(handoff_file, 'w') as f:
+    f.write(handoff_text)
+
+# Host version state file (v12 — F8)
+if host_version:
+    b12_base = os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.B12'))
+    state_dir = os.path.join(b12_base, 'memory-state')
+    os.makedirs(state_dir, exist_ok=True)
+    with open(os.path.join(state_dir, 'host-version.txt'), 'w') as f:
+        f.write(host_version)
 
 # Append to rolling history (last 5 sessions)
 history_file = os.path.join(summary_dir, f"{project_name}-history.md")
@@ -657,6 +805,9 @@ try:
         '## Architecture Decisions': ('general', 1.3),
         '## Workflow Patterns': ('general', 1.1),
         '## File Conventions': ('general', 1.1),
+        '## Infrastructure': ('infra', 1.5),
+        '## Content Decisions': ('content_decision', 1.3),
+        '## Identity Corrections': ('correction', 2.0),
     }
     micro_texts = []
     micro_meta = []
@@ -782,6 +933,79 @@ try:
                 m_row = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (m_hash,)).fetchone()[0]
                 conn.execute("INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
                              (m_row, m_emb))
+
+    # ─── Correction cascade (v12 — F4) ──────────────────────────
+    # Scan user messages for identity corrections, cascade update existing memories
+    try:
+        CORRECTION_SCAN_RE = _re.compile(
+            r'(?i)(?:'
+            r'not\s+(.{3,30})(?:,\s*|\s+but\s+)(?:it.?s|actually)\s+(.{3,30})'     # not X, actually Y
+            r'|(?:wrong|incorrect)\s+(.{3,20})(?:should be|is actually)\s+(.{3,30})' # X wrong, should be Y
+            r'|changed?\s+(?:from|my)\s+(.{3,30})\s+to\s+(.{3,30})'                  # changed from X to Y
+            r')'
+        )
+
+        for msg_text in [m for m in (user_messages or []) if len(m) > 10]:
+            for cm in CORRECTION_SCAN_RE.finditer(msg_text[:500]):
+                groups = cm.groups()
+                # Extract old/new from whichever capture group matched
+                old_val, new_val = None, None
+                for gi in range(0, len(groups), 2):
+                    if groups[gi] and groups[gi+1]:
+                        old_val = groups[gi].strip().rstrip('.,;:')
+                        new_val = groups[gi+1].strip().rstrip('.,;:')
+                        break
+
+                if not old_val or not new_val or len(old_val) < 4:
+                    continue
+
+                # Find affected memories (max 10)
+                affected = conn.execute("""
+                    SELECT id, content, content_hash FROM memories
+                    WHERE content LIKE ? AND deleted_at IS NULL
+                    LIMIT 10
+                """, (f'%{old_val}%',)).fetchall()
+
+                for mem_id, mem_content, mem_hash in affected:
+                    updated_content = mem_content.replace(old_val, new_val)
+                    if updated_content == mem_content:
+                        continue
+                    new_hash = hashlib.sha256(updated_content.strip().lower().encode('utf-8')).hexdigest()
+                    # Update content + metadata
+                    try:
+                        existing_meta = conn.execute(
+                            "SELECT metadata FROM memories WHERE id = ?", (mem_id,)
+                        ).fetchone()
+                        meta_dict = json.loads(existing_meta[0]) if existing_meta and existing_meta[0] else {}
+                        meta_dict['correction_applied'] = now.isoformat()
+                        meta_dict['corrected_from'] = old_val[:50]
+                        conn.execute("""
+                            UPDATE memories
+                            SET content = ?, content_hash = ?, metadata = ?, updated_at = ?, updated_at_iso = ?
+                            WHERE id = ?
+                        """, (updated_content, new_hash, json.dumps(meta_dict),
+                              now.timestamp(), now.isoformat(), mem_id))
+                    except Exception:
+                        continue
+
+                # Store the correction itself as a high-strength memory
+                corr_text = f"[Correction] Not '{old_val}', actually '{new_val}'"
+                corr_hash = hashlib.sha256(corr_text.strip().lower().encode('utf-8')).hexdigest()
+                if not conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (corr_hash,)).fetchone():
+                    corr_tags = f"proj:{project_name},user:{setup_context},correction,{now.strftime('%Y-%m')}"
+                    corr_meta = json.dumps({
+                        "project": project_name, "type": "correction",
+                        "importance_score": 2.0, "old_value": old_val[:50],
+                        "new_value": new_val[:50], "affected_count": len(affected)
+                    })
+                    conn.execute("""
+                        INSERT INTO memories (content, content_hash, tags, memory_type, metadata,
+                                              created_at, updated_at, created_at_iso, updated_at_iso, strength)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 2.0)
+                    """, (corr_text, corr_hash, corr_tags, 'correction', corr_meta,
+                          now.timestamp(), now.timestamp(), now.isoformat(), now.isoformat()))
+    except Exception:
+        pass  # Non-critical — don't block session end
 
     # ─── Progress memory TTL: expire progress entries after 14 days ───
     try:

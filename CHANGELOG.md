@@ -1,5 +1,27 @@
 # Changelog
 
+## [12.0.0] — Unreleased
+
+### Features
+
+* **session-end:** Sprint Handoff Memory — compact state file (`{project}-handoff.md`) for seamless session continuity (F1)
+* **precompact:** Aggressive PreCompact Extraction — high-value items (decision, error_fix, learning, preference) stored directly to SQLite during compaction (F2)
+* **codex:** Cross-Platform Session Bridge — fix metadata to valid JSON, add memory_type, consistent tags (F3)
+* **session-end:** Identity Correction Cascade — detect "not X, actually Y" patterns and cascade-update existing memories (F4)
+* **patterns:** Infrastructure Entity Auto-Extraction — IP, SSH, port, version patterns with scoring (F5)
+* **patterns:** Content Decision Auto-Capture — blog publish, editorial decision, guardrail patterns (F6)
+* **health:** B12 Health Check CLI (`b12_health.py`) — 8 diagnostic checks with colored output, `--json` and `--fix` flags (F7)
+* **session-end/start:** Host Version Tracking — extract Claude Code version from transcript, store in state file, check against `compat.json` (F8)
+* **session-start:** Content Guardrails Always-Surface — auto-inject content-guardrail tagged memories for content sessions (F9)
+* **session-start:** Setup-Aware Session Routing — warn when CWD matches work pattern but personal setup is active (F10)
+* **install:** add `--health` flag to run health check diagnostics
+
+### Bug Fixes
+
+* **codex:** metadata was invalid f-string format, now proper `json.dumps()` output
+* **codex:** tags had inconsistent spacing (spaces after commas), now matches Claude Code hook format
+* **codex:** `store_memory()` was missing `memory_type` column in INSERT
+
 ## [11.7.3](https://github.com/dorukardahan/B12/compare/v11.7.2...v11.7.3) (2026-03-14)
 
 

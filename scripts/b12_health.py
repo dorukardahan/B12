@@ -1,0 +1,549 @@
+#!/usr/bin/env python3
+"""
+B12 Health Check CLI — standalone diagnostic tool for verifying B12 installation.
+
+Checks hook files, Python modules, SQLite schema, embed daemon, launchd plists,
+Claude setup consistency, and MCP server configuration.
+
+Usage:
+    python3 scripts/b12_health.py
+    python3 scripts/b12_health.py --json
+    python3 scripts/b12_health.py --fix
+"""
+
+import argparse
+import json
+import os
+import plistlib
+import socket
+import sqlite3
+import sys
+from pathlib import Path
+
+# ── Constants ────────────────────────────────────────────────────────
+
+VERSION = "12.0"
+
+_HOME = Path.home()
+_B12_DIR = Path(os.environ.get("B12_DATA_DIR", _HOME / ".B12"))
+_HOOK_DIR = _B12_DIR / "hooks"
+_SCRIPT_DIR = _HOOK_DIR / "scripts"
+_VENV_PATH = _HOME / ".local" / "b12-venv"
+
+REQUIRED_HOOKS = [
+    "memory-session-start.sh",
+    "memory-session-end.sh",
+    "memory-precompact.sh",
+]
+
+REQUIRED_PYTHON_MODULES = [
+    "shared_patterns.py",
+    "embed_daemon.py",
+    "write_time_merge.py",
+]
+
+REQUIRED_TABLES = ["memories", "memory_embeddings", "memory_fts"]
+
+_UID = os.getuid() if hasattr(os, "getuid") else os.getpid()
+SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
+
+CLAUDE_JSON_PATH = _HOME / ".claude.json"
+
+# Platform-aware DB path
+if sys.platform == "darwin":
+    DB_PATH = _HOME / "Library" / "Application Support" / "mcp-memory" / "sqlite_vec.db"
+elif sys.platform == "win32":
+    DB_PATH = _HOME / "AppData" / "Local" / "mcp-memory" / "sqlite_vec.db"
+else:
+    DB_PATH = _HOME / ".local" / "share" / "mcp-memory" / "sqlite_vec.db"
+
+
+# ── Result types ─────────────────────────────────────────────────────
+
+class Status:
+    OK = "OK"
+    WARN = "WARN"
+    FAIL = "FAIL"
+
+
+class CheckResult:
+    __slots__ = ("status", "label", "detail")
+
+    def __init__(self, status: str, label: str, detail: str = ""):
+        self.status = status
+        self.label = label
+        self.detail = detail
+
+    def to_dict(self) -> dict:
+        d = {"status": self.status, "label": self.label}
+        if self.detail:
+            d["detail"] = self.detail
+        return d
+
+
+# ── Color output helpers ─────────────────────────────────────────────
+
+_COLORS = {
+    Status.OK: "\033[0;32m",    # green
+    Status.WARN: "\033[1;33m",  # yellow
+    Status.FAIL: "\033[0;31m",  # red
+    "reset": "\033[0m",
+    "dim": "\033[2m",
+    "bold": "\033[1m",
+}
+
+
+def _color(text: str, code: str) -> str:
+    return f"{code}{text}{_COLORS['reset']}"
+
+
+def _format_result(r: CheckResult, use_color: bool = True) -> str:
+    tag = f"[{r.status}]"
+    if use_color:
+        tag = _color(tag.ljust(6), _COLORS.get(r.status, ""))
+    else:
+        tag = tag.ljust(6)
+    line = f"{tag} {r.label}"
+    if r.detail:
+        detail_text = f"  {r.detail}" if use_color else f"  {r.detail}"
+        if use_color:
+            line += "\n" + _color(f"       {r.detail}", _COLORS["dim"])
+        else:
+            line += f" ({r.detail})"
+    return line
+
+
+# ── Individual checks ────────────────────────────────────────────────
+
+def check_hook_directory(fix: bool = False) -> CheckResult:
+    """Check that ~/.B12/hooks/ exists."""
+    if _HOOK_DIR.is_dir():
+        return CheckResult(Status.OK, "Hook directory exists")
+    if fix:
+        _HOOK_DIR.mkdir(parents=True, exist_ok=True)
+        return CheckResult(Status.OK, "Hook directory created", str(_HOOK_DIR))
+    return CheckResult(Status.FAIL, "Hook directory missing", str(_HOOK_DIR))
+
+
+def check_hook_files() -> CheckResult:
+    """Check required hook shell scripts are present."""
+    found = []
+    missing = []
+    for name in REQUIRED_HOOKS:
+        path = _HOOK_DIR / name
+        if path.is_file():
+            found.append(name)
+        else:
+            missing.append(name)
+    total = len(REQUIRED_HOOKS)
+    if not missing:
+        return CheckResult(Status.OK, f"Hook files present ({total}/{total})")
+    if found:
+        return CheckResult(
+            Status.WARN,
+            f"Hook files partial ({len(found)}/{total})",
+            f"Missing: {', '.join(missing)}",
+        )
+    return CheckResult(
+        Status.FAIL,
+        f"Hook files missing (0/{total})",
+        f"Missing: {', '.join(missing)}",
+    )
+
+
+def check_python_modules() -> CheckResult:
+    """Check required Python support modules are present."""
+    found = []
+    missing = []
+    for name in REQUIRED_PYTHON_MODULES:
+        path = _SCRIPT_DIR / name
+        if path.is_file():
+            found.append(name)
+        else:
+            missing.append(name)
+    total = len(REQUIRED_PYTHON_MODULES)
+    if not missing:
+        return CheckResult(Status.OK, f"Python modules present ({total}/{total})")
+    if found:
+        return CheckResult(
+            Status.WARN,
+            f"Python modules partial ({len(found)}/{total})",
+            f"Missing: {', '.join(missing)}",
+        )
+    return CheckResult(
+        Status.FAIL,
+        f"Python modules missing (0/{total})",
+        f"Missing: {', '.join(missing)}",
+    )
+
+
+def check_sqlite_database() -> CheckResult:
+    """Check SQLite database is accessible and has required tables."""
+    if not DB_PATH.is_file():
+        return CheckResult(Status.FAIL, "SQLite database not found", str(DB_PATH))
+    try:
+        conn = sqlite3.connect(str(DB_PATH), timeout=5)
+        conn.execute("PRAGMA busy_timeout=5000")
+        # Get all table names (including virtual tables)
+        rows = conn.execute(
+            "SELECT name FROM sqlite_master WHERE type IN ('table', 'virtual table')"
+        ).fetchall()
+        tables = {r[0] for r in rows}
+        conn.close()
+    except sqlite3.Error as e:
+        return CheckResult(Status.FAIL, "SQLite database error", str(e))
+
+    found = []
+    missing = []
+    for t in REQUIRED_TABLES:
+        if t in tables:
+            found.append(t)
+        else:
+            missing.append(t)
+
+    if not missing:
+        return CheckResult(Status.OK, "SQLite database accessible", f"Tables: {', '.join(found)}")
+    if found:
+        return CheckResult(
+            Status.WARN,
+            f"SQLite schema incomplete ({len(found)}/{len(REQUIRED_TABLES)} tables)",
+            f"Missing: {', '.join(missing)}",
+        )
+    return CheckResult(
+        Status.FAIL,
+        "SQLite schema missing all required tables",
+        f"Missing: {', '.join(missing)}",
+    )
+
+
+def check_embed_daemon() -> CheckResult:
+    """Check if the embed daemon Unix socket is alive and responsive."""
+    if not os.path.exists(SOCK_PATH):
+        return CheckResult(Status.WARN, "Embed daemon not running", f"Socket not found: {SOCK_PATH}")
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(3)
+        sock.connect(SOCK_PATH)
+        request = json.dumps({"op": "health"}) + "\n"
+        sock.sendall(request.encode())
+        response = b""
+        while True:
+            chunk = sock.recv(4096)
+            if not chunk:
+                break
+            response += chunk
+            if b"\n" in response:
+                break
+        sock.close()
+        data = json.loads(response.decode().strip())
+        if data.get("ok"):
+            uptime = data.get("uptime", 0)
+            served = data.get("requests_served", 0)
+            return CheckResult(
+                Status.OK,
+                "Embed daemon running",
+                f"Uptime: {int(uptime)}s, requests: {served}",
+            )
+        return CheckResult(Status.WARN, "Embed daemon responded with error", str(data))
+    except (socket.error, json.JSONDecodeError, OSError) as e:
+        return CheckResult(
+            Status.WARN,
+            "Embed daemon socket exists but not responsive",
+            str(e),
+        )
+
+
+def check_launchd_plists() -> CheckResult:
+    """Check launchd plist files point to correct B12 paths (macOS only)."""
+    if sys.platform != "darwin":
+        return CheckResult(Status.OK, "Launchd check skipped (not macOS)")
+
+    launch_agents = _HOME / "Library" / "LaunchAgents"
+    if not launch_agents.is_dir():
+        return CheckResult(Status.WARN, "LaunchAgents directory not found")
+
+    plist_files = sorted(launch_agents.glob("com.b12.*.plist"))
+    if not plist_files:
+        return CheckResult(Status.WARN, "No B12 launchd plists found")
+
+    issues = []
+    valid_count = 0
+    for pf in plist_files:
+        try:
+            with open(pf, "rb") as f:
+                plist = plistlib.load(f)
+            # Check ProgramArguments for correct paths
+            prog_args = plist.get("ProgramArguments", [])
+            prog_str = " ".join(str(a) for a in prog_args)
+            # Plists should reference ~/.B12/ paths, not old ~/.claude/ paths
+            if "/.claude/" in prog_str:
+                issues.append(f"{pf.name}: references old ~/.claude/ path")
+            else:
+                valid_count += 1
+        except Exception as e:
+            issues.append(f"{pf.name}: parse error ({e})")
+
+    total = len(plist_files)
+    if not issues:
+        return CheckResult(Status.OK, f"Launchd plists configured ({total} plists)")
+    return CheckResult(
+        Status.WARN,
+        f"Launchd plist issues ({valid_count}/{total} OK)",
+        "; ".join(issues),
+    )
+
+
+def check_claude_setups() -> CheckResult:
+    """Check all ~/.claude* setup directories have consistent hook paths."""
+    setup_dirs = []
+    for entry in _HOME.iterdir():
+        if entry.is_dir() and entry.name.startswith(".claude"):
+            settings = entry / "settings.json"
+            if settings.is_file():
+                setup_dirs.append(entry)
+
+    if not setup_dirs:
+        return CheckResult(Status.WARN, "No Claude setup directories found")
+
+    consistent = []
+    inconsistent = []
+    expected_hook_prefix = str(_HOOK_DIR)
+    # Also accept ~ notation
+    expected_hook_prefix_tilde = "~/.B12/hooks/"
+
+    for sd in sorted(setup_dirs):
+        settings_path = sd / "settings.json"
+        try:
+            with open(settings_path) as f:
+                settings = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            inconsistent.append(f"{sd.name}: cannot read settings.json")
+            continue
+
+        hooks_config = settings.get("hooks", {})
+        if not hooks_config:
+            inconsistent.append(f"{sd.name}: no hooks configured")
+            continue
+
+        # Collect all command paths from hooks config
+        commands = []
+        for event_name, event_list in hooks_config.items():
+            if not isinstance(event_list, list):
+                continue
+            for matcher_block in event_list:
+                inner_hooks = matcher_block.get("hooks", [])
+                for h in inner_hooks:
+                    cmd = h.get("command", "")
+                    if cmd:
+                        commands.append(cmd)
+
+        if not commands:
+            inconsistent.append(f"{sd.name}: no hook commands found")
+            continue
+
+        # Check all commands reference ~/.B12/hooks/
+        bad_paths = []
+        for cmd in commands:
+            expanded = cmd.replace("~", str(_HOME))
+            if not expanded.startswith(str(_HOOK_DIR)):
+                bad_paths.append(cmd)
+
+        if bad_paths:
+            inconsistent.append(
+                f"{sd.name}: {len(bad_paths)} hooks reference wrong path"
+            )
+        else:
+            consistent.append(sd.name)
+
+    total = len(setup_dirs)
+    if not inconsistent:
+        return CheckResult(
+            Status.OK,
+            f"Claude setups consistent ({total}/{total})",
+        )
+    detail = "; ".join(inconsistent)
+    if consistent:
+        return CheckResult(
+            Status.WARN,
+            f"Claude setups partially consistent ({len(consistent)}/{total})",
+            detail,
+        )
+    return CheckResult(Status.FAIL, f"Claude setups inconsistent (0/{total})", detail)
+
+
+def check_mcp_config() -> CheckResult:
+    """Check MCP server config in ~/.claude.json has correct B12 path."""
+    if not CLAUDE_JSON_PATH.is_file():
+        return CheckResult(Status.WARN, "~/.claude.json not found")
+
+    try:
+        with open(CLAUDE_JSON_PATH) as f:
+            config = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        return CheckResult(Status.FAIL, "Cannot parse ~/.claude.json", str(e))
+
+    mcp_servers = config.get("mcpServers", {})
+    if "B12" not in mcp_servers:
+        return CheckResult(Status.FAIL, "MCP server 'B12' not configured in ~/.claude.json")
+
+    b12_config = mcp_servers["B12"]
+    command = b12_config.get("command", "")
+    args = b12_config.get("args", [])
+
+    issues = []
+
+    # Check command points to venv python
+    expected_venv_python = str(_VENV_PATH / "bin" / "python3")
+    if sys.platform == "win32":
+        expected_venv_python = str(_VENV_PATH / "Scripts" / "python.exe")
+
+    if command != expected_venv_python:
+        # Not necessarily wrong — just warn if venv python doesn't exist
+        if not Path(command).is_file():
+            issues.append(f"Python not found: {command}")
+
+    # Check args point to b12_mcp_server.py
+    if args:
+        server_path = args[0]
+        if not Path(server_path).is_file():
+            issues.append(f"MCP server script not found: {server_path}")
+        expected_server = str(_SCRIPT_DIR / "b12_mcp_server.py")
+        if server_path != expected_server:
+            # Warn but don't fail — path might be valid but different
+            if not Path(server_path).is_file():
+                issues.append(f"Expected server at: {expected_server}")
+    else:
+        issues.append("No args specified (missing server script path)")
+
+    if not issues:
+        return CheckResult(Status.OK, "MCP server configured")
+    # FAIL if the python binary or server script doesn't exist; WARN otherwise
+    severity = Status.FAIL if any("not found" in i for i in issues) else Status.WARN
+    return CheckResult(severity, "MCP server config issues", "; ".join(issues))
+
+
+# ── Auto-fix helpers ─────────────────────────────────────────────────
+
+def _apply_fixes() -> list[str]:
+    """Apply safe auto-fixes. Returns list of actions taken."""
+    actions = []
+
+    # Create missing directories
+    for d in [_B12_DIR, _HOOK_DIR, _SCRIPT_DIR]:
+        if not d.is_dir():
+            d.mkdir(parents=True, exist_ok=True)
+            actions.append(f"Created directory: {d}")
+
+    # Create memory-logs directory
+    log_dir = _B12_DIR / "memory-logs"
+    if not log_dir.is_dir():
+        log_dir.mkdir(parents=True, exist_ok=True)
+        actions.append(f"Created directory: {log_dir}")
+
+    return actions
+
+
+# ── Main runner ──────────────────────────────────────────────────────
+
+def run_health_check(fix: bool = False) -> list[CheckResult]:
+    """Run all health checks and return results."""
+    fix_actions = []
+    if fix:
+        fix_actions = _apply_fixes()
+
+    results = [
+        check_hook_directory(fix=fix),
+        check_hook_files(),
+        check_python_modules(),
+        check_sqlite_database(),
+        check_embed_daemon(),
+        check_launchd_plists(),
+        check_claude_setups(),
+        check_mcp_config(),
+    ]
+
+    return results, fix_actions
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="B12 Health Check — verify B12 installation integrity",
+    )
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Output results as JSON",
+    )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="Attempt auto-fixes for common issues (e.g., create missing dirs)",
+    )
+    args = parser.parse_args()
+
+    results, fix_actions = run_health_check(fix=args.fix)
+
+    # Count statuses
+    counts = {Status.OK: 0, Status.WARN: 0, Status.FAIL: 0}
+    for r in results:
+        counts[r.status] = counts.get(r.status, 0) + 1
+
+    if args.json_output:
+        output = {
+            "version": VERSION,
+            "checks": [r.to_dict() for r in results],
+            "summary": counts,
+        }
+        if fix_actions:
+            output["fixes_applied"] = fix_actions
+        print(json.dumps(output, indent=2))
+    else:
+        # Header
+        use_color = sys.stdout.isatty()
+        header = f"B12 Health Check v{VERSION}"
+        if use_color:
+            header = _color(header, _COLORS["bold"])
+        print(header)
+        print("\u2500" * 35)
+
+        # Results
+        for r in results:
+            print(_format_result(r, use_color=use_color))
+
+        # Fix actions
+        if fix_actions:
+            print()
+            fix_header = "Fixes applied:"
+            if use_color:
+                fix_header = _color(fix_header, _COLORS["bold"])
+            print(fix_header)
+            for a in fix_actions:
+                prefix = _color("  +", _COLORS[Status.OK]) if use_color else "  +"
+                print(f"{prefix} {a}")
+
+        # Summary line
+        print("\u2500" * 35)
+        parts = []
+        if counts[Status.OK]:
+            s = f"{counts[Status.OK]} OK"
+            parts.append(_color(s, _COLORS[Status.OK]) if use_color else s)
+        if counts[Status.WARN]:
+            s = f"{counts[Status.WARN]} WARN"
+            parts.append(_color(s, _COLORS[Status.WARN]) if use_color else s)
+        if counts[Status.FAIL]:
+            s = f"{counts[Status.FAIL]} FAIL"
+            parts.append(_color(s, _COLORS[Status.FAIL]) if use_color else s)
+        print(f"Result: {', '.join(parts)}")
+
+    # Exit code
+    if counts[Status.FAIL] > 0:
+        sys.exit(2)
+    elif counts[Status.WARN] > 0:
+        sys.exit(1)
+    else:
+        sys.exit(0)
+
+
+if __name__ == "__main__":
+    main()

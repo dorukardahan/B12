@@ -129,16 +129,32 @@ if [ -f "$PROFILE_FILE" ]; then
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# LAST SESSION SUMMARY — project-specific first, global as fallback
+# SPRINT HANDOFF / LAST SESSION — handoff preferred over full summary (v12)
+# Handoff is compact (~300-500 chars), replaces full summary for continuity.
+# Falls back to full summary if no recent handoff exists.
 # ═══════════════════════════════════════════════════════════════
 LAST_SESSION=""
 LAST_SESSION_SOURCE=""
-if [ -f "$SUMMARY_DIR/${PROJECT_NAME}-latest.md" ]; then
-  LAST_SESSION=$(cat "$SUMMARY_DIR/${PROJECT_NAME}-latest.md" 2>/dev/null | head -30)
-  LAST_SESSION_SOURCE="project"
-elif [ -f "$SUMMARY_DIR/global-latest.md" ]; then
-  LAST_SESSION=$(cat "$SUMMARY_DIR/global-latest.md" 2>/dev/null | head -30)
-  LAST_SESSION_SOURCE="global"
+
+# Try handoff first (24h gate)
+HANDOFF_FILE="$SUMMARY_DIR/${PROJECT_NAME}-handoff.md"
+if [ -f "$HANDOFF_FILE" ]; then
+  HANDOFF_AGE=$(( $(date +%s) - $(file_mtime "$HANDOFF_FILE") ))
+  if [ "$HANDOFF_AGE" -lt 86400 ]; then
+    LAST_SESSION=$(head -20 "$HANDOFF_FILE")
+    LAST_SESSION_SOURCE="handoff"
+  fi
+fi
+
+# Fallback: full session summary
+if [ -z "$LAST_SESSION" ]; then
+  if [ -f "$SUMMARY_DIR/${PROJECT_NAME}-latest.md" ]; then
+    LAST_SESSION=$(cat "$SUMMARY_DIR/${PROJECT_NAME}-latest.md" 2>/dev/null | head -30)
+    LAST_SESSION_SOURCE="project"
+  elif [ -f "$SUMMARY_DIR/global-latest.md" ]; then
+    LAST_SESSION=$(cat "$SUMMARY_DIR/global-latest.md" 2>/dev/null | head -30)
+    LAST_SESSION_SOURCE="global"
+  fi
 fi
 
 # ═══════════════════════════════════════════════════════════════
@@ -169,9 +185,8 @@ if [ -f "$DIGEST_FILE" ]; then
 fi
 
 # ═══════════════════════════════════════════════════════════════
-# MEMORY PRE-FETCH — FTS5 + tag-based relevant memory loading
+# DATABASE PATH — needed by guardrails, pre-fetch, and compat checks
 # ═══════════════════════════════════════════════════════════════
-MEMORY_PREFETCH=""
 if [ "$(uname)" = "Darwin" ]; then
   DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
 elif [ -d "$HOME/AppData" ]; then
@@ -179,6 +194,49 @@ elif [ -d "$HOME/AppData" ]; then
 else
   DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
 fi
+
+# ═══════════════════════════════════════════════════════════════
+# HOST VERSION COMPAT CHECK (v12 — F8)
+# ═══════════════════════════════════════════════════════════════
+COMPAT_WARN=""
+VERSION_FILE="$B12_BASE/memory-state/host-version.txt"
+COMPAT_FILE="${B12_HOOK_DIR:-$HOME/.B12/hooks}/scripts/compat.json"
+if [ -f "$VERSION_FILE" ] && [ -f "$COMPAT_FILE" ] && command -v jq &>/dev/null; then
+  HOST_VER=$(cat "$VERSION_FILE" 2>/dev/null)
+  COMPAT_WARN=$(jq -r --arg v "$HOST_VER" '.known_issues[$v] // ""' "$COMPAT_FILE" 2>/dev/null)
+fi
+
+# ═══════════════════════════════════════════════════════════════
+# CONTENT GUARDRAILS — always surface for content sessions (v12 — F9)
+# ═══════════════════════════════════════════════════════════════
+CONTENT_GUARDRAILS=""
+IS_CONTENT=false
+echo "$CWD" | grep -qiE '(blog|content|marketing|seo|article|typefully)' && IS_CONTENT=true
+[ -f "$SUMMARY_DIR/${PROJECT_NAME}-handoff.md" ] && grep -qiE '(blog|content|article|editorial)' "$SUMMARY_DIR/${PROJECT_NAME}-handoff.md" 2>/dev/null && IS_CONTENT=true
+
+if $IS_CONTENT && [ -f "$DB_PATH" ]; then
+  CONTENT_GUARDRAILS=$(sqlite3 "$DB_PATH" "
+    SELECT substr(content, 1, 200) FROM memories
+    WHERE tags LIKE '%content-guardrail%' AND deleted_at IS NULL
+    ORDER BY COALESCE(json_extract(metadata, '\$.importance_score'), 1.0) DESC LIMIT 3
+  " 2>/dev/null)
+fi
+
+# ═══════════════════════════════════════════════════════════════
+# SETUP-AWARE SESSION ROUTING (v12 — F10)
+# ═══════════════════════════════════════════════════════════════
+ROUTING_WARN=""
+if [ -n "$_WORK_PAT" ]; then
+  CWD_HAS_WORK=$(echo "$CWD" | grep -ci "$_WORK_PAT" || true)
+  if [ "$CWD_HAS_WORK" -gt 0 ] && [ "$SETUP_CONTEXT" = "personal" ]; then
+    ROUTING_WARN="[ROUTING] CWD matches work pattern but using personal setup. Consider .claude-${_WORK_PAT}."
+  fi
+fi
+
+# ═══════════════════════════════════════════════════════════════
+# MEMORY PRE-FETCH — FTS5 + tag-based relevant memory loading
+# ═══════════════════════════════════════════════════════════════
+MEMORY_PREFETCH=""
 
 if [ -f "$DB_PATH" ]; then
   # Sanitize project name for SQL (alphanumeric + dash/underscore only)
@@ -295,13 +353,30 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
     CONTEXT="${CONTEXT}\n\n--- USER PROFILE ---\n${USER_PROFILE}\n--- END PROFILE ---"
   fi
 
-  # Add last session summary
+  # Add last session / sprint handoff (Tier 0 — never trimmed)
   if [ -n "$LAST_SESSION" ]; then
-    if [ "$LAST_SESSION_SOURCE" = "global" ]; then
+    if [ "$LAST_SESSION_SOURCE" = "handoff" ]; then
+      CONTEXT="${CONTEXT}\n\n--- LAST SESSION ---\n${LAST_SESSION}\n--- END LAST SESSION ---"
+    elif [ "$LAST_SESSION_SOURCE" = "global" ]; then
       CONTEXT="${CONTEXT}\n\n--- LAST SESSION (from different project) ---\n${LAST_SESSION}\n--- END LAST SESSION ---"
     else
       CONTEXT="${CONTEXT}\n\n--- LAST SESSION ---\n${LAST_SESSION}\n--- END LAST SESSION ---"
     fi
+  fi
+
+  # Add content guardrails (Tier 0 — never trimmed, v12 F9)
+  if [ -n "$CONTENT_GUARDRAILS" ]; then
+    CONTEXT="${CONTEXT}\n\n--- CONTENT GUARDRAILS ---\n${CONTENT_GUARDRAILS}\n--- END GUARDRAILS ---"
+  fi
+
+  # Add compat warning (v12 F8)
+  if [ -n "$COMPAT_WARN" ]; then
+    CONTEXT="${CONTEXT}\n[B12 COMPAT] Claude Code ${HOST_VER}: ${COMPAT_WARN}"
+  fi
+
+  # Add routing warning (v12 F10)
+  if [ -n "$ROUTING_WARN" ]; then
+    CONTEXT="${CONTEXT}\n${ROUTING_WARN}"
   fi
 
   # Add cross-project hints
