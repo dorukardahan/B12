@@ -278,7 +278,7 @@ RESULTS=$(sqlite3 "$DB_PATH" "
            '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') as display,
            (
              0.3 * max(COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / COALESCE(m.strength, 1.0)), 0.5), 0.01)
-             + 0.3 * min(COALESCE(json_extract(m.metadata, '$.importance_score'), 1.0) / 2.0, 1.0)
+             + 0.3 * min(COALESCE(CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.importance_score') END, 1.0) / 2.0, 1.0)
              + 0.4 * (1.0 / (1.0 + abs(f.rank)))
            ) as score
     FROM memories m
@@ -534,7 +534,7 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
         last_accessed_at = unixepoch('now'),
         metadata = json_set(COALESCE(metadata, '{}'),
           '\$.access_count',
-          COALESCE(json_extract(metadata, '\$.access_count'), 0) + 1)
+          COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '\$.access_count') END, 0) + 1)
     WHERE id IN (${BOOST_IDS})
   " >/dev/null 2>&1
 fi

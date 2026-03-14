@@ -296,9 +296,9 @@ if stale > 0:
 importance_dist = conn.execute("""
     SELECT
         CASE
-            WHEN json_extract(metadata, '$.importance_score') >= 2.0 THEN 'critical (2.0)'
-            WHEN json_extract(metadata, '$.importance_score') >= 1.5 THEN 'important (1.5-2.0)'
-            WHEN json_extract(metadata, '$.importance_score') >= 1.0 THEN 'normal (1.0-1.5)'
+            WHEN json_valid(metadata) AND json_extract(metadata, '$.importance_score') >= 2.0 THEN 'critical (2.0)'
+            WHEN json_valid(metadata) AND json_extract(metadata, '$.importance_score') >= 1.5 THEN 'important (1.5-2.0)'
+            WHEN json_valid(metadata) AND json_extract(metadata, '$.importance_score') >= 1.0 THEN 'normal (1.0-1.5)'
             ELSE 'low (<1.0 or unset)'
         END as tier,
         COUNT(*)

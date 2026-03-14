@@ -558,7 +558,7 @@ async def memory_search(
                                last_accessed_at = ?,
                                metadata = json_set(COALESCE(metadata, '{}'),
                                  '$.access_count',
-                                 COALESCE(json_extract(metadata, '$.access_count'), 0) + 1)
+                                 COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.access_count') END, 0) + 1)
                            WHERE content_hash = ?""",
                         (int(time.time()), row["content_hash"]),
                     )
@@ -771,7 +771,7 @@ async def memory_session_context(
                   AND (valid_until IS NULL OR valid_until > datetime('now'))
                   AND tags LIKE ?
                   AND memory_type NOT IN ('session_summary', 'progress')
-                ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0)
+                ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                          * COALESCE(strength, 1.0) DESC
                 LIMIT 3
             """, (f"%proj:{project_name}%",)).fetchall()
@@ -790,7 +790,7 @@ async def memory_session_context(
                             last_accessed_at = ?,
                             metadata = json_set(COALESCE(metadata, '{{}}'),
                               '$.access_count',
-                              COALESCE(json_extract(metadata, '$.access_count'), 0) + 1)
+                              COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.access_count') END, 0) + 1)
                         WHERE id IN ({placeholders})
                     """, [now_ts] + boost_ids)
 
@@ -801,7 +801,7 @@ async def memory_session_context(
               AND (valid_until IS NULL OR valid_until > datetime('now'))
               AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
               AND memory_type NOT IN ('session_summary', 'progress')
-            ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0)
+            ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                      * COALESCE(strength, 1.0) DESC
             LIMIT 2
         """).fetchall()
@@ -1294,7 +1294,7 @@ async def resource_project_context(name: str) -> str:
               AND (valid_until IS NULL OR valid_until > datetime('now'))
               AND tags LIKE ?
               AND memory_type NOT IN ('session_summary', 'progress')
-            ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0)
+            ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                      * COALESCE(strength, 1.0) DESC
             LIMIT 3
         """, (f"%proj:{name}%",)).fetchall()
