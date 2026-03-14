@@ -1,5 +1,17 @@
 # Changelog
 
+# [11.8.0](https://github.com/dorukardahan/B12/compare/v11.7.3...v11.8.0) (2026-03-14)
+
+
+### Bug Fixes
+
+* **v12:** address code review findings (C1, I1, I3, I4, I5, S2) ([b4bcfbf](https://github.com/dorukardahan/B12/commit/b4bcfbf895ba11d020dea8f060bc5cd2d0fc81c5))
+
+
+### Features
+
+* implement B12 v12.0 — 10 features across 3 phases ([c27fe94](https://github.com/dorukardahan/B12/commit/c27fe9476f37a70d1907cc382e880b90c8b5edc3)), closes [hi#value](https://github.com/hi/issues/value)
+
 ## [12.0.0] — Unreleased
 
 ### Features
