@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.8.2](https://github.com/dorukardahan/B12/compare/v11.8.1...v11.8.2) (2026-03-14)
+
+
+### Bug Fixes
+
+* **mcp:** return full content_hash in search results instead of truncated ([ecb328e](https://github.com/dorukardahan/B12/commit/ecb328ec4eb4e41e72937c47d3d0283514b95f7e))
+
 ## [11.8.1](https://github.com/dorukardahan/B12/compare/v11.8.0...v11.8.1) (2026-03-14)
 
 
