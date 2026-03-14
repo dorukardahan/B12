@@ -721,7 +721,7 @@ async def memory_quality(
                        AVG(json_extract(metadata, '$.quality_score')) as avg_q,
                        MIN(json_extract(metadata, '$.quality_score')) as min_q,
                        MAX(json_extract(metadata, '$.quality_score')) as max_q
-                FROM memories WHERE deleted_at IS NULL
+                FROM memories WHERE deleted_at IS NULL AND json_valid(metadata)
             """).fetchone()
             type_counts = db.execute(
                 "SELECT memory_type, COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL GROUP BY memory_type"
