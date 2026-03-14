@@ -329,7 +329,7 @@ def _unified_score(row, relevance: float) -> float:
 def _fmt_memory(row, score=None) -> str:
     p = [f"[{row['memory_type'] or 'general'}] {row['content'][:500]}"]
     if row["tags"]: p.append(f"  Tags: {row['tags']}")
-    p.append(f"  Hash: {row['content_hash'][:16]}...  Created: {row['created_at_iso'] or '?'}")
+    p.append(f"  Hash: {row['content_hash']}  Created: {row['created_at_iso'] or '?'}")
     if score is not None: p.append(f"  Score: {score:.3f}")
     return "\n".join(p)
 
