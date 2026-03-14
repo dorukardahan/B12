@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.8.4](https://github.com/dorukardahan/B12/compare/v11.8.3...v11.8.4) (2026-03-14)
+
+
+### Bug Fixes
+
+* **mcp:** guard all json_extract(metadata) against malformed JSON ([8477ffd](https://github.com/dorukardahan/B12/commit/8477ffdeffe9d135c5d063cdf40629a21c7e92ae))
+
 ## [11.8.3](https://github.com/dorukardahan/B12/compare/v11.8.2...v11.8.3) (2026-03-14)
 
 
