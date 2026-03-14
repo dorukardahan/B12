@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.7.3](https://github.com/dorukardahan/B12/compare/v11.7.2...v11.7.3) (2026-03-14)
+
+
+### Bug Fixes
+
+* **install:** remove unused label variable in update_launchd_plists ([f624f2e](https://github.com/dorukardahan/B12/commit/f624f2e81cd22dd33db11cd5320d435c69f136f0))
+
 ## [11.7.2](https://github.com/dorukardahan/B12/compare/v11.7.1...v11.7.2) (2026-03-14)
 
 
