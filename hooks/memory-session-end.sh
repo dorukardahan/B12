@@ -861,11 +861,16 @@ try:
                        '.py', '.sh', '.json', '.md', 'command', 'function',
                        'import', 'install', 'deploy', 'test', 'memory', 'tag',
                        'embed', 'query', 'switched', 'decided', 'chose',
-                       'configured', 'migrat', 'resolved']
+                       'configured', 'migrat', 'resolved',
+                       'ip', 'port', 'ssh', 'version', 'server', 'host',
+                       'blog', 'article', 'publish', 'editorial', 'content',
+                       'correction', 'actually', 'infrastructure']
             return any(sig in tl for sig in SIGNALS)
 
         prefix_map = {'decision': 'Decision', 'error_fix': 'Error Fix',
                       'learning': 'Learning', 'progress': 'Progress',
+                      'infra': 'Infrastructure', 'content_decision': 'Content Decision',
+                      'correction': 'Identity Correction',
                       'general': section_hdr.lstrip('# ')}
         for bullet in bullets[:5]:
             if not is_actionable(bullet):
@@ -942,6 +947,8 @@ try:
             r'not\s+(.{3,30})(?:,\s*|\s+but\s+)(?:it.?s|actually)\s+(.{3,30})'     # not X, actually Y
             r'|(?:wrong|incorrect)\s+(.{3,20})(?:should be|is actually)\s+(.{3,30})' # X wrong, should be Y
             r'|changed?\s+(?:from|my)\s+(.{3,30})\s+to\s+(.{3,30})'                  # changed from X to Y
+            r'|(?:yanlış|hatalı)\s+(.{3,30})(?:aslında|artık|olarak)\s+(.{3,30})'    # Turkish: yanlış X, aslında Y
+            r'|(.{3,30})\s+değil\s*,?\s*(?:artık|şimdi)\s+(.{3,30})'                 # Turkish: X değil, artık Y
             r')'
         )
 
@@ -960,11 +967,12 @@ try:
                     continue
 
                 # Find affected memories (max 10)
+                escaped_old = old_val.replace('%', '\\%').replace('_', '\\_')
                 affected = conn.execute("""
                     SELECT id, content, content_hash FROM memories
-                    WHERE content LIKE ? AND deleted_at IS NULL
+                    WHERE content LIKE ? ESCAPE '\\' AND deleted_at IS NULL
                     LIMIT 10
-                """, (f'%{old_val}%',)).fetchall()
+                """, (f'%{escaped_old}%',)).fetchall()
 
                 for mem_id, mem_content, mem_hash in affected:
                     updated_content = mem_content.replace(old_val, new_val)

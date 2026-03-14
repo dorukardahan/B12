@@ -185,7 +185,7 @@ _UID=$(id -u 2>/dev/null || echo $$)
 EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
 
 if [ -f "$STAGING_DIR/precompact-${SESSION_ID}.txt" ] && [ -x "$VENV_PYTHON" ]; then
-  python3 - "$STAGING_DIR/precompact-${SESSION_ID}.txt" "$PROJECT_NAME" "$CWD" "$EMBED_SOCK" << 'PCPYEOF'
+  "$VENV_PYTHON" - "$STAGING_DIR/precompact-${SESSION_ID}.txt" "$PROJECT_NAME" "$CWD" "$EMBED_SOCK" << 'PCPYEOF'
 import sys, os, json, hashlib, sqlite3, socket as _sock, base64
 
 staging_file = sys.argv[1]

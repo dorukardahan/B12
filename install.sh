@@ -127,11 +127,15 @@ for arg in "$@"; do
     --cline)     INSTALL_CLINE=true ;;
     --opencode)  INSTALL_OPENCODE=true ;;
     --health)
-      # Run health check and exit
+      # Run health check and exit — only forward --json and --fix
+      _health_args=()
+      for _ha in "$@"; do
+        [[ "$_ha" == "--json" || "$_ha" == "--fix" ]] && _health_args+=("$_ha")
+      done
       if [ -x "$VENV_PYTHON" ]; then
-        "$VENV_PYTHON" "$SCRIPT_SOURCE/b12_health.py" "${@:2}"
+        "$VENV_PYTHON" "$SCRIPT_SOURCE/b12_health.py" "${_health_args[@]}"
       elif command -v python3 &>/dev/null; then
-        python3 "$SCRIPT_SOURCE/b12_health.py" "${@:2}"
+        python3 "$SCRIPT_SOURCE/b12_health.py" "${_health_args[@]}"
       else
         echo "Python 3 required for health check"
         exit 1
