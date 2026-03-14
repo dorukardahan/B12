@@ -204,6 +204,49 @@ copy_scripts() {
 }
 
 # ─────────────────────────────────────────────
+# Step 3b: Update launchd plists (macOS only)
+# Migrates ~/.claude/hooks/ → ~/.B12/hooks/
+# and ~/.claude/memory-logs/ → ~/.B12/memory-logs/
+# ─────────────────────────────────────────────
+update_launchd_plists() {
+  [ "$(uname)" = "Darwin" ] || return 0
+
+  local LAUNCH_DIR="$HOME/Library/LaunchAgents"
+  [ -d "$LAUNCH_DIR" ] || return 0
+
+  local updated=0
+  for plist in "$LAUNCH_DIR"/com.b12.*.plist; do
+    [ -f "$plist" ] || continue
+    local label
+    label=$(basename "$plist" .plist)
+    local changed=false
+
+    # Check for old ~/.claude/hooks/ paths
+    if grep -q "$HOME/.claude/hooks/" "$plist" 2>/dev/null; then
+      sed -i '' "s|$HOME/.claude/hooks/|$HOME/.B12/hooks/|g" "$plist"
+      changed=true
+    fi
+
+    # Check for old ~/.claude/memory-logs/ paths
+    if grep -q "$HOME/.claude/memory-logs/" "$plist" 2>/dev/null; then
+      sed -i '' "s|$HOME/.claude/memory-logs/|$HOME/.B12/memory-logs/|g" "$plist"
+      changed=true
+    fi
+
+    if $changed; then
+      # Reload the plist so launchd picks up new paths
+      launchctl unload "$plist" 2>/dev/null || true
+      launchctl load "$plist" 2>/dev/null || true
+      updated=$((updated + 1))
+    fi
+  done
+
+  if [ "$updated" -gt 0 ]; then
+    info "Updated $updated launchd plist(s): ~/.claude/ → ~/.B12/ paths"
+  fi
+}
+
+# ─────────────────────────────────────────────
 # Step 4: Merge hook config into settings.json
 # ─────────────────────────────────────────────
 install_to_setup() {
@@ -1747,6 +1790,7 @@ fi
 create_dirs
 copy_hooks
 copy_scripts
+update_launchd_plists
 
 # Verify MCP package
 if [ -x "$VENV_PYTHON" ]; then

@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* **install:** add `update_launchd_plists()` to migrate `~/.claude/hooks/` → `~/.B12/hooks/` and `~/.claude/memory-logs/` → `~/.B12/memory-logs/` in launchd plist files, then reload affected jobs — previously `install.sh --all` copied hooks to the new location but left 5 launchd jobs pointing at the old path
+
 ## [11.7.1](https://github.com/dorukardahan/B12/compare/v11.7.0...v11.7.1) (2026-03-03)
 
 
