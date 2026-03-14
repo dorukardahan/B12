@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.8.3](https://github.com/dorukardahan/B12/compare/v11.8.2...v11.8.3) (2026-03-14)
+
+
+### Bug Fixes
+
+* **mcp:** memory_quality analyze crashes on legacy metadata (malformed JSON) ([b5bf3c0](https://github.com/dorukardahan/B12/commit/b5bf3c0be54f40a96d1dba6d95cd19c8e7900360))
+
 ## [11.8.2](https://github.com/dorukardahan/B12/compare/v11.8.1...v11.8.2) (2026-03-14)
 
 
