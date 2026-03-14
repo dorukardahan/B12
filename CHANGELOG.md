@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.9.0](https://github.com/dorukardahan/B12/compare/v11.8.4...v11.9.0) (2026-03-14)
+
+
+### Features
+
+* **integrity:** 3-layer metadata validation — prevent invalid JSON at write time ([e99f607](https://github.com/dorukardahan/B12/commit/e99f60788afd1f5533efe85a931f9b375d0b537d))
+
 ## [11.8.4](https://github.com/dorukardahan/B12/compare/v11.8.3...v11.8.4) (2026-03-14)
 
 
