@@ -217,8 +217,6 @@ update_launchd_plists() {
   local updated=0
   for plist in "$LAUNCH_DIR"/com.b12.*.plist; do
     [ -f "$plist" ] || continue
-    local label
-    label=$(basename "$plist" .plist)
     local changed=false
 
     # Check for old ~/.claude/hooks/ paths
