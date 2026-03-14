@@ -138,9 +138,19 @@ def _tags_to_str(tags: Any) -> Optional[str]:
 def _metadata_to_str(metadata: Any) -> Optional[str]:
     if metadata is None:
         return None
+    # Use validate_metadata for guaranteed valid JSON output
+    try:
+        from shared_patterns import validate_metadata
+        return validate_metadata(metadata)
+    except ImportError:
+        pass
+    # Fallback if shared_patterns not available
     if isinstance(metadata, str):
-        return metadata
-    # Keep defaults stable for ASCII-only logs; allow non-ascii if metadata has it.
+        try:
+            json.loads(metadata)
+            return metadata
+        except (json.JSONDecodeError, ValueError):
+            return "{}"
     return json.dumps(metadata, ensure_ascii=False)
 
 

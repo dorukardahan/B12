@@ -142,6 +142,16 @@ def _get_embedding_direct(text):
 
 def store_memory(db_path, content, metadata_str, tags, embedding=None, memory_type='general'):
     """Store a memory in the B12 database."""
+    # Validate metadata is valid JSON before INSERT
+    try:
+        from shared_patterns import validate_metadata
+        metadata_str = validate_metadata(metadata_str)
+    except ImportError:
+        if metadata_str and isinstance(metadata_str, str):
+            try:
+                json.loads(metadata_str)
+            except (json.JSONDecodeError, ValueError):
+                metadata_str = "{}"
     content_hash = hashlib.sha256(content.strip().lower().encode()).hexdigest()
     now = datetime.now(timezone.utc).isoformat()
 

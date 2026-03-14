@@ -231,6 +231,26 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
             """)
         except Exception:
             pass  # vec0 may already exist with different params
+
+    # Metadata JSON validation trigger — last safety net against invalid JSON
+    db.execute("""
+        CREATE TRIGGER IF NOT EXISTS b12_metadata_json_check_insert
+        BEFORE INSERT ON memories
+        WHEN NEW.metadata IS NOT NULL AND NEW.metadata != '' AND NEW.metadata != '{}'
+             AND json_valid(NEW.metadata) = 0
+        BEGIN
+            SELECT RAISE(ABORT, 'B12: metadata must be valid JSON');
+        END
+    """)
+    db.execute("""
+        CREATE TRIGGER IF NOT EXISTS b12_metadata_json_check_update
+        BEFORE UPDATE OF metadata ON memories
+        WHEN NEW.metadata IS NOT NULL AND NEW.metadata != '' AND NEW.metadata != '{}'
+             AND json_valid(NEW.metadata) = 0
+        BEGIN
+            SELECT RAISE(ABORT, 'B12: metadata must be valid JSON');
+        END
+    """)
     db.commit()
 
 
@@ -300,6 +320,44 @@ def _require_db() -> sqlite3.Connection:
     return _db
 
 
+def _validate_metadata(value) -> str:
+    """Ensure metadata is valid JSON. Gracefully handles legacy f-string format."""
+    if value is None:
+        return "{}"
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return "{}"
+        try:
+            json.loads(s)
+            return s
+        except (json.JSONDecodeError, ValueError):
+            # Legacy f-string: "type:x, importance:0.6"
+            result = {}
+            for part in s.split(","):
+                part = part.strip()
+                if ":" not in part:
+                    continue
+                k, _, v = part.partition(":")
+                k, v = k.strip(), v.strip()
+                if k == "importance":
+                    k = "importance_score"
+                try:
+                    v = float(v)
+                    if v == int(v):
+                        v = int(v)
+                except (ValueError, TypeError):
+                    pass
+                result[k] = v
+            return json.dumps(result, ensure_ascii=False) if result else "{}"
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return "{}"
+
+
 def _unified_score(row, relevance: float) -> float:
     """Compute unified score: 0.3*decay + 0.3*importance + 0.4*relevance.
     Matches the hook's scoring formula for consistent cross-path results."""
@@ -355,7 +413,7 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         "access_count": 0, "source_type": "user", "credibility": 1.0,
     }
     base_meta.update(metadata)
-    meta_json = json.dumps(base_meta, ensure_ascii=False)
+    meta_json = _validate_metadata(base_meta)
 
     async with _db_lock:
         # Check if a soft-deleted row with same hash exists — undelete it
@@ -619,7 +677,7 @@ async def memory_update(
                 existing = {}
             existing.update(updates["metadata"])
             sets.append("metadata = ?")
-            vals.append(json.dumps(existing, ensure_ascii=False))
+            vals.append(_validate_metadata(existing))
         if "strength" in updates:
             # Clamp to [0.3, 5.0] to prevent poisoning the Ebbinghaus decay formula
             strength = max(0.3, min(5.0, float(updates["strength"])))

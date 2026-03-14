@@ -6,6 +6,7 @@ hooks/memory-session-end.sh, hooks/memory-precompact.sh, and all scripts.
 English + Turkish contextual patterns (v4 format).
 """
 import hashlib
+import json
 import os
 import re
 import sys
@@ -43,6 +44,56 @@ def content_hash(text: str) -> str:
     ALL code that computes content hashes MUST use this function.
     """
     return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
+
+def validate_metadata(value) -> str:
+    """Ensure metadata is a valid JSON string. Never raises.
+
+    Accepts: dict → json.dumps it
+    Accepts: valid JSON string → passes through
+    Accepts: None/empty → returns '{}'
+    Accepts: legacy f-string ("type:x, importance:0.6") → parses and converts
+
+    ALL code that writes to the metadata column MUST use this function.
+    """
+    if value is None:
+        return "{}"
+    if isinstance(value, dict):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, str):
+        s = value.strip()
+        if not s:
+            return "{}"
+        # Already valid JSON?
+        try:
+            json.loads(s)
+            return s
+        except (json.JSONDecodeError, ValueError):
+            pass
+        # Legacy f-string format: "type:progress, importance:0.6, key:value"
+        result = {}
+        for part in s.split(","):
+            part = part.strip()
+            if ":" not in part:
+                continue
+            key, _, val = part.partition(":")
+            key = key.strip()
+            val = val.strip()
+            if key == "importance":
+                key = "importance_score"
+            try:
+                val = float(val)
+                if val == int(val):
+                    val = int(val)
+            except (ValueError, TypeError):
+                pass
+            result[key] = val
+        return json.dumps(result, ensure_ascii=False) if result else "{}"
+    # Unknown type — serialize best-effort
+    try:
+        return json.dumps(value, ensure_ascii=False)
+    except (TypeError, ValueError):
+        return "{}"
+
 
 DECISION_RE = re.compile(
     r'(?i)(?:'
