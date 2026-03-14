@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.7.2](https://github.com/dorukardahan/B12/compare/v11.7.1...v11.7.2) (2026-03-14)
+
+
+### Bug Fixes
+
+* **install:** migrate launchd plists from ~/.claude/ to ~/.B12/ paths ([39fab9c](https://github.com/dorukardahan/B12/commit/39fab9cb3c535c0ddcb29d22c77f74e6b0e8907b))
+
 ## Unreleased
 
 ### Bug Fixes
