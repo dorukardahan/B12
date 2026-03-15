@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.15.0](https://github.com/dorukardahan/B12/compare/v11.14.0...v11.15.0) (2026-03-15)
+
+
+### Features
+
+* **codex:** upgrade extraction with all shared_patterns — implicit decisions, blockers, corrections ([ab10f90](https://github.com/dorukardahan/B12/commit/ab10f9032be2ed501ae06b22e4b9e4e59246c1b3))
+
 # [11.14.0](https://github.com/dorukardahan/B12/compare/v11.13.0...v11.14.0) (2026-03-15)
 
 
