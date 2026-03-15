@@ -59,7 +59,8 @@ _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
 sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
 from shared_patterns import (DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE,
                              TOOL_PREF_RE, ARCH_RE, WORKFLOW_RE, FILE_CONV_RE,
-                             CORRECTION_RE, INFRA_RE, CONTENT_RE)
+                             CORRECTION_RE, INFRA_RE, CONTENT_RE,
+                             summary_filter, classify_by_prefix)
 
 transcript_path = sys.argv[1]
 project_name = sys.argv[2]
@@ -138,6 +139,11 @@ try:
 
                                     # Pattern matching on full assistant text (scan up to 2000 chars)
                                     scan_text = text[:2000]
+
+                                    # Layer 0: Skip session summary recitations (v12.2)
+                                    if summary_filter(scan_text):
+                                        continue
+
                                     if DECISION_RE.search(scan_text):
                                         # Extract context around the match
                                         m = DECISION_RE.search(scan_text)

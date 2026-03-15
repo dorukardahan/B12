@@ -119,13 +119,34 @@ try:
         DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE,
         TOOL_PREF_RE, ARCH_RE, WORKFLOW_RE, CORRECTION_RE,
         IMPLICIT_DECISION_RE, REASON_RE, BLOCKER_RE,
-        DB_PATH, content_hash, validate_metadata
+        DB_PATH, content_hash, validate_metadata,
+        summary_filter, classify_by_prefix,
     )
 except ImportError:
     # shared_patterns not available — skip silently
     sys.exit(0)
 
-# ── Scan for patterns ────────────────────────────────────────
+# ── Layer 0: Skip session summary recitations ───────────────
+if summary_filter(scan_text):
+    sys.exit(0)
+
+# ── Layer 1: Check for [Label] prefix auto-classification ───
+prefix_result = classify_by_prefix(scan_text)
+if prefix_result:
+    h = content_hash(scan_text[:200])
+    matches = [{
+        "content": scan_text[:300],
+        "category": prefix_result["type"],
+        "score": 9,
+        "hash": h,
+    }]
+    # Skip regex — prefix is deterministic
+    with open(buffer_file, "a") as f:
+        for m in matches:
+            f.write(json.dumps(m, ensure_ascii=False) + "\n")
+    sys.exit(0)
+
+# ── Layer 2: Scan for patterns (regex) ──────────────────────
 PATTERNS = [
     (DECISION_RE,          "decision",          8),
     (IMPLICIT_DECISION_RE, "implicit_decision", 7),

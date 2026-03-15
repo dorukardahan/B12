@@ -254,6 +254,83 @@ CONTENT_RE = re.compile(
     r')'
 )
 
+
+# ═══════════════════════════════════════════════════════════════
+# Layer 0 + Layer 1: Pre-regex filters (v12.2)
+# These run BEFORE regex patterns to eliminate false positives
+# and auto-classify content that has explicit type markers.
+# ═══════════════════════════════════════════════════════════════
+
+# ── Layer 0: Session summary filter ─────────────────────────
+_SUMMARY_MARKERS = (
+    '# Session Summary',
+    '## Decisions Made',
+    '## Errors & Fixes',
+    '## Key Learnings',
+    '## User Preferences',
+    '## What Was Done',
+    '## Sprint Handoff',
+    '## User Requests',
+    '## Files Modified',
+)
+
+
+def summary_filter(text: str) -> bool:
+    """Return True if text is a session summary recitation (skip regex).
+
+    Session summaries contain embedded decision/error keywords that
+    trigger false positives. This filter detects them by structural
+    markers (2+ matches = summary content).
+    """
+    if not text:
+        return False
+    return sum(1 for m in _SUMMARY_MARKERS if m in text) >= 2
+
+
+# ── Layer 1: [Label] prefix auto-classification ─────────────
+_PREFIX_RE = re.compile(r'^\[([^\]]{2,30})\]')
+
+_PREFIX_MAP = {
+    'decision': 'decision',
+    'error fix': 'error_fix',
+    'error': 'error_fix',
+    'gotcha': 'error_fix',
+    'learning': 'learning',
+    'preference': 'preference',
+    'progress': 'observation',
+    'observation': 'observation',
+    'architecture': 'knowledge',
+    'pattern': 'learning',
+    'reference': 'knowledge',
+    'review': 'knowledge',
+    'note': 'knowledge',
+    'handoff': 'observation',
+    'audit': 'knowledge',
+    'test': 'knowledge',
+}
+
+
+def classify_by_prefix(content: str):
+    """Auto-classify memory by [Label] prefix tag.
+
+    Returns {"type": str, "confidence": 1.0} if prefix found,
+    or None if no recognized prefix.
+
+    Prefix tags like [Decision], [Error Fix], [Learning] are
+    deterministic type markers — no regex needed, 100% precision.
+    """
+    if not content:
+        return None
+    m = _PREFIX_RE.match(content.strip())
+    if not m:
+        return None
+    tag = m.group(1).strip().lower()
+    for key, typ in _PREFIX_MAP.items():
+        if key in tag:
+            return {"type": typ, "confidence": 1.0}
+    return None
+
+
 # ── v12.1 patterns — implicit decisions, reasons, blockers ───
 
 IMPLICIT_DECISION_RE = re.compile(

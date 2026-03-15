@@ -34,7 +34,8 @@ import sys, json, os, re
 # B12_HOOK_DIR controls code location; B12_DATA_DIR controls data only
 _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
 sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
-from shared_patterns import DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE
+from shared_patterns import (DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE,
+                             summary_filter)
 
 transcript_path = sys.argv[1]
 project_name = sys.argv[2]
@@ -93,6 +94,10 @@ try:
                             if block.get('type') == 'text' and block.get('text', '').strip():
                                 text = block['text']
                                 snippet = text[:400]
+
+                                # Layer 0: Skip session summary recitations (v12.2)
+                                if summary_filter(text[:2000]):
+                                    continue
 
                                 # Score by pattern match
                                 if DECISION_RE.search(snippet):
