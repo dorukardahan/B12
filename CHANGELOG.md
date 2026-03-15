@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.11.0](https://github.com/dorukardahan/B12/compare/v11.10.0...v11.11.0) (2026-03-15)
+
+
+### Features
+
+* **hooks:** mid-session checkpoint hook — captures decisions/errors/learnings between compactions ([b990ffb](https://github.com/dorukardahan/B12/commit/b990ffb38d658b3c971110d433abc0d19889737e))
+
 # [11.10.0](https://github.com/dorukardahan/B12/compare/v11.9.0...v11.10.0) (2026-03-15)
 
 
