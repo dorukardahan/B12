@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.19.0](https://github.com/dorukardahan/B12/compare/v11.18.2...v11.19.0) (2026-03-15)
+
+
+### Features
+
+* **classify:** 3-layer extraction pipeline — summary filter + prefix classifier + regex ([05a9825](https://github.com/dorukardahan/B12/commit/05a98257330b6002d56ff2293e842c26209d4ca5))
+
 ## [11.18.2](https://github.com/dorukardahan/B12/compare/v11.18.1...v11.18.2) (2026-03-15)
 
 
