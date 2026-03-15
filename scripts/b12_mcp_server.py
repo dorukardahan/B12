@@ -51,6 +51,18 @@ SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 _db: sqlite3.Connection | None = None
 _db_lock = asyncio.Lock()
 
+# ── Session tracker (MCP-only platform support) ─────────────────
+# Tracks tool calls during a session so we can generate a summary
+# on shutdown. Solves the #13 gap: MCP-only platforms have no
+# SessionEnd hook, so without this, session context is lost.
+_session_tracker = {
+    "search_queries": [],     # recent search queries (topic signals)
+    "stored_count": 0,        # memories explicitly stored this session
+    "tool_calls": 0,          # total MCP tool invocations
+    "start_time": None,       # session start timestamp
+    "project": None,          # detected project name
+}
+
 
 def _ensure_schema(db: sqlite3.Connection) -> None:
     """Create all required tables if they don't exist. Safe on existing DBs."""
@@ -267,10 +279,69 @@ async def lifespan(server: FastMCP):
         _db.enable_load_extension(True)
         sqlite_vec.load(_db)
     _ensure_schema(_db)
+    _session_tracker["start_time"] = time.time()
     yield
+    # ── Session flush on shutdown (MCP-only platform support) ────
+    _flush_session_tracker(_db)
     if _db:
         _db.close()
         _db = None
+
+
+def _flush_session_tracker(db: sqlite3.Connection | None) -> None:
+    """Store a session summary from tracked MCP tool calls.
+
+    This is the ONLY way MCP-only platforms (Cursor, VS Code, Windsurf,
+    Cline, Kimi, OpenCode) get automatic session-end memories.
+    Claude Code and Gemini CLI have dedicated hooks and don't need this.
+    """
+    tracker = _session_tracker
+    if not db or tracker["tool_calls"] < 3:
+        return  # Too few calls — not a real session
+
+    try:
+        parts = []
+
+        # Topics searched (reveals what user was working on)
+        if tracker["search_queries"]:
+            unique = list(dict.fromkeys(tracker["search_queries"][-10:]))
+            parts.append(f"Searched: {', '.join(unique[:5])}")
+
+        if tracker["stored_count"] > 0:
+            parts.append(f"Stored {tracker['stored_count']} memories")
+
+        parts.append(f"Tool calls: {tracker['tool_calls']}")
+
+        # Duration
+        if tracker["start_time"]:
+            dur_min = (time.time() - tracker["start_time"]) / 60
+            if dur_min >= 1:
+                parts.append(f"Duration: {dur_min:.0f}min")
+
+        content = f"[Progress] {' • '.join(parts)}"
+        project = tracker["project"] or "unknown"
+        tags = f"proj:{project},type:session_summary,source:mcp,platform:mcp-only"
+        meta_dict = {
+            "type": "session_summary",
+            "importance_score": 0.6,
+            "project": project,
+            "source": "mcp_session_tracker",
+            "tool_calls": tracker["tool_calls"],
+        }
+
+        now_ts = int(time.time())
+        ch = hashlib.sha256(content.strip().lower().encode()).hexdigest()
+
+        db.execute(
+            """INSERT OR IGNORE INTO memories
+               (content, content_hash, metadata, tags, memory_type,
+                created_at, updated_at, strength)
+               VALUES (?, ?, ?, ?, 'session_summary', ?, ?, 1.0)""",
+            (content, ch, json.dumps(meta_dict), tags, now_ts, now_ts)
+        )
+        db.commit()
+    except Exception:
+        pass  # Never block shutdown
 
 server = FastMCP("B12", lifespan=lifespan)
 
@@ -398,7 +469,17 @@ def _fmt_memory(row, score=None) -> str:
 async def memory_store(content: str, metadata: dict | None = None) -> str:
     """Store a new memory with optional metadata, tags, and type."""
     db = _require_db()
+    _session_tracker["tool_calls"] += 1
+    _session_tracker["stored_count"] += 1
+    # Detect project from tags
     metadata = metadata or {}
+    if not _session_tracker["project"]:
+        t = metadata.get("tags", "") or ""
+        for part in (t if isinstance(t, list) else t.split(",")):
+            p = str(part).strip()
+            if p.startswith("proj:"):
+                _session_tracker["project"] = p[5:]
+                break
     tags_raw = metadata.pop("tags", None)
     memory_type = metadata.pop("type", metadata.pop("memory_type", "general"))
     valid_until = metadata.pop("valid_until", None)
@@ -483,6 +564,9 @@ async def memory_search(
     """Search memories by semantic similarity, full-text, or hybrid.
     Set stemmed=True to use porter-stemmed FTS (matches morphological variants: run/running/ran)."""
     db = _require_db()
+    _session_tracker["tool_calls"] += 1
+    if query:
+        _session_tracker["search_queries"].append(query[:80])
     results: dict[str, tuple[dict, float]] = {}  # content_hash -> (row, score)
 
     tag_list = ([t.strip() for t in tags.split(",")] if isinstance(tags, str)
@@ -646,6 +730,7 @@ async def memory_update(
 ) -> str:
     """Update metadata, tags, or type of an existing memory. Content and hash are immutable."""
     db = _require_db()
+    _session_tracker["tool_calls"] += 1
 
     async with _db_lock:
         row = db.execute(
