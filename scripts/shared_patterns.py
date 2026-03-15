@@ -253,3 +253,51 @@ CONTENT_RE = re.compile(
     r'|(?:(?:review|feedback)\s*:\s+.{5,})'
     r')'
 )
+
+# ── v12.1 patterns — implicit decisions, reasons, blockers ───
+
+IMPLICIT_DECISION_RE = re.compile(
+    r'(?i)(?:'
+    # English implicit decisions
+    r'(?:let.?s\s+(?:go\s+with|use|try|pick|choose|stick with)\s+.{3,80})'
+    r'|(?:going\s+to\s+use\s+.{3,80})'
+    r'|(?:plan\s+is\s+to\s+.{3,80})'
+    r'|(?:(?:I|we).?(?:ll|will)\s+(?:go with|use|try|pick)\s+.{3,80})'
+    r'|(?:(?:better|best)\s+to\s+(?:use|go with|try)\s+.{3,80})'
+    # Turkish implicit decisions
+    r'|(?:(?:yapacağız|kullanalım|geçelim|deneyelim|seçelim)\s+.{3,80})'
+    r'|(?:(?:bununla|bunu|şunu)\s+(?:gidelim|deneyelim|kullanalım)\s*.{0,80})'
+    r'|(?:(?:en iyisi|daha iyi)\s+.{3,80})'
+    r')'
+)
+
+REASON_RE = re.compile(
+    r'(?i)(?:'
+    # English reasoning
+    r'(?:because\s+.{10,200})'
+    r'|(?:since\s+.{10,200})'
+    r'|(?:the\s+reason\s+(?:is|was|being)\s+.{10,200})'
+    r'|(?:due\s+to\s+.{10,200})'
+    r'|(?:this\s+is\s+(?:because|since|due to)\s+.{10,200})'
+    # Turkish reasoning
+    r'|(?:çünkü\s+.{10,200})'
+    r'|(?:(?:nedeni|sebebi|sebebiyle)\s+.{10,200})'
+    r'|(?:(?:bunun\s+nedeni|bunun\s+sebebi)\s+.{10,200})'
+    r')'
+)
+
+BLOCKER_RE = re.compile(
+    r'(?i)(?:'
+    # English blockers
+    r'(?:blocked\s+by\s+.{5,150})'
+    r'|(?:waiting\s+for\s+.{5,150})'
+    r'|(?:can.?t\s+proceed\s+.{5,150})'
+    r'|(?:stuck\s+on\s+.{5,150})'
+    r'|(?:(?:depends|dependent)\s+on\s+.{5,150})'
+    r'|(?:need\s+to\s+(?:wait|resolve|fix)\s+.{5,150})'
+    # Turkish blockers
+    r'|(?:(?:bekliyor|takıldık|tıkandık)\s+.{5,150})'
+    r'|(?:(?:buna\s+bağlı|bundan\s+önce)\s+.{5,150})'
+    r'|(?:(?:çözmemiz|düzeltmemiz)\s+(?:lazım|gerek)\s*.{0,150})'
+    r')'
+)

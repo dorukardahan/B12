@@ -113,6 +113,7 @@ try:
     from shared_patterns import (
         DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE,
         TOOL_PREF_RE, ARCH_RE, WORKFLOW_RE, CORRECTION_RE,
+        IMPLICIT_DECISION_RE, REASON_RE, BLOCKER_RE,
         DB_PATH, content_hash, validate_metadata
     )
 except ImportError:
@@ -121,14 +122,17 @@ except ImportError:
 
 # ── Scan for patterns ────────────────────────────────────────
 PATTERNS = [
-    (DECISION_RE,   "decision",   8),
-    (ERROR_RE,      "error",      8),
-    (LEARNING_RE,   "learning",   7),
-    (PREFERENCE_RE, "preference", 9),
-    (TOOL_PREF_RE,  "tool_pref",  7),
-    (ARCH_RE,       "architecture", 7),
-    (WORKFLOW_RE,   "workflow",   6),
-    (CORRECTION_RE, "correction", 8),
+    (DECISION_RE,          "decision",          8),
+    (IMPLICIT_DECISION_RE, "implicit_decision", 7),
+    (ERROR_RE,             "error",             8),
+    (LEARNING_RE,          "learning",          7),
+    (PREFERENCE_RE,        "preference",        9),
+    (TOOL_PREF_RE,         "tool_pref",         7),
+    (ARCH_RE,              "architecture",       7),
+    (WORKFLOW_RE,          "workflow",           6),
+    (CORRECTION_RE,        "correction",         8),
+    (REASON_RE,            "reasoning",          6),
+    (BLOCKER_RE,           "blocker",            8),
 ]
 
 matches = []
