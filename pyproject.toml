@@ -1,0 +1,46 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "b12-memory"
+version = "12.0.0"
+description = "Persistent cross-session memory system for AI coding assistants"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.11"
+authors = [
+    {name = "Doruk Ardahan", email = "doruk@dorukardahan.com"}
+]
+keywords = ["memory", "ai", "coding-assistant", "claude-code", "persistent-memory", "semantic-search"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Libraries",
+]
+dependencies = [
+    "mcp",
+    "sentence-transformers",
+    "sqlite-vec",
+    "fsrs",
+]
+
+[project.optional-dependencies]
+dev = ["pytest"]
+
+[project.scripts]
+b12 = "b12_memory.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/dorukardahan/B12"
+Repository = "https://github.com/dorukardahan/B12"
+Issues = "https://github.com/dorukardahan/B12/issues"
+
+[tool.setuptools.packages.find]
+where = ["scripts"]
+include = ["b12_memory*"]
