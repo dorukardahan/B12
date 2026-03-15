@@ -60,7 +60,7 @@ sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
 from shared_patterns import (DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE,
                              TOOL_PREF_RE, ARCH_RE, WORKFLOW_RE, FILE_CONV_RE,
                              CORRECTION_RE, INFRA_RE, CONTENT_RE,
-                             summary_filter, classify_by_prefix)
+                             summary_filter)
 
 transcript_path = sys.argv[1]
 project_name = sys.argv[2]

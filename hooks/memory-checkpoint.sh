@@ -131,22 +131,21 @@ if summary_filter(scan_text):
     sys.exit(0)
 
 # ── Layer 1: Check for [Label] prefix auto-classification ───
+prefix_classified = False
 prefix_result = classify_by_prefix(scan_text)
 if prefix_result:
     h = content_hash(scan_text[:200])
-    matches = [{
-        "content": scan_text[:300],
-        "category": prefix_result["type"],
-        "score": 9,
-        "hash": h,
-    }]
-    # Skip regex — prefix is deterministic
     with open(buffer_file, "a") as f:
-        for m in matches:
-            f.write(json.dumps(m, ensure_ascii=False) + "\n")
-    sys.exit(0)
+        f.write(json.dumps({
+            "content": scan_text[:300],
+            "category": prefix_result["type"],
+            "score": 9,
+            "hash": h,
+        }, ensure_ascii=False) + "\n")
+    prefix_classified = True
+    # Skip regex — prefix is deterministic, jump to flush check
 
-# ── Layer 2: Scan for patterns (regex) ──────────────────────
+# ── Layer 2: Scan for patterns (regex) — skip if prefix handled ─
 PATTERNS = [
     (DECISION_RE,          "decision",          8),
     (IMPLICIT_DECISION_RE, "implicit_decision", 7),
@@ -164,29 +163,30 @@ PATTERNS = [
 matches = []
 seen_hashes = set()
 
-for regex, category, base_score in PATTERNS:
-    for m in regex.finditer(scan_text):
-        text = m.group(0).strip()
-        if len(text) < 15 or len(text) > 500:
-            continue
-        h = content_hash(text)
-        if h in seen_hashes:
-            continue
-        seen_hashes.add(h)
-        matches.append({
-            "content": f"[{category.title()}] {text}",
-            "category": category,
-            "score": base_score,
-            "hash": h,
-        })
+if not prefix_classified:
+    for regex, category, base_score in PATTERNS:
+        for m in regex.finditer(scan_text):
+            text = m.group(0).strip()
+            if len(text) < 15 or len(text) > 500:
+                continue
+            h = content_hash(text)
+            if h in seen_hashes:
+                continue
+            seen_hashes.add(h)
+            matches.append({
+                "content": f"[{category.title()}] {text}",
+                "category": category,
+                "score": base_score,
+                "hash": h,
+            })
 
-if not matches:
-    sys.exit(0)
+    if not matches:
+        sys.exit(0)
 
-# ── Append to buffer ─────────────────────────────────────────
-with open(buffer_file, "a") as f:
-    for m in matches:
-        f.write(json.dumps(m, ensure_ascii=False) + "\n")
+    # ── Append regex matches to buffer ───────────────────────────
+    with open(buffer_file, "a") as f:
+        for m in matches:
+            f.write(json.dumps(m, ensure_ascii=False) + "\n")
 
 # ── Check buffer size — flush if ≥ 3 items ──────────────────
 buffer_items = []
