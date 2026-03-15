@@ -1793,7 +1793,7 @@ verify_opencode() {
 # Main
 # ═════════════════════════════════════════════
 
-echo "B12 Memory System Installer (v11.11.0 — multi-platform)"
+echo "B12 Memory System Installer (v11.12.0 — multi-platform)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first

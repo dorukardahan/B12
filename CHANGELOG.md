@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.12.0](https://github.com/dorukardahan/B12/compare/v11.11.0...v11.12.0) (2026-03-15)
+
+
+### Features
+
+* **token:** behavioral instructions → skill — 58% context reduction ([ece7184](https://github.com/dorukardahan/B12/commit/ece7184e8116aae15ac588fe343b7ccb9fa063ea))
+
 # [11.11.0](https://github.com/dorukardahan/B12/compare/v11.10.0...v11.11.0) (2026-03-15)
 
 
