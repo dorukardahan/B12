@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.16.0](https://github.com/dorukardahan/B12/compare/v11.15.0...v11.16.0) (2026-03-15)
+
+
+### Features
+
+* **cli:** b12 command — direct terminal access to memory system ([adc6066](https://github.com/dorukardahan/B12/commit/adc6066f74b81cd22f42c3d1a986889e72004aac))
+
 # [11.15.0](https://github.com/dorukardahan/B12/compare/v11.14.0...v11.15.0) (2026-03-15)
 
 
