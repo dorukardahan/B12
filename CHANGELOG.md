@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.18.2](https://github.com/dorukardahan/B12/compare/v11.18.1...v11.18.2) (2026-03-15)
+
+
+### Bug Fixes
+
+* **review:** address code review findings — schema, cleanup, atexit, versions ([6859a20](https://github.com/dorukardahan/B12/commit/6859a20b1aa0eb9b1747f4ece68ff1165626a97c))
+
 ## [11.18.1](https://github.com/dorukardahan/B12/compare/v11.18.0...v11.18.1) (2026-03-15)
 
 
