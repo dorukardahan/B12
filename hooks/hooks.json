@@ -1,0 +1,104 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "startup|resume|compact",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B12_HOOK_DIR=${CLAUDE_PLUGIN_ROOT}/hooks ${CLAUDE_PLUGIN_ROOT}/hooks/memory-session-start.sh",
+            "timeout": 20
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "matcher": "auto|manual",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B12_HOOK_DIR=${CLAUDE_PLUGIN_ROOT}/hooks ${CLAUDE_PLUGIN_ROOT}/hooks/memory-precompact.sh",
+            "timeout": 30
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B12_HOOK_DIR=${CLAUDE_PLUGIN_ROOT}/hooks ${CLAUDE_PLUGIN_ROOT}/hooks/memory-session-end.sh",
+            "timeout": 35
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B12_HOOK_DIR=${CLAUDE_PLUGIN_ROOT}/hooks ${CLAUDE_PLUGIN_ROOT}/hooks/memory-retrieval.sh",
+            "timeout": 15
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "mcp__B12__memory_store",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B12_HOOK_DIR=${CLAUDE_PLUGIN_ROOT}/hooks ${CLAUDE_PLUGIN_ROOT}/hooks/memory-tag-enforce.sh",
+            "timeout": 8
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B12_HOOK_DIR=${CLAUDE_PLUGIN_ROOT}/hooks ${CLAUDE_PLUGIN_ROOT}/hooks/memory-proactive-surface.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "mcp__B12__memory_store|mcp__B12__memory_search|mcp__B12__memory_quality|mcp__B12__memory_update",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B12_HOOK_DIR=${CLAUDE_PLUGIN_ROOT}/hooks ${CLAUDE_PLUGIN_ROOT}/hooks/memory-feedback.sh",
+            "timeout": 8
+          }
+        ]
+      },
+      {
+        "matcher": "Read|Edit|Write|Glob|Grep",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B12_HOOK_DIR=${CLAUDE_PLUGIN_ROOT}/hooks ${CLAUDE_PLUGIN_ROOT}/hooks/memory-working-context.sh",
+            "timeout": 8
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B12_HOOK_DIR=${CLAUDE_PLUGIN_ROOT}/hooks ${CLAUDE_PLUGIN_ROOT}/hooks/memory-proactive-surface.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ]
+  }
+}

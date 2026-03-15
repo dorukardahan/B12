@@ -1,0 +1,23 @@
+{
+  "name": "b12-memory",
+  "version": "12.0.0",
+  "description": "Persistent cross-session memory system with automatic extraction, semantic search, and spaced repetition. Works across 10+ AI coding platforms.",
+  "author": {
+    "name": "Doruk Ardahan",
+    "url": "https://github.com/dorukardahan"
+  },
+  "homepage": "https://github.com/dorukardahan/B12",
+  "repository": "https://github.com/dorukardahan/B12",
+  "license": "MIT",
+  "keywords": [
+    "memory",
+    "persistent-memory",
+    "cross-session",
+    "semantic-search",
+    "spaced-repetition",
+    "multi-platform",
+    "mcp",
+    "hooks",
+    "context-management"
+  ]
+}

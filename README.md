@@ -128,7 +128,31 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 
 ## Quick Start
 
-### 1. One-command setup (recommended)
+### Option A: Claude Code Plugin (recommended for Claude Code users)
+
+```bash
+# 1. Add B12 marketplace
+/plugin marketplace add dorukardahan/B12
+
+# 2. Install the plugin
+/plugin install b12-memory@b12-memory
+```
+
+This installs B12 as a Claude Code plugin with hooks, MCP server, skills, and slash commands — all auto-configured. You still need the Python venv for the MCP server:
+
+```bash
+git clone https://github.com/dorukardahan/B12.git
+cd B12 && ./install.sh --full  # Creates venv + deps only (hooks/MCP managed by plugin)
+```
+
+After installation, you get:
+- `/b12-search` — search your memory
+- `/b12-store` — store a memory
+- `/b12-status` — health check
+
+For local plugin development: `claude --plugin-dir /path/to/B12`
+
+### Option B: Script install (recommended for multi-platform)
 
 ```bash
 git clone https://github.com/dorukardahan/B12.git
@@ -221,7 +245,17 @@ See `docs/setup.md` for the full installation guide.
 
 ```
 B12/
-├── hooks/                          # Lifecycle hook scripts (deployed to ~/.B12/hooks/)
+├── .claude-plugin/                 # Claude Code plugin metadata
+│   ├── plugin.json                 #   Plugin manifest (name, version, keywords)
+│   └── marketplace.json            #   Marketplace catalog for discovery
+├── .mcp.json                       # Plugin MCP server config (auto-loaded)
+├── commands/                       # Slash commands (auto-discovered by plugin)
+│   ├── b12-search.md               #   /b12-search — search memories
+│   ├── b12-store.md                #   /b12-store — store a memory
+│   └── b12-status.md               #   /b12-status — health check
+├── hooks/                          # Lifecycle hook scripts
+│   ├── hooks.json                  #   Plugin hook definitions (auto-loaded)
+│   ├── scripts -> ../scripts       #   Symlink to support scripts (for plugin cache)
 │   ├── memory-session-start.sh     #   SessionStart — inject context
 │   ├── memory-retrieval.sh         #   UserPromptSubmit — per-message retrieval
 │   ├── memory-tag-enforce.sh       #   PreToolUse — auto-inject scope tags
@@ -242,6 +276,7 @@ B12/
 │       └── b12-gemini-tool-call.sh      # AfterTool adapter (memory retrieval)
 ├── scripts/                        # Support modules
 │   ├── b12_mcp_server.py           #   Custom FastMCP server (5 tools + 4 resources)
+│   ├── start-mcp.sh                #   MCP bootstrap (venv detection, used by plugin)
 │   ├── embed_daemon.py             #   Background embedding daemon (Unix socket)
 │   ├── write_time_merge.py         #   Semantic dedup at write time
 │   ├── ebbinghaus.py               #   Decay scoring utilities
@@ -264,6 +299,7 @@ B12/
 │   ├── migrate_stemmed_fts.py      #   Migration: backfill porter-stemmed FTS5 table
 │   └── migrate_v10_13.py           #   Migration: create native FTS5 table
 ├── skills/                         # Agent skills
+│   ├── b12-memory/SKILL.md         #   B12 behavioral skill (plugin, comprehensive)
 │   └── b12/SKILL.md               #   B12 Codex Skill (memory workflow)
 ├── config/                         # Template configuration files
 │   ├── mcp-b12-template.json       #   MCP server config for ~/.claude.json

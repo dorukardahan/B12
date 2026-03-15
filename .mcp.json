@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "B12": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/scripts/start-mcp.sh",
+      "env": {
+        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_MAX_RESPONSE_CHARS": "40000"
+      }
+    }
+  }
+}
