@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.10.0](https://github.com/dorukardahan/B12/compare/v11.9.0...v11.10.0) (2026-03-15)
+
+
+### Features
+
+* **plugin:** Claude Code plugin format — marketplace discovery + slash commands ([d4bc053](https://github.com/dorukardahan/B12/commit/d4bc0535321de396bf13c0772f17df8abbf2e345))
+
 # [11.9.0](https://github.com/dorukardahan/B12/compare/v11.8.4...v11.9.0) (2026-03-14)
 
 
