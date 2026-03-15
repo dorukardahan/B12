@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.13.0](https://github.com/dorukardahan/B12/compare/v11.12.0...v11.13.0) (2026-03-15)
+
+
+### Features
+
+* **patterns:** implicit decisions, reasoning, and blockers — 3 new regex patterns ([f513de5](https://github.com/dorukardahan/B12/commit/f513de5a1db2f0e321236c273ab2f6022dfb8d74))
+
 # [11.12.0](https://github.com/dorukardahan/B12/compare/v11.11.0...v11.12.0) (2026-03-15)
 
 
