@@ -105,6 +105,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.B12/hooks/memory-checkpoint.sh",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }

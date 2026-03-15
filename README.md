@@ -264,6 +264,7 @@ B12/
 │   ├── memory-precompact.sh        #   PreCompact — stage transcript summary
 │   ├── memory-session-end.sh       #   SessionEnd — extract & persist memories
 │   ├── memory-proactive-surface.sh #   PostToolUse — proactive memory surfacing
+│   ├── memory-checkpoint.sh        #   PostToolUse — mid-session memory capture (rate-limited)
 │   ├── memory-backup.sh            #   Scheduled — daily WAL-safe backup
 │   ├── memory-consolidate.py       #   Scheduled — dedup, stale detection
 │   ├── memory-quality-audit.sh     #   Scheduled — weekly health score

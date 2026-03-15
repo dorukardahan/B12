@@ -98,6 +98,15 @@
             "timeout": 10
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "B12_HOOK_DIR=${CLAUDE_PLUGIN_ROOT}/hooks ${CLAUDE_PLUGIN_ROOT}/hooks/memory-checkpoint.sh",
+            "timeout": 5
+          }
+        ]
       }
     ]
   }
