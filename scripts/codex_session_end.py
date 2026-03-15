@@ -29,7 +29,11 @@ _script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _script_dir)
 
 from transcript_adapter import parse, extract_user_messages, extract_assistant_texts, extract_files_modified
-from shared_patterns import DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE
+from shared_patterns import (
+    DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE,
+    IMPLICIT_DECISION_RE, REASON_RE, BLOCKER_RE,
+    TOOL_PREF_RE, ARCH_RE, WORKFLOW_RE, CORRECTION_RE,
+)
 
 
 def get_db_path():
@@ -234,22 +238,25 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
     files_modified = extract_files_modified(messages)
     project_name = os.path.basename(info.cwd) if info.cwd else "unknown"
 
-    # Pattern matching on assistant texts
+    # Pattern matching on assistant texts (v2: all shared_patterns)
     decisions = []
     errors = []
     learnings = []
     preferences = []
+    blockers = []
 
     for text in assistant_texts:
         snippet = text[:500]
-        if DECISION_RE.search(snippet):
+        if DECISION_RE.search(snippet) or IMPLICIT_DECISION_RE.search(snippet):
             decisions.append(snippet[:200])
-        if ERROR_RE.search(snippet):
+        if ERROR_RE.search(snippet) or CORRECTION_RE.search(snippet):
             errors.append(snippet[:200])
-        if LEARNING_RE.search(snippet):
+        if LEARNING_RE.search(snippet) or REASON_RE.search(snippet):
             learnings.append(snippet[:200])
-        if PREFERENCE_RE.search(snippet):
+        if PREFERENCE_RE.search(snippet) or TOOL_PREF_RE.search(snippet):
             preferences.append(snippet[:200])
+        if BLOCKER_RE.search(snippet):
+            blockers.append(snippet[:200])
 
     # Build session summary
     summary_lines = []
@@ -284,6 +291,12 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         summary_lines.append("## Learnings")
         for l in learnings[:5]:
             summary_lines.append(f"- {l}")
+        summary_lines.append("")
+
+    if blockers:
+        summary_lines.append("## Blockers")
+        for b in blockers[:5]:
+            summary_lines.append(f"- {b}")
         summary_lines.append("")
 
     if files_modified:
