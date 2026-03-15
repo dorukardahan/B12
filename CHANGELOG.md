@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.17.0](https://github.com/dorukardahan/B12/compare/v11.16.0...v11.17.0) (2026-03-15)
+
+
+### Features
+
+* **gemini:** add checkpoint hook to AfterTool adapter — mid-session capture for Gemini CLI ([185a33b](https://github.com/dorukardahan/B12/commit/185a33ba8899dd63bd9481db392b0a7962c60fa7))
+
 # [11.16.0](https://github.com/dorukardahan/B12/compare/v11.15.0...v11.16.0) (2026-03-15)
 
 
