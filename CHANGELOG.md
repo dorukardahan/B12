@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.18.1](https://github.com/dorukardahan/B12/compare/v11.18.0...v11.18.1) (2026-03-15)
+
+
+### Bug Fixes
+
+* **mcp:** session tracker for MCP-only platforms — auto-capture on shutdown ([9d5d91f](https://github.com/dorukardahan/B12/commit/9d5d91fd14174f69ee01f7b897e4fa124aa2972b))
+
 # [11.18.0](https://github.com/dorukardahan/B12/compare/v11.17.0...v11.18.0) (2026-03-15)
 
 
