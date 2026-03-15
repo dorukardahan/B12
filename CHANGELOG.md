@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.18.0](https://github.com/dorukardahan/B12/compare/v11.17.0...v11.18.0) (2026-03-15)
+
+
+### Features
+
+* **dist:** pyproject.toml for pip install b12-memory distribution ([6030bee](https://github.com/dorukardahan/B12/commit/6030beec27abcbed540904edadc6b4a2bcc323c5))
+
 # [11.17.0](https://github.com/dorukardahan/B12/compare/v11.16.0...v11.17.0) (2026-03-15)
 
 
