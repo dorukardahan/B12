@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.19.2](https://github.com/dorukardahan/B12/compare/v11.19.1...v11.19.2) (2026-03-15)
+
+
+### Bug Fixes
+
+* **classify:** remove regex classification + fix prefix map + ship LogReg head ([f3a03a6](https://github.com/dorukardahan/B12/commit/f3a03a625ea6c8f5d14c3816d94062c5b2ab23b6))
+
 ## [11.19.1](https://github.com/dorukardahan/B12/compare/v11.19.0...v11.19.1) (2026-03-15)
 
 
