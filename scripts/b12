@@ -1,0 +1,12 @@
+#!/bin/bash
+# B12 CLI wrapper — invokes b12_cli.py with the correct Python
+VENV="$HOME/.local/b12-venv"
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ -f "$VENV/bin/python3" ]; then
+  exec "$VENV/bin/python3" "$SCRIPT_DIR/b12_cli.py" "$@"
+elif [ -f "$VENV/Scripts/python.exe" ]; then
+  exec "$VENV/Scripts/python.exe" "$SCRIPT_DIR/b12_cli.py" "$@"
+else
+  exec python3 "$SCRIPT_DIR/b12_cli.py" "$@"
+fi

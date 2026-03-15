@@ -1821,6 +1821,27 @@ install_claude_skill() {
 }
 install_claude_skill
 
+# Install b12 CLI to PATH
+install_cli() {
+  local CLI_SRC="$SCRIPT_DIR/scripts/b12"
+  local CLI_PY="$SCRIPT_DIR/scripts/b12_cli.py"
+  local CLI_DEST="$HOME/.local/bin/b12"
+  if [ -f "$CLI_SRC" ] && [ -f "$CLI_PY" ]; then
+    mkdir -p "$HOME/.local/bin"
+    # Copy wrapper and CLI script to a stable location
+    cp "$CLI_SRC" "$SCRIPT_DEST/b12"
+    cp "$CLI_PY" "$SCRIPT_DEST/b12_cli.py"
+    chmod +x "$SCRIPT_DEST/b12"
+    # Symlink from PATH-accessible location
+    ln -sf "$SCRIPT_DEST/b12" "$CLI_DEST"
+    info "b12 CLI installed to $CLI_DEST"
+    if ! echo "$PATH" | grep -q "$HOME/.local/bin"; then
+      warn "Add to PATH: export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
+  fi
+}
+install_cli
+
 # Verify MCP package
 if [ -x "$VENV_PYTHON" ]; then
   if "$VENV_PYTHON" -c "import mcp" 2>/dev/null; then
