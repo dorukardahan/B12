@@ -23,6 +23,7 @@ exec 3>&2
 
 B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
 B12_HOOK="$B12_HOOK_DIR/memory-retrieval.sh"
+B12_CHECKPOINT="$B12_HOOK_DIR/memory-checkpoint.sh"
 
 # Read Gemini CLI input
 INPUT=$(cat)
@@ -108,6 +109,16 @@ if [ -n "$RESULT" ] && echo "$RESULT" | jq empty 2>/dev/null; then
       '{ "hookSpecificOutput": { "additionalContext": $ctx } }'
     exit 0
   fi
+fi
+
+# ── Trigger checkpoint hook in background (mid-session capture) ──
+if [ -f "$B12_CHECKPOINT" ]; then
+  CHECKPOINT_INPUT=$(jq -n \
+    --arg tool "$TOOL_NAME" \
+    --arg sid "$(echo "$INPUT" | jq -r '.session_id // "gemini"')" \
+    --arg result "$(echo "$INPUT" | jq -r '.tool_response // .tool_result // "" | tostring' 2>/dev/null | head -c 3000)" \
+    '{ "tool_name": $tool, "session_id": $sid, "tool_result": $result }')
+  echo "$CHECKPOINT_INPUT" | bash "$B12_CHECKPOINT" >/dev/null 2>&1 &
 fi
 
 echo '{}'
