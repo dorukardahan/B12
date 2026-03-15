@@ -325,19 +325,16 @@ if [ -n "$PARENT_PROJECT" ]; then
   SEARCH_HINT="Default: tags=[\"proj:${PARENT_PROJECT}\"] (parent project). Also try proj:${PROJECT_NAME} for subdir-specific."
 fi
 
-# Behavioral instructions (~2000 chars) — injected on both startup AND compact
-# v6: extracted from startup-only to shared variable so compact path also gets them
-BEHAVIORAL_INSTR="MEMORY TOOLS: memory_search (mode=hybrid, after/before=ISO date, max_response_chars=40000), memory_store (always include metadata), memory_update, memory_quality.\nTIME SEARCH: When user says approximate time (\"2 days ago\", \"last week\", \"this morning\"), use wide buffer: \u00b11 day for days, \u00b12 days for weeks. Example: \"2 days ago\" \u2192 after=3_days_ago, before=1_day_ago. If few results, widen range."
+# Behavioral instructions — trimmed in v7 (skill has full details)
+# v7: ~600 chars (was ~2000). Static instructions moved to skills/b12-memory/SKILL.md.
+# Only session-specific (dynamic) instructions remain here.
+BEHAVIORAL_INSTR="MEMORY TOOLS: memory_search (mode=hybrid, after/before=ISO date, max_response_chars=40000), memory_store (always include metadata), memory_update, memory_quality."
 
-BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nSCOPE SYSTEM:\nSetup: ${SETUP_CONTEXT} | Project: ${PROJECT_NAME}${PARENT_INFO}\nWhen STORING: Always include tags [${STORE_TAG}, user:${SETUP_CONTEXT}] and metadata {project:\"${PARENT_PROJECT:-${PROJECT_NAME}}\", setup:\"${SETUP_CONTEXT}\", scope:\"<type>\"}.\nScope types:\n- project: codebase-specific (architecture, decisions, bugs) -> tag: ${STORE_TAG}\n- universal: applies everywhere (patterns, CLI tricks, lessons) -> tag: user:universal\n- preference: user preferences (always global) -> tag: user:pref\n- setup: team/workflow specific to ${SETUP_CONTEXT} -> tag: user:${SETUP_CONTEXT}\nWhen SEARCHING:\n- ${SEARCH_HINT} Add user:universal for general knowledge.\n- Cross-project: no tag filter. Mentally deprioritize results from unrelated proj: tags.\n- Few results (<3): widen scope, remove tag filter."
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nSCOPE SYSTEM:\nSetup: ${SETUP_CONTEXT} | Project: ${PROJECT_NAME}${PARENT_INFO}\nWhen STORING: Always include tags [${STORE_TAG}, user:${SETUP_CONTEXT}] and metadata {project:\"${PARENT_PROJECT:-${PROJECT_NAME}}\", setup:\"${SETUP_CONTEXT}\", scope:\"<type>\"}.\nWhen SEARCHING: ${SEARCH_HINT} Add user:universal for general knowledge. Few results (<3): widen scope, remove tag filter."
 
-BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nDUAL MEMORY LAYERS:\n- MEMORY.md = active project state (current architecture, decisions, conventions). Updated each session.\n- MCP memory = historical knowledge (past errors, cross-project patterns, resolved issues, preferences). Searched on demand.\nDo NOT duplicate between them."
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nAUTO BEHAVIOR: Store silently when learning something important. Update user-profile.md at ${MEMORY_DIR}/user-profile.md when learning new preferences. Pill format:\nRetrieval: ( \ud83d\udc8a B12 \ud83e\udde0 : found N memories about [topic], stored [date] \u2705 )\nStore: ( \ud83d\udc8a B12 \ud83e\udde0 : saved to memory \u2705 )\nNot found (only when user explicitly asks): ( \ud83d\udc8a B12 \ud83e\udde0 : searched but nothing found \u274c )\nKeep under 15 words. Only \u2705 or \u274c at the end."
 
-BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nIMPORTANCE: Set importance_score in metadata (2.0=critical, 1.5=important, 1.0=normal, 0.7=temporary). Use tags: critical, important, reference, temporary."
-
-BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nAUTO BEHAVIOR: 1) Search memory on startup with project + task keywords. 2) Store silently when learning something important \u2014 categorize by type (architecture/decision/pattern/gotcha/progress/preference). 3) Update user-profile.md at ${MEMORY_DIR}/user-profile.md when learning new preferences. 4) At session start, print ONE short line with the B12 pill format. 5) When retrieval hook returns relevant memories or when storing, use these EXACT formats:\nRetrieval: ( \ud83d\udc8a B12 \ud83e\udde0 : found N memories about [topic], stored [date] \u2705 )\nStore: ( \ud83d\udc8a B12 \ud83e\udde0 : saved to memory \u2705 )\nNot found (only when user explicitly asks): ( \ud83d\udc8a B12 \ud83e\udde0 : searched but nothing found \u274c ) \u2014 then try wider time range or different keywords before giving up.\nKeep under 15 words. Only \u2705 or \u274c at the end, no other emojis after the colon."
-
-BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nSTORE KEY LEARNINGS: When you discover decisions, errors, preferences, or architectural patterns during this session, store them as memories. For batch refinement of multiple candidates, use memory_refine tool."
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nFor detailed tool usage, importance scoring, time search, scope types, and dual memory layers: invoke /b12-memory skill."
 
 if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # ═══════════════════════════════════════════════════════════

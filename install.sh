@@ -1808,6 +1808,19 @@ copy_hooks
 copy_scripts
 update_launchd_plists
 
+# Install B12 behavioral skill to Claude Code (enables /b12-memory command)
+install_claude_skill() {
+  local SKILL_SRC="$SCRIPT_DIR/skills/b12-memory"
+  for dir in "$HOME"/.claude*; do
+    [ -d "$dir" ] || continue
+    local SKILL_DEST="$dir/skills/b12-memory"
+    mkdir -p "$SKILL_DEST"
+    cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
+  done
+  info "B12 skill installed to Claude Code skill directories"
+}
+install_claude_skill
+
 # Verify MCP package
 if [ -x "$VENV_PYTHON" ]; then
   if "$VENV_PYTHON" -c "import mcp" 2>/dev/null; then
