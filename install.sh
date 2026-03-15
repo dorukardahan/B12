@@ -321,8 +321,8 @@ setup_venv() {
     info "Created venv at $VENV_PATH"
   fi
 
-  echo "Installing dependencies (mcp, sentence-transformers, sqlite-vec)..."
-  "$VENV_PYTHON" -m pip install --quiet mcp sentence-transformers sqlite-vec || error "pip install failed"
+  echo "Installing dependencies (mcp, sentence-transformers, sqlite-vec, fsrs)..."
+  "$VENV_PYTHON" -m pip install --quiet mcp sentence-transformers sqlite-vec fsrs || error "pip install failed"
   info "Dependencies installed"
 }
 
@@ -1827,13 +1827,13 @@ if [ -x "$VENV_PYTHON" ]; then
     info "MCP Python package available (via b12-venv)"
   else
     warn "MCP Python package not found in b12-venv"
-    warn "Run: $VENV_PYTHON -m pip install mcp sentence-transformers sqlite-vec"
+    warn "Run: $VENV_PYTHON -m pip install mcp sentence-transformers sqlite-vec fsrs"
   fi
 else
   if ! $FULL_SETUP; then
     warn "B12 venv not found. Run with --full for automatic setup, or manually:"
     echo "       python3 -m venv $VENV_PATH"
-    echo "       $VENV_PYTHON -m pip install mcp sentence-transformers sqlite-vec"
+    echo "       $VENV_PYTHON -m pip install mcp sentence-transformers sqlite-vec fsrs"
   fi
 fi
 

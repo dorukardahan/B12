@@ -271,13 +271,14 @@ else
   done
 fi
 
-# ── FTS5 search with softened Ebbinghaus decay ─────────────────
+# ── FTS5 search with FSRS power-law retention ──────────────────
+# v7: FSRS-6 power forgetting curve R = 1/(1 + t/(9*S)) replaces Ebbinghaus e^(-t/S)
 RESULTS=$(sqlite3 "$DB_PATH" "
   WITH scored AS (
     SELECT m.id,
            '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') as display,
            (
-             0.3 * max(COALESCE(exp(-((julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch')))) / COALESCE(m.strength, 1.0)), 0.5), 0.01)
+             0.3 * max(1.0 / (1.0 + (julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch'))) / (9.0 * COALESCE(m.strength, 1.0))), 0.01)
              + 0.3 * min(COALESCE(CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.importance_score') END, 1.0) / 2.0, 1.0)
              + 0.4 * (1.0 / (1.0 + abs(f.rank)))
            ) as score
@@ -524,19 +525,75 @@ if [ "$RERANK_DONE" = false ] && [ "$RESULT_COUNT" -gt 5 ]; then
   RESULT_COUNT=5
 fi
 
-# ── Boost strength (spaced repetition) ─────────────────────────
+# ── Boost strength via FSRS (spaced repetition) ────────────────
 if [ "$RESULT_COUNT" -gt 0 ]; then
   BOOST_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | head -5 | tr '\n' ',' | sed 's/,$//')
-  sqlite3 "$DB_PATH" "
-    PRAGMA busy_timeout=10000;
-    UPDATE memories
-    SET strength = min(COALESCE(strength, 1.0) + 0.2, 5.0),
-        last_accessed_at = unixepoch('now'),
-        metadata = json_set(COALESCE(metadata, '{}'),
-          '\$.access_count',
-          COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '\$.access_count') END, 0) + 1)
-    WHERE id IN (${BOOST_IDS})
-  " >/dev/null 2>&1
+  B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.B12/hooks}/scripts"
+  python3 - "$DB_PATH" "$BOOST_IDS" "$B12_SCRIPTS" << 'FSRS_EOF' >/dev/null 2>&1
+import sys, os, sqlite3, json
+db_path, boost_ids_str, scripts_dir = sys.argv[1], sys.argv[2], sys.argv[3]
+sys.path.insert(0, scripts_dir)
+try:
+    from b12_scheduler import review_memory, FSRS_AVAILABLE
+except ImportError:
+    FSRS_AVAILABLE = False
+
+ids = [int(x) for x in boost_ids_str.split(",") if x.strip().isdigit()]
+if not ids:
+    sys.exit(0)
+
+conn = sqlite3.connect(db_path, timeout=10)
+conn.execute("PRAGMA busy_timeout=10000")
+
+for mid in ids:
+    row = conn.execute(
+        "SELECT strength, difficulty, due_date, metadata FROM memories WHERE id = ?", (mid,)
+    ).fetchone()
+    if not row:
+        continue
+    strength, difficulty, due_date, meta_str = row
+    strength = strength or 1.0
+    difficulty = difficulty or 5.0
+    access_count = 0
+    try:
+        if meta_str and json.loads(meta_str):
+            access_count = json.loads(meta_str).get("access_count", 0)
+    except (json.JSONDecodeError, TypeError):
+        pass
+
+    if FSRS_AVAILABLE:
+        result = review_memory(
+            stability=strength, difficulty=difficulty,
+            due_date=due_date, rating="good", access_count=access_count
+        )
+        new_strength = result["stability"]
+        new_difficulty = result["difficulty"]
+        new_due = result["due_date"]
+    else:
+        new_strength = min(strength + 0.2, 5.0)
+        new_difficulty = difficulty
+        new_due = due_date
+
+    # Update memory with new FSRS values
+    meta = {}
+    try:
+        meta = json.loads(meta_str) if meta_str else {}
+    except (json.JSONDecodeError, TypeError):
+        pass
+    meta["access_count"] = access_count + 1
+
+    conn.execute(
+        """UPDATE memories
+           SET strength = ?, difficulty = ?, due_date = ?,
+               last_accessed_at = unixepoch('now'),
+               metadata = ?
+           WHERE id = ?""",
+        (new_strength, new_difficulty, new_due, json.dumps(meta, ensure_ascii=False), mid)
+    )
+
+conn.commit()
+conn.close()
+FSRS_EOF
 fi
 
 # ── Graph-aware context expansion (Phase 2) ──────────────────
