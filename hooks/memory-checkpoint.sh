@@ -174,8 +174,8 @@ if not prefix_classified:
                 continue
             seen_hashes.add(h)
             matches.append({
-                "content": f"[{category.title()}] {text}",
-                "category": category,
+                "content": text,
+                "category": "general",
                 "score": base_score,
                 "hash": h,
             })

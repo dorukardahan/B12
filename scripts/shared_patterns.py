@@ -294,17 +294,17 @@ _PREFIX_MAP = {
     'decision': 'decision',
     'error fix': 'error_fix',
     'error': 'error_fix',
-    'gotcha': 'error_fix',
+    'gotcha': 'learning',
     'learning': 'learning',
     'preference': 'preference',
     'progress': 'observation',
     'observation': 'observation',
     'architecture': 'knowledge',
-    'pattern': 'learning',
+    'pattern': 'knowledge',
     'reference': 'knowledge',
     'review': 'knowledge',
     'note': 'knowledge',
-    'handoff': 'observation',
+    'handoff': 'session_summary',
     'audit': 'knowledge',
     'test': 'knowledge',
 }
@@ -317,7 +317,7 @@ def classify_by_prefix(content: str):
     or None if no recognized prefix.
 
     Prefix tags like [Decision], [Error Fix], [Learning] are
-    deterministic type markers — no regex needed, 100% precision.
+    deterministic type markers — no regex needed, ~94% precision.
     """
     if not content:
         return None
