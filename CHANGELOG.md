@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.14.0](https://github.com/dorukardahan/B12/compare/v11.13.0...v11.14.0) (2026-03-15)
+
+
+### Features
+
+* **scheduler:** FSRS-6 hybrid spaced repetition — replaces primitive Ebbinghaus ([b72dec8](https://github.com/dorukardahan/B12/commit/b72dec862089c78e63be910431d72e8177f90528))
+
 # [11.13.0](https://github.com/dorukardahan/B12/compare/v11.12.0...v11.13.0) (2026-03-15)
 
 
