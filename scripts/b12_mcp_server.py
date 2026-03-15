@@ -81,9 +81,17 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
             deleted_at REAL DEFAULT NULL,
             strength REAL DEFAULT 1.0,
             last_accessed_at REAL DEFAULT NULL,
-            valid_until TEXT DEFAULT NULL
+            valid_until TEXT DEFAULT NULL,
+            difficulty REAL DEFAULT 5.0,
+            due_date TEXT DEFAULT NULL
         )
     """)
+    # Migrate existing tables: add FSRS columns if missing
+    existing_cols = {r[1] for r in db.execute("PRAGMA table_info(memories)")}
+    if "difficulty" not in existing_cols:
+        db.execute("ALTER TABLE memories ADD COLUMN difficulty REAL DEFAULT 5.0")
+    if "due_date" not in existing_cols:
+        db.execute("ALTER TABLE memories ADD COLUMN due_date TEXT")
     # B12 FTS5 table (unicode61 tokenizer, used by hooks)
     # Includes tags column to match existing DB schema from mcp-memory-service
     db.execute("""
@@ -280,6 +288,8 @@ async def lifespan(server: FastMCP):
         sqlite_vec.load(_db)
     _ensure_schema(_db)
     _session_tracker["start_time"] = time.time()
+    import atexit
+    atexit.register(lambda: _flush_session_tracker(_db))
     yield
     # ── Session flush on shutdown (MCP-only platform support) ────
     _flush_session_tracker(_db)

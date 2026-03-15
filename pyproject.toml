@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "b12-memory"
-version = "12.0.0"
+version = "11.18.0"
 description = "Persistent cross-session memory system for AI coding assistants"
 readme = "README.md"
 license = {text = "MIT"}
@@ -33,14 +33,15 @@ dependencies = [
 [project.optional-dependencies]
 dev = ["pytest"]
 
-[project.scripts]
-b12 = "b12_memory.cli:main"
+# NOTE: pip install entry point not yet functional — use install.sh for now
+# [project.scripts]
+# b12 = "b12_memory.cli:main"
 
 [project.urls]
 Homepage = "https://github.com/dorukardahan/B12"
 Repository = "https://github.com/dorukardahan/B12"
 Issues = "https://github.com/dorukardahan/B12/issues"
 
-[tool.setuptools.packages.find]
-where = ["scripts"]
-include = ["b12_memory*"]
+# [tool.setuptools.packages.find]
+# where = ["scripts"]
+# include = ["b12_memory*"]

@@ -41,6 +41,11 @@ COUNTER_FILE="$CHECKPOINT_DIR/.call-counter-${SESSION_ID:0:12}"
 BUFFER_FILE="$CHECKPOINT_DIR/.buffer-${SESSION_ID:0:12}.jsonl"
 LAST_FLUSH="$CHECKPOINT_DIR/.last-flush-${SESSION_ID:0:12}"
 
+# Cleanup stale session files (older than 24 hours)
+find "$CHECKPOINT_DIR" -name '.call-counter-*' -mtime +1 -delete 2>/dev/null || true
+find "$CHECKPOINT_DIR" -name '.buffer-*' -mtime +1 -delete 2>/dev/null || true
+find "$CHECKPOINT_DIR" -name '.last-flush-*' -mtime +1 -delete 2>/dev/null || true
+
 NOW=$(date +%s)
 
 # ── Rate limit check ─────────────────────────────────────────
@@ -192,7 +197,7 @@ try:
     existing_hashes = set()
     try:
         rows = conn.execute(
-            "SELECT json_extract(metadata, '$.content_hash') FROM memories WHERE json_extract(metadata, '$.content_hash') IS NOT NULL"
+            "SELECT content_hash FROM memories WHERE content_hash IS NOT NULL"
         ).fetchall()
         existing_hashes = {r[0] for r in rows if r[0]}
     except Exception:
