@@ -219,6 +219,22 @@ copy_scripts() {
   if [ "$count" -gt 0 ]; then
     info "Copied $count support scripts to $SCRIPT_DEST"
   fi
+
+  # Copy ML models (classifier head etc.)
+  local MODEL_SOURCE="$SCRIPT_DIR/models"
+  local MODEL_DEST="$HOME/.B12/models"
+  if [ -d "$MODEL_SOURCE" ]; then
+    mkdir -p "$MODEL_DEST"
+    local mcount=0
+    for f in "$MODEL_SOURCE"/*.pkl "$MODEL_SOURCE"/*.onnx; do
+      [ -f "$f" ] || continue
+      cp "$f" "$MODEL_DEST/"
+      mcount=$((mcount + 1))
+    done
+    if [ "$mcount" -gt 0 ]; then
+      info "Copied $mcount ML models to $MODEL_DEST"
+    fi
+  fi
 }
 
 # ─────────────────────────────────────────────

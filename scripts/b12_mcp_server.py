@@ -495,7 +495,7 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
     valid_until = metadata.pop("valid_until", None)
     tags = _normalize_tags(tags_raw)
 
-    # Auto-classify by [Label] prefix if type is generic (v12.2)
+    # Auto-classify: prefix first, then ML head via daemon (v12.2+)
     if memory_type in ("general", "note", ""):
         try:
             from shared_patterns import classify_by_prefix
@@ -504,6 +504,11 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
                 memory_type = prefix_result["type"]
         except ImportError:
             pass
+
+    if memory_type in ("general", "note", ""):
+        resp = daemon_request("classify", text=content)
+        if resp and resp.get("type"):
+            memory_type = resp["type"]
 
     content_hash = compute_content_hash(content)
     now_ts, now_iso = _now()

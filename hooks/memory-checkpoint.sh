@@ -183,6 +183,40 @@ if not prefix_classified:
     if not matches:
         sys.exit(0)
 
+    # ── ML classify via daemon (LogReg head over embeddings) ─────
+    import socket as _sock
+    _uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
+    _daemon_sock = f"/tmp/b12-embed-{_uid}.sock"
+
+    def _daemon_classify(text):
+        """Call daemon classify op. Returns type str or None."""
+        try:
+            s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+            s.settimeout(2)
+            s.connect(_daemon_sock)
+            req = json.dumps({"op": "classify", "text": text}) + "\n"
+            s.sendall(req.encode())
+            data = b""
+            while b"\n" not in data:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+            s.close()
+            resp = json.loads(data.decode().strip())
+            if resp.get("ok") and resp.get("type"):
+                return resp["type"]
+        except Exception:
+            pass
+        return None
+
+    # Try to classify each match — fallback to "general"
+    if os.path.exists(_daemon_sock):
+        for m in matches:
+            classified = _daemon_classify(m["content"])
+            if classified:
+                m["category"] = classified
+
     # ── Append regex matches to buffer ───────────────────────────
     with open(buffer_file, "a") as f:
         for m in matches:

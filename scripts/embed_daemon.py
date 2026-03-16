@@ -17,6 +17,7 @@ Operations:
   nli_check        {pairs: [[a,b], ...]}         → {results: [{label, scores}]}
   find_neighbors   {db_path, memory_id, k, min_sim} → {neighbors: [{id, similarity}]}
   find_cluster     {db_path, threshold, min_size, project} → {clusters: [[ids]], count}
+  classify         {text}                        → {type: str, confidence: float}
   health           {}                            → {uptime, requests_served}
   shutdown         {}                            → {} + daemon exits
 
@@ -495,6 +496,74 @@ def _find_neighbors(model, data):
     return {'ok': True, 'neighbors': neighbors[:k]}
 
 
+# ── Classifier head (lazy-loaded LogisticRegression over embeddings) ──
+_CLASSIFIER_HEAD = None
+_CLASSIFIER_LABELS = None
+_CLASSIFIER_AVAILABLE = None  # None = not checked yet
+_CLASSIFIER_PATH = os.path.join(
+    os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.B12')),
+    'models', 'classifier-head.pkl'
+)
+
+
+def _load_classifier():
+    """Lazy-load the LogReg classifier head. Returns True if available."""
+    global _CLASSIFIER_HEAD, _CLASSIFIER_LABELS, _CLASSIFIER_AVAILABLE
+
+    if _CLASSIFIER_AVAILABLE is not None:
+        return _CLASSIFIER_AVAILABLE
+
+    try:
+        import pickle
+        if not os.path.exists(_CLASSIFIER_PATH):
+            log(f"Classifier head not found: {_CLASSIFIER_PATH}")
+            _CLASSIFIER_AVAILABLE = False
+            return False
+
+        t0 = time.time()
+        with open(_CLASSIFIER_PATH, 'rb') as f:
+            data = pickle.load(f)
+        _CLASSIFIER_HEAD = data['head']
+        _CLASSIFIER_LABELS = data['labels']
+        _CLASSIFIER_AVAILABLE = True
+        log(f"Classifier head loaded in {time.time()-t0:.3f}s "
+            f"({len(_CLASSIFIER_LABELS)} classes, "
+            f"cv_acc={data.get('cv_accuracy', 'N/A'):.3f})")
+        return True
+    except Exception as e:
+        log(f"Classifier head load failed: {e}")
+        _CLASSIFIER_AVAILABLE = False
+        return False
+
+
+def _classify(model, data):
+    """Classify text using embedding + LogReg head.
+
+    Input:  {"op": "classify", "text": "..."}
+    Output: {"type": str, "confidence": float}
+    """
+    text = data.get('text', '')
+    if not text:
+        return {'ok': False, 'error': 'missing text'}
+
+    if not _load_classifier():
+        return {'ok': False, 'error': 'classifier_not_available'}
+
+    import numpy as np
+
+    embedding = model.encode([text], normalize_embeddings=True,
+                              convert_to_numpy=True)[0]
+    proba = _CLASSIFIER_HEAD.predict_proba(embedding.reshape(1, -1))[0]
+    pred_idx = int(np.argmax(proba))
+    confidence = float(proba[pred_idx])
+
+    return {
+        'ok': True,
+        'type': _CLASSIFIER_LABELS[pred_idx],
+        'confidence': round(confidence, 4),
+    }
+
+
 def _find_cluster(model, data):
     """Find connected components of similar memories above a threshold.
 
@@ -621,6 +690,8 @@ def handle_request(model, data, start_time, requests_served):
             return _find_neighbors(model, data)
         elif op == 'find_cluster':
             return _find_cluster(model, data)
+        elif op == 'classify':
+            return _classify(model, data)
         else:
             return {'ok': False, 'error': f'unknown_op: {op}'}
     except Exception as e:
