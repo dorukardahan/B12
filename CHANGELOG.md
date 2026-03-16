@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.20.2](https://github.com/dorukardahan/B12/compare/v11.20.1...v11.20.2) (2026-03-16)
+
+
+### Bug Fixes
+
+* **cli:** resolve symlink before finding b12_cli.py ([b9d73ed](https://github.com/dorukardahan/B12/commit/b9d73ed5d4a1c15015739d3aba9a224eeed0c16e))
+
 ## [11.20.1](https://github.com/dorukardahan/B12/compare/v11.20.0...v11.20.1) (2026-03-16)
 
 
