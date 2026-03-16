@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.20.0](https://github.com/dorukardahan/B12/compare/v11.19.2...v11.20.0) (2026-03-16)
+
+
+### Features
+
+* **classify:** integrate LogReg head into runtime pipeline ([239348d](https://github.com/dorukardahan/B12/commit/239348d7c4f6f94ba54ab82d7af18dba8c318e76))
+
 ## [11.19.2](https://github.com/dorukardahan/B12/compare/v11.19.1...v11.19.2) (2026-03-15)
 
 
