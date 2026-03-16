@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.20.1](https://github.com/dorukardahan/B12/compare/v11.20.0...v11.20.1) (2026-03-16)
+
+
+### Bug Fixes
+
+* **mcp:** remove CLAUDE_PLUGIN_ROOT dependency from .mcp.json ([a3f5e29](https://github.com/dorukardahan/B12/commit/a3f5e29040ba3618a689dc6e2b00d44eeed2f596))
+
 # [11.20.0](https://github.com/dorukardahan/B12/compare/v11.19.2...v11.20.0) (2026-03-16)
 
 
