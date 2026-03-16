@@ -43,6 +43,9 @@ consolidation_archive/
 working-memory.json
 feedback.jsonl
 
+# Training checkpoints (large model artifacts)
+checkpoints/
+
 # Benchmark data (large)
 benchmarks/locomo/locomo10.json
 
