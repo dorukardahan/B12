@@ -1,7 +1,14 @@
 #!/bin/bash
 # B12 CLI wrapper — invokes b12_cli.py with the correct Python
 VENV="$HOME/.local/b12-venv"
-SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Resolve symlinks to find the real script location
+_self="$0"
+while [ -L "$_self" ]; do
+  _dir="$(cd "$(dirname "$_self")" && pwd)"
+  _self="$(readlink "$_self")"
+  [[ "$_self" != /* ]] && _self="$_dir/$_self"
+done
+SCRIPT_DIR="$(cd "$(dirname "$_self")" && pwd)"
 
 if [ -f "$VENV/bin/python3" ]; then
   exec "$VENV/bin/python3" "$SCRIPT_DIR/b12_cli.py" "$@"
