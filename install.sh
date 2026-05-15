@@ -1767,6 +1767,54 @@ SKILLEOF
 }
 
 # ─────────────────────────────────────────────
+# OpenCode: Deploy TypeScript Plugin
+# ─────────────────────────────────────────────
+deploy_opencode_plugin() {
+  local PLUGIN_SRC="$SCRIPT_DIR/plugins/opencode"
+  local PLUGIN_DEST="$HOME/.config/opencode/plugins/b12"
+
+  # Check bun is installed (OpenCode uses Bun runtime)
+  if ! command -v bun >/dev/null 2>&1; then
+    warn "Bun not found — OpenCode plugin requires Bun to build and run"
+    warn "Install with: curl -fsSL https://bun.sh/install | bash"
+    warn "Then re-run: ./install.sh --opencode"
+    return 1
+  fi
+
+  # Verify plugin source exists
+  if [ ! -f "$PLUGIN_SRC/src/index.ts" ]; then
+    warn "Plugin source not found at $PLUGIN_SRC/src/index.ts"
+    return 1
+  fi
+
+  # Clean and recreate destination
+  rm -rf "$PLUGIN_DEST" 2>/dev/null || true
+  mkdir -p "$PLUGIN_DEST"
+
+  # Copy source tree (OpenCode will build with Bun)
+  cp -r "$PLUGIN_SRC/src" "$PLUGIN_DEST/src"
+  cp "$PLUGIN_SRC/package.json" "$PLUGIN_DEST/package.json"
+  cp "$PLUGIN_SRC/tsconfig.json" "$PLUGIN_DEST/tsconfig.json" 2>/dev/null || true
+  cp "$PLUGIN_SRC/bun.lock" "$PLUGIN_DEST/bun.lock" 2>/dev/null || true
+
+  # Install dependencies (better-sqlite3 native + @opencode-ai/plugin)
+  info "Installing OpenCode plugin dependencies with Bun..."
+  (
+    cd "$PLUGIN_DEST" || exit 1
+    bun install --production --silent 2>&1 | tail -5
+  )
+
+  if [ $? -ne 0 ]; then
+    warn "Bun install failed for OpenCode plugin"
+    return 1
+  fi
+
+  info "B12 OpenCode plugin deployed to $PLUGIN_DEST"
+  info "Plugin will be loaded on next OpenCode restart"
+  return 0
+}
+
+# ─────────────────────────────────────────────
 # OpenCode: verify installation
 # ─────────────────────────────────────────────
 verify_opencode() {
@@ -1802,6 +1850,14 @@ verify_opencode() {
     errors=$((errors + 1))
   fi
 
+  # Plugin deploy check (source + node_modules from bun install)
+  if [ -f "$HOME/.config/opencode/plugins/b12/src/index.ts" ] && [ -d "$HOME/.config/opencode/plugins/b12/node_modules" ]; then
+    info "Verify: B12 OpenCode plugin deployed (source + dependencies)"
+  else
+    warn "Verify: B12 OpenCode plugin NOT found at ~/.config/opencode/plugins/b12"
+    errors=$((errors + 1))
+  fi
+
   return $errors
 }
 
@@ -1809,7 +1865,7 @@ verify_opencode() {
 # Main
 # ═════════════════════════════════════════════
 
-echo "B12 Memory System Installer (v11.20.1 — multi-platform)"
+echo "B12 Memory System Installer (v11.21.0 — OpenCode TypeScript plugin)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first
@@ -1970,9 +2026,10 @@ fi
 if $INSTALL_OPENCODE; then
   echo ""
   echo "── OpenCode Setup ───────────────"
-  inject_opencode_mcp_config
+   inject_opencode_mcp_config
   inject_opencode_agents
   install_opencode_skill
+  deploy_opencode_plugin
   echo ""
 fi
 

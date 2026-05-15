@@ -75,9 +75,11 @@ B12's MCP server works with any tool that supports MCP stdio. The installer hand
 | Kimi Code | `--kimi` | ~/.kimi/mcp.json | ~/.kimi/AGENTS.md |
 | Windsurf | `--windsurf` | ~/.codeium/windsurf/mcp_config.json | ~/.codeium/.../global_rules.md |
 | Cline | `--cline` | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md |
-| OpenCode | `--opencode` | ~/.config/opencode/opencode.json | ~/.config/opencode/AGENTS.md |
+| OpenCode | `--opencode` | ~/.config/opencode/opencode.json | ~/.config/opencode/AGENTS.md + TypeScript plugin (auto-deployed) |
 
 \* VS Code/Copilot instructions are per-project (`.github/copilot-instructions.md`). The installer creates a template in the B12 repo — copy it to each project where you want B12 active.
+
+\** OpenCode also receives a TypeScript plugin (deployed to `~/.config/opencode/plugins/b12/`) for full lifecycle hooks (SessionStart, PreCompact, SessionEnd, tool tracking, memory retrieval). Requires Bun runtime.
 
 All platforms share the same SQLite database — memories stored in one session are searchable in all others.
 
@@ -122,7 +124,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Gemini CLI hooks** — adapter scripts that give Gemini CLI full B12 hook integration
 - **LoCoMo benchmark** — retrieval quality evaluation with MRR, NDCG, and regression detection
 - **Multi-setup support** — works across `.claude`, `.claude-work`, etc. with shared database
-- **Multi-platform support** — Claude Code, Codex, Gemini, VS Code, Cursor, Kimi, Windsurf, Cline, OpenCode
+- **Multi-platform support** — Claude Code, Codex, Gemini, VS Code, Cursor, Kimi, Windsurf, Cline, OpenCode (with TypeScript plugin for full lifecycle automation)
 - **Zero config after install** — hooks handle everything silently in the background
 - **Fully local** — no cloud, no API calls, all data stays on your machine
 
