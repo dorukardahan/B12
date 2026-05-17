@@ -1,0 +1,22 @@
+{
+  "mcpServers": {
+    "B12": {
+      "command": "python3",
+      "args": [
+        "~/Desktop/B12/scripts/b12_mcp_server.py"
+      ],
+      "env": {
+        "B12_DATA_DIR": "~/.B12"
+      },
+      "enabled": true,
+      "startup_timeout_sec": 20,
+      "tool_timeout_sec": 180,
+      "tool_timeouts": {
+        "memory_consolidate": 300,
+        "memory_refine": 120,
+        "memory_quality": 120
+      },
+      "description": "B12 Persistent Memory System - Full MCP interface (search, store, consolidate, Ebbinghaus, quality, dashboard, etc.)"
+    }
+  }
+}

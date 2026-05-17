@@ -129,3 +129,32 @@ When adding new patterns, always add both English and Turkish variants.
 - NO API keys or secrets
 - Use generic examples and placeholders
 - User profile template should be empty/generic — users fill in their own info
+
+## Grok CLI Native Support (2026-05)
+
+When working in Grok CLI, prefer the native integration located in `.grok/plugins/b12/` and `.grok/skills/b12-memory/`.
+
+Key points:
+- The primary interface is the `b12-memory` skill (auto-invokes on memory-related prompts via its description).
+- Full B12 MCP tools are available as `B12__memory_*`.
+- Use Grok's native subagent system (`task` tool + `fork_context=true` + researcher persona) for deep memory extraction/audits on long sessions.
+- Lifecycle automation (PreCompact staging, SessionEnd extraction) is provided via thin hooks in the plugin that delegate to the shared core.
+- Verify everything with `grok inspect`, `/skills`, and `grok mcp list`.
+- All Grok-specific files are additive — they do not modify any existing Claude Code, OpenCode, or other platform code.
+
+For full details see `docs/grok-integration.md`.
+
+<!-- B12-MEMORY-START -->
+
+# B12 Persistent Memory (Grok)
+
+When working in this repository with Grok CLI, the `b12-memory` skill is available.
+
+**Recommended practices:**
+- At the start of sessions, let the `b12-memory` skill load relevant context.
+- Use `B12__memory_search`, `B12__memory_store`, `B12__memory_surface` etc. via the MCP tools.
+- For complex memory tasks on long sessions, use Grok's native subagent system (`task` tool with `fork_context` and researcher persona).
+
+The B12 engine provides semantic search, Ebbinghaus decay, consolidation, and cross-session memory.
+
+<!-- B12-MEMORY-END -->

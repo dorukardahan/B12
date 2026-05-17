@@ -1,0 +1,29 @@
+{
+  "description": "B12 lifecycle hooks for Grok (PreCompact staging + SessionEnd extraction). Thin wrappers that delegate to the shared B12 core (no duplication of patterns, merge logic, or engines).",
+  "hooks": {
+    "PreCompact": [
+      {
+        "description": "Stage high-value memories from the session transcript before compaction using B12 shared engines.",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/b12-precompact.py",
+            "timeout": 35
+          }
+        ]
+      }
+    ],
+    "SessionEnd": [
+      {
+        "description": "Extract decisions, gotchas, learnings, and progress from the completed session and store them via B12.",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/b12-session-end.py",
+            "timeout": 40
+          }
+        ]
+      }
+    ]
+  }
+}

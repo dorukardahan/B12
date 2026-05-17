@@ -54,3 +54,8 @@ B12_audit_*.md
 
 # Claude Code local state
 .claude/
+
+# Generated B12 review and planning PDFs (internal documents, not for public repo)
+docs/B12_Inceleme_Raporu.pdf
+docs/B12_Gelistirme_Plani.pdf
+docs/B12_*.pdf

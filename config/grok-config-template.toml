@@ -1,0 +1,14 @@
+# B12 MCP Server configuration for Grok CLI
+# This file can be merged into ~/.grok/config.toml
+
+[mcp_servers.B12]
+command = "python3"
+args = ["/path/to/B12/scripts/b12_mcp_server.py"]
+env = { B12_DATA_DIR = "~/.B12" }
+enabled = true
+startup_timeout_sec = 20
+tool_timeout_sec = 180
+tool_timeouts = { memory_consolidate = 300, memory_refine = 120 }
+
+# Recommended: Also enable the b12-memory skill
+# Place .grok/skills/b12-memory/SKILL.md in your project or ~/.grok/skills/
