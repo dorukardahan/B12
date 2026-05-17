@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.30.2](https://github.com/dorukardahan/B12/compare/v11.30.1...v11.30.2) (2026-05-17)
+
+
+### Bug Fixes
+
+* **opencode:** pre-compact signature + dist async fixes + investigation doc ([#12](https://github.com/dorukardahan/B12/issues/12)) ([f27b6fa](https://github.com/dorukardahan/B12/commit/f27b6fa7661577b65f1f72633cda641572d55340))
+
 ## [11.30.1](https://github.com/dorukardahan/B12/compare/v11.30.0...v11.30.1) (2026-05-17)
 
 
