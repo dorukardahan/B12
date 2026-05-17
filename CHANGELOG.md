@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.28.0](https://github.com/dorukardahan/B12/compare/v11.27.0...v11.28.0) (2026-05-17)
+
+
+### Features
+
+* **mcp:** memory_forget privacy + cleanup MCP tool ([#8](https://github.com/dorukardahan/B12/issues/8)) ([b48d53a](https://github.com/dorukardahan/B12/commit/b48d53ad23ab729cffa9948ad51c2370e29d75a4))
+
 # [11.27.0](https://github.com/dorukardahan/B12/compare/v11.26.0...v11.27.0) (2026-05-17)
 
 
