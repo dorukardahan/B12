@@ -459,9 +459,41 @@ def _validate_metadata(value) -> str:
         return "{}"
 
 
+_DEFAULT_WEIGHTS = {
+    "decay": float(os.environ.get("B12_WEIGHT_DECAY", "0.25")),
+    "importance": float(os.environ.get("B12_WEIGHT_IMPORTANCE", "0.25")),
+    "relevance": float(os.environ.get("B12_WEIGHT_RELEVANCE", "0.40")),
+    "strength": float(os.environ.get("B12_WEIGHT_STRENGTH", "0.10")),
+}
+
+
 def _unified_score(row, relevance: float) -> float:
-    """Compute unified score: 0.3*decay + 0.3*importance + 0.4*relevance.
-    Matches the hook's scoring formula for consistent cross-path results."""
+    """Compute unified retrieval score across four dimensions.
+
+    score = decay*W_decay + importance*W_importance + relevance*W_relevance
+          + strength*W_strength
+
+    Defaults (overridable via B12_WEIGHT_* env vars):
+      decay      0.25  — Ebbinghaus retention curve, exp(-age_days/strength)
+      importance 0.25  — user/system-tagged importance from metadata
+      relevance  0.40  — BM25 (FTS path) or cosine (semantic path); single
+                         slot because each candidate is found via exactly one
+                         method here. Hybrid in `memory_search` comes from the
+                         cross-method overlap bonus (BM25 ∩ semantic = +30%
+                         min-side boost in `memory_search`).
+      strength   0.10  — independent boost from spaced-repetition reinforcement
+                         (previously only altered the decay time constant; now
+                         also contributes directly so frequently-accessed
+                         memories rank higher even when their content age
+                         outpaces their relevance score).
+
+    The four defaults sum to 1.0. Override behavior is intentionally permissive
+    — callers may set any subset (e.g. only `B12_WEIGHT_STRENGTH=0` to suppress
+    strength) without renormalizing the remaining weights; this mirrors how
+    Mahmory's tuned weight vector (`semantic 0.42 / bm25 0.22 / recency 0.18 /
+    strength 0.10 / importance 0.08`) was tuned empirically without enforced
+    normalization. A future PR may add an explicit normalizer flag.
+    """
     import math
     now_ts = time.time()
     # Explicit None checks — 0.0 is a valid value for both fields
@@ -474,6 +506,9 @@ def _unified_score(row, relevance: float) -> float:
     if strength <= 0:
         strength = 0.01
     decay = max(math.exp(-age_days / strength), 0.01)
+    # Strength as an independent dimension, normalized to 0..1 against the
+    # boost cap of 5.0 (see ebbinghaus.py:64-68 `boost_strength +0.2 cap 5.0`).
+    strength_score = min(strength / 5.0, 1.0)
 
     meta = {}
     try:
@@ -482,7 +517,13 @@ def _unified_score(row, relevance: float) -> float:
         pass
     importance = min(float(meta.get("importance_score", 1.0)) / 2.0, 1.0)
 
-    return 0.3 * decay + 0.3 * importance + 0.4 * relevance
+    w = _DEFAULT_WEIGHTS
+    return (
+        w["decay"] * decay
+        + w["importance"] * importance
+        + w["relevance"] * relevance
+        + w["strength"] * strength_score
+    )
 
 
 def _fmt_memory(row, score=None) -> str:
