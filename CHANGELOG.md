@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.25.0](https://github.com/dorukardahan/B12/compare/v11.24.0...v11.25.0) (2026-05-17)
+
+
+### Features
+
+* **skills:** b12-memory skill description auto-fires on EN+TR recall verbs ([#5](https://github.com/dorukardahan/B12/issues/5)) ([aa345a4](https://github.com/dorukardahan/B12/commit/aa345a4c88cef6bce04cd43aada4037b15d27c81)), closes [#4](https://github.com/dorukardahan/B12/issues/4)
+
 # [11.24.0](https://github.com/dorukardahan/B12/compare/v11.23.0...v11.24.0) (2026-05-17)
 
 
