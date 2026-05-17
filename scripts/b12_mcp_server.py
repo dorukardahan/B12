@@ -880,6 +880,178 @@ async def memory_update(
     return f"Updated memory {content_hash[:16]}"
 
 
+# ── Tool: memory_forget ─────────────────────────────────────────
+
+@server.tool()
+async def memory_forget(
+    target: str,
+    mode: str = "privatize",
+    reason: str | None = None,
+) -> str:
+    """Forget operations — privacy + cleanup.
+
+    Three modes:
+
+      privatize (default, soft, reversible)
+        Flip the row's tags to include `private` so cross-project
+        recall excludes it. The content stays in the DB; running
+        memory_update with tags removal undoes the privatize.
+
+      hard_delete (irreversible)
+        DELETE the row + embedding outright. Use only when the
+        content must be unrecoverable (accidentally captured secret,
+        credential leak). No undo.
+
+      forget_session (bulk, soft)
+        Walks every row whose metadata.session_id == target and
+        privatizes the whole batch. Useful for "this whole exchange
+        was sensitive — keep it local only".
+
+    Every operation writes a single audit row tagged `forget-audit`
+    with memory_type='system' so the trail survives both privatize
+    and hard_delete. Caller-supplied `reason` is stored verbatim in
+    the audit row's metadata.
+
+    Parameters:
+      target: content_hash for privatize/hard_delete; session_id for
+              forget_session
+      mode:   "privatize" | "hard_delete" | "forget_session"
+      reason: free-text reason recorded in the audit row metadata
+    """
+    db = _require_db()
+    _session_tracker["tool_calls"] += 1
+
+    valid_modes = {"privatize", "hard_delete", "forget_session"}
+    if mode not in valid_modes:
+        return f"Invalid mode '{mode}'. Use one of: {sorted(valid_modes)}"
+
+    now_ts, now_iso = _now()
+    audit_payload: dict = {
+        "mode": mode,
+        "target": target[:64],  # truncate long session_ids in metadata
+        "reason": reason or "",
+        "ts_iso": now_iso,
+    }
+
+    async with _db_lock:
+        affected_ids: list[int] = []
+
+        if mode == "hard_delete":
+            row = db.execute(
+                "SELECT id FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+                (target,),
+            ).fetchone()
+            if not row:
+                return f"Memory not found: {target[:16]}"
+            mem_id = int(row["id"])
+            # Remove embedding first (FK-style cleanup; sqlite-vec
+            # tables don't enforce FKs but consistency matters).
+            try:
+                db.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (mem_id,))
+            except sqlite3.OperationalError:
+                pass  # table may not exist on older installs
+            db.execute("DELETE FROM memories WHERE id = ?", (mem_id,))
+            affected_ids = [mem_id]
+            audit_payload["affected_ids"] = affected_ids
+            audit_payload["target_hash_short"] = target[:16]
+
+        elif mode == "privatize":
+            row = db.execute(
+                "SELECT id, tags FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+                (target,),
+            ).fetchone()
+            if not row:
+                return f"Memory not found: {target[:16]}"
+            mem_id = int(row["id"])
+            existing_tags = _normalize_tags(row["tags"] or "")
+            tag_list = [t.strip() for t in existing_tags.split(",") if t.strip()]
+            if "private" not in tag_list:
+                tag_list.append("private")
+            new_tags = ",".join(tag_list)
+            db.execute(
+                "UPDATE memories SET tags = ?, updated_at = ?, updated_at_iso = ? WHERE id = ?",
+                (new_tags, now_ts, now_iso, mem_id),
+            )
+            affected_ids = [mem_id]
+            audit_payload["affected_ids"] = affected_ids
+            audit_payload["target_hash_short"] = target[:16]
+
+        elif mode == "forget_session":
+            # session_id can live under metadata.session_id or tags
+            # ("session:<id>"). We search both surfaces.
+            rows = db.execute(
+                """
+                SELECT id, tags FROM memories
+                WHERE deleted_at IS NULL
+                  AND (
+                    (json_valid(metadata) AND json_extract(metadata, '$.session_id') = ?)
+                    OR tags LIKE ?
+                  )
+                """,
+                (target, f"%session:{target}%"),
+            ).fetchall()
+            if not rows:
+                return f"No rows match session_id {target[:16]}"
+            for r in rows:
+                mem_id = int(r["id"])
+                existing_tags = _normalize_tags(r["tags"] or "")
+                tag_list = [t.strip() for t in existing_tags.split(",") if t.strip()]
+                if "private" not in tag_list:
+                    tag_list.append("private")
+                new_tags = ",".join(tag_list)
+                db.execute(
+                    "UPDATE memories SET tags = ?, updated_at = ?, updated_at_iso = ? WHERE id = ?",
+                    (new_tags, now_ts, now_iso, mem_id),
+                )
+                affected_ids.append(mem_id)
+            audit_payload["affected_ids"] = affected_ids
+            audit_payload["session_id_short"] = target[:16]
+
+        # Audit row — system-type, tagged `forget-audit`. Survives both
+        # privatize (tagged forget-audit, not private — operator can
+        # still see the trail) and hard_delete (the target row is gone
+        # but the audit lives).
+        audit_content = (
+            f"[forget-audit] mode={mode} target={target[:16]} "
+            f"affected={len(affected_ids)} reason={(reason or '').strip()[:120]}"
+        )
+        audit_hash = hashlib.sha256(
+            f"{audit_content}|{now_iso}".encode("utf-8")
+        ).hexdigest()
+        try:
+            db.execute(
+                """
+                INSERT INTO memories (
+                    content, content_hash, tags, memory_type, metadata,
+                    created_at, created_at_iso, updated_at, updated_at_iso,
+                    strength
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    audit_content,
+                    audit_hash,
+                    "forget-audit,system",
+                    "system",
+                    json.dumps(audit_payload, ensure_ascii=False),
+                    now_ts, now_iso,
+                    now_ts, now_iso,
+                    1.0,
+                ),
+            )
+        except sqlite3.IntegrityError:
+            # extremely unlikely — same audit hash within the same
+            # iso-second. Skip the audit row rather than failing the
+            # forget op.
+            pass
+
+        db.commit()
+
+    return (
+        f"Forget complete: mode={mode}, affected={len(affected_ids)} row(s), "
+        f"audit recorded as memory_type=system tag=forget-audit"
+    )
+
+
 # ── Tool: memory_quality ─────────────────────────────────────────
 
 @server.tool()
