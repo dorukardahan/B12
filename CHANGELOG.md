@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.26.0](https://github.com/dorukardahan/B12/compare/v11.25.0...v11.26.0) (2026-05-17)
+
+
+### Features
+
+* **hooks:** UserPromptSubmit auto-recall boost on EN+TR recall verbs ([#6](https://github.com/dorukardahan/B12/issues/6)) ([13f4d30](https://github.com/dorukardahan/B12/commit/13f4d303d242d4b14d21b128a6789a08609eb40e)), closes [#4](https://github.com/dorukardahan/B12/issues/4) [#5](https://github.com/dorukardahan/B12/issues/5)
+
 # [11.25.0](https://github.com/dorukardahan/B12/compare/v11.24.0...v11.25.0) (2026-05-17)
 
 
