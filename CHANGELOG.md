@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.24.0](https://github.com/dorukardahan/B12/compare/v11.23.0...v11.24.0) (2026-05-17)
+
+
+### Features
+
+* **hooks:** shorter directive SessionStart context primer (v8) ([#4](https://github.com/dorukardahan/B12/issues/4)) ([3b160ea](https://github.com/dorukardahan/B12/commit/3b160ea1ea25df4e0c0ed7b597fdeaed6320fb85))
+
 # [11.23.0](https://github.com/dorukardahan/B12/compare/v11.22.0...v11.23.0) (2026-05-17)
 
 
