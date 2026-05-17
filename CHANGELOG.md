@@ -1,5 +1,32 @@
 # Changelog
 
+# [11.22.0](https://github.com/dorukardahan/B12/compare/v11.21.0...v11.22.0) (2026-05-17)
+
+
+### Features
+
+* **mcp:** shared MCP daemon architecture — one launchd-managed `b12_mcp_daemon.py` process now serves multiple concurrent Claude Code (and other CLI) sessions over a Unix socket at `/tmp/b12-mcp-<UID>.sock`. `b12_mcp_server.py` auto-detects the daemon and becomes a thin stdio↔socket proxy; if the daemon is unreachable it falls back to in-process FastMCP stdio mode, so every existing Codex / Gemini / Kimi / OpenCode / Grok integration stays functional with zero config changes.
+* **install:** new `--daemon` and `--daemon-uninstall` flags. `./install.sh --daemon` renders `config/com.b12.mcp.daemon.plist`, writes it to `~/Library/LaunchAgents/`, runs `launchctl load`, and waits up to 10 s for the socket to appear.
+* **cleanup:** removed `external-mcp-server` MCP entirely (Doruk's direct request — 0G docs are now accessible from the website). Config entries deleted from `~/.claude.json` and `~/.codex/config.toml`; binaries archived to `/tmp/0g-mcp-archive-<TS>/` for reversibility.
+
+### Performance
+
+* **mcp:** ~59% RSS reduction with 4 parallel Claude Code sessions (~600 MB → ~248 MB). Cold-start handshake latency unchanged at the proxy boundary because the proxy module still imports `b12_mcp_server` transitively; a strictly thinner proxy is queued as a v11.23 follow-up (estimated additional ~0.3 s × N-sessions saving).
+
+### Forensic audit (2026-03-16 → 2026-05-17)
+
+* Audited 2,981 sessions across all 6 supported CLIs. **B12 is stable when called (0 errors, 0 timeouts) but massively underutilized.** Claude Code: 30/36 sessions (83%) consumed the `MEMORY SYSTEM ACTIVE` SessionStart context and never invoked any B12 tool. OpenCode/Grok/Kimi: 0% real invocation rate despite the MCP server being loaded. Gemini: 1/139 sessions invoked B12 once and got `response={}` (integration broken end-to-end). Codex 2026-05-07: 10 parallel rollouts all missed the "[redacted-quote]" recall trigger. Full evidence at `docs/B12_session_audit_2026-03-16_2026-05-17.md` and `/tmp/b12-forensic-findings.md`.
+* Closing the underutilization gap is **out of scope** for this release — logged as v11.23 follow-up backlog (skill / SessionStart-context redesign, Gemini path fix, Codex recall-trigger pattern matching).
+
+### PR #2 review (`feat/hybrid-weights-rebalance` by @AytuncYildizli)
+
+* Reviewed end-to-end at `docs/B12_PR2_review.md`. **Recommendation: MERGE with minor follow-ups** (manual recall-DB comparison, normalizer-flag tracker, daemon-migration env-var note). Code is clean, surgical (44/3 LOC, single file), references validate, mergeable against current `main`. PR adds `strength` as 4th score dimension with env-overridable weights — no conflict with the daemon migration. Pending Doruk's manual recall comparison.
+
+### Claude Code CLI 2.1.143 compatibility
+
+* Audited every hook event B12 wires (`SessionStart`, `PreCompact`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`) against the current Claude Code 2.1.143 hook contract. **All payload shapes unchanged**, no regressions. Opportunities surfaced (not adopted in this release): `PostToolUseFailure`, `PostCompact`, `effort.level` field, `CLAUDE_CODE_SESSION_ID` env var.
+
+
 ## [11.20.2](https://github.com/dorukardahan/B12/compare/v11.20.1...v11.20.2) (2026-03-16)
 
 

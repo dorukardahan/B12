@@ -47,6 +47,14 @@ _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
 # Hardcode /tmp/ — macOS TMPDIR varies per session, causing socket mismatch
 SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 
+# Optional pre-warmed daemon socket. When present and reachable, b12_mcp_server
+# runs as a thin stdio proxy that forwards the MCP wire protocol to the shared
+# daemon process (see scripts/b12_mcp_daemon.py). When unreachable, the server
+# falls back to legacy in-process stdio mode below — non-Claude-Code consumers
+# (Codex, Gemini, Kimi, OpenCode, Grok) see zero behaviour change either way.
+MCP_DAEMON_SOCK = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
+B12_VERSION = "v11.22.0"
+
 # ── SQLite connection (set during lifespan) ──────────────────────
 _db: sqlite3.Connection | None = None
 _db_lock = asyncio.Lock()
@@ -274,26 +282,38 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
     db.commit()
 
 
+# Set to True by b12_mcp_daemon.py before serving connections so the lifespan
+# below stays idempotent: DB is opened once per daemon process and remains
+# open across every client connection. In legacy in-process mode (any non-
+# daemon consumer: Codex, Gemini, Kimi, OpenCode, Grok, OR Claude Code when
+# the daemon is down) this stays False and the lifespan behaves as before —
+# closing the DB on session end.
+_DAEMON_MODE = False
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP):
     global _db
-    os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-    _db = sqlite3.connect(DB_PATH, timeout=30)
-    _db.execute("PRAGMA journal_mode=WAL")
-    _db.execute("PRAGMA busy_timeout=30000")
-    _db.execute("PRAGMA wal_autocheckpoint=100")
-    _db.row_factory = sqlite3.Row
-    if _HAS_VEC:
-        _db.enable_load_extension(True)
-        sqlite_vec.load(_db)
-    _ensure_schema(_db)
-    _session_tracker["start_time"] = time.time()
-    import atexit
-    atexit.register(lambda: _flush_session_tracker(_db))
+    if _db is None:
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        _db = sqlite3.connect(DB_PATH, timeout=30)
+        _db.execute("PRAGMA journal_mode=WAL")
+        _db.execute("PRAGMA busy_timeout=30000")
+        _db.execute("PRAGMA wal_autocheckpoint=100")
+        _db.row_factory = sqlite3.Row
+        if _HAS_VEC:
+            _db.enable_load_extension(True)
+            sqlite_vec.load(_db)
+        _ensure_schema(_db)
+        _session_tracker["start_time"] = time.time()
+        import atexit
+        atexit.register(lambda: _flush_session_tracker(_db))
     yield
-    # ── Session flush on shutdown (MCP-only platform support) ────
+    # Session flush always runs on disconnect (per-session MCP summary).
+    # DB close only runs in legacy mode — the daemon keeps the DB warm
+    # across connections and lets the OS clean it up at process exit.
     _flush_session_tracker(_db)
-    if _db:
+    if not _DAEMON_MODE and _db:
         _db.close()
         _db = None
 
@@ -1615,7 +1635,130 @@ async def resource_health() -> str:
     return "\n".join(lines)
 
 
+# ── Proxy mode (when shared daemon is running) ───────────────────
+
+def _daemon_alive(sock_path: str, timeout: float = 0.5) -> bool:
+    """Quick check: is the B12 MCP daemon listening on `sock_path`?
+
+    Returns True iff the socket exists AND accepts a TCP-style connect within
+    `timeout` seconds. False on any failure (no socket file, permission denied,
+    daemon stuck mid-shutdown). The caller falls back to in-process mode on False.
+    """
+    if not os.path.exists(sock_path):
+        return False
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    try:
+        s.connect(sock_path)
+        s.close()
+        return True
+    except (OSError, socket.timeout):
+        return False
+
+
+async def _run_as_proxy(sock_path: str) -> None:
+    """Thin bidirectional byte pipe: stdin <-> daemon socket <-> stdout.
+
+    Both endpoints speak newline-delimited JSON-RPC (the MCP stdio wire format).
+    No MCP-aware parsing happens here — bytes go through verbatim, so any future
+    protocol updates carry over automatically.
+
+    Shutdown semantics:
+      - stdin EOF (host CLI exited): send EOF to daemon, drain any pending
+        responses, then exit. This is the normal case.
+      - socket EOF (daemon crashed or shut down): stop reading stdin and exit.
+        The host CLI will see proxy exit and may respawn it (Claude Code does).
+    """
+    import sys as _sys
+    sock_reader, sock_writer = await asyncio.open_unix_connection(sock_path)
+    loop = asyncio.get_running_loop()
+
+    # Wrap stdin as a proper asyncio StreamReader so cancellation actually works
+    stdin_reader = asyncio.StreamReader()
+    stdin_protocol = asyncio.StreamReaderProtocol(stdin_reader)
+    await loop.connect_read_pipe(lambda: stdin_protocol, _sys.stdin)
+
+    socket_closed = asyncio.Event()
+
+    async def stdin_to_socket() -> None:
+        try:
+            while not socket_closed.is_set():
+                line = await stdin_reader.readline()
+                if not line:
+                    break  # stdin EOF — host CLI closed
+                sock_writer.write(line)
+                await sock_writer.drain()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            # Tell daemon "no more requests"
+            try:
+                if sock_writer.can_write_eof():
+                    sock_writer.write_eof()
+            except Exception:
+                pass
+
+    async def socket_to_stdout() -> None:
+        try:
+            while True:
+                line = await sock_reader.readline()
+                if not line:
+                    return  # daemon closed socket
+                _sys.stdout.buffer.write(line)
+                _sys.stdout.buffer.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            pass
+        finally:
+            socket_closed.set()
+
+    stdin_task = asyncio.create_task(stdin_to_socket())
+    socket_task = asyncio.create_task(socket_to_stdout())
+
+    # Wait until stdin closes (normal shutdown) OR socket closes (daemon died).
+    # When stdin closes first, give the socket up to 2s to drain in-flight
+    # responses before we tear down.
+    await stdin_task
+    if not socket_task.done():
+        try:
+            await asyncio.wait_for(socket_task, timeout=2.0)
+        except asyncio.TimeoutError:
+            socket_task.cancel()
+            try:
+                await socket_task
+            except (asyncio.CancelledError, Exception):
+                pass
+
+    try:
+        sock_writer.close()
+        await sock_writer.wait_closed()
+    except Exception:
+        pass
+
+
 # ── Entry point ──────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    server.run("stdio")
+    # Daemon-aware launch:
+    #   1. If B12_MCP_FORCE_STDIO=1 is set, always run in-process (escape hatch).
+    #   2. Else if the shared daemon socket is reachable, become a thin
+    #      stdio<->socket proxy (saves ~7-8s per Claude Code session cold start).
+    #   3. Else fall back to legacy in-process FastMCP stdio — this is the
+    #      behaviour every non-Claude-Code consumer (Codex, Gemini, Kimi,
+    #      OpenCode, Grok) has always used. No regression risk.
+    _force_stdio = os.environ.get("B12_MCP_FORCE_STDIO") == "1"
+    if not _force_stdio and _daemon_alive(MCP_DAEMON_SOCK):
+        try:
+            asyncio.run(_run_as_proxy(MCP_DAEMON_SOCK))
+        except KeyboardInterrupt:
+            pass
+        except Exception as exc:
+            # Proxy failure: log to stderr (visible to host CLI) and fall back
+            # to in-process so this Claude Code session stays usable.
+            import sys as _sys
+            _sys.stderr.write(
+                f"[B12] daemon proxy failed ({type(exc).__name__}: {exc}); "
+                f"falling back to in-process stdio\n"
+            )
+            server.run("stdio")
+    else:
+        server.run("stdio")

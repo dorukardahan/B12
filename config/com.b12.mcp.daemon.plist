@@ -1,0 +1,67 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <!--
+        B12 Shared MCP Daemon (launchd LaunchAgent)
+
+        Hosts a single long-running b12_mcp_daemon.py process so multiple
+        Claude Code sessions share one FastMCP boot (saves ~7-8s cold start
+        per session). The thin stdio proxy in b12_mcp_server.py connects to
+        this daemon's Unix socket; if the daemon is unreachable, the proxy
+        auto-falls-back to legacy in-process stdio so other consumers
+        (Codex, Gemini, Kimi, OpenCode, Grok) keep working unchanged.
+
+        Reload after editing:
+            launchctl unload ~/Library/LaunchAgents/com.b12.mcp.daemon.plist
+            launchctl load   ~/Library/LaunchAgents/com.b12.mcp.daemon.plist
+
+        Tail logs:
+            tail -f /tmp/b12-mcp-daemon.err.log
+            tail -f ~/.B12/memory-logs/mcp-daemon.log
+
+        Disable without removing:
+            launchctl unload ~/Library/LaunchAgents/com.b12.mcp.daemon.plist
+            (the b12_mcp_server.py proxy will fall back to in-process stdio.)
+    -->
+    <key>Label</key>
+    <string>com.b12.mcp.daemon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!--
+            B12_HOME_PYTHON and B12_HOME_DAEMON are substituted by install.sh
+            during `./install.sh --daemon` so this plist works regardless of
+            where the user cloned B12 or where their venv lives.
+        -->
+        <string>B12_HOME_PYTHON</string>
+        <string>B12_HOME_DAEMON</string>
+    </array>
+
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>B12_DATA_DIR</key>
+        <string>B12_HOME_DATA_DIR</string>
+        <key>PYTHONUNBUFFERED</key>
+        <string>1</string>
+    </dict>
+
+    <key>KeepAlive</key>
+    <true/>
+
+    <key>RunAtLoad</key>
+    <true/>
+
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+
+    <key>ProcessType</key>
+    <string>Background</string>
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/b12-mcp-daemon.err.log</string>
+
+    <key>StandardOutPath</key>
+    <string>/tmp/b12-mcp-daemon.out.log</string>
+</dict>
+</plist>

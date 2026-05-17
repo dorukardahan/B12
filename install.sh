@@ -113,6 +113,9 @@ INSTALL_KIMI=false
 INSTALL_WINDSURF=false
 INSTALL_CLINE=false
 INSTALL_OPENCODE=false
+INSTALL_GROK=false
+INSTALL_DAEMON=false
+UNINSTALL_DAEMON=false
 TARGET_DIR=""
 for arg in "$@"; do
   case "$arg" in
@@ -126,6 +129,9 @@ for arg in "$@"; do
     --windsurf)  INSTALL_WINDSURF=true ;;
     --cline)     INSTALL_CLINE=true ;;
     --opencode)  INSTALL_OPENCODE=true ;;
+    --grok)      INSTALL_GROK=true ;;
+    --daemon)    INSTALL_DAEMON=true ;;
+    --daemon-uninstall) UNINSTALL_DAEMON=true ;;
     --health)
       # Run health check and exit — only forward --json and --fix
       _health_args=()
@@ -1767,17 +1773,15 @@ SKILLEOF
 }
 
 # ─────────────────────────────────────────────
-# OpenCode: Deploy TypeScript Plugin
+# OpenCode: Build TypeScript Plugin to single JS file
 # ─────────────────────────────────────────────
-deploy_opencode_plugin() {
+build_opencode_plugin() {
   local PLUGIN_SRC="$SCRIPT_DIR/plugins/opencode"
-  local PLUGIN_DEST="$HOME/.config/opencode/plugins/b12"
 
-  # Check bun is installed (OpenCode uses Bun runtime)
+  # Check bun is installed
   if ! command -v bun >/dev/null 2>&1; then
-    warn "Bun not found — OpenCode plugin requires Bun to build and run"
+    warn "Bun not found — OpenCode plugin requires Bun to build"
     warn "Install with: curl -fsSL https://bun.sh/install | bash"
-    warn "Then re-run: ./install.sh --opencode"
     return 1
   fi
 
@@ -1787,30 +1791,103 @@ deploy_opencode_plugin() {
     return 1
   fi
 
-  # Clean and recreate destination
-  rm -rf "$PLUGIN_DEST" 2>/dev/null || true
-  mkdir -p "$PLUGIN_DEST"
-
-  # Copy source tree (OpenCode will build with Bun)
-  cp -r "$PLUGIN_SRC/src" "$PLUGIN_DEST/src"
-  cp "$PLUGIN_SRC/package.json" "$PLUGIN_DEST/package.json"
-  cp "$PLUGIN_SRC/tsconfig.json" "$PLUGIN_DEST/tsconfig.json" 2>/dev/null || true
-  cp "$PLUGIN_SRC/bun.lock" "$PLUGIN_DEST/bun.lock" 2>/dev/null || true
-
-  # Install dependencies (better-sqlite3 native + @opencode-ai/plugin)
-  info "Installing OpenCode plugin dependencies with Bun..."
+  # Build to dist/index.js (single bundled file)
+  info "Building OpenCode plugin with Bun..."
   (
-    cd "$PLUGIN_DEST" || exit 1
-    bun install --production --silent 2>&1 | tail -5
+    cd "$PLUGIN_SRC" || exit 1
+    bun build src/index.ts --outdir dist --target bun --external better-sqlite3 2>&1 | tail -10
   )
 
-  if [ $? -ne 0 ]; then
-    warn "Bun install failed for OpenCode plugin"
+  if [ ! -f "$PLUGIN_SRC/dist/index.js" ]; then
+    warn "Bun build failed — dist/index.js not created"
     return 1
   fi
 
-  info "B12 OpenCode plugin deployed to $PLUGIN_DEST"
-  info "Plugin will be loaded on next OpenCode restart"
+  info "OpenCode plugin built successfully"
+  return 0
+}
+
+# ─────────────────────────────────────────────
+# OpenCode: Deploy compiled plugin (index.js) + inject into config
+# ─────────────────────────────────────────────
+deploy_opencode_plugin() {
+  local PLUGIN_SRC="$SCRIPT_DIR/plugins/opencode"
+  local PLUGIN_DEST="$HOME/.config/opencode/plugins/b12"
+  local COMPILED_JS="$PLUGIN_SRC/dist/index.js"
+
+  # Verify compiled JS exists (build_opencode_plugin must run first)
+  if [ ! -f "$COMPILED_JS" ]; then
+    warn "Compiled plugin not found at $COMPILED_JS — run build first"
+    return 1
+  fi
+
+  # Clean destination and old b12-memory plugin (avoid confusion)
+  rm -rf "$PLUGIN_DEST" 2>/dev/null || true
+  rm -rf "$HOME/.config/opencode/plugins/b12-memory" 2>/dev/null || true
+  mkdir -p "$PLUGIN_DEST"
+
+  # Copy compiled index.js (OpenCode loads this directly)
+  cp "$COMPILED_JS" "$PLUGIN_DEST/index.js"
+
+  # Copy package.json for dependency info (optional, OpenCode uses bundled)
+  cp "$PLUGIN_SRC/package.json" "$PLUGIN_DEST/package.json" 2>/dev/null || true
+
+  info "B12 OpenCode plugin deployed to $PLUGIN_DEST/index.js"
+  return 0
+}
+
+# ─────────────────────────────────────────────
+# OpenCode: Inject plugin path into opencode.json
+# ─────────────────────────────────────────────
+inject_opencode_plugin_config() {
+  local OPENCODE_DIR="$HOME/.config/opencode"
+  local CONFIG_JSON="$OPENCODE_DIR/opencode.json"
+  local PLUGIN_PATH="./plugins/b12"
+
+  if [ ! -d "$OPENCODE_DIR" ]; then
+    warn "OpenCode config directory not found at $OPENCODE_DIR"
+    return 1
+  fi
+
+  if [ ! -f "$CONFIG_JSON" ]; then
+    echo '{}' > "$CONFIG_JSON"
+    info "Created $CONFIG_JSON"
+  fi
+
+  if ! python3 - "$CONFIG_JSON" "$PLUGIN_PATH" << 'PYEOF'
+import sys, json
+
+config_path = sys.argv[1]
+plugin_path = sys.argv[2]
+
+with open(config_path, 'r') as f:
+    content = f.read().strip()
+    if not content:
+        content = '{}'
+    config = json.loads(content)
+
+if 'plugin' not in config:
+    config['plugin'] = []
+
+# Remove old b12-memory or b12 entries
+config['plugin'] = [p for p in config['plugin'] if 'b12-memory' not in p and p != './plugins/b12' and p != 'b12']
+
+# Add our plugin
+if plugin_path not in config['plugin']:
+    config['plugin'].append(plugin_path)
+
+with open(config_path, 'w') as f:
+    json.dump(config, f, indent=2)
+    f.write('\n')
+
+print(f"Added {plugin_path} to plugin list")
+PYEOF
+  then
+    warn "Failed to update plugin config in $CONFIG_JSON"
+    return 1
+  fi
+
+  info "B12 OpenCode plugin registered in $CONFIG_JSON"
   return 0
 }
 
@@ -1850,11 +1927,18 @@ verify_opencode() {
     errors=$((errors + 1))
   fi
 
-  # Plugin deploy check (source + node_modules from bun install)
-  if [ -f "$HOME/.config/opencode/plugins/b12/src/index.ts" ] && [ -d "$HOME/.config/opencode/plugins/b12/node_modules" ]; then
-    info "Verify: B12 OpenCode plugin deployed (source + dependencies)"
+  # Plugin deploy check (compiled index.js + registered in config)
+  if [ -f "$HOME/.config/opencode/plugins/b12/index.js" ]; then
+    info "Verify: B12 OpenCode plugin compiled at ~/.config/opencode/plugins/b12/index.js"
   else
-    warn "Verify: B12 OpenCode plugin NOT found at ~/.config/opencode/plugins/b12"
+    warn "Verify: B12 OpenCode plugin NOT found at ~/.config/opencode/plugins/b12/index.js"
+    errors=$((errors + 1))
+  fi
+
+  if [ -f "$CONFIG_JSON" ] && grep -q 'plugins/b12' "$CONFIG_JSON" 2>/dev/null; then
+    info "Verify: B12 OpenCode plugin registered in $CONFIG_JSON"
+  else
+    warn "Verify: B12 OpenCode plugin NOT registered in $CONFIG_JSON"
     errors=$((errors + 1))
   fi
 
@@ -1862,10 +1946,300 @@ verify_opencode() {
 }
 
 # ═════════════════════════════════════════════
+# Grok CLI
+# ═════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# Grok: Inject MCP server into ~/.grok/config.toml
+# ─────────────────────────────────────────────
+inject_grok_mcp_config() {
+  local GROK_CONFIG_DIR="$HOME/.grok"
+  local CONFIG_TOML="$GROK_CONFIG_DIR/config.toml"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$GROK_CONFIG_DIR" ]; then
+    warn "Grok config directory not found at $GROK_CONFIG_DIR — creating it"
+    mkdir -p "$GROK_CONFIG_DIR"
+  fi
+
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --grok"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+
+  if [ ! -f "$CONFIG_TOML" ]; then
+    touch "$CONFIG_TOML"
+    info "Created $CONFIG_TOML"
+  fi
+
+  # Use line-based TOML injection (no external toml module dependency)
+  python3 - "$CONFIG_TOML" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, os
+
+config_path = sys.argv[1]
+venv_python = sys.argv[2]
+server_script = sys.argv[3]
+
+with open(config_path, 'r') as f:
+    lines = f.readlines()
+
+# Remove any existing [mcp_servers.B12] section (and its subkeys)
+filtered = []
+in_b12_section = False
+for line in lines:
+    stripped = line.strip()
+    if stripped.startswith('[') and not stripped.startswith('[['):
+        table_name = stripped.split(']')[0].lstrip('[').strip()
+        if table_name == 'mcp_servers.B12' or table_name.startswith('mcp_servers.B12.'):
+            in_b12_section = True
+            continue
+        else:
+            in_b12_section = False
+    if in_b12_section:
+        continue
+    filtered.append(line)
+
+content = ''.join(filtered).rstrip() + '\n'
+
+b12_block = f'''
+[mcp_servers.B12]
+command = "{venv_python}"
+args = ["{server_script}"]
+enabled = true
+startup_timeout_sec = 20
+tool_timeout_sec = 180
+
+[mcp_servers.B12.env]
+B12_DATA_DIR = "{os.path.expanduser('~/.B12')}"
+'''
+
+content += b12_block
+
+with open(config_path, 'w') as f:
+    f.write(content)
+
+print("Added B12 MCP server to ~/.grok/config.toml")
+PYEOF
+
+  if [ $? -eq 0 ]; then
+    info "B12 MCP server registered in $CONFIG_TOML"
+  else
+    warn "Failed to update $CONFIG_TOML"
+    return 1
+  fi
+
+  return 0
+}
+
+# ─────────────────────────────────────────────
+# Grok: Deploy plugin and skills to ~/.grok/
+# ─────────────────────────────────────────────
+deploy_grok_plugin() {
+  local PLUGIN_SRC="$SCRIPT_DIR/.grok/plugins-available/b12"
+  local PLUGIN_DEST="$HOME/.grok/plugins/b12"
+
+  if [ ! -d "$PLUGIN_SRC" ]; then
+    warn "Grok plugin source not found at $PLUGIN_SRC (expected in plugins-available/)"
+    return 1
+  fi
+
+  rm -rf "$PLUGIN_DEST" 2>/dev/null || true
+  mkdir -p "$PLUGIN_DEST"
+  cp -r "$PLUGIN_SRC"/* "$PLUGIN_DEST"/ 2>/dev/null || true
+
+  info "B12 Grok plugin deployed to $PLUGIN_DEST (from plugins-available/)"
+  return 0
+}
+
+# ─────────────────────────────────────────────
+# Grok: Install b12-memory skill into ~/.grok/skills/
+# ─────────────────────────────────────────────
+install_grok_skill() {
+  local SKILL_SRC="$SCRIPT_DIR/.grok/skills/b12-memory"
+  local SKILL_DEST="$HOME/.grok/skills/b12-memory"
+
+  if [ ! -f "$SKILL_SRC/SKILL.md" ]; then
+    warn "Grok skill source not found at $SKILL_SRC/SKILL.md"
+    return 1
+  fi
+
+  mkdir -p "$SKILL_DEST"
+  cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
+
+  info "B12 Grok skill installed to $SKILL_DEST/SKILL.md"
+  return 0
+}
+
+# ─────────────────────────────────────────────
+# Grok: Inject B12 instructions into AGENTS.md (project level)
+# ─────────────────────────────────────────────
+inject_grok_agents() {
+  local TARGET="$SCRIPT_DIR/AGENTS.md"
+  local TEMPLATE="$SCRIPT_DIR/config/grok-instructions-template.md"
+
+  if [ ! -f "$TARGET" ]; then
+    warn "AGENTS.md not found at $TARGET — skipping Grok instructions injection"
+    return 0
+  fi
+
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "Grok instructions template not found at $TEMPLATE"
+    return 1
+  fi
+
+  # Avoid duplicate injection
+  if grep -q 'B12-MEMORY-START' "$TARGET" 2>/dev/null; then
+    info "B12 instructions already present in AGENTS.md"
+    return 0
+  fi
+
+  {
+    echo ""
+    cat "$TEMPLATE"
+  } >> "$TARGET"
+
+  info "Added B12 Grok instructions to AGENTS.md"
+  return 0
+}
+
+# ─────────────────────────────────────────────
+# Grok: Verify installation
+# ─────────────────────────────────────────────
+verify_grok() {
+  local errors=0
+  local CONFIG_TOML="$HOME/.grok/config.toml"
+  local PLUGIN_DIR="$HOME/.grok/plugins/b12"
+  local SKILL_DIR="$HOME/.grok/skills/b12-memory"
+
+  echo ""
+  info "Grok CLI Verification:"
+
+  if [ -f "$CONFIG_TOML" ] && grep -q '^\[mcp_servers\.B12\]' "$CONFIG_TOML" 2>/dev/null; then
+    info "  ✓ B12 MCP server configured in $CONFIG_TOML"
+  else
+    warn "  ✗ B12 MCP server NOT found in $CONFIG_TOML"
+    errors=$((errors + 1))
+  fi
+
+  if [ -d "$PLUGIN_DIR" ]; then
+    info "  ✓ B12 plugin directory exists at $PLUGIN_DIR"
+  else
+    warn "  ✗ B12 plugin directory NOT found at $PLUGIN_DIR"
+    errors=$((errors + 1))
+  fi
+
+  if [ -f "$SKILL_DIR/SKILL.md" ]; then
+    info "  ✓ b12-memory skill installed at $SKILL_DIR"
+  else
+    warn "  ✗ b12-memory skill NOT found at $SKILL_DIR"
+    errors=$((errors + 1))
+  fi
+
+  echo ""
+  if [ $errors -eq 0 ]; then
+    info "Grok CLI integration looks good. Run 'grok inspect' to verify."
+  else
+    warn "Some Grok verification checks failed. You may need to run 'grok' and trust the plugin/hooks manually."
+  fi
+
+  return $errors
+}
+
+# ─────────────────────────────────────────────
+# B12 shared MCP daemon (v11.22.0+)
+# ─────────────────────────────────────────────
+# Renders config/com.b12.mcp.daemon.plist into ~/Library/LaunchAgents/ with
+# user-specific paths substituted, then launchctl-loads it. The b12_mcp_server.py
+# stdio proxy auto-detects the daemon at /tmp/b12-mcp-<UID>.sock; if absent it
+# falls back to legacy in-process behaviour so non-Claude-Code consumers
+# (Codex, Gemini, Kimi, OpenCode, Grok) see no change.
+install_mcp_daemon() {
+  if [ "$(uname)" != "Darwin" ]; then
+    warn "MCP daemon (launchd) is macOS-only; skipping on $(uname)."
+    return 0
+  fi
+
+  local TEMPLATE="$SCRIPT_DIR/config/com.b12.mcp.daemon.plist"
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "Daemon plist template not found: $TEMPLATE"
+    return 1
+  fi
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "B12 venv Python not found at $VENV_PYTHON — run './install.sh --full' first."
+    return 1
+  fi
+
+  local LAUNCH_DIR="$HOME/Library/LaunchAgents"
+  local PLIST_DEST="$LAUNCH_DIR/com.b12.mcp.daemon.plist"
+  local DAEMON_PY="$SCRIPT_DEST/b12_mcp_daemon.py"
+  local DATA_DIR="${B12_DATA_DIR:-$HOME/.B12}"
+
+  if [ ! -f "$DAEMON_PY" ]; then
+    warn "b12_mcp_daemon.py not deployed yet. Run copy_scripts first."
+    return 1
+  fi
+
+  mkdir -p "$LAUNCH_DIR"
+
+  # Unload prior daemon if present (idempotent)
+  if launchctl list 2>/dev/null | grep -q "com.b12.mcp.daemon"; then
+    launchctl unload "$PLIST_DEST" 2>/dev/null || true
+  fi
+
+  # Render the plist with absolute paths substituted in
+  sed \
+    -e "s|B12_HOME_PYTHON|$VENV_PYTHON|g" \
+    -e "s|B12_HOME_DAEMON|$DAEMON_PY|g" \
+    -e "s|B12_HOME_DATA_DIR|$DATA_DIR|g" \
+    "$TEMPLATE" > "$PLIST_DEST"
+
+  launchctl load "$PLIST_DEST"
+
+  # Brief wait for the socket to appear (cold start ~5-10s)
+  local SOCK="/tmp/b12-mcp-$(id -u).sock"
+  local i=0
+  while [ $i -lt 20 ] && [ ! -S "$SOCK" ]; do
+    sleep 0.5
+    i=$((i + 1))
+  done
+
+  if [ -S "$SOCK" ]; then
+    info "MCP daemon loaded — listening on $SOCK"
+    info "  Logs: tail -f /tmp/b12-mcp-daemon.err.log"
+    info "        tail -f $DATA_DIR/memory-logs/mcp-daemon.log"
+  else
+    warn "MCP daemon plist loaded but socket did not appear within 10s."
+    warn "  Inspect: launchctl list | grep b12.mcp"
+    warn "  Inspect: tail /tmp/b12-mcp-daemon.err.log"
+  fi
+}
+
+uninstall_mcp_daemon() {
+  if [ "$(uname)" != "Darwin" ]; then
+    return 0
+  fi
+  local PLIST_DEST="$HOME/Library/LaunchAgents/com.b12.mcp.daemon.plist"
+  if [ -f "$PLIST_DEST" ]; then
+    launchctl unload "$PLIST_DEST" 2>/dev/null || true
+    rm -f "$PLIST_DEST"
+    info "MCP daemon unloaded and plist removed."
+  else
+    info "MCP daemon was not installed; nothing to remove."
+  fi
+  # Best-effort socket cleanup (daemon should have done this on SIGTERM)
+  rm -f "/tmp/b12-mcp-$(id -u).sock" "/tmp/b12-mcp-$(id -u).pid" 2>/dev/null || true
+}
+
+# ═════════════════════════════════════════════
 # Main
 # ═════════════════════════════════════════════
 
-echo "B12 Memory System Installer (v11.21.0 — OpenCode TypeScript plugin)"
+echo "B12 Memory System Installer (v11.22.0 — Shared MCP daemon)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first
@@ -2026,10 +2400,39 @@ fi
 if $INSTALL_OPENCODE; then
   echo ""
   echo "── OpenCode Setup ───────────────"
-   inject_opencode_mcp_config
+  inject_opencode_mcp_config
   inject_opencode_agents
   install_opencode_skill
+  build_opencode_plugin
   deploy_opencode_plugin
+  inject_opencode_plugin_config
+  echo ""
+fi
+
+# Grok setup
+if $INSTALL_GROK; then
+  echo ""
+  echo "── Grok CLI Setup ───────────────"
+  inject_grok_mcp_config
+  deploy_grok_plugin
+  install_grok_skill
+  inject_grok_agents
+  echo ""
+  info "Grok CLI: After restart, run 'grok inspect' to verify B12 plugin and skill are loaded."
+  info "         If plugin shows as 'disabled', open Grok and trust it via Ctrl+L → Plugins."
+fi
+
+# MCP daemon (v11.22.0+) — explicit opt-in via --daemon / --daemon-uninstall
+if $UNINSTALL_DAEMON; then
+  echo ""
+  echo "── B12 MCP Daemon Uninstall ─────"
+  uninstall_mcp_daemon
+  echo ""
+fi
+if $INSTALL_DAEMON; then
+  echo ""
+  echo "── B12 MCP Daemon Setup ─────────"
+  install_mcp_daemon
   echo ""
 fi
 
@@ -2100,6 +2503,13 @@ if $INSTALL_OPENCODE; then
   VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
+if $INSTALL_GROK; then
+  echo ""
+  echo "── Grok CLI Verification ────────"
+  verify_grok
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
+fi
+
 set -e
 
 echo ""
@@ -2115,10 +2525,11 @@ $INSTALL_KIMI && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Kimi"
 $INSTALL_WINDSURF && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Windsurf"
 $INSTALL_CLINE && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Cline"
 $INSTALL_OPENCODE && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED OpenCode"
+$INSTALL_GROK && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Grok"
 
 if [ $VERIFY_RESULT -eq 0 ]; then
   if [ -n "$PLATFORMS_INSTALLED" ]; then
-    info "Installation complete! Restart Claude Code and$PLATFORMS_INSTALLED to activate B12."
+    info "Installation complete! Restart your AI tools ($PLATFORMS_INSTALLED) to activate B12."
   else
     info "Installation complete! Restart Claude Code to activate B12."
   fi
@@ -2128,17 +2539,17 @@ fi
 
 # Show helpful tips
 ANY_PLATFORM=false
-$INSTALL_CODEX || $INSTALL_GEMINI || $INSTALL_VSCODE || $INSTALL_CURSOR || $INSTALL_KIMI || $INSTALL_WINDSURF || $INSTALL_CLINE || $INSTALL_OPENCODE && ANY_PLATFORM=true
+$INSTALL_CODEX || $INSTALL_GEMINI || $INSTALL_VSCODE || $INSTALL_CURSOR || $INSTALL_KIMI || $INSTALL_WINDSURF || $INSTALL_CLINE || $INSTALL_OPENCODE || $INSTALL_GROK && ANY_PLATFORM=true
 
 if ! $FULL_SETUP && ! $ANY_PLATFORM; then
   echo ""
   echo "Tip: Run './install.sh --full' for automatic venv + MCP config setup."
-  echo "     Flags: --codex --gemini --vscode --cursor --kimi --windsurf --cline --opencode"
+  echo "     Flags: --codex --gemini --vscode --cursor --kimi --windsurf --cline --opencode --grok"
 fi
 
 echo ""
 if [ -n "$PLATFORMS_INSTALLED" ]; then
-  echo "Next: Restart Claude Code and$PLATFORMS_INSTALLED, then run /mcp to verify B12 is connected."
+  echo "Next: Restart your tools ($PLATFORMS_INSTALLED), then run the appropriate verification command (e.g. grok inspect for Grok)."
 else
   echo "Next: Restart Claude Code, then run /mcp to verify B12 is connected."
 fi
