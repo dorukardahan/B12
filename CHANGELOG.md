@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.30.0](https://github.com/dorukardahan/B12/compare/v11.29.0...v11.30.0) (2026-05-17)
+
+
+### Features
+
+* **scripts:** Codex CLI research doc + cross-CLI canonicalization helper ([#10](https://github.com/dorukardahan/B12/issues/10)) ([8b6ba3f](https://github.com/dorukardahan/B12/commit/8b6ba3f674108fee0d26e35d8c116a6e01bf8f60))
+
 # [11.29.0](https://github.com/dorukardahan/B12/compare/v11.28.0...v11.29.0) (2026-05-17)
 
 
