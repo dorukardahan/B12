@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.23.0](https://github.com/dorukardahan/B12/compare/v11.22.0...v11.23.0) (2026-05-17)
+
+
+### Features
+
+* configurable retrieval weights + explicit strength dimension ([#2](https://github.com/dorukardahan/B12/issues/2)) ([c84201d](https://github.com/dorukardahan/B12/commit/c84201da0fc322936bdbc21cef8746b9a7b6476b))
+
 # [11.22.0](https://github.com/dorukardahan/B12/compare/v11.21.0...v11.22.0) (2026-05-17)
 
 
