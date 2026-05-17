@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.27.0](https://github.com/dorukardahan/B12/compare/v11.26.0...v11.27.0) (2026-05-17)
+
+
+### Features
+
+* **scoring:** ingest-time importance heuristics with EN+TR tokens ([#7](https://github.com/dorukardahan/B12/issues/7)) ([1cbcf25](https://github.com/dorukardahan/B12/commit/1cbcf25541ea0f3bb1b39561b7252d8d33132fdf)), closes [#2](https://github.com/dorukardahan/B12/issues/2)
+
 # [11.26.0](https://github.com/dorukardahan/B12/compare/v11.25.0...v11.26.0) (2026-05-17)
 
 
