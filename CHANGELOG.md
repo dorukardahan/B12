@@ -5,6 +5,13 @@
 
 ### Features
 
+* **mcp:** shared daemon architecture (v11.22.0) ([cdf7243](https://github.com/dorukardahan/B12/commit/cdf724373c31fe8b94551fcb254af39c82037c9d)), closes [#2](https://github.com/dorukardahan/B12/issues/2)
+
+# [11.22.0](https://github.com/dorukardahan/B12/compare/v11.21.0...v11.22.0) (2026-05-17)
+
+
+### Features
+
 * **mcp:** shared MCP daemon architecture — one launchd-managed `b12_mcp_daemon.py` process now serves multiple concurrent Claude Code (and other CLI) sessions over a Unix socket at `/tmp/b12-mcp-<UID>.sock`. `b12_mcp_server.py` auto-detects the daemon and becomes a thin stdio↔socket proxy; if the daemon is unreachable it falls back to in-process FastMCP stdio mode, so every existing Codex / Gemini / Kimi / OpenCode / Grok integration stays functional with zero config changes.
 * **install:** new `--daemon` and `--daemon-uninstall` flags. `./install.sh --daemon` renders `config/com.b12.mcp.daemon.plist`, writes it to `~/Library/LaunchAgents/`, runs `launchctl load`, and waits up to 10 s for the socket to appear.
 * **cleanup:** removed `external-mcp-server` MCP entirely (Doruk's direct request — 0G docs are now accessible from the website). Config entries deleted from `~/.claude.json` and `~/.codex/config.toml`; binaries archived to `/tmp/0g-mcp-archive-<TS>/` for reversibility.
