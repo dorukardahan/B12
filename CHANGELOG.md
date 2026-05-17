@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.29.0](https://github.com/dorukardahan/B12/compare/v11.28.0...v11.29.0) (2026-05-17)
+
+
+### Features
+
+* **mcp:** markdown session_context renderer with per-row content cap ([#9](https://github.com/dorukardahan/B12/issues/9)) ([64f2ee4](https://github.com/dorukardahan/B12/commit/64f2ee4e95410e207aa47142b1c301a09d694917))
+
 # [11.28.0](https://github.com/dorukardahan/B12/compare/v11.27.0...v11.28.0) (2026-05-17)
 
 
