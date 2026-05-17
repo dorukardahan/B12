@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.30.1](https://github.com/dorukardahan/B12/compare/v11.30.0...v11.30.1) (2026-05-17)
+
+
+### Bug Fixes
+
+* **gemini:** project_name normalization for bench / temp-dir hosts ([#11](https://github.com/dorukardahan/B12/issues/11)) ([bde5e9d](https://github.com/dorukardahan/B12/commit/bde5e9d1eeaa50346cb41c1c34ff58da3eb58400))
+
 # [11.30.0](https://github.com/dorukardahan/B12/compare/v11.29.0...v11.30.0) (2026-05-17)
 
 
