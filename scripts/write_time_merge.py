@@ -154,6 +154,43 @@ def _metadata_to_str(metadata: Any) -> Optional[str]:
     return json.dumps(metadata, ensure_ascii=False)
 
 
+def _augment_importance(metadata: Any, content: str) -> Any:
+    """Pre-populate metadata.importance_score from b12_importance heuristics.
+
+    If the caller already provided `importance_score` in metadata, do nothing
+    (caller wins). Otherwise compute the band-based score using
+    `b12_importance.score(content)` and stash it under `importance_score` so
+    the recall path picks it up identically to a caller-set value.
+
+    Pattern from AytuncYildizli/B12 PR 24 (3534d0d).
+    """
+    try:
+        import b12_importance  # type: ignore[import-not-found]
+    except ImportError:
+        return metadata
+
+    # Materialize metadata into a dict we can mutate, mirroring _metadata_to_str
+    # logic. dict / JSON-string / None all flow through here.
+    if isinstance(metadata, str):
+        try:
+            obj = json.loads(metadata) if metadata.strip() else {}
+            if not isinstance(obj, dict):
+                return metadata  # leave non-dict JSON alone
+        except (json.JSONDecodeError, ValueError):
+            return metadata  # leave malformed strings to _metadata_to_str
+    elif metadata is None:
+        obj = {}
+    elif isinstance(metadata, dict):
+        obj = dict(metadata)  # shallow copy — never mutate caller's dict
+    else:
+        return metadata
+
+    if "importance_score" not in obj:
+        obj["importance_score"] = b12_importance.score(content)
+
+    return obj
+
+
 def _get_table_columns(conn: sqlite3.Connection, table: str) -> set:
     cur = conn.execute(f"PRAGMA table_info({table})")
     return {row[1] for row in cur.fetchall()}
@@ -526,6 +563,13 @@ def merge_or_insert(
     now_ts, now_iso = _coerce_now(now)
 
     tags_str = _tags_to_str(tags)
+    # Auto-populate metadata.importance_score from b12_importance if the
+    # caller did not pre-set it. Pattern ported from AytuncYildizli/B12
+    # PR 24 (3534d0d feat(scoring): ingest-time importance heuristics).
+    # Memorable / decision / fact bands map to importance_score values
+    # the recall scorer already understands (>= 0.7 ranks above
+    # baseline). Caller-provided metadata.importance_score wins.
+    metadata = _augment_importance(metadata, content)
     metadata_str = _metadata_to_str(metadata)
 
     if not content_hash:
