@@ -1193,9 +1193,34 @@ async def memory_session_context(
     if not project_name and cwd:
         project_name = os.path.basename(cwd)
 
+    # Phase MX (R8) — Gemini bench / temp-dir project_name normalization.
+    # Some hosts (Gemini in particular when running under bench scripts
+    # or temp dirs) append a run-id hash suffix like `-qe2y1r7g` to the
+    # project basename, so the exact-tag lookup misses every real proj:
+    # row in the DB. We build a small list of candidate project_name
+    # forms — exact name first (preserves existing behavior), then a
+    # trailing-suffix-strip, then the cwd parent's basename — and pick
+    # the first one that returns project rows.
+    import re as _re_local
+    candidates: list[str] = []
+    if project_name:
+        candidates.append(project_name)
+        # Strip trailing -[6-10 char alnum hash] suffix
+        stripped = _re_local.sub(r"-[a-z0-9]{6,10}$", "", project_name)
+        if stripped and stripped != project_name:
+            candidates.append(stripped)
+        # Cwd parent fallback (the temp-dir-with-meaningful-parent case)
+        if cwd:
+            parent = os.path.basename(os.path.dirname(cwd))
+            if parent and parent not in candidates and parent not in ("/", "T", "tmp", "private"):
+                candidates.append(parent)
+
     async with _db_lock:
         # 1. Pre-fetched project memories (top 3 by importance x strength)
-        if project_name:
+        # Try each candidate in order, stop on first hit.
+        proj_memories = []
+        matched_project_name = ""
+        for cand in candidates:
             proj_memories = db.execute("""
                 SELECT id, content, memory_type, tags, metadata, strength,
                        created_at, created_at_iso
@@ -1207,28 +1232,36 @@ async def memory_session_context(
                 ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                          * COALESCE(strength, 1.0) DESC
                 LIMIT 3
-            """, (f"%proj:{project_name}%",)).fetchall()
+            """, (f"%proj:{cand}%",)).fetchall()
             if proj_memories:
-                sections.append(f"## Project Memories ({project_name})")
-                boost_ids = []
-                for m in proj_memories:
-                    ts = _short_iso(m["created_at"] if "created_at" in m.keys() else None,
-                                    m["created_at_iso"] if "created_at_iso" in m.keys() else None)
-                    ts_suffix = f"  _({ts})_" if ts else ""
-                    sections.append(f"- [{m['memory_type']}] {_trim(m['content'])}{ts_suffix}")
-                    boost_ids.append(m['id'])
-                # Spaced repetition: boost retrieved memories
-                if boost_ids:
-                    placeholders = ",".join("?" * len(boost_ids))
-                    db.execute(f"""
-                        UPDATE memories
-                        SET strength = min(COALESCE(strength, 1.0) + 0.2, 5.0),
-                            last_accessed_at = ?,
-                            metadata = json_set(COALESCE(metadata, '{{}}'),
-                              '$.access_count',
-                              COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.access_count') END, 0) + 1)
-                        WHERE id IN ({placeholders})
-                    """, [now_ts] + boost_ids)
+                matched_project_name = cand
+                break
+        if proj_memories or matched_project_name:
+            # Keep the legacy code path below working — substitute the
+            # matched candidate name back into project_name so the
+            # downstream Markdown heading is accurate.
+            project_name = matched_project_name or project_name
+        if proj_memories:
+            sections.append(f"## Project Memories ({project_name})")
+            boost_ids = []
+            for m in proj_memories:
+                ts = _short_iso(m["created_at"] if "created_at" in m.keys() else None,
+                                m["created_at_iso"] if "created_at_iso" in m.keys() else None)
+                ts_suffix = f"  _({ts})_" if ts else ""
+                sections.append(f"- [{m['memory_type']}] {_trim(m['content'])}{ts_suffix}")
+                boost_ids.append(m['id'])
+            # Spaced repetition: boost retrieved memories
+            if boost_ids:
+                placeholders = ",".join("?" * len(boost_ids))
+                db.execute(f"""
+                    UPDATE memories
+                    SET strength = min(COALESCE(strength, 1.0) + 0.2, 5.0),
+                        last_accessed_at = ?,
+                        metadata = json_set(COALESCE(metadata, '{{}}'),
+                          '$.access_count',
+                          COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.access_count') END, 0) + 1)
+                    WHERE id IN ({placeholders})
+                """, [now_ts] + boost_ids)
 
         # 2. Universal memories (top 2, not project-specific)
         universal = db.execute("""
