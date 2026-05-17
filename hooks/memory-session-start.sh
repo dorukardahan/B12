@@ -325,16 +325,28 @@ if [ -n "$PARENT_PROJECT" ]; then
   SEARCH_HINT="Default: tags=[\"proj:${PARENT_PROJECT}\"] (parent project). Also try proj:${PROJECT_NAME} for subdir-specific."
 fi
 
-# Behavioral instructions — trimmed in v7 (skill has full details)
-# v7: ~600 chars (was ~2000). Static instructions moved to skills/b12-memory/SKILL.md.
-# Only session-specific (dynamic) instructions remain here.
-BEHAVIORAL_INSTR="MEMORY TOOLS: memory_search (mode=hybrid, after/before=ISO date, max_response_chars=40000), memory_store (always include metadata), memory_update, memory_quality."
+# Behavioral instructions — v8 (2026-05-17): directive primer
+#
+# Forensic audit 2026-03-16..2026-05-17 flagged 30 of 36 in-window
+# Claude Code sessions (83%) reading this block and calling zero memory
+# tools. v7 was descriptive ("memory_search can ...") which left the
+# trigger up to the model. v8 leads with the trigger condition, keeps
+# the store-tag policy because it stays session-dynamic, and condenses
+# the emoji-pill detail to one line.
+# v7 lineage: ~600 chars (down from v6 ~2000). Static instructions live
+# in skills/b12-memory/SKILL.md.
+BEHAVIORAL_INSTR="CALL memory_search BEFORE answering when ANY of these holds:"
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n- user uses a recall verb (EN: remember, recall, last time, before, previously, prior, earlier, said, told, mentioned, stored / TR: hat\u0131rla, hat\u0131rl\u0131yor, ge\u00e7en sefer, daha \u00f6nce, \u00f6nceki, demi\u015ftik, s\u00f6ylemi\u015ftim, kaydetmi\u015ftik)"
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n- user references work that is not visible in the current conversation"
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n- starting a non-trivial task in this project"
 
-BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nSCOPE SYSTEM:\nSetup: ${SETUP_CONTEXT} | Project: ${PROJECT_NAME}${PARENT_INFO}\nWhen STORING: Always include tags [${STORE_TAG}, user:${SETUP_CONTEXT}] and metadata {project:\"${PARENT_PROJECT:-${PROJECT_NAME}}\", setup:\"${SETUP_CONTEXT}\", scope:\"<type>\"}.\nWhen SEARCHING: ${SEARCH_HINT} Add user:universal for general knowledge. Few results (<3): widen scope, remove tag filter."
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nCALL memory_store WHEN: a decision, fact, preference, or workflow pattern that should outlive this conversation. Store silently. Always include tags [${STORE_TAG}, user:${SETUP_CONTEXT}] and metadata {project:\"${PARENT_PROJECT:-${PROJECT_NAME}}\", setup:\"${SETUP_CONTEXT}\", scope:\"<type>\"}."
 
-BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nAUTO BEHAVIOR: Store silently when learning something important. Update user-profile.md at ${MEMORY_DIR}/user-profile.md when learning new preferences. Pill format:\nRetrieval: ( \ud83d\udc8a B12 \ud83e\udde0 : found N memories about [topic], stored [date] \u2705 )\nStore: ( \ud83d\udc8a B12 \ud83e\udde0 : saved to memory \u2705 )\nNot found (only when user explicitly asks): ( \ud83d\udc8a B12 \ud83e\udde0 : searched but nothing found \u274c )\nKeep under 15 words. Only \u2705 or \u274c at the end."
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nSEARCH HINT: ${SEARCH_HINT} Few results (<3): widen scope, remove tag filter."
 
-BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nFor detailed tool usage, importance scoring, time search, scope types, and dual memory layers: invoke /b12-memory skill."
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nTOOLS: memory_search (mode=hybrid, ISO-date after/before), memory_store, memory_update, memory_quality. Pill: ( \ud83d\udc8a B12 \ud83e\udde0 : found N memories about [topic] \u2705 ) on retrieval, ( \ud83d\udc8a B12 \ud83e\udde0 : saved to memory \u2705 ) on store, \u274c only when user explicitly asked and nothing was found."
+
+BEHAVIORAL_INSTR="${BEHAVIORAL_INSTR}\n\nFor importance scoring, time search, scope types, and dual memory layers: invoke /b12-memory skill."
 
 if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # ═══════════════════════════════════════════════════════════
