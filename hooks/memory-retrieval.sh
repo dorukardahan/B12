@@ -82,6 +82,24 @@ if [[ "$PROMPT" =~ ^/[a-zA-Z][a-zA-Z0-9_-]*($|[[:space:]]) ]]; then
   exit 0
 fi
 
+# ── Recall-verb detection (v8 — forensic-driven, EN+TR) ───────
+# When the user uses an explicit recall verb, the retrieval path
+# widens (limit 8 not 5), forces hybrid rerank (no skip), and the
+# output additionalContext gets a directive prefix so the model
+# knows the user explicitly asked for memory recall.
+# Closes the 83% Claude Code underutilization gap from the audit
+# at docs/B12_session_audit_2026-03-16_2026-05-17.md section 6.
+RECALL_VERB_HIT=false
+if echo "$PROMPT_LOWER" | grep -qE '\b(remember|recall|last time|previously|earlier|prior|before|said|told|mentioned|stored|saved)\b'; then
+  RECALL_VERB_HIT=true
+fi
+# Turkish recall verbs (Unicode-aware — works under UTF-8 locale)
+if [ "$RECALL_VERB_HIT" = false ]; then
+  if echo "$PROMPT_LOWER" | grep -qiE 'hatırla|hatırlıyor|geçen sefer|daha önce|önceki|demiştik|söylemiştim|söylemişti|kaydetmiştik|nerden geldiğini hatırlamadığım'; then
+    RECALL_VERB_HIT=true
+  fi
+fi
+
 if [ "$(uname)" = "Darwin" ]; then
   DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
 elif [ -d "$HOME/AppData" ]; then
@@ -134,8 +152,12 @@ done
 #   - Default → re-rank (hybrid wins on most types)
 QUERY_MODE="hybrid"  # default: do vector re-rank
 
+# Recall verb overrides everything else — always force hybrid so the
+# rerank step does not get skipped on a high-FTS-score top hit.
+if [ "$RECALL_VERB_HIT" = true ]; then
+  QUERY_MODE="hybrid"
 # Check negation first (highest priority → force hybrid)
-if echo "$PROMPT_LOWER" | grep -qE '\b(never|nobody|no one|nothing|nowhere)\b|n'\''t\b| not '; then
+elif echo "$PROMPT_LOWER" | grep -qE '\b(never|nobody|no one|nothing|nowhere)\b|n'\''t\b| not '; then
   QUERY_MODE="hybrid"
 # Check attribute/preference patterns (→ keyword, skip re-rank)
 elif echo "$PROMPT_LOWER" | grep -qE '\b(favorite|favourite|favori|likes?|enjoys?|prefers?|hobbi|hobies|hobby|hobbies|interests?|passionate?|obsess|fond)\b'; then
@@ -332,8 +354,9 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
   fi
 fi
 
-# Smart re-rank skip: if top FTS score is very high, reranking won't help
-if [ "$SHOULD_RERANK" = true ] && [ "$RESULT_COUNT" -ge 3 ]; then
+# Smart re-rank skip: if top FTS score is very high, reranking won't help.
+# Recall-verb queries bypass the skip — the user explicitly asked for memory.
+if [ "$SHOULD_RERANK" = true ] && [ "$RESULT_COUNT" -ge 3 ] && [ "$RECALL_VERB_HIT" = false ]; then
   TOP_SCORE=$(echo "$RESULTS" | head -1 | awk -F'|' '{print $3}')
   if [ -n "$TOP_SCORE" ] && echo "$TOP_SCORE" | awk '{exit ($1 > 0.8) ? 0 : 1}' 2>/dev/null; then
     SHOULD_RERANK=false
@@ -517,12 +540,14 @@ COLDEOF
   done <<< "$_COLD_OUTPUT"
 fi
 
-# Trim to top 5
-if [ "$RERANK_DONE" = false ] && [ "$RESULT_COUNT" -gt 5 ]; then
-  RESULT_DISPLAY=$(echo -e "$RESULT_DISPLAY" | head -5)
-  RESULT_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | head -5 | tr '\n' ',' | sed 's/,$//')
+# Trim to top 5 (top 8 when the user used a recall verb — explicit ask).
+DISPLAY_LIMIT=5
+[ "$RECALL_VERB_HIT" = true ] && DISPLAY_LIMIT=8
+if [ "$RERANK_DONE" = false ] && [ "$RESULT_COUNT" -gt "$DISPLAY_LIMIT" ]; then
+  RESULT_DISPLAY=$(echo -e "$RESULT_DISPLAY" | head -"$DISPLAY_LIMIT")
+  RESULT_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | head -"$DISPLAY_LIMIT" | tr '\n' ',' | sed 's/,$//')
   RESULT_IDS="${RESULT_IDS},"
-  RESULT_COUNT=5
+  RESULT_COUNT="$DISPLAY_LIMIT"
 fi
 
 # ── Boost strength via FSRS (spaced repetition) ────────────────
@@ -647,7 +672,8 @@ if [ -d "$FEEDBACK_DIR" ] || mkdir -p "$FEEDBACK_DIR" 2>/dev/null; then
     --arg ss "$SEARCH_SOURCE" \
     --argjson lat "$_LATENCY_MS" \
     --arg proj "$PROJ" \
-    '{ts: (now|floor), type: "hook_retrieval", query: $q, keywords: $kw, result_count: $rc, reranked: ($rr == "true"), query_mode: $qm, skip_reason: $sr, search_source: $ss, latency_ms: $lat, project: $proj}' \
+    --arg rv "$RECALL_VERB_HIT" \
+    '{ts: (now|floor), type: "hook_retrieval", query: $q, keywords: $kw, result_count: $rc, reranked: ($rr == "true"), query_mode: $qm, skip_reason: $sr, search_source: $ss, latency_ms: $lat, project: $proj, recall_verb_hit: ($rv == "true")}' \
     >> "$FEEDBACK_FILE" 2>/dev/null
 fi
 
@@ -690,8 +716,13 @@ fi
 
 # Use jq to construct valid JSON (handles all control chars and Unicode safely)
 {
-  printf '%s' "Memory retrieval (auto, ${QUERY_MODE}, keywords: ${SAFE_KEYWORDS}):"
-  printf '\n'
+  if [ "$RECALL_VERB_HIT" = true ]; then
+    printf '%s' "Memory retrieval (auto, ${QUERY_MODE}, recall-verb HIT, keywords: ${SAFE_KEYWORDS}):"
+    printf '\n[directive] user used a recall verb — surface these memories aggressively and follow up with memory_search if the top hits do not cover the user'\''s intent.\n'
+  else
+    printf '%s' "Memory retrieval (auto, ${QUERY_MODE}, keywords: ${SAFE_KEYWORDS}):"
+    printf '\n'
+  fi
   printf '%b' "$RESULT_DISPLAY"
   if [ -n "$GRAPH_EXPANDED" ]; then
     printf '\nRelated (graph):\n'
