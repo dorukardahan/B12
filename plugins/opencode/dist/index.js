@@ -1608,20 +1608,17 @@ function addSearchPattern(memory, pattern) {
     updated_at: Date.now()
   };
 }
-function loadWorkingMemory(stagingDir) {
+async function loadWorkingMemory(stagingDir) {
   const filePath = join5(stagingDir, "working-memory.json");
   if (!existsSync4(filePath))
     return null;
   try {
-    const raw = Bun.file(filePath);
-    const text = awaitRawText(raw);
+    const file = Bun.file(filePath);
+    const text = await file.text();
     return JSON.parse(text);
   } catch {
     return null;
   }
-}
-function awaitRawText(file) {
-  return file.text();
 }
 function saveWorkingMemory(stagingDir, memory) {
   const filePath = join5(stagingDir, "working-memory.json");
@@ -1805,9 +1802,8 @@ async function runCheckpoint(input, output, db, project) {
 
 // src/hooks/pre-compact.ts
 import { join as join7 } from "path";
-import { mkdirSync as mkdirSync3, writeFileSync, readdirSync as readdirSync2, statSync, unlinkSync } from "fs";
+import { mkdirSync as mkdirSync3, writeFileSync, readdirSync as readdirSync2, statSync, unlinkSync, renameSync as renameSync2 } from "fs";
 import { homedir as homedir6 } from "os";
-import { renameSync as renameSync2 } from "fs";
 var B12_BASE5 = process.env.B12_DATA_DIR || join7(homedir6(), ".B12");
 var CHAR_BUDGET2 = 8000;
 var PRIORITY_WEIGHTS = {

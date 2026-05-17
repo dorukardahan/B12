@@ -122,6 +122,11 @@ export async function preCompact(
 }
 
 async function storeHighValue(
+  items: ScoredItem[],
+  project: string,
+  cwd: string,
+  db: B12Database
+): Promise<void> {
   const texts = items.map((item) => `[${item.category}] ${item.text}`)
 
   let embeddings: string[] | null = null
