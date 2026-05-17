@@ -1,5 +1,17 @@
 # Changelog
 
+# [11.31.0](https://github.com/dorukardahan/B12/compare/v11.30.2...v11.31.0) (2026-05-17)
+
+
+### Bug Fixes
+
+* **kimi:** platform-mcp-drift warning + investigation doc ([#13](https://github.com/dorukardahan/B12/issues/13)) ([8962314](https://github.com/dorukardahan/B12/commit/896231452f94603493cef1922e439076d6bbf4ba))
+
+
+### Features
+
+* **grok:** native Grok CLI integration + investigation doc ([#14](https://github.com/dorukardahan/B12/issues/14)) ([dbdf50c](https://github.com/dorukardahan/B12/commit/dbdf50c7239b9bd69aaefcbe239be93cf6c16080)), closes [hi#value](https://github.com/hi/issues/value)
+
 ## [11.30.2](https://github.com/dorukardahan/B12/compare/v11.30.1...v11.30.2) (2026-05-17)
 
 
