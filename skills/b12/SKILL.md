@@ -1,10 +1,20 @@
 ---
 name: b12-memory
 description: >
-  Persistent cross-session memory system. Use at session start to load context
-  from previous sessions, when user asks about past work, and before session end
-  to store important findings. Triggers on: memory, remember, previous session,
-  last time, what did we, store this, save this finding.
+  B12 persistent cross-session memory system. INVOKE this skill BEFORE
+  answering when the user uses any recall verb or references work that
+  is not visible in the current conversation. English recall verbs:
+  remember, recall, last time, before, previously, prior, earlier, said,
+  told, mentioned, stored, saved. Turkish recall verbs: hatırla,
+  hatırlıyor musun, geçen sefer, daha önce, önceki, demiştik, söylemiştim,
+  kaydetmiştik, nerden geldiğini hatırlamadığım. Also invoke when the user
+  asks to "store this", "save this", "remember this", "not al", "kayda
+  geç", "unutma", or any imperative that implies long-term persistence.
+  Also invoke at the start of any non-trivial task in this project to
+  prime context. Covers the B12 MCP tools: memory_search, memory_store,
+  memory_update, memory_quality, memory_refine, memory_consolidate,
+  memory_surface, memory_session_context, memory_export, memory_import,
+  memory_dashboard.
 ---
 
 # B12 Memory System
