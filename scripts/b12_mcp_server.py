@@ -1153,10 +1153,41 @@ async def memory_session_context(
     cwd: str = "",
 ) -> str:
     """Get session start context: pre-fetched project memories, last session summary,
-    and behavioral instructions. Call this FIRST in every new session."""
+    and behavioral instructions. Call this FIRST in every new session.
+
+    Returns a Markdown-formatted block. Per-row content is trimmed at
+    RENDER_CONTENT_CAP_CHARS (600) with a "…(truncated)" breadcrumb so
+    operators can see when a memory was clipped. Timestamps are
+    rendered as `(2026-05-17 14:08)` next to each row. Pattern ported
+    from AytuncYildizli/B12 PR 11 (787a6b8 belleque_session_surface)
+    rendering style.
+    """
     db = _require_db()
     now_ts = time.time()
     sections: list[str] = []
+
+    # Per-row content cap. Mirrors AytuncYildizli/B12 belleque_session_surface
+    # RENDER_CONTENT_CAP_CHARS — keeps the MCP response under a reasonable
+    # token budget when a session has 10x 4KB tool outputs.
+    RENDER_CONTENT_CAP_CHARS = 600
+
+    def _trim(text: str | None, cap: int = RENDER_CONTENT_CAP_CHARS) -> str:
+        if text is None:
+            return ""
+        if len(text) <= cap:
+            return text
+        return text[:cap].rstrip() + "…(truncated)"
+
+    def _short_iso(epoch: float | None, fallback_iso: str | None = None) -> str:
+        if epoch:
+            try:
+                from datetime import datetime as _dt, timezone as _tz
+                return _dt.fromtimestamp(float(epoch), tz=_tz.utc).strftime("%Y-%m-%d %H:%M")
+            except (OverflowError, OSError, ValueError, TypeError):
+                pass
+        if fallback_iso:
+            return str(fallback_iso)[:16].replace("T", " ")
+        return ""
 
     # Detect project from cwd if not provided
     if not project_name and cwd:
@@ -1166,7 +1197,8 @@ async def memory_session_context(
         # 1. Pre-fetched project memories (top 3 by importance x strength)
         if project_name:
             proj_memories = db.execute("""
-                SELECT id, content, memory_type, tags, metadata, strength
+                SELECT id, content, memory_type, tags, metadata, strength,
+                       created_at, created_at_iso
                 FROM memories
                 WHERE deleted_at IS NULL
                   AND (valid_until IS NULL OR valid_until > datetime('now'))
@@ -1180,7 +1212,10 @@ async def memory_session_context(
                 sections.append(f"## Project Memories ({project_name})")
                 boost_ids = []
                 for m in proj_memories:
-                    sections.append(f"- [{m['memory_type']}] {m['content'][:300]}")
+                    ts = _short_iso(m["created_at"] if "created_at" in m.keys() else None,
+                                    m["created_at_iso"] if "created_at_iso" in m.keys() else None)
+                    ts_suffix = f"  _({ts})_" if ts else ""
+                    sections.append(f"- [{m['memory_type']}] {_trim(m['content'])}{ts_suffix}")
                     boost_ids.append(m['id'])
                 # Spaced repetition: boost retrieved memories
                 if boost_ids:
@@ -1197,7 +1232,7 @@ async def memory_session_context(
 
         # 2. Universal memories (top 2, not project-specific)
         universal = db.execute("""
-            SELECT content, memory_type FROM memories
+            SELECT content, memory_type, created_at, created_at_iso FROM memories
             WHERE deleted_at IS NULL
               AND (valid_until IS NULL OR valid_until > datetime('now'))
               AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
@@ -1209,20 +1244,28 @@ async def memory_session_context(
         if universal:
             sections.append("## Universal Memories")
             for m in universal:
-                sections.append(f"- [{m['memory_type']}] {m['content'][:300]}")
+                ts = _short_iso(m["created_at"] if "created_at" in m.keys() else None,
+                                m["created_at_iso"] if "created_at_iso" in m.keys() else None)
+                ts_suffix = f"  _({ts})_" if ts else ""
+                sections.append(f"- [{m['memory_type']}] {_trim(m['content'])}{ts_suffix}")
 
         # 3. Last session summary for this project
         if project_name:
             last_summary = db.execute("""
-                SELECT content FROM memories
+                SELECT content, created_at, created_at_iso FROM memories
                 WHERE memory_type = 'session_summary'
                   AND deleted_at IS NULL
                   AND tags LIKE ?
                 ORDER BY created_at DESC LIMIT 1
             """, (f"%proj:{project_name}%",)).fetchone()
             if last_summary:
-                sections.append("## Last Session Summary")
-                sections.append(last_summary['content'][:800])
+                ts = _short_iso(
+                    last_summary["created_at"] if "created_at" in last_summary.keys() else None,
+                    last_summary["created_at_iso"] if "created_at_iso" in last_summary.keys() else None,
+                )
+                ts_suffix = f"  _({ts})_" if ts else ""
+                sections.append(f"## Last Session Summary{ts_suffix}")
+                sections.append(_trim(last_summary['content'], cap=800))
 
         db.commit()
 
