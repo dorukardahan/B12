@@ -2319,6 +2319,32 @@ else
   install_to_setup "$HOME/.claude"
 fi
 
+# Phase MX (R10) — surface drift on non-Claude platform CLIs.
+# `--all` covers `~/.claude*` only by design. The flags
+# `--kimi`/`--codex`/`--gemini`/`--cursor`/`--windsurf`/`--opencode`/
+# `--grok` are explicit, but users routinely forget to chain them with
+# `--all`. This loop prints a one-line hint per detected platform dir
+# whose mcp config lacks B12 — non-fatal, exit code 0.
+if $INSTALL_ALL; then
+  for plat in codex gemini kimi cursor windsurf opencode grok; do
+    case "$plat" in
+      codex)    plat_dir="$HOME/.codex"     ; plat_cfg="$HOME/.codex/config.toml" ;;
+      gemini)   plat_dir="$HOME/.gemini"    ; plat_cfg="$HOME/.gemini/settings.json" ;;
+      kimi)     plat_dir="$HOME/.kimi"      ; plat_cfg="$HOME/.kimi/mcp.json" ;;
+      cursor)   plat_dir="$HOME/.cursor"    ; plat_cfg="$HOME/.cursor/mcp.json" ;;
+      windsurf) plat_dir="$HOME/.codeium/windsurf" ; plat_cfg="$HOME/.codeium/windsurf/mcp_config.json" ;;
+      opencode) plat_dir="$HOME/.config/opencode" ; plat_cfg="$HOME/.config/opencode/opencode.json" ;;
+      grok)     plat_dir="$HOME/.grok"      ; plat_cfg="$HOME/.grok/mcp.json" ;;
+    esac
+    [ -d "$plat_dir" ] || continue
+    # Already registered? Skip.
+    if [ -f "$plat_cfg" ] && grep -q '"B12"\|\[mcp_servers\.B12\]\|B12 =' "$plat_cfg" 2>/dev/null; then
+      continue
+    fi
+    echo "[B12] hint: $plat_dir/ exists but $plat_cfg has no B12 entry. Run \`./install.sh --$plat\` to register." >&2
+  done
+fi
+
 echo ""
 
 # Full setup: inject Claude Code MCP config
