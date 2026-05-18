@@ -15,6 +15,8 @@
 # - Tracks memory_quality and memory_update calls
 # - Log rotation (max 5000 lines)
 
+set -o pipefail 2>/dev/null || true
+
 # ── Self-timeout watchdog ─────────────────────────────────────
 ( sleep 5 && kill -TERM $$ 2>/dev/null ) &
 _WATCHDOG=$!

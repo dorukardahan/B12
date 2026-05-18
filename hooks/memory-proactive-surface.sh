@@ -47,12 +47,47 @@ fi
 B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 B12_STATE_DIR="$B12_BASE/state"
 SURFACE_STATE="$B12_BASE/surfacing-state.json"
+SURFACE_LOCK="${SURFACE_STATE}.lockdir"
 B12_TOK_STATE="$B12_STATE_DIR/session-tok-${SESSION_ID12}.txt"
 B12_DEDUP_LEDGER="$B12_STATE_DIR/session-injected-${SESSION_ID12}.txt"
 B12_TOK_PER_TURN="${B12_MAX_INJECT_TOKENS:-800}"
 B12_TOK_SESSION_MAX="${B12_MAX_SESSION_TOKENS:-80000}"
 B12_TOK_PER_TURN_CHARS=$(( B12_TOK_PER_TURN * 4 ))
 mkdir -p "$B12_STATE_DIR" 2>/dev/null
+
+# Portable mkdir-based mutex on the surfacing-state.json critical section
+# (read counter → bump → check threshold → write). Two concurrent hook fires
+# from parallel tool calls used to race here: both could read TOOL_CALLS=4,
+# both bump to 5, both pass the rate limit, both daemon-call + surface.
+# Worst case = 2× redundant inject + 2× token bill on one tool turn.
+#
+# Stale-lock TTL: if the dir exists and is older than 5s (any prior fire
+# crashed before releasing), force-remove and retry. macOS has no flock(1)
+# binary, so mkdir is the lightest portable atomic primitive (~1ms vs the
+# ~30ms python3-fcntl pattern used elsewhere for backgrounded hooks).
+_b12_surface_lock_acquire() {
+  local _i
+  for _i in 1 2 3 4 5 6 7 8 9 10; do
+    if mkdir "$SURFACE_LOCK" 2>/dev/null; then
+      return 0
+    fi
+    # Stale-lock detection: if dir mtime > 5s ago, prior holder died.
+    if [ -d "$SURFACE_LOCK" ]; then
+      local _now _mtime
+      _now=$(date +%s 2>/dev/null)
+      _mtime=$(stat -f %m "$SURFACE_LOCK" 2>/dev/null || stat -c %Y "$SURFACE_LOCK" 2>/dev/null)
+      if [ -n "$_now" ] && [ -n "$_mtime" ] && [ $(( _now - _mtime )) -gt 5 ]; then
+        rmdir "$SURFACE_LOCK" 2>/dev/null
+        continue
+      fi
+    fi
+    sleep 0.02 2>/dev/null || sleep 1
+  done
+  return 1
+}
+_b12_surface_lock_release() {
+  rmdir "$SURFACE_LOCK" 2>/dev/null
+}
 
 # ── Trigger classification ──────────────────────────────────
 TRIGGER_TYPE=""
@@ -93,9 +128,18 @@ fi
 
 # ── Rate limit (preserved from v1) ───────────────────────────
 # Tool-call counter + 60s cooldown, both keyed by session via the JSON file.
+# Critical section is wrapped in a mkdir-mutex so concurrent fires from
+# parallel tool calls don't both read counter=4, both bump to 5, both surface.
+# Lock is held through the daemon round-trip and the success/no-hit writes —
+# concurrent fires past threshold are exactly what the race wants to prevent.
+# EXIT trap chains onto the existing watchdog trap so every exit path
+# (early-empty / DB-missing / daemon-down / hit / miss) releases the lock.
 NOW=$(date +%s)
 LAST_AT=0
 TOOL_CALLS=0
+if _b12_surface_lock_acquire; then
+  trap '_b12_surface_lock_release; kill "${_B12_WD_PID:-0}" 2>/dev/null; wait "${_B12_WD_PID:-0}" 2>/dev/null' EXIT
+fi
 if [ -f "$SURFACE_STATE" ]; then
   _STATE=$(cat "$SURFACE_STATE" 2>/dev/null)
   if [ -n "$_STATE" ]; then
@@ -106,7 +150,7 @@ fi
 TOOL_CALLS=$((TOOL_CALLS + 1))
 ELAPSED=$(( NOW - LAST_AT ))
 if [ "$TOOL_CALLS" -lt 5 ] || [ "$ELAPSED" -lt 60 ]; then
-  # Persist the bumped counter, exit empty.
+  # Persist the bumped counter, exit empty (EXIT trap releases the lock).
   echo "{\"last_surfaced_at\":${LAST_AT},\"tool_calls\":${TOOL_CALLS}}" > "${SURFACE_STATE}.tmp" 2>/dev/null && \
     mv "${SURFACE_STATE}.tmp" "$SURFACE_STATE" 2>/dev/null
   echo '{}'

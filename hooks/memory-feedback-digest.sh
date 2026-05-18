@@ -10,6 +10,8 @@
 #   ./memory-feedback-digest.sh              # Generate digest
 #   ./memory-feedback-digest.sh --quiet      # No stdout output
 
+set -o pipefail 2>/dev/null || true
+
 B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 FEEDBACK_FILE="$B12_BASE/memory-logs/feedback.jsonl"
 DIGEST_FILE="$B12_BASE/memory-logs/feedback-digest.md"

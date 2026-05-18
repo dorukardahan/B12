@@ -11,6 +11,8 @@
 # - Executive summary (5-line) for next session's compact loading
 # - B12_DATA_DIR support for multi-setup
 
+set -o pipefail 2>/dev/null || true
+
 # ── Self-timeout watchdog ─────────────────────────────────────
 # Kills this script if it exceeds max runtime. Prevents orphan processes.
 ( sleep 30 && kill -TERM $$ 2>/dev/null ) &

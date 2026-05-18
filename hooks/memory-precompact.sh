@@ -8,6 +8,8 @@
 # - Token budget: keeps only top items within ~2000 tokens
 # - Setup/scope context preserved through compaction
 
+set -o pipefail 2>/dev/null || true
+
 # ── Self-timeout watchdog ─────────────────────────────────────
 # Kills this script if it exceeds max runtime. Prevents orphan processes.
 ( sleep 25 && kill -TERM $$ 2>/dev/null ) &

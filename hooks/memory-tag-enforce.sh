@@ -6,6 +6,8 @@
 # Fires on: mcp__B12__memory_store (PreToolUse)
 # Output: updatedInput with corrected tags, or silent allow if compliant
 
+set -o pipefail 2>/dev/null || true
+
 # ── Self-timeout watchdog ─────────────────────────────────────
 ( sleep 5 && kill -TERM $$ 2>/dev/null ) &
 _WATCHDOG=$!

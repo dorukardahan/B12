@@ -7,6 +7,8 @@
 #
 # Keeps last 7 backups. Uses sqlite3 .backup for WAL-safe copies.
 
+set -o pipefail 2>/dev/null || true
+
 if [ "$(uname)" = "Darwin" ]; then
   DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
 elif [ -d "$HOME/AppData" ]; then

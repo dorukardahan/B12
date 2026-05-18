@@ -7,6 +7,8 @@
 # Output: empty JSON (side-effect only)
 # Performance target: <50ms
 
+set -o pipefail 2>/dev/null || true
+
 # ── Self-timeout watchdog ─────────────────────────────────────
 ( sleep 5 && kill -TERM $$ 2>/dev/null ) &
 _WATCHDOG=$!

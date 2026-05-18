@@ -14,6 +14,13 @@ if [ -n "$_B12_COMMON_LOADED" ]; then
 fi
 _B12_COMMON_LOADED=1
 
+# Defensive: pipe failures (e.g. `cmd | tee FILE; rc=$?`) silently return the
+# last command's exit by default — the global PIPESTATUS rule. Set pipefail
+# here so every hook that sources _b12_common.sh inherits the safer default.
+# Hooks that don't source this file opt in directly at the top of their own
+# script.
+set -o pipefail 2>/dev/null || true
+
 # Canonical hook code path. R10 pitfall: hooks must NEVER assume
 # `$SCRIPT_DIR` is set; the env var coming in from hooks.json is the only
 # stable anchor.

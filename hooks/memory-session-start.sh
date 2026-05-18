@@ -20,6 +20,8 @@
 # - Lazy-load user profile (only if updated within 7 days)
 # - Dual-layer deconfliction rule (MEMORY.md vs MCP memory)
 
+set -o pipefail 2>/dev/null || true
+
 # ── Orphan hook cleanup ──────────────────────────────────────
 # Kill memory hook processes orphaned from previous sessions (PPID=1)
 for _pid in $(pgrep -f "memory-.*\.sh" 2>/dev/null); do

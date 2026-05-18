@@ -11,6 +11,9 @@
 # Codex passes a JSON payload as $1 (first argument) with:
 #   type, thread-id, turn-id, input-messages, last-assistant-message
 
+# pipefail: surface a real exit from the upstream command in any pipe chain.
+set -o pipefail 2>/dev/null || true
+
 # Central data directory
 B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.B12/hooks}/scripts"
