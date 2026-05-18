@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.37.0](https://github.com/dorukardahan/B12/compare/v11.36.0...v11.37.0) (2026-05-18)
+
+
+### Features
+
+* **longsession:** periodic re-surface of early-session high-importance memories (P-LONGSESSION / Q2) ([#30](https://github.com/dorukardahan/B12/issues/30)) ([6e9da5a](https://github.com/dorukardahan/B12/commit/6e9da5aed6f08f05ddee438bb67f783c76482b43)), closes [hi#importance](https://github.com/hi/issues/importance) [hi#importance](https://github.com/hi/issues/importance) [hi#importance](https://github.com/hi/issues/importance) [#26](https://github.com/dorukardahan/B12/issues/26) [#26](https://github.com/dorukardahan/B12/issues/26)
+
 # [11.36.0](https://github.com/dorukardahan/B12/compare/v11.35.0...v11.36.0) (2026-05-18)
 
 
