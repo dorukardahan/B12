@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.31.1](https://github.com/dorukardahan/B12/compare/v11.31.0...v11.31.1) (2026-05-18)
+
+
+### Bug Fixes
+
+* **skills:** resolve b12-memory skill name collision ([#18](https://github.com/dorukardahan/B12/issues/18)) ([8e4f23e](https://github.com/dorukardahan/B12/commit/8e4f23e6190bd2e5ac90f5889e20a4386373a5ef))
+
 # [11.31.0](https://github.com/dorukardahan/B12/compare/v11.30.2...v11.31.0) (2026-05-17)
 
 
