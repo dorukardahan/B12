@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.46.0](https://github.com/dorukardahan/B12/compare/v11.45.0...v11.46.0) (2026-05-18)
+
+
+### Features
+
+* **hooks:** Codex PreToolUse + PostToolUse + PreCompact + cloud bridge (CX2) ([#42](https://github.com/dorukardahan/B12/issues/42)) ([1705b4b](https://github.com/dorukardahan/B12/commit/1705b4b1b632fa577509d0fb869077ee85c42ee9))
+
 # [11.45.0](https://github.com/dorukardahan/B12/compare/v11.44.0...v11.45.0) (2026-05-18)
 
 
