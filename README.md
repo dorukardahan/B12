@@ -269,6 +269,8 @@ B12/
 │   ├── memory-session-end.sh       #   SessionEnd — extract & persist memories
 │   ├── memory-proactive-surface.sh #   PostToolUse — proactive memory surfacing
 │   ├── memory-checkpoint.sh        #   PostToolUse — mid-session memory capture (rate-limited)
+│   ├── memory-tool-failure.sh      #   PostToolUseFailure — capture tool errors as memories
+│   ├── memory-turn-end.sh          #   Stop — end-of-turn response scan
 │   ├── memory-backup.sh            #   Scheduled — daily WAL-safe backup
 │   ├── memory-consolidate.py       #   Scheduled — dedup, stale detection
 │   ├── memory-quality-audit.sh     #   Scheduled — weekly health score
@@ -357,7 +359,7 @@ Environment variables:
 
 ### Hooks (Claude Code `settings.json`)
 
-All 7 hook events are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically. See `docs/setup.md` for manual configuration.
+All 9 hook events are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically. See `docs/setup.md` for manual configuration.
 
 ### Multi-setup
 
@@ -429,6 +431,18 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 | **Working Memory** | Conversation momentum | `~/.B12/memory-staging/working-memory.json` | Post-compaction recovery |
 
 ## Changelog (recent)
+
+### v11.42 (2026-05-18) — Claude Code v2.1.139+ hook coverage expansion
+
+- **`Stop` hook** (`hooks/memory-turn-end.sh`) — scans the assistant's
+  end-of-turn response text for decision / learning / error patterns
+  and queues them into the existing checkpoint buffer. Captures
+  commentary that `PostToolUse` never sees.
+- **`PostToolUseFailure` hook** (`hooks/memory-tool-failure.sh`) —
+  records failed tool calls (Bash, Edit, Write, WebFetch, MCP) as
+  high-importance error memories. Skips noise sources (Read / Glob /
+  Grep failures). The "X did not work because Y" signal that B12
+  previously missed entirely.
 
 ### v11.7 (2026-03-03) — Tier 3: Stemming, Health Report, Gemini Hooks, MCP Resources
 
