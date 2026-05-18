@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.42.0](https://github.com/dorukardahan/B12/compare/v11.41.0...v11.42.0) (2026-05-18)
+
+
+### Features
+
+* **hooks:** Stop + PostToolUseFailure capture ([#38](https://github.com/dorukardahan/B12/issues/38)) ([216b306](https://github.com/dorukardahan/B12/commit/216b306fa5bcb288129c2f268ca6ae01e387b4df)), closes [hi#importance](https://github.com/hi/issues/importance)
+
 # [11.41.0](https://github.com/dorukardahan/B12/compare/v11.40.1...v11.41.0) (2026-05-18)
 
 
