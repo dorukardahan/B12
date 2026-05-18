@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.36.0](https://github.com/dorukardahan/B12/compare/v11.35.0...v11.36.0) (2026-05-18)
+
+
+### Features
+
+* **recall:** Q3 semantic trigger + Q4 4-field surface format + Q5 checkpoint telemetry (P-RECALL) ([#29](https://github.com/dorukardahan/B12/issues/29)) ([d3a382a](https://github.com/dorukardahan/B12/commit/d3a382a736d6d166690ccaf2aa70546f3b23841f)), closes [#25](https://github.com/dorukardahan/B12/issues/25) [#25](https://github.com/dorukardahan/B12/issues/25) [#25](https://github.com/dorukardahan/B12/issues/25)
+
 # [11.35.0](https://github.com/dorukardahan/B12/compare/v11.34.0...v11.35.0) (2026-05-18)
 
 
