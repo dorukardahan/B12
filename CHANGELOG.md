@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.35.0](https://github.com/dorukardahan/B12/compare/v11.34.0...v11.35.0) (2026-05-18)
+
+
+### Features
+
+* **speed:** async hooks + sync cap + trivial skip + Codex round-3 fixes (P-SPEED) ([#28](https://github.com/dorukardahan/B12/issues/28)) ([cfe12b9](https://github.com/dorukardahan/B12/commit/cfe12b932782ac86711c558d965b1ace6611d723)), closes [#23](https://github.com/dorukardahan/B12/issues/23) [#23](https://github.com/dorukardahan/B12/issues/23) [#24](https://github.com/dorukardahan/B12/issues/24) [#24](https://github.com/dorukardahan/B12/issues/24)
+
 # [11.34.0](https://github.com/dorukardahan/B12/compare/v11.33.0...v11.34.0) (2026-05-18)
 
 
