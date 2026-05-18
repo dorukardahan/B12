@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.45.0](https://github.com/dorukardahan/B12/compare/v11.44.0...v11.45.0) (2026-05-18)
+
+
+### Features
+
+* **hooks:** Codex Round 0 + SessionStart/Stop/UserPromptSubmit (CX0+CX1) ([#41](https://github.com/dorukardahan/B12/issues/41)) ([d67b9a5](https://github.com/dorukardahan/B12/commit/d67b9a51ce74e145a327ef4369e3f4df5d1deb78)), closes [#22861](https://github.com/dorukardahan/B12/issues/22861) [#22008](https://github.com/dorukardahan/B12/issues/22008) [#21160](https://github.com/dorukardahan/B12/issues/21160) [#22861](https://github.com/dorukardahan/B12/issues/22861) [#7](https://github.com/dorukardahan/B12/issues/7) [#22008](https://github.com/dorukardahan/B12/issues/22008) [#8](https://github.com/dorukardahan/B12/issues/8) [#21160](https://github.com/dorukardahan/B12/issues/21160) [#9](https://github.com/dorukardahan/B12/issues/9) [#22861](https://github.com/dorukardahan/B12/issues/22861) [#39](https://github.com/dorukardahan/B12/issues/39) [#8](https://github.com/dorukardahan/B12/issues/8) [#1](https://github.com/dorukardahan/B12/issues/1) [hi#risk](https://github.com/hi/issues/risk) [#22861](https://github.com/dorukardahan/B12/issues/22861) [#22861](https://github.com/dorukardahan/B12/issues/22861)
+
 # [11.44.0](https://github.com/dorukardahan/B12/compare/v11.43.0...v11.44.0) (2026-05-18)
 
 
