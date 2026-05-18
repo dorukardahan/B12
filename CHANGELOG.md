@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.43.0](https://github.com/dorukardahan/B12/compare/v11.42.0...v11.43.0) (2026-05-18)
+
+
+### Features
+
+* **hooks:** native /goal awareness + SubagentStop capture ([#39](https://github.com/dorukardahan/B12/issues/39)) ([e70fc62](https://github.com/dorukardahan/B12/commit/e70fc6269371549f78aeb7145dcafd3c79b44a1f)), closes [#38](https://github.com/dorukardahan/B12/issues/38)
+
 # [11.42.0](https://github.com/dorukardahan/B12/compare/v11.41.0...v11.42.0) (2026-05-18)
 
 
