@@ -910,6 +910,100 @@ PYEOF
   fi
 fi
 
+# ── Q2 topic-shift re-surface (P-BURNIN / Phase C) ───────────
+# Orthogonal trigger to the periodic-N counter above: when consecutive
+# user prompts drift in topic (cosine < 0.55 against the previous
+# prompt's embedding), the session has likely topic-shifted and the
+# model can benefit from a fresh injection of THIS session's
+# high-importance memories that may have slid out of the effective
+# working window. Stricter filter than periodic (importance >= 0.8,
+# older than session midpoint). Skipped if the periodic re-surface
+# already fired this turn — no point firing twice.
+#
+# Default off if B12_TOPICSHIFT_DISABLE=1 is set. Daemon-route only —
+# falls through silently if daemon down (this is best-effort signal).
+_TOPICSHIFT_BLOCK=""
+if [ "${B12_TOPICSHIFT_DISABLE:-0}" != "1" ] && \
+   [ -z "$_RESURFACE_BLOCK" ] && \
+   [ -n "$VENV_PYTHON" ] && [ -x "$VENV_PYTHON" ] && \
+   [ -S "$EMBED_SOCK" ] && [ -n "$PROMPT" ]; then
+  _TS_THRESHOLD="${B12_TOPICSHIFT_COSINE:-0.55}"
+  _TOPICSHIFT_OUT=$(B12_TS_PROMPT="$PROMPT" "$VENV_PYTHON" - "$SESSION_ID" "$DB_PATH" "$EMBED_SOCK" "$_TS_THRESHOLD" "$_DEDUP_IDS" << 'PYEOF' 2>/dev/null
+import os, sys, json, socket
+_hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
+sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
+try:
+    from b12_long_session import topic_shift_check, pick_topic_shift_ids
+except ImportError:
+    sys.exit(0)
+
+sid = sys.argv[1]
+db_path = sys.argv[2]
+sock_path = sys.argv[3]
+try:
+    threshold = float(sys.argv[4])
+except (TypeError, ValueError):
+    threshold = 0.55
+skip_raw = sys.argv[5] if len(sys.argv) > 5 else ''
+skip_ids = [int(x) for x in skip_raw.split(',') if x.strip().isdigit()]
+
+# Prompt comes through env, not stdin — `python3 - << PYEOF` already
+# uses stdin for the script body, so reading argv-shaped data via env
+# avoids the stdin collision.
+prompt = (os.environ.get("B12_TS_PROMPT", "") or "").strip()
+if not prompt or len(prompt) < 4:
+    sys.exit(0)
+
+# Embed the current prompt via the daemon's encode_batch op.
+try:
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    s.settimeout(2.0)
+    s.connect(sock_path)
+    req = json.dumps({"op": "encode_batch", "texts": [prompt]}) + "\n"
+    s.sendall(req.encode("utf-8"))
+    chunks = []
+    while True:
+        c = s.recv(65536)
+        if not c:
+            break
+        chunks.append(c)
+    s.close()
+    resp = json.loads(b"".join(chunks).decode("utf-8", errors="replace"))
+except Exception:
+    sys.exit(0)
+
+if not resp.get("ok") or not resp.get("embeddings"):
+    sys.exit(0)
+cur_emb_b64 = resp["embeddings"][0]
+
+shifted, cos = topic_shift_check(sid, cur_emb_b64, threshold=threshold)
+if not shifted:
+    sys.exit(0)
+
+hits = pick_topic_shift_ids(db_path, sid, limit=3, skip_ids=skip_ids)
+print(json.dumps({"shifted": True, "cosine": cos, "threshold": threshold, "hits": hits}, ensure_ascii=False))
+PYEOF
+  )
+  if [ -n "$_TOPICSHIFT_OUT" ]; then
+    _TS_COS=$(echo "$_TOPICSHIFT_OUT" | jq -r '.cosine // ""' 2>/dev/null)
+    _TS_HITS_JSON=$(echo "$_TOPICSHIFT_OUT" | jq -c '.hits // []' 2>/dev/null)
+    _TS_HIT_COUNT=$(echo "$_TS_HITS_JSON" | jq -r 'length' 2>/dev/null)
+    if [ "${_TS_HIT_COUNT:-0}" -gt 0 ]; then
+      _TS_BODY=$(echo "$_TS_HITS_JSON" | \
+        jq -r '.[] | "[\(.memory_type)|src:\(.source_session)|imp:\(.importance|tostring)|proj:\(.project)] \(.preview)"')
+      _TOPICSHIFT_BLOCK=$'\n[topic-shift re-surface (cos='"${_TS_COS}"$' < threshold, high-importance older memories from this session)]\n'"${_TS_BODY}"$'\n'
+      # Don't write ledger yet — T1/T2 may trim. Same pattern as periodic.
+      _RESURFACE_IDS=$(echo "$_TS_HITS_JSON" | jq -r '.[].id')
+    fi
+  fi
+fi
+
+# Merge periodic + topic-shift blocks (only one can be set; the
+# guard above skips topic-shift when periodic already fired).
+if [ -n "$_TOPICSHIFT_BLOCK" ]; then
+  _RESURFACE_BLOCK="$_TOPICSHIFT_BLOCK"
+fi
+
 # ── Output ─────────────────────────────────────────────────────
 # Re-surface block alone is enough to inject even if regular retrieval
 # came up empty — the model still benefits from the periodic anchor.

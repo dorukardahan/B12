@@ -191,6 +191,214 @@ def reset_turn_counter(session_id: str) -> None:
         pass
 
 
+# ── Q2 topic-shift re-surface ────────────────────────────────────
+# Triggered orthogonally to the periodic-N counter: when consecutive user
+# prompts drift below the cosine threshold (default 0.55), the session has
+# "topic-shifted" and the model can benefit from a fresh injection of this
+# session's high-importance memories that may have slid out of working
+# context. Stricter filter than the periodic path (importance>=0.8, older
+# than the session midpoint) so we re-surface only the genuinely-anchoring
+# facts on a topic shift, not every same-session note.
+TOPIC_SHIFT_DEFAULT_COSINE = 0.55
+TOPIC_SHIFT_MIN_IMPORTANCE = 0.8
+TOPIC_SHIFT_DEFAULT_LIMIT = 3
+
+
+def topic_shift_state_path(session_id: str) -> str:
+    """Per-session embedding-of-previous-prompt state file."""
+    return os.path.join(
+        _state_dir(),
+        f'topicshift-{_sid12(session_id)}.txt',
+    )
+
+
+def pick_topic_shift_ids(
+    db_path: str,
+    session_id: str,
+    limit: int = TOPIC_SHIFT_DEFAULT_LIMIT,
+    min_importance: float = TOPIC_SHIFT_MIN_IMPORTANCE,
+    skip_ids: list[int] | None = None,
+) -> list[dict]:
+    """Topic-shift re-surface candidates.
+
+    Stricter than ``pick_resurface_ids``:
+      - same source_session (this session captured the fact)
+      - importance_score >= 0.8 (only the genuinely-anchoring facts)
+      - created_at < session-midpoint (older than half the elapsed session,
+        so we re-surface facts the model captured *early* — the ones most
+        likely to have slid out of effective working context)
+      - id not in skip_ids (T3 dedup ledger)
+    """
+    if not os.path.exists(db_path):
+        return []
+    sid12 = _sid12(session_id)
+    skip_set = set(int(x) for x in (skip_ids or []) if str(x).isdigit())
+
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        # First: find session-start (earliest same-session memory) to
+        # compute the midpoint. If the session has only one memory or
+        # all memories are < 5 min old, "older than midpoint" filters
+        # everything out — fall back to the full set.
+        #
+        # `memories.created_at` is stored as Unix-epoch REAL (verified
+        # against b12_mcp_server.py:_ensure_schema and production rows
+        # like 1779097617.716011). `julianday(epoch_real)` returns NULL
+        # in SQLite without the 'unixepoch' modifier — Codex PR #34 P1.
+        # We work directly in epoch seconds; both endpoints are REAL,
+        # the threshold compares REAL-to-REAL, no datetime() conversion
+        # involved.
+        bounds = conn.execute(
+            """
+            SELECT MIN(m.created_at)                    AS first_ts,
+                   CAST(strftime('%s', 'now') AS REAL)  AS now_ts
+            FROM memories m
+            WHERE m.deleted_at IS NULL
+              AND COALESCE(json_extract(m.metadata, '$.source_session'), '') = ?
+            """,
+            (sid12,),
+        ).fetchone()
+        first_ts = bounds[0] if bounds else None
+        now_ts = bounds[1] if bounds else None
+        midpoint_ts = None
+        if first_ts is not None and now_ts is not None and now_ts > first_ts:
+            midpoint_ts = float(first_ts) + (float(now_ts) - float(first_ts)) * 0.5
+
+        # If we couldn't compute a midpoint (single-memory session), skip
+        # the age filter and just return importance-ordered candidates.
+        if midpoint_ts is not None:
+            rows = conn.execute(
+                """
+                SELECT m.id,
+                       m.content_hash,
+                       COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) AS importance,
+                       COALESCE(json_extract(m.metadata, '$.project'), '') AS project,
+                       COALESCE(SUBSTR(json_extract(m.metadata, '$.source_session'), 1, 12), '') AS source_session,
+                       m.memory_type,
+                       SUBSTR(replace(replace(m.content, char(10), ' '), char(9), ' '), 1, 80) AS preview
+                FROM memories m
+                WHERE m.deleted_at IS NULL
+                  AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
+                  AND m.memory_type NOT IN ('session_summary', 'progress')
+                  AND COALESCE(json_extract(m.metadata, '$.source_session'), '') = ?
+                  AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?
+                  AND m.created_at < ?
+                ORDER BY importance DESC, m.created_at ASC
+                LIMIT 50
+                """,
+                (sid12, float(min_importance), midpoint_ts),
+            ).fetchall()
+        else:
+            rows = conn.execute(
+                """
+                SELECT m.id,
+                       m.content_hash,
+                       COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) AS importance,
+                       COALESCE(json_extract(m.metadata, '$.project'), '') AS project,
+                       COALESCE(SUBSTR(json_extract(m.metadata, '$.source_session'), 1, 12), '') AS source_session,
+                       m.memory_type,
+                       SUBSTR(replace(replace(m.content, char(10), ' '), char(9), ' '), 1, 80) AS preview
+                FROM memories m
+                WHERE m.deleted_at IS NULL
+                  AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
+                  AND m.memory_type NOT IN ('session_summary', 'progress')
+                  AND COALESCE(json_extract(m.metadata, '$.source_session'), '') = ?
+                  AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?
+                ORDER BY importance DESC, m.created_at ASC
+                LIMIT 50
+                """,
+                (sid12, float(min_importance)),
+            ).fetchall()
+    finally:
+        conn.close()
+
+    out = []
+    for row in rows:
+        mid = int(row[0])
+        if mid in skip_set:
+            continue
+        out.append({
+            'id': mid,
+            'content_hash': row[1],
+            'importance': float(row[2] or 0.5),
+            'project': row[3] or '',
+            'source_session': row[4] or '',
+            'memory_type': row[5] or '',
+            'preview': row[6] or '',
+        })
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
+def cosine_drift(prev_emb_b64: str, cur_emb_b64: str) -> float:
+    """Return cosine similarity in [-1, 1] between two base64 float32
+    embeddings (as produced by embed_daemon's `encode_batch` op).
+
+    Bare math — no numpy required so this can run inside the retrieval
+    hook's tiny Python heredoc without pulling in heavy deps on a hot
+    path that needs to stay sub-200ms.
+    """
+    import base64 as _b64
+    import struct as _struct
+
+    try:
+        a = _b64.b64decode(prev_emb_b64)
+        b = _b64.b64decode(cur_emb_b64)
+    except Exception:
+        return 1.0  # corrupt state → behave as "same topic", don't trigger
+    if not a or not b or len(a) != len(b) or len(a) % 4 != 0:
+        return 1.0
+    n = len(a) // 4
+    av = _struct.unpack(f'<{n}f', a)
+    bv = _struct.unpack(f'<{n}f', b)
+    dot = 0.0
+    na = 0.0
+    nb = 0.0
+    for x, y in zip(av, bv):
+        dot += x * y
+        na += x * x
+        nb += y * y
+    if na <= 0.0 or nb <= 0.0:
+        return 1.0
+    return dot / (math.sqrt(na) * math.sqrt(nb))
+
+
+def topic_shift_check(
+    session_id: str,
+    current_emb_b64: str,
+    threshold: float = TOPIC_SHIFT_DEFAULT_COSINE,
+) -> tuple[bool, float]:
+    """Compare the current prompt embedding against the previously-stored
+    one. Returns (shifted, cosine). On first call (no prior state), records
+    the embedding and returns (False, 1.0). Always persists the current
+    embedding for the next call.
+    """
+    path = topic_shift_state_path(session_id)
+    prev = None
+    try:
+        with open(path, 'r') as f:
+            prev = f.read().strip() or None
+    except FileNotFoundError:
+        prev = None
+
+    fd, tmp = tempfile.mkstemp(prefix='b12ts-', dir=_state_dir())
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(current_emb_b64)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+
+    if not prev:
+        return (False, 1.0)
+    cos = cosine_drift(prev, current_emb_b64)
+    return (cos < float(threshold), cos)
+
+
 # ── Self-test ───────────────────────────────────────────────────
 def _self_test() -> int:
     failures: list[str] = []
@@ -274,12 +482,46 @@ def _self_test() -> int:
         if picks2:
             failures.append(f'skip_ids=[1] should empty result, got {picks2}')
 
+        # ── Topic-shift cosine drift ──
+        import base64 as _b64
+        import struct as _struct
+        # Synthetic 4-dim embeddings (unit-normalised) — same vector vs an
+        # orthogonal one. Real BGE-M3 returns 1024-dim normalised float32.
+        emb_a = _b64.b64encode(_struct.pack('<4f', 1.0, 0.0, 0.0, 0.0)).decode('ascii')
+        emb_b = _b64.b64encode(_struct.pack('<4f', 0.0, 1.0, 0.0, 0.0)).decode('ascii')
+        emb_a2 = _b64.b64encode(_struct.pack('<4f', 0.99, 0.05, 0.0, 0.0)).decode('ascii')
+        cos_self = cosine_drift(emb_a, emb_a)
+        if cos_self < 0.999:
+            failures.append(f'cosine_drift(self, self) = {cos_self}, expected ~1.0')
+        cos_orth = cosine_drift(emb_a, emb_b)
+        if not (-0.05 < cos_orth < 0.05):
+            failures.append(f'cosine_drift(orthogonal) = {cos_orth}, expected ~0')
+
+        # topic_shift_check first call returns False (no prior state).
+        shifted0, _ = topic_shift_check(sid, emb_a)
+        if shifted0:
+            failures.append('topic_shift_check first call should not trigger')
+        # Second call with similar embedding → not shifted.
+        shifted_same, cos_same = topic_shift_check(sid, emb_a2)
+        if shifted_same:
+            failures.append(f'topic_shift_check near-identical should not trigger (cos={cos_same:.3f})')
+        # Third call with orthogonal embedding → shifted.
+        shifted_orth, cos_orth = topic_shift_check(sid, emb_b)
+        if not shifted_orth:
+            failures.append(f'topic_shift_check orthogonal should trigger (cos={cos_orth:.3f})')
+
+        # pick_topic_shift_ids: only importance >= 0.8 returned.
+        picks_ts = pick_topic_shift_ids(db_path, sid, limit=3)
+        ts_ids = {p['id'] for p in picks_ts}
+        if 2 in ts_ids or 3 in ts_ids or 4 in ts_ids:
+            failures.append(f'pick_topic_shift_ids leaked low-importance/cross-session/deleted: {ts_ids}')
+
     if failures:
         print('SELF-TEST FAILED:')
         for f in failures:
             print(f'  - {f}')
         return 1
-    print('SELF-TEST OK (6 cases: counter init, fire at N, fire at 2N, peek, project-scoped pick, skip_ids)')
+    print('SELF-TEST OK (11 cases: counter init, fire at N, fire at 2N, peek, project-scoped pick, skip_ids, cosine self, cosine orth, topic_shift first/same/orth, pick_topic_shift filtering)')
     return 0
 
 
