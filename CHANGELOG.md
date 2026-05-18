@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.40.0](https://github.com/dorukardahan/B12/compare/v11.39.0...v11.40.0) (2026-05-18)
+
+
+### Features
+
+* **eval:** S5 GGUF Q4 vs Q8 benchmark + eval doc completion ([#35](https://github.com/dorukardahan/B12/issues/35)) ([9cb2b56](https://github.com/dorukardahan/B12/commit/9cb2b5633d0d232403fa91b4e0b92729a54d4e8d))
+
 # [11.39.0](https://github.com/dorukardahan/B12/compare/v11.38.2...v11.39.0) (2026-05-18)
 
 
