@@ -39,6 +39,15 @@ class SessionInfo:
     model: str = ""
     cli_version: str = ""
     timestamp: str = ""
+    # Git provenance from Codex rollout's session_meta (SessionMetaLine.git)
+    git_branch: str = ""
+    git_repo_url: str = ""
+    git_commit: str = ""
+    # SessionMeta.source value — "cli"/"vscode"/"exec"/"mcp"/"custom"/etc.
+    # Plus the related SessionMeta.originator (rust constant for the
+    # external-agent-migration writer is "claude").
+    source: str = ""
+    originator: str = ""
 
 
 def detect_format(path: str) -> str:
@@ -203,6 +212,16 @@ def _parse_codex(path: str, tail_lines: int = 0) -> tuple:
             info.cli_version = payload.get('cli_version', '')
             info.timestamp = payload.get('timestamp', '')
             info.model = payload.get('model_provider', '')
+            # SessionMetaLine flattens SessionMeta + Option<GitInfo>.
+            # Source / originator are how external-agent-sessions
+            # marks Claude-Code-imported rollouts.
+            info.source = str(payload.get('source', '') or '')
+            info.originator = str(payload.get('originator', '') or '')
+            git = obj.get('git') or payload.get('git') or {}
+            if isinstance(git, dict):
+                info.git_branch = str(git.get('branch') or '')
+                info.git_repo_url = str(git.get('repository_url') or '')
+                info.git_commit = str(git.get('commit_hash') or '')
             continue
 
         if entry_type == 'turn_context':

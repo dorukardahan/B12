@@ -14,3 +14,8 @@ startup_timeout_sec = 30
 [mcp_servers.B12.env]
 MCP_EMBEDDING_MODEL = "BAAI/bge-m3"
 MCP_MAX_RESPONSE_CHARS = "40000"
+
+# Round 0 fix #2 — silent-store pattern: skip per-call approval prompt for
+# memory_store (B12's batch-write tool). Plan §2 / CX-C5.
+[mcp_servers.B12.tools.memory_store]
+approval_mode = "auto"

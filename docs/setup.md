@@ -462,3 +462,28 @@ Replace `/Users/yourname` with your actual home directory.
 | Working context tracking | Automatic (hook) | Not available |
 
 The 4 MCP tools work identically on both platforms. The difference is in automation — Claude Code hooks handle retrieval and storage silently, while Codex relies on AGENTS.md instructions to guide the model.
+
+### Codex hook migration: `notify` → `Stop`
+
+Codex CLI **0.130.0** (hooks GA on 2026-05-14) replaces the legacy
+root-level `notify = [...]` config knob with the formal `Stop` hook event.
+B12 ships both paths so existing installs keep working:
+
+| Codex version | Path | What B12 ships |
+|---------------|------|----------------|
+| < 0.130.0     | root-level `notify = ["<...>/b12-codex-notify.sh"]` in `config.toml` | `hooks/b12-codex-notify.sh` — debounced rollout post-scrape (legacy) |
+| ≥ 0.130.0     | `[hooks.events.Stop]` block in `hooks.json` plus `[hooks.state]` SHA-256 pinning | `hooks/memory-codex-*.sh` family (Stop, SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PreCompact) |
+
+Both paths are safe to leave configured simultaneously — Codex 0.130.0
+honors `notify` for backwards compatibility while preferring the formal
+hook events when present. Upgrade by running `./install.sh --codex`
+again; the new hooks will be deployed and pre-pinned into
+`[hooks.state]` (Round 0 fix #1 — SHA-256 trusted_hash entries skip
+Codex's StartupHooksReview prompt-trust flow).
+
+**Live-session caveat (issue #21160).** Editing `~/.codex/hooks.json` or
+`~/.codex/config.toml` while a Codex session is live silent-disables ALL
+hooks for the rest of that session, even with valid file content.
+`install.sh --codex` and `--all` now run `pgrep -f codex` and warn you
+if a session is open — restart any open Codex windows after re-running
+the installer so the new hook config actually loads.

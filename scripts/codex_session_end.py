@@ -144,8 +144,14 @@ def _get_embedding_direct(text):
         return None
 
 
-def store_memory(db_path, content, metadata_str, tags, embedding=None, memory_type='general'):
-    """Store a memory in the B12 database."""
+def store_memory(db_path, content, metadata_str, tags, embedding=None, memory_type='general', hash_salt=""):
+    """Store a memory in the B12 database.
+
+    `hash_salt` (Round 0 fix #3) is concatenated into the dedup hash so the
+    same session content tagged against two different git branches or repos
+    produces two distinct rows instead of one being silently dropped by the
+    existing SHA-256 dedup precedent (Feb 26 fix on this file).
+    """
     # Validate metadata is valid JSON before INSERT
     try:
         from shared_patterns import validate_metadata
@@ -156,7 +162,8 @@ def store_memory(db_path, content, metadata_str, tags, embedding=None, memory_ty
                 json.loads(metadata_str)
             except (json.JSONDecodeError, ValueError):
                 metadata_str = "{}"
-    content_hash = hashlib.sha256(content.strip().lower().encode()).hexdigest()
+    hash_input = content.strip().lower().encode() + b"|" + (hash_salt or "").encode()
+    content_hash = hashlib.sha256(hash_input).hexdigest()
     now = datetime.now(timezone.utc).isoformat()
 
     now_epoch = time.time()
@@ -213,6 +220,54 @@ def log_error(msg):
         f.write(f"[{datetime.now().isoformat()}] codex_session_end: {msg}\n")
 
 
+def _git_provenance_tags(info) -> str:
+    """
+    Build comma-separated [git:<branch>] + [repo:<owner>/<repo>] tags from
+    Codex SessionMetaLine.git. Used by both the tags column AND the
+    content_hash (so re-process of the same rollout under a different
+    branch produces a fresh memory rather than dedup-colliding with the
+    prior one).
+    """
+    parts = []
+    branch = getattr(info, 'git_branch', '') or ''
+    repo_url = getattr(info, 'git_repo_url', '') or ''
+    if branch:
+        parts.append(f"git:{branch}")
+    if repo_url:
+        # Normalize https/git@/ssh URLs to owner/repo for stable tag value.
+        slug = repo_url
+        for prefix in ('https://github.com/', 'git@github.com:', 'ssh://git@github.com/'):
+            if slug.startswith(prefix):
+                slug = slug[len(prefix):]
+                break
+        slug = slug.rstrip('/').removesuffix('.git')
+        if '/' in slug:
+            parts.append(f"repo:{slug}")
+    return ",".join(parts)
+
+
+def _is_imported_from_claude(info) -> bool:
+    """
+    Codex 0.128.0 external-agent-sessions auto-imports Claude Code rollouts
+    in the background. Without this guard, B12 double-counts every Claude
+    session (once via B12's own Claude reader, once via Codex's imported
+    copy). Plan §2 Round 0 fix #4.
+
+    Plan doc spec: skip when payload.source == "imported_from_claude".
+    Defensive: also skip when originator == "claude" (the external-agent
+    migration's SOURCE_EXTERNAL_AGENT_NAME constant) or when
+    SessionSource carries the "imported_from_claude" custom variant
+    (serialized via SessionSource::Custom(_)).
+    """
+    src = (getattr(info, 'source', '') or '').strip().lower()
+    if src in ('imported_from_claude', 'claude', 'claude_code'):
+        return True
+    orig = (getattr(info, 'originator', '') or '').strip().lower()
+    if orig in ('claude', 'claude_code', 'claude-code'):
+        return True
+    return False
+
+
 def process_rollout(rollout_path: str, force: bool = False) -> dict:
     """
     Process a single Codex rollout file.
@@ -223,6 +278,11 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
 
     if not info.session_id:
         return {"status": "skip", "reason": "no session_id"}
+
+    # Round 0 fix #4 — defensive skip for external-agent-sessions imports.
+    if _is_imported_from_claude(info):
+        save_processed_session(info.session_id)
+        return {"status": "skip", "reason": "imported_from_claude"}
 
     # Check if already processed
     if not force and info.session_id in load_processed_sessions():
@@ -313,17 +373,26 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         save_processed_session(info.session_id)
         return {"status": "error", "reason": "database not found"}
 
+    # Round 0 fix #3 — git provenance tags from session_meta.git
+    git_tags = _git_provenance_tags(info)
+    tag_suffix = ("," + git_tags) if git_tags else ""
+
     # Store session summary
-    tags = f"proj:{project_name},user:codex,session-summary,platform:codex"
+    tags = f"proj:{project_name},user:codex,session-summary,platform:codex{tag_suffix}"
     metadata = json.dumps({
         "type": "session_summary",
         "importance_score": 0.6,
         "platform": "codex",
         "extraction_method": "codex_v2",
-        "session_id": info.session_id[:12]
+        "session_id": info.session_id[:12],
+        "git_branch": info.git_branch,
+        "git_repo_url": info.git_repo_url,
     })
     embedding = get_embedding(summary[:1000])
-    summary_id = store_memory(db_path, summary, metadata, tags, embedding, memory_type='session_summary')
+    summary_id = store_memory(
+        db_path, summary, metadata, tags, embedding,
+        memory_type='session_summary', hash_salt=git_tags,
+    )
 
     # Store micro-memories (decisions, learnings, errors)
     micro_count = 0
@@ -334,15 +403,20 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         ("preference", preferences, 0.7),
     ]:
         for item in items[:3]:  # Max 3 per category
-            micro_tags = f"proj:{project_name},user:codex,{category},platform:codex"
+            micro_tags = f"proj:{project_name},user:codex,{category},platform:codex{tag_suffix}"
             micro_meta = json.dumps({
                 "type": category,
                 "importance_score": importance,
                 "platform": "codex",
-                "extraction_method": "codex_v2"
+                "extraction_method": "codex_v2",
+                "git_branch": info.git_branch,
+                "git_repo_url": info.git_repo_url,
             })
             micro_emb = get_embedding(item)
-            mid = store_memory(db_path, item, micro_meta, micro_tags, micro_emb, memory_type=category)
+            mid = store_memory(
+                db_path, item, micro_meta, micro_tags, micro_emb,
+                memory_type=category, hash_salt=git_tags,
+            )
             if mid:
                 micro_count += 1
 

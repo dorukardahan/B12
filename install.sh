@@ -216,6 +216,16 @@ copy_hooks() {
     chmod +x "$HOOK_DEST/b12-codex-notify.sh"
     count=$((count + 1))
   fi
+  # Codex spillover helper sourced by memory-codex-session-start.sh.
+  # Codex review on PR #41 round 3 caught: the memory-*.sh glob above
+  # does not match _b12_codex_spillover.sh (no `memory-` prefix), so
+  # SessionStart's fallback `EMIT="$BODY"` shipped the raw payload and
+  # bypassed the ~9.2KB direct-emit safeguard for issue #22861.
+  if [ -f "$HOOK_SOURCE/_b12_codex_spillover.sh" ]; then
+    cp "$HOOK_SOURCE/_b12_codex_spillover.sh" "$HOOK_DEST/"
+    chmod +x "$HOOK_DEST/_b12_codex_spillover.sh"
+    count=$((count + 1))
+  fi
   info "Copied $count hook scripts to $HOOK_DEST"
 }
 
@@ -666,6 +676,168 @@ inject_codex_agents() {
 }
 
 # ─────────────────────────────────────────────
+# Codex CLI: [hooks.state] trusted-hash pre-pin — DEFERRED.
+#
+# Round 0 fix #1 in Plan §2 originally proposed pre-pinning SHA-256
+# entries into ~/.codex/config.toml [hooks.state] so the first session
+# would skip Codex's StartupHooksReview prompt-trust flow. Codex review
+# on PR #41 round 1 (2026-05-18) flagged two correctness gaps:
+#
+#  • P1 (cosmetic): the initial key shape used the hook script path,
+#    but Codex's runtime keys hook entries by `<source_path>:
+#    <event_label>:<group_index>:<handler_index>` (codex-rs/hooks/src/
+#    lib.rs:91 hook_key()).
+#  • P1 (substantive): the initial value used a raw file-body SHA-256,
+#    but Codex's `trusted_hash` value is `sha256:<hex>` over the
+#    canonical JSON of the NormalizedHookIdentity TOML
+#    (codex-rs/hooks/src/engine/discovery.rs:543 + codex-rs/config/src/
+#    fingerprint.rs:37 version_for_toml).
+#
+# Reproducing version_for_toml's canonical JSON serialization in
+# Python without bit-for-bit drift is risky — any divergence yields
+# `HookTrustStatus::Modified`, which is exactly the StartupHooksReview
+# friction the pin was meant to skip. Until B12 has a Rust-side
+# fixture test that pins the canonical JSON shape (so installer
+# changes can't silently break trust matching), this function is a
+# no-op that logs the deferral so users know to expect a one-time
+# trust prompt per hook on first session.
+#
+# Tracked in plan doc CX-followup section.
+# ─────────────────────────────────────────────
+inject_codex_hooks_state() {
+  local CONFIG_TOML="$HOME/.codex/config.toml"
+  [ -f "$CONFIG_TOML" ] || return 0
+
+  local pending=0
+  for f in "$HOOK_DEST"/memory-codex-*.sh; do
+    [ -f "$f" ] || continue
+    pending=$((pending + 1))
+  done
+
+  if [ "$pending" -eq 0 ]; then
+    return 0
+  fi
+
+  info "Codex hooks deployed ($pending file(s)). First-session trust prompt"
+  info "  is expected — Round 0 trust-hash pre-pin is deferred to a"
+  info "  follow-up PR (canonical-JSON fixture needed). After accepting"
+  info "  the StartupHooksReview prompts, trust is cached in"
+  info "  $CONFIG_TOML [hooks.state]."
+}
+
+# ─────────────────────────────────────────────
+# Codex CLI: merge memory-codex-*.sh into ~/.codex/hooks.json.
+# CX1 — registers SessionStart, UserPromptSubmit, Stop. CX2 will extend
+# this block with PreToolUse / PostToolUse / PreCompact entries.
+#
+# Idempotent: any existing B12-managed entry (identifiable by the
+# memory-codex- substring in the command) is removed before re-insert.
+# Non-B12 entries (e.g., user's own Superset notify hook) are preserved
+# verbatim. Plan §2 / CX-C4.
+# ─────────────────────────────────────────────
+register_codex_hooks_json() {
+  local CODEX_DIR="$HOME/.codex"
+  local HOOKS_JSON="$CODEX_DIR/hooks.json"
+  [ -d "$CODEX_DIR" ] || { warn "Codex directory not found at $CODEX_DIR — skipping hooks.json"; return 1; }
+
+  # Verify deployed hooks exist; without them the json entries point at
+  # missing files and Codex's StartupHooksReview will flag them.
+  local missing=0
+  for h in memory-codex-session-start.sh memory-codex-prompt-submit.sh memory-codex-stop.sh; do
+    if [ ! -x "$HOOK_DEST/$h" ]; then
+      warn "Codex hook missing at $HOOK_DEST/$h — run copy_hooks first"
+      missing=$((missing + 1))
+    fi
+  done
+  [ "$missing" -gt 0 ] && return 1
+
+  python3 - "$HOOKS_JSON" "$HOOK_DEST" << 'PYEOF'
+import json, os, sys
+
+hooks_path = sys.argv[1]
+hook_dest = sys.argv[2]
+
+# Load or initialize. Codex tolerates a missing file but is strict on
+# malformed JSON — we treat a parse failure as "start fresh" so an
+# install does not wedge on a stale half-written config.
+try:
+    with open(hooks_path, 'r') as fh:
+        data = json.load(fh)
+except (FileNotFoundError, json.JSONDecodeError):
+    data = {}
+
+if not isinstance(data, dict):
+    data = {}
+data.setdefault('hooks', {})
+
+# Event → script-name mapping. The keys are exactly what
+# codex-rs/hooks/src/lib.rs:18 HOOK_EVENT_NAMES declares.
+plan = {
+    'SessionStart':     'memory-codex-session-start.sh',
+    'UserPromptSubmit': 'memory-codex-prompt-submit.sh',
+    'Stop':             'memory-codex-stop.sh',
+}
+
+def is_b12_entry(entry):
+    """Identify a hook entry that B12 previously inserted."""
+    if not isinstance(entry, dict):
+        return False
+    for sub in entry.get('hooks', []):
+        if isinstance(sub, dict) and 'memory-codex-' in str(sub.get('command', '')):
+            return True
+    return False
+
+for event_name, script in plan.items():
+    arr = data['hooks'].get(event_name, [])
+    if not isinstance(arr, list):
+        arr = []
+    # Drop any prior B12 entry; preserve everything else verbatim.
+    arr = [e for e in arr if not is_b12_entry(e)]
+    arr.append({
+        'hooks': [
+            {
+                'type': 'command',
+                # Codex hook timeouts are in SECONDS (Codex review on PR
+                # #41 round 1, 2026-05-18 — initial value 20000 turned
+                # into a ~5.5h hang per stuck hook). Claude Code uses
+                # milliseconds for the same field name; do not copy a
+                # value across without a unit check.
+                'command': os.path.join(hook_dest, script),
+                'timeout': 20,
+            }
+        ]
+    })
+    data['hooks'][event_name] = arr
+
+with open(hooks_path, 'w') as fh:
+    json.dump(data, fh, indent=2)
+    fh.write('\n')
+PYEOF
+
+  info "Registered 3 B12 hook(s) in $HOOKS_JSON (SessionStart, UserPromptSubmit, Stop)"
+}
+
+# ─────────────────────────────────────────────
+# Codex CLI: warn if live Codex sessions are running. Round 0 fix #9 /
+# Plan §2. Issue #21160 (2026-05-05) — editing hooks.json or config.toml
+# during a live session silent-disables ALL hooks for the rest of that
+# session. B12's documented workflow (`./install.sh --all` while sessions
+# are live) WILL silently break Codex unless we tell the user.
+# ─────────────────────────────────────────────
+warn_live_codex_sessions() {
+  # `pgrep -f` matches against full command line; covers both
+  # `codex` (interactive) and `codex exec ...` (one-shot).
+  local pids
+  pids=$(pgrep -f '(^|/)codex( |$|-)' 2>/dev/null | tr '\n' ' ')
+  if [ -n "$pids" ]; then
+    warn "Live Codex process(es) detected (PIDs:$pids)"
+    warn "  Issue #21160: editing hooks.json / config.toml while a session is"
+    warn "  live silent-disables ALL hooks for the rest of that session."
+    warn "  Restart any open Codex sessions to pick up the new hook config."
+  fi
+}
+
+# ─────────────────────────────────────────────
 # Codex CLI: install B12 skill
 # ─────────────────────────────────────────────
 install_codex_skill() {
@@ -766,6 +938,34 @@ verify_codex() {
   else
     warn "Verify: Notify hook NOT found in $CONFIG_TOML"
     errors=$((errors + 1))
+  fi
+
+  # CX1 hooks (SessionStart / UserPromptSubmit / Stop) registered?
+  local HOOKS_JSON="$HOME/.codex/hooks.json"
+  if [ -f "$HOOKS_JSON" ]; then
+    local registered
+    registered=$(python3 - "$HOOKS_JSON" << 'PYEOF' 2>/dev/null
+import json, sys
+try:
+    data = json.load(open(sys.argv[1]))
+except Exception:
+    print(0); sys.exit(0)
+count = 0
+for evt in ('SessionStart', 'UserPromptSubmit', 'Stop'):
+    for entry in data.get('hooks', {}).get(evt, []):
+        for sub in entry.get('hooks', []):
+            if 'memory-codex-' in str(sub.get('command', '')):
+                count += 1
+                break
+print(count)
+PYEOF
+)
+    if [ "$registered" = "3" ]; then
+      info "Verify: 3 B12 Codex hooks registered in $HOOKS_JSON"
+    else
+      warn "Verify: expected 3 Codex hook entries in $HOOKS_JSON, found ${registered:-0}"
+      errors=$((errors + 1))
+    fi
   fi
 
   # Check B12 skill installed (canonical path is skills/b12-memory/ since the
@@ -2376,6 +2576,13 @@ else
   install_to_setup "$HOME/.claude"
 fi
 
+# Round 0 fix #9 — warn early if Codex is live. `--all` overwrites
+# ~/.B12/hooks/ which is the shared path Codex hook entries point at;
+# silent issue #21160 applies even when the user didn't pass --codex.
+if [ -d "$HOME/.codex" ] && ($INSTALL_ALL || $INSTALL_CODEX || $FIX_DRIFT); then
+  warn_live_codex_sessions
+fi
+
 # Phase MX (R10) — surface drift on non-Claude platform CLIs.
 # `--all` covers `~/.claude*` only by design. The flags
 # `--kimi`/`--codex`/`--gemini`/`--cursor`/`--windsurf`/`--opencode`/
@@ -2431,9 +2638,12 @@ set +e
 if $INSTALL_CODEX; then
   echo ""
   echo "── Codex CLI Setup ──────────────"
+  warn_live_codex_sessions
   inject_codex_mcp_config
   inject_codex_agents
   install_codex_skill
+  register_codex_hooks_json
+  inject_codex_hooks_state
   echo ""
 fi
 
