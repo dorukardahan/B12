@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.33.0](https://github.com/dorukardahan/B12/compare/v11.32.0...v11.33.0) (2026-05-18)
+
+
+### Features
+
+* **extraction:** LLM extraction subagent (Anthropic + Ollama, default-off, opt-in) ([#17](https://github.com/dorukardahan/B12/issues/17)) ([952d4c5](https://github.com/dorukardahan/B12/commit/952d4c5b917d1c857512de82a27fddf0f3145beb))
+
 # [11.32.0](https://github.com/dorukardahan/B12/compare/v11.31.1...v11.32.0) (2026-05-18)
 
 
