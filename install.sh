@@ -17,6 +17,10 @@
 #   ./install.sh --full --codex     # Full setup + Codex CLI support
 #   ./install.sh --full --gemini --cursor  # Full setup + Gemini + Cursor
 #   ./install.sh --health           # Run B12 health check diagnostics
+#   ./install.sh --all --fix-drift  # Auto-register B12 on any detected
+#                                   # non-Claude platform (Codex/Gemini/
+#                                   # Kimi/Cursor/Windsurf/OpenCode/Grok)
+#                                   # that's missing a B12 entry. Opt-in.
 #
 # What --full does (in addition to standard install):
 #   1. Creates ~/.local/b12-venv if it doesn't exist
@@ -116,6 +120,7 @@ INSTALL_OPENCODE=false
 INSTALL_GROK=false
 INSTALL_DAEMON=false
 UNINSTALL_DAEMON=false
+FIX_DRIFT=false
 TARGET_DIR=""
 for arg in "$@"; do
   case "$arg" in
@@ -132,6 +137,7 @@ for arg in "$@"; do
     --grok)      INSTALL_GROK=true ;;
     --daemon)    INSTALL_DAEMON=true ;;
     --daemon-uninstall) UNINSTALL_DAEMON=true ;;
+    --fix-drift) FIX_DRIFT=true ;;
     --health)
       # Run health check and exit — only forward --json and --fix
       _health_args=()
@@ -2368,23 +2374,36 @@ fi
 # `--grok` are explicit, but users routinely forget to chain them with
 # `--all`. This loop prints a one-line hint per detected platform dir
 # whose mcp config lacks B12 — non-fatal, exit code 0.
+#
+# When `--fix-drift` is also passed, the loop calls each platform's
+# inject_*_mcp_config() to auto-register B12. Opt-in only — default
+# behavior remains "warn only" so users who detected drift on a
+# system they don't want B12 on can ignore the hint.
 if $INSTALL_ALL; then
   for plat in codex gemini kimi cursor windsurf opencode grok; do
     case "$plat" in
-      codex)    plat_dir="$HOME/.codex"     ; plat_cfg="$HOME/.codex/config.toml" ;;
-      gemini)   plat_dir="$HOME/.gemini"    ; plat_cfg="$HOME/.gemini/settings.json" ;;
-      kimi)     plat_dir="$HOME/.kimi"      ; plat_cfg="$HOME/.kimi/mcp.json" ;;
-      cursor)   plat_dir="$HOME/.cursor"    ; plat_cfg="$HOME/.cursor/mcp.json" ;;
-      windsurf) plat_dir="$HOME/.codeium/windsurf" ; plat_cfg="$HOME/.codeium/windsurf/mcp_config.json" ;;
-      opencode) plat_dir="$HOME/.config/opencode" ; plat_cfg="$HOME/.config/opencode/opencode.json" ;;
-      grok)     plat_dir="$HOME/.grok"      ; plat_cfg="$HOME/.grok/mcp.json" ;;
+      codex)    plat_dir="$HOME/.codex"     ; plat_cfg="$HOME/.codex/config.toml"                  ; plat_inject=inject_codex_mcp_config ;;
+      gemini)   plat_dir="$HOME/.gemini"    ; plat_cfg="$HOME/.gemini/settings.json"               ; plat_inject=inject_gemini_mcp_config ;;
+      kimi)     plat_dir="$HOME/.kimi"      ; plat_cfg="$HOME/.kimi/mcp.json"                      ; plat_inject=inject_kimi_mcp_config ;;
+      cursor)   plat_dir="$HOME/.cursor"    ; plat_cfg="$HOME/.cursor/mcp.json"                    ; plat_inject=inject_cursor_mcp_config ;;
+      windsurf) plat_dir="$HOME/.codeium/windsurf" ; plat_cfg="$HOME/.codeium/windsurf/mcp_config.json" ; plat_inject=inject_windsurf_mcp_config ;;
+      opencode) plat_dir="$HOME/.config/opencode" ; plat_cfg="$HOME/.config/opencode/opencode.json"  ; plat_inject=inject_opencode_mcp_config ;;
+      grok)     plat_dir="$HOME/.grok"      ; plat_cfg="$HOME/.grok/config.toml"                   ; plat_inject=inject_grok_mcp_config ;;
     esac
     [ -d "$plat_dir" ] || continue
     # Already registered? Skip.
     if [ -f "$plat_cfg" ] && grep -q '"B12"\|\[mcp_servers\.B12\]\|B12 =' "$plat_cfg" 2>/dev/null; then
       continue
     fi
-    echo "[B12] hint: $plat_dir/ exists but $plat_cfg has no B12 entry. Run \`./install.sh --$plat\` to register." >&2
+    if $FIX_DRIFT; then
+      echo "[B12] fix-drift: registering B12 for detected $plat_dir/ ..." >&2
+      # The inject_* functions return non-zero for "directory not found"
+      # warnings which we already gated on -d above; suppress here to
+      # keep --all from aborting on a single drift fix.
+      "$plat_inject" || true
+    else
+      echo "[B12] hint: $plat_dir/ exists but $plat_cfg has no B12 entry. Run \`./install.sh --$plat\` to register (or re-run with \`--all --fix-drift\` to auto-register all detected platforms)." >&2
+    fi
   done
 fi
 

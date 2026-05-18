@@ -358,6 +358,7 @@ If you run multiple Claude Code setups (e.g., personal + work):
 - **Session summaries** are per-project, so they don't overwrite each other
 - **Hook config** needs to be in each setup's `settings.json`
 - **Install**: `./install.sh --all` handles all setups
+- **Drift auto-fix**: `./install.sh --all --fix-drift` auto-registers B12 on any detected non-Claude platform (Codex/Gemini/Kimi/Cursor/Windsurf/OpenCode/Grok) whose MCP config is missing a B12 entry. Default behavior remains warn-only — `--fix-drift` is opt-in.
 
 ### Environment variables
 
