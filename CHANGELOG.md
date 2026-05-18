@@ -1,5 +1,14 @@
 # Changelog
 
+# [11.32.0](https://github.com/dorukardahan/B12/compare/v11.31.1...v11.32.0) (2026-05-18)
+
+
+### Features
+
+* **health:** host-side plugin-load probe for MCP B12 entries ([#20](https://github.com/dorukardahan/B12/issues/20)) ([8c5331d](https://github.com/dorukardahan/B12/commit/8c5331d279cb3943ea89202b8783e72f9d0181d5))
+* **install:** --fix-drift opt-in mode to auto-register detected platforms ([#19](https://github.com/dorukardahan/B12/issues/19)) ([93ce9fd](https://github.com/dorukardahan/B12/commit/93ce9fda583d0b7e4d92c38b82ae8461a839ef41))
+* **scripts:** durable JSONL ingest queue with ACK pointer (mahobrain port) ([#21](https://github.com/dorukardahan/B12/issues/21)) ([5bd2f05](https://github.com/dorukardahan/B12/commit/5bd2f058ebf7303163887c14fda2c9b60be411bd))
+
 ## [11.31.1](https://github.com/dorukardahan/B12/compare/v11.31.0...v11.31.1) (2026-05-18)
 
 
