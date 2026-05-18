@@ -11,11 +11,22 @@
 # of codex-rs/core/src/tools/handlers/ at 2026-05-18 confirms there is no
 # tool handler by either name — `codex cloud` is a CLI subcommand
 # (cloud-tasks/cli.rs), not a tool, so PreToolUse/PostToolUse matchers
-# would never fire. CX2 falls back to the rollout-scrape path already
-# shipping in scripts/codex_session_end.py: cloud-task rollouts land in
-# ~/.codex/sessions/.../rollout-*.jsonl just like local sessions, and
-# Stop hook's debounced rollout processor picks them up via the
-# `transcript_path` field. Trade-off documented in plan doc CX2 row.
+# would never fire. The matcher case-statement below therefore correctly
+# omits cloud_*; install.sh:797 mirrors the same omission.
+#
+# Synthetic-fixture validation 2026-05-19 confirmed the hook denylist
+# behaves as designed (cloud_* → silent exit 0; shell|apply_patch|
+# unified_exec → telemetry write). It also revealed that the
+# "rollout-scrape fallback" referenced in earlier CX2 documentation is
+# NOT shipping today: transcript_adapter._parse_codex DOES capture
+# cloud_exec/cloud_apply into SessionInfo._all_tools, but
+# codex_session_end.py only consumes extract_user_messages /
+# extract_assistant_texts / extract_files_modified, so the captured
+# cloud-task tool calls are silently discarded. Recommended Phase E
+# follow-up: wire codex_session_end.py to ingest info._all_tools and
+# emit a `[cloud_task:<id>]`-tagged memory per cloud_exec/cloud_apply
+# pair (~80 LOC). See docs/B12_codex_implementation_plan_2026-05-18.md
+# §CX-Followup §A — Synthetic Validation Result 2026-05-19.
 #
 # Wire input shape: codex-rs/hooks/src/schema.rs:279 PostToolUseCommandInput
 #   {..., tool_name, tool_input, tool_response, tool_use_id}
