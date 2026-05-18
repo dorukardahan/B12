@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.38.2](https://github.com/dorukardahan/B12/compare/v11.38.1...v11.38.2) (2026-05-18)
+
+
+### Bug Fixes
+
+* **hooks:** hard sync timeout via foreground-child kill (P-BURNIN-B) ([#33](https://github.com/dorukardahan/B12/issues/33)) ([aabb908](https://github.com/dorukardahan/B12/commit/aabb908920b1a6bc682733e833b34891aebf875e)), closes [#24](https://github.com/dorukardahan/B12/issues/24)
+
 ## [11.38.1](https://github.com/dorukardahan/B12/compare/v11.38.0...v11.38.1) (2026-05-18)
 
 
