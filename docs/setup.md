@@ -92,7 +92,7 @@ This copies all hooks and scripts to `~/.B12/hooks/` and merges the hook configu
       "command": "/Users/yourname/.local/b12-venv/bin/python3",
       "args": ["/Users/yourname/.B12/hooks/scripts/b12_mcp_server.py"],
       "env": {
-        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
         "MCP_MAX_RESPONSE_CHARS": "40000"
       }
     }
@@ -437,7 +437,7 @@ enabled = true
 startup_timeout_sec = 30
 
 [mcp_servers.B12.env]
-MCP_EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+MCP_EMBEDDING_MODEL = "BAAI/bge-m3"
 MCP_MAX_RESPONSE_CHARS = "40000"
 ```
 

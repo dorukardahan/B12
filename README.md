@@ -180,7 +180,7 @@ Start a new Claude Code session. Run `/mcp` — you should see `B12 · connected
 - `memory_quality` — rate, get, or analyze memory quality
 - `memory_session_context` — get session start context (project memories, last summary, instructions)
 
-**First run note:** The embedding model (~90MB) downloads automatically on the first session. This is a one-time download — subsequent sessions start instantly.
+**First run note:** The default embedding model (BGE-M3, ~2.2GB FP32 weights) downloads automatically on the first session. This is a one-time download — subsequent sessions start instantly. Set `B12_EMBED_BACKEND=gguf` + `B12_EMBED_GGUF_PATH=...` to use a Q8_0 / Q4_K_M GGUF (~250-500MB) via `llama-cpp-python` instead.
 
 The database and all tables are created automatically on first use. After your first session ends, check `~/.B12/memory-summaries/` for the generated summary.
 
@@ -197,7 +197,7 @@ If you prefer step-by-step control, see [docs/setup.md](docs/setup.md) for the f
       "command": "/Users/yourname/.local/b12-venv/bin/python3",
       "args": ["/Users/yourname/.B12/hooks/scripts/b12_mcp_server.py"],
       "env": {
-        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
         "MCP_MAX_RESPONSE_CHARS": "40000"
       }
     }
@@ -342,7 +342,11 @@ B12/
 The B12 MCP server is a custom FastMCP server (`b12_mcp_server.py`) that replaces the old `mcp-memory-service`. It runs in a dedicated Python venv at `~/.local/b12-venv/`.
 
 Environment variables:
-- `MCP_EMBEDDING_MODEL` — sentence-transformer model name (default: `paraphrase-multilingual-MiniLM-L12-v2`)
+- `MCP_EMBEDDING_MODEL` — sentence-transformer model name (default: `BAAI/bge-m3`; 1024-dim multilingual cls-pooled)
+- `B12_EMBED_BACKEND` — `sentence-transformers` (default) or `gguf` (requires `llama-cpp-python`)
+- `B12_EMBED_GGUF_PATH` — absolute path to a BGE-M3 GGUF file when `B12_EMBED_BACKEND=gguf`
+- `B12_MAX_INJECT_TOKENS` — per-turn injection cap (default `800`, char proxy)
+- `B12_MAX_SESSION_TOKENS` — cumulative per-session injection cap (default `80000` = ~8% of 1M)
 - `MCP_MAX_RESPONSE_CHARS` — max chars in search results (default: `40000`)
 
 ### Hooks (Claude Code `settings.json`)

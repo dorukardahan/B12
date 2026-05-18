@@ -28,7 +28,7 @@ except ImportError:
 
 B12_VERSION = "11.4.0"
 SCHEMA_VERSION = 1
-EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+EMBEDDING_MODEL = "BAAI/bge-m3"
 
 
 @dataclass

@@ -36,7 +36,7 @@ Notes
 - The embedding for the *incoming* memory is expected to be provided as
   float32 bytes (384 dims) from the caller's embed step.
 - On merge, we recompute the embedding for the merged content using:
-    paraphrase-multilingual-MiniLM-L12-v2  (default, overridable via MCP_EMBEDDING_MODEL)
+    BAAI/bge-m3  (default, overridable via MCP_EMBEDDING_MODEL)
 """
 
 from __future__ import annotations
@@ -74,12 +74,14 @@ except ImportError:
         DEFAULT_DB_PATH = _home / "AppData" / "Local" / "mcp-memory" / "sqlite_vec.db"
     else:
         DEFAULT_DB_PATH = _home / ".local" / "share" / "mcp-memory" / "sqlite_vec.db"
-DEFAULT_MODEL_NAME = "paraphrase-multilingual-MiniLM-L12-v2"
+DEFAULT_MODEL_NAME = "BAAI/bge-m3"
 
 SIMILARITY_THRESHOLD = 0.85
 STRENGTH_BOOST_ON_MERGE = 0.2
 STRENGTH_CAP = 5.0
-EMBEDDING_DIM = 384
+# 1024 for BGE-M3 (default since v11.34 / P-FOUNDATION); override via env to
+# stay compatible with pre-migration 384-dim DBs.
+EMBEDDING_DIM = int(os.environ.get("B12_EMBED_DIM", "1024"))
 
 
 @dataclass(frozen=True)

@@ -55,8 +55,14 @@ LOCK_PATH = f"/tmp/b12-embed-{_UID}.lock"
 LOG_DIR = os.path.join(os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.B12')), 'memory-logs')
 LOG_PATH = os.path.join(LOG_DIR, "embed-daemon.log")
 IDLE_TIMEOUT = 7200  # 2 hours
-CONN_TIMEOUT = 10    # Per-connection read timeout (increased for NLI batches)
-MODEL_NAME = os.environ.get('MCP_EMBEDDING_MODEL', 'paraphrase-multilingual-MiniLM-L12-v2')
+CONN_TIMEOUT = 15    # Per-connection read timeout (BGE-M3 batches can run >10s)
+# Production default: BGE-M3 (1024-dim, multilingual, cls pooling). Override
+# via MCP_EMBEDDING_MODEL for benchmarks or follow-up Q4_K_M GGUF rollout.
+MODEL_NAME = os.environ.get('MCP_EMBEDDING_MODEL', 'BAAI/bge-m3')
+# Embedding dim is derived from the loaded model at runtime — never assume 384.
+EXPECTED_DIM = None  # set after model load
+# Backend selector: sentence-transformers (default) | gguf (opt-in via env)
+EMBED_BACKEND = os.environ.get('B12_EMBED_BACKEND', 'sentence-transformers').lower()
 
 
 def log(msg):
@@ -115,15 +121,21 @@ def _semantic_search(model, data):
         WHERE m.deleted_at IS NULL
           AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
           AND m.memory_type NOT IN ('session_summary', 'progress')
-          AND m.tags NOT LIKE '%session-summary%'
+          AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
         LIMIT 500
     """).fetchall()
 
     scores = []
+    skipped_dim = 0
     for row_id, display, emb_bytes in rows:
         if not emb_bytes:
             continue
         dim = len(emb_bytes) // 4
+        # Mixed-dim cosines silently truncate via zip() and produce garbage
+        # scores, so fail closed against mismatch until the migration finishes.
+        if EXPECTED_DIM is not None and dim != EXPECTED_DIM:
+            skipped_dim += 1
+            continue
         stored = struct.unpack(f'{dim}f', emb_bytes)
         cos_sim = float(sum(a * b for a, b in zip(q_emb, stored)))
         if cos_sim > 0.3:
@@ -131,7 +143,92 @@ def _semantic_search(model, data):
 
     scores.sort(key=lambda x: x['score'], reverse=True)
     conn.close()
-    return {'ok': True, 'results': scores[:limit]}
+    out = {'ok': True, 'results': scores[:limit]}
+    if skipped_dim:
+        out['dim_skipped'] = skipped_dim
+    return out
+
+
+def _recall(model, data):
+    """Hook-side recall op: semantic search + threshold + dedup ledger.
+
+    Single round-trip replacement for `semantic_search` followed by
+    client-side filtering. Pushes the dedup logic to the daemon to avoid
+    sending all candidate IDs over the socket.
+
+    Input keys (additions over semantic_search):
+      threshold : float, minimum cosine to return (default 0.55, Q3 spec)
+      skip_ids  : list[int], memory IDs already injected this session (T3)
+      limit     : int, max hits to return (default 5)
+      project   : str, optional tag filter (e.g. 'B12' → tags LIKE '%proj:B12%')
+    """
+    query = data.get('query', '')
+    db_path = data.get('db_path', '')
+    limit = int(data.get('limit', 5))
+    threshold = float(data.get('threshold', 0.55))
+    skip_ids = set(int(x) for x in (data.get('skip_ids') or []) if str(x).isdigit())
+    project = (data.get('project') or '').strip()
+
+    if not query or not db_path:
+        return {'ok': False, 'error': 'missing query or db_path'}
+
+    q_emb = model.encode([query], normalize_embeddings=True)[0]
+    conn = _open_db(db_path)
+
+    sql = """
+        SELECT m.id,
+               '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') AS display,
+               m.content_hash,
+               COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) AS importance,
+               COALESCE(json_extract(m.metadata, '$.project'), '') AS project,
+               m.content,
+               e.content_embedding
+        FROM memories m
+        JOIN memory_embeddings e ON m.id = e.rowid
+        WHERE m.deleted_at IS NULL
+          AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
+          AND m.memory_type NOT IN ('session_summary', 'progress')
+          AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
+    """
+    params = []
+    if project:
+        sql += " AND m.tags LIKE ?"
+        params.append(f"%proj:{project}%")
+    sql += " LIMIT 500"
+
+    rows = conn.execute(sql, params).fetchall()
+    conn.close()
+
+    hits = []
+    for row in rows:
+        mem_id, display, content_hash, importance, project_tag, content, emb_bytes = row
+        if mem_id in skip_ids:
+            continue
+        if not emb_bytes:
+            continue
+        dim = len(emb_bytes) // 4
+        # Hard guard against embed/store dim drift — surface as error
+        if EXPECTED_DIM is not None and dim != EXPECTED_DIM:
+            continue
+        stored = struct.unpack(f'{dim}f', emb_bytes)
+        cos_sim = float(sum(a * b for a, b in zip(q_emb, stored)))
+        if cos_sim < threshold:
+            continue
+        preview = (content or '').replace('\n', ' ').replace('\t', ' ').strip()
+        if len(preview) > 80:
+            preview = preview[:77] + '...'
+        hits.append({
+            'id': int(mem_id),
+            'display': display,
+            'score': round(cos_sim, 4),
+            'content_hash': content_hash,
+            'importance': round(float(importance or 0.5), 3),
+            'project': project_tag,
+            'preview': preview,
+        })
+
+    hits.sort(key=lambda x: x['score'], reverse=True)
+    return {'ok': True, 'results': hits[:limit], 'threshold': threshold}
 
 
 def _rerank(model, data):
@@ -154,6 +251,9 @@ def _rerank(model, data):
         ).fetchone()
         if row and row[0]:
             dim = len(row[0]) // 4
+            if EXPECTED_DIM is not None and dim != EXPECTED_DIM:
+                scores.append((int(mem_id), 0.0))
+                continue
             stored = struct.unpack(f'{dim}f', row[0])
             cos_sim = float(sum(a * b for a, b in zip(q_emb, stored)))
             scores.append((int(mem_id), max(0.0, cos_sim)))
@@ -462,6 +562,10 @@ def _find_neighbors(model, data):
 
     target_bytes = target_row[0]
     dim = len(target_bytes) // 4
+    if EXPECTED_DIM is not None and dim != EXPECTED_DIM:
+        conn.close()
+        return {'ok': False, 'error': 'dim_mismatch',
+                'expected': EXPECTED_DIM, 'got': dim}
     target_emb = struct.unpack(f'{dim}f', target_bytes)
 
     # Scan all active non-deleted memories
@@ -483,6 +587,8 @@ def _find_neighbors(model, data):
         if not emb_bytes:
             continue
         d = len(emb_bytes) // 4
+        if EXPECTED_DIM is not None and d != EXPECTED_DIM:
+            continue
         stored = struct.unpack(f'{d}f', emb_bytes)
         dot = float(sum(a * b for a, b in zip(target_emb, stored)))
         stored_norm = math.sqrt(sum(x * x for x in stored))
@@ -553,6 +659,13 @@ def _classify(model, data):
 
     embedding = model.encode([text], normalize_embeddings=True,
                               convert_to_numpy=True)[0]
+    # Dim guard — classifier head is trained against a specific embed dim.
+    # After a model swap the pickled head will silently produce garbage
+    # without this check.
+    expected_in = getattr(_CLASSIFIER_HEAD, 'n_features_in_', None)
+    if expected_in is not None and int(expected_in) != int(len(embedding)):
+        return {'ok': False, 'error': 'classifier_dim_mismatch',
+                'expected': int(expected_in), 'got': int(len(embedding))}
     proba = _CLASSIFIER_HEAD.predict_proba(embedding.reshape(1, -1))[0]
     pred_idx = int(np.argmax(proba))
     confidence = float(proba[pred_idx])
@@ -611,6 +724,8 @@ def _find_cluster(model, data):
         if not emb_bytes:
             continue
         dim = len(emb_bytes) // 4
+        if EXPECTED_DIM is not None and dim != EXPECTED_DIM:
+            continue
         emb = struct.unpack(f'{dim}f', emb_bytes)
         mem_ids.append(row_id)
         embeddings.append(emb)
@@ -659,6 +774,47 @@ def _find_cluster(model, data):
     return {'ok': True, 'clusters': clusters, 'count': len(clusters)}
 
 
+class _GGUFEmbedShim:
+    """Thin shim around llama-cpp-python's embedding API.
+
+    Exposes ``encode(texts, normalize_embeddings=True, convert_to_numpy=...)``
+    so it is drop-in for the rest of the daemon. Lives behind ``B12_EMBED_BACKEND=gguf``
+    so the default path stays on sentence-transformers (no new heavy dep).
+    """
+    def __init__(self, llama):
+        self._llama = llama
+
+    def encode(self, texts, normalize_embeddings=True, convert_to_numpy=False):
+        import numpy as np
+        out = []
+        for t in texts:
+            emb = self._llama.create_embedding(t)
+            vec = emb['data'][0]['embedding']
+            if normalize_embeddings:
+                arr = np.asarray(vec, dtype=np.float32)
+                norm = float(np.linalg.norm(arr))
+                if norm > 0:
+                    arr = arr / norm
+                vec = arr.tolist()
+            out.append(vec)
+        if convert_to_numpy:
+            return np.asarray(out, dtype=np.float32)
+        return [np.asarray(v, dtype=np.float32) for v in out]
+
+
+def _load_gguf_backend():
+    """Load a BGE-M3 Q8_0 GGUF via llama-cpp-python (opt-in)."""
+    from llama_cpp import Llama  # type: ignore
+    gguf_path = os.environ.get('B12_EMBED_GGUF_PATH', '').strip()
+    if not gguf_path or not os.path.exists(gguf_path):
+        raise FileNotFoundError(
+            f"B12_EMBED_GGUF_PATH not set or missing (got: {gguf_path!r}). "
+            "Set it to a BGE-M3 Q8_0 GGUF file."
+        )
+    llama = Llama(model_path=gguf_path, embedding=True, n_ctx=8192, verbose=False)
+    return _GGUFEmbedShim(llama)
+
+
 def handle_request(model, data, start_time, requests_served):
     """Route a JSON request to the appropriate handler."""
     op = data.get('op', '')
@@ -680,6 +836,8 @@ def handle_request(model, data, start_time, requests_served):
     try:
         if op == 'semantic_search':
             return _semantic_search(model, data)
+        elif op == 'recall':
+            return _recall(model, data)
         elif op == 'rerank':
             return _rerank(model, data)
         elif op == 'encode_batch':
@@ -733,14 +891,26 @@ def main():
     # Ignore SIGHUP so daemon survives shell exits (even without disown)
     signal.signal(signal.SIGHUP, signal.SIG_IGN)
 
-    log(f"Daemon starting (PID {os.getpid()})")
+    log(f"Daemon starting (PID {os.getpid()}, backend={EMBED_BACKEND})")
 
-    # Load model FIRST (expensive, ~12s) — socket not created yet
+    # Load model FIRST (expensive, ~3-12s for BGE-M3) — socket not created yet
+    # so daemon_alive() = model ready by definition.
+    global EXPECTED_DIM
     model = None
     try:
-        from sentence_transformers import SentenceTransformer
-        model = SentenceTransformer(MODEL_NAME, device='cpu')
-        log(f"Model loaded: {MODEL_NAME}")
+        if EMBED_BACKEND == 'gguf':
+            # Opt-in path for users who installed llama-cpp-python + a GGUF.
+            # Path is conventional, override via B12_EMBED_GGUF_PATH.
+            model = _load_gguf_backend()
+            log(f"Model loaded (gguf): {os.environ.get('B12_EMBED_GGUF_PATH', '<auto>')}")
+        else:
+            from sentence_transformers import SentenceTransformer
+            model = SentenceTransformer(MODEL_NAME, device='cpu')
+            log(f"Model loaded: {MODEL_NAME}")
+        # Probe dim once so subsequent ops can validate against drift.
+        probe = model.encode(["dim_probe"], normalize_embeddings=True)
+        EXPECTED_DIM = int(len(probe[0]))
+        log(f"Embedding dim = {EXPECTED_DIM}")
     except Exception as e:
         log(f"Model load FAILED: {e}")
         sys.exit(1)  # atexit handles cleanup
@@ -756,7 +926,10 @@ def main():
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     server.bind(SOCKET_PATH)
     os.chmod(SOCKET_PATH, 0o600)
-    server.listen(2)
+    # Backlog 8 keeps a small burst of overlapping hook fires (e.g. SessionStart
+    # prime + the first UserPromptSubmit, plus a PreCompact) from racing into
+    # a `Connection refused`; Claude Code itself is sequential per session.
+    server.listen(8)
     server.settimeout(60)  # Wakes up every 60s to check idle timeout
 
     start_time = time.time()

@@ -250,11 +250,16 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
         )
     """)
     # Vector embeddings table (requires sqlite-vec)
+    # Dim is derived from B12_EMBED_DIM env var (default 1024 for BGE-M3 since
+    # v11.34 / P-FOUNDATION). Pre-BGE-M3 DBs at 384-dim keep working because
+    # the migration script (scripts/migrate_embed_to_bge_m3.py) drops + recreates
+    # this table with the new dim. We only CREATE if missing.
     if _HAS_VEC:
+        _embed_dim = int(os.environ.get("B12_EMBED_DIM", "1024"))
         try:
-            db.execute("""
+            db.execute(f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_embeddings USING vec0(
-                    content_embedding FLOAT[384] distance_metric=cosine
+                    content_embedding FLOAT[{_embed_dim}] distance_metric=cosine
                 )
             """)
         except Exception:

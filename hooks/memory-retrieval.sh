@@ -48,9 +48,37 @@ trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
 INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // ""')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
+SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
+SESSION_ID12="${SESSION_ID:0:12}"
 
 # ── Latency tracking (Phase 1) ───────────────────────────────
 _START_MS=$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null || echo 0)
+
+# ── Token / dedup state (T1 + T2 + T3) ───────────────────────
+# Lockstep with scripts/b12_token_budget.py — same session id truncation,
+# same state-dir layout. Defaults: 800-token per-turn cap, 80K cumulative,
+# 500-entry LRU dedup ledger.
+B12_BASE_FOR_STATE="${B12_DATA_DIR:-$HOME/.B12}"
+B12_STATE_DIR="$B12_BASE_FOR_STATE/state"
+B12_TOK_STATE="$B12_STATE_DIR/session-tok-${SESSION_ID12}.txt"
+B12_DEDUP_LEDGER="$B12_STATE_DIR/session-injected-${SESSION_ID12}.txt"
+B12_TOK_PER_TURN="${B12_MAX_INJECT_TOKENS:-800}"   # T1
+B12_TOK_SESSION_MAX="${B12_MAX_SESSION_TOKENS:-80000}"  # T2
+B12_TOK_PER_TURN_CHARS=$(( B12_TOK_PER_TURN * 4 ))  # char proxy
+mkdir -p "$B12_STATE_DIR" 2>/dev/null
+
+# T2 pre-check — skip retrieval entirely if cumulative budget exhausted.
+_TOK_USED=0
+if [ -f "$B12_TOK_STATE" ]; then
+  _TOK_USED=$(cat "$B12_TOK_STATE" 2>/dev/null | tr -cd '0-9')
+  [ -z "$_TOK_USED" ] && _TOK_USED=0
+fi
+if [ "$_TOK_USED" -ge "$B12_TOK_SESSION_MAX" ]; then
+  # Best-effort log line — never blocks
+  echo "{\"ts\":$(date +%s),\"session_id\":\"${SESSION_ID12}\",\"reason\":\"cumulative_cap\",\"used\":${_TOK_USED},\"ceiling\":${B12_TOK_SESSION_MAX}}" \
+    >> "$B12_BASE_FOR_STATE/memory-logs/token-budget-skips.jsonl" 2>/dev/null
+  exit 0
+fi
 
 # Skip trivial messages (short, greetings, confirmations)
 PROMPT_LEN=${#PROMPT}
@@ -310,7 +338,7 @@ RESULTS=$(sqlite3 "$DB_PATH" "
       AND m.deleted_at IS NULL
       AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
       AND m.memory_type NOT IN ('session_summary', 'progress')
-      AND m.tags NOT LIKE '%session-summary%'
+      AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
     ORDER BY score DESC
     LIMIT 10
   )
@@ -364,20 +392,84 @@ if [ "$SHOULD_RERANK" = true ] && [ "$RESULT_COUNT" -ge 3 ] && [ "$RECALL_VERB_H
   fi
 fi
 
+# ── T3 dedup: load already-injected IDs for this session ──────
+# Comma-bracketed for substring tests later (`,${id},`).
+_DEDUP_IDS=","
+if [ -f "$B12_DEDUP_LEDGER" ]; then
+  while IFS= read -r _did; do
+    _did="${_did//[^0-9]/}"
+    [ -n "$_did" ] && _DEDUP_IDS="${_DEDUP_IDS}${_did},"
+  done < "$B12_DEDUP_LEDGER"
+fi
+
+# Strip dedup IDs from FTS pool before scoring continues.
+if [ "$_DEDUP_IDS" != "," ] && [ "$RESULT_COUNT" -gt 0 ]; then
+  _FILTERED_IDS=""
+  _FILTERED_DISPLAY=""
+  _FILTERED_COUNT=0
+  _OLD_DISPLAY_LINES=$(printf '%b' "$RESULT_DISPLAY")
+  _idx=0
+  while IFS= read -r _line; do
+    _idx=$((_idx + 1))
+    [ -z "$_line" ] && continue
+  done <<< "$_OLD_DISPLAY_LINES"
+  # Rebuild from RESULT_IDS while honoring dedup.
+  _idx=0
+  _OLD_IDS=$(echo "$RESULT_IDS" | tr ',' '\n')
+  while IFS= read -r _cand_id; do
+    _idx=$((_idx + 1))
+    [ -z "$_cand_id" ] && continue
+    if echo "$_DEDUP_IDS" | grep -q ",${_cand_id},"; then
+      continue
+    fi
+    _line=$(printf '%b' "$RESULT_DISPLAY" | sed -n "${_idx}p")
+    _FILTERED_IDS="${_FILTERED_IDS}${_cand_id},"
+    _FILTERED_DISPLAY="${_FILTERED_DISPLAY}${_line}\n"
+    _FILTERED_COUNT=$((_FILTERED_COUNT + 1))
+  done <<< "$_OLD_IDS"
+  RESULT_IDS="$_FILTERED_IDS"
+  RESULT_DISPLAY="$_FILTERED_DISPLAY"
+  RESULT_COUNT="$_FILTERED_COUNT"
+  _FTS_COUNT="$RESULT_COUNT"
+  if [ "$RESULT_COUNT" -eq 0 ]; then
+    NEEDS_COLD_SEMANTIC=true
+  fi
+fi
+
 # ── Daemon path: parallel semantic + rerank (Phase 1 + v11) ───
 if daemon_alive; then
-  # Run semantic search (~50ms) as parallel retrieval path (skip in keyword-only mode)
+  # S2: prefer the `recall` op — single round-trip, threshold + dedup pushed
+  # into the daemon. Falls back to legacy semantic_search if the daemon is
+  # too old to know `recall`.
   if [ "$QUERY_MODE" != "keyword" ]; then
-  _REQ=$(jq -nc --arg q "$PROMPT" --arg db "$DB_PATH" '{op:"semantic_search",query:$q,db_path:$db,limit:5}')
+  _SKIP_IDS_JSON=$(echo "$_DEDUP_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | jq -Rn '[inputs | tonumber]')
+  _REQ=$(jq -nc --arg q "$PROMPT" --arg db "$DB_PATH" --argjson skip "$_SKIP_IDS_JSON" \
+    '{op:"recall",query:$q,db_path:$db,limit:5,threshold:0.55,skip_ids:$skip}')
   _RESP=$(daemon_request "$_REQ")
+  _USED_RECALL=false
   if echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+    _USED_RECALL=true
     _SEM_DATA=$(echo "$_RESP" | jq -r '.results[] | "\(.id)|\(.display)"')
+  else
+    # Older daemon: fall back to semantic_search.
+    _REQ=$(jq -nc --arg q "$PROMPT" --arg db "$DB_PATH" '{op:"semantic_search",query:$q,db_path:$db,limit:5}')
+    _RESP=$(daemon_request "$_REQ")
+    if echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+      _SEM_DATA=$(echo "$_RESP" | jq -r '.results[] | "\(.id)|\(.display)"')
+    else
+      _SEM_DATA=""
+    fi
+  fi
+  if [ -n "$_SEM_DATA" ]; then
     _EXISTING_IDS=",${RESULT_IDS}"
     _SEM_ADDED=0
     while IFS='|' read -r _id _display; do
       if [ -n "$_id" ]; then
-        # Deduplicate: skip if already in FTS results (rerank handles scoring)
+        # Deduplicate: skip if already in FTS results, OR in T3 ledger
         if echo "$_EXISTING_IDS" | grep -q ",${_id},"; then
+          continue
+        fi
+        if echo "$_DEDUP_IDS" | grep -q ",${_id},"; then
           continue
         fi
         RESULT_IDS="${RESULT_IDS}${_id},"
@@ -387,10 +479,15 @@ if daemon_alive; then
       fi
     done <<< "$_SEM_DATA"
     NEEDS_COLD_SEMANTIC=false
-    if [ "$_FTS_COUNT" -gt 0 ]; then
-      SEARCH_SOURCE="fts5+daemon_semantic"
+    if [ "$_USED_RECALL" = true ]; then
+      _SEM_LABEL="daemon_recall"
     else
-      SEARCH_SOURCE="daemon_semantic"
+      _SEM_LABEL="daemon_semantic"
+    fi
+    if [ "$_FTS_COUNT" -gt 0 ]; then
+      SEARCH_SOURCE="fts5+${_SEM_LABEL}"
+    else
+      SEARCH_SOURCE="${_SEM_LABEL}"
     fi
     # If semantic added new results to FTS pool, enable reranking for merged pool
     if [ "$_SEM_ADDED" -gt 0 ] && [ "$_FTS_COUNT" -gt 0 ] && [ "$SHOULD_RERANK" = false ]; then
@@ -442,8 +539,10 @@ should_rerank = sys.argv[4] == 'true'
 id_list_str = sys.argv[5] if len(sys.argv) > 5 else ''
 
 try:
+    import os as _os
     from sentence_transformers import SentenceTransformer
-    model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+    _model_name = _os.environ.get('MCP_EMBEDDING_MODEL', 'BAAI/bge-m3')
+    model = SentenceTransformer(_model_name)
     q_emb = model.encode([query], normalize_embeddings=True)[0]
 
     if needs_semantic:
@@ -461,7 +560,7 @@ try:
             WHERE m.deleted_at IS NULL
               AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
               AND m.memory_type NOT IN ('session_summary', 'progress')
-              AND m.tags NOT LIKE '%session-summary%'
+              AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
         """).fetchall()
 
         scores = []
@@ -714,8 +813,9 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
   fi
 fi
 
-# Use jq to construct valid JSON (handles all control chars and Unicode safely)
-{
+# Build the candidate context string first so we can apply T1/T2 caps
+# BEFORE handing it back to Claude Code.
+_CANDIDATE_CONTEXT=$({
   if [ "$RECALL_VERB_HIT" = true ]; then
     printf '%s' "Memory retrieval (auto, ${QUERY_MODE}, recall-verb HIT, keywords: ${SAFE_KEYWORDS}):"
     printf '\n[directive] user used a recall verb — surface these memories aggressively and follow up with memory_search if the top hits do not cover the user'\''s intent.\n'
@@ -730,6 +830,70 @@ fi
   fi
   printf '%s' "$HINT"
   printf '%s' "$CONTRADICTION_WARN"
-} | jq -Rs '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}'
+})
+
+# ── T1 per-turn char cap (≈800 tokens at chars/4) ─────────────
+# Trim from the tail; track how many memory lines survived so the T3
+# dedup ledger does not over-record IDs that the model never saw.
+_CAND_LEN=${#_CANDIDATE_CONTEXT}
+_CAND_LEN_BEFORE_TRIM=0
+_SURVIVED_MEMORY_LINES=""
+if [ "$_CAND_LEN" -gt "$B12_TOK_PER_TURN_CHARS" ]; then
+  _CAND_LEN_BEFORE_TRIM="$_CAND_LEN"
+  _CANDIDATE_CONTEXT="${_CANDIDATE_CONTEXT:0:$B12_TOK_PER_TURN_CHARS}"
+  # Count fully-rendered RESULT_DISPLAY memory rows that survived the cut.
+  # Memory rows are `[mtype] preview` where mtype is a lowercase identifier
+  # (decision, fact, observation, learning, ...). HEADERS we render also
+  # start with `[` — `[directive]`, `[Note: ...]`, `[trimmed: ...]` — so
+  # anchor on `^\[[a-z_]+\] ` and exclude the known header tokens so the
+  # dedup ledger doesn't burn slots on IDs the model never saw.
+  _SURVIVED_MEMORY_LINES=$(printf '%s' "$_CANDIDATE_CONTEXT" | awk '
+    /^\[[a-z_]+\] / && !/^\[(directive|Note|long-session|trimmed)/ { c++ }
+    END { print c+0 }' 2>/dev/null || echo 0)
+  _CANDIDATE_CONTEXT="${_CANDIDATE_CONTEXT}"$'\n[trimmed: per-turn token cap hit]'
+  _CAND_LEN=${#_CANDIDATE_CONTEXT}
+fi
+
+# ── T2 cumulative cap (~80K per session) ──────────────────────
+# Char-based proxy: chars / 4 ≈ tokens (R10 — no real tokenizer in hooks).
+_CAND_TOK=$(( (_CAND_LEN + 3) / 4 ))
+_WOULD_BE=$(( _TOK_USED + _CAND_TOK ))
+if [ "$_WOULD_BE" -gt "$B12_TOK_SESSION_MAX" ]; then
+  echo "{\"ts\":$(date +%s),\"session_id\":\"${SESSION_ID12}\",\"reason\":\"would_exceed_cumulative\",\"requested_tokens\":${_CAND_TOK},\"used\":${_TOK_USED},\"ceiling\":${B12_TOK_SESSION_MAX}}" \
+    >> "$B12_BASE_FOR_STATE/memory-logs/token-budget-skips.jsonl" 2>/dev/null
+  exit 0
+fi
+
+# Update cumulative counter atomically (write-then-rename).
+echo "$_WOULD_BE" > "${B12_TOK_STATE}.tmp" 2>/dev/null && mv "${B12_TOK_STATE}.tmp" "$B12_TOK_STATE" 2>/dev/null
+
+# ── T3 dedup ledger: prepend only IDs the model actually saw ──
+# When T1 trimmed mid-output, _SURVIVED_MEMORY_LINES is the count of
+# completely-rendered RESULT_DISPLAY lines. Use that as the cap so we
+# don't burn a dedup slot on a memory that never made it through the
+# token cap. When trim fired but 0 lines survived (header-only output),
+# record 0 IDs — the model saw none of them.
+if [ "$RESULT_COUNT" -gt 0 ]; then
+  if [ -n "$_SURVIVED_MEMORY_LINES" ] && [ "$_CAND_LEN_BEFORE_TRIM" -gt 0 ]; then
+    _DEDUP_LIMIT="$_SURVIVED_MEMORY_LINES"
+  else
+    # No trim → record up to 10 IDs (legacy upper bound).
+    _DEDUP_LIMIT=10
+  fi
+  if [ "$_DEDUP_LIMIT" -gt 0 ]; then
+    _INJECTED_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | head -"$_DEDUP_LIMIT")
+    if [ -n "$_INJECTED_IDS" ]; then
+      _NEW_LEDGER=$( {
+        echo "$_INJECTED_IDS"
+        [ -f "$B12_DEDUP_LEDGER" ] && cat "$B12_DEDUP_LEDGER"
+      } | awk 'NF && !seen[$0]++' | head -500 )
+      echo "$_NEW_LEDGER" > "${B12_DEDUP_LEDGER}.tmp" 2>/dev/null && \
+        mv "${B12_DEDUP_LEDGER}.tmp" "$B12_DEDUP_LEDGER" 2>/dev/null
+    fi
+  fi
+fi
+
+printf '%s' "$_CANDIDATE_CONTEXT" | \
+  jq -Rs '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}'
 
 exit 0

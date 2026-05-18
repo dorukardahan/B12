@@ -11,7 +11,7 @@
       "command": "__VENV_PYTHON__",
       "args": ["__SCRIPT_PATH__"],
       "env": {
-        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
         "MCP_MAX_RESPONSE_CHARS": "40000"
       }
     }

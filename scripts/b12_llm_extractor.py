@@ -133,7 +133,7 @@ def _get_embedding_model():
     except Exception:
         return None
     model_name = os.environ.get(
-        "MCP_EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2"
+        "MCP_EMBEDDING_MODEL", "BAAI/bge-m3"
     )
     cached = _MODEL_CACHE.get(model_name)
     if cached is not None:
@@ -147,11 +147,14 @@ def _get_embedding_model():
 
 
 def _encode_embedding(text: str) -> bytes | None:
-    """Compute a 384-dim float32 embedding for a single string.
+    """Compute a float32 embedding for a single string.
 
-    Returns None if sentence-transformers is unavailable. Uses the
-    module-level model cache so repeated calls within one worker
-    pay the model-load cost exactly once.
+    Dim is whatever the active sentence-transformer model returns
+    (1024 for the BGE-M3 default, 384 for legacy MiniLM); only the
+    sanity-check is "we got a 1-D numpy array" — the DB layer
+    enforces the actual dim. Override expected dim via B12_EMBED_DIM
+    (default 1024 for BGE-M3 since v11.34 / P-FOUNDATION) when the
+    caller wants a hard guard rail.
     """
     model = _get_embedding_model()
     if model is None:
@@ -160,7 +163,10 @@ def _encode_embedding(text: str) -> bytes | None:
         import numpy as np
         emb = model.encode([text], convert_to_numpy=True)[0]
         emb = np.asarray(emb, dtype=np.float32)
-        if emb.ndim != 1 or emb.shape[0] != 384:
+        if emb.ndim != 1:
+            return None
+        expected = os.environ.get("B12_EMBED_DIM")
+        if expected and emb.shape[0] != int(expected):
             return None
         return emb.tobytes()
     except Exception:

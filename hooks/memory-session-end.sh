@@ -720,7 +720,7 @@ def encode_texts(texts):
     # Cold fallback: load model locally
     if _model[0] is None:
         from sentence_transformers import SentenceTransformer
-        model_name = os.environ.get('MCP_EMBEDDING_MODEL', 'paraphrase-multilingual-MiniLM-L12-v2')
+        model_name = os.environ.get('MCP_EMBEDDING_MODEL', 'BAAI/bge-m3')
         _model[0] = SentenceTransformer(model_name, device='cpu')
     embeddings = _model[0].encode(texts, convert_to_numpy=True)
     return [emb.astype(np.float32).tobytes() for emb in embeddings]

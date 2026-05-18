@@ -36,6 +36,7 @@ from pathlib import Path
 
 # Optional: sentence-transformers for vector search
 _embedding_model = None
+EMBED_DIM = int(__import__('os').environ.get('B12_EMBED_DIM', '1024'))
 
 def get_embedding_model():
     """Lazy-load embedding model (same as B12 production)."""
@@ -43,7 +44,9 @@ def get_embedding_model():
     if _embedding_model is None:
         try:
             from sentence_transformers import SentenceTransformer
-            _embedding_model = SentenceTransformer('paraphrase-multilingual-MiniLM-L12-v2')
+            _embedding_model = SentenceTransformer('BAAI/bge-m3')
+            global EMBED_DIM
+            EMBED_DIM = int(_embedding_model.get_sentence_embedding_dimension() or 1024)
             print(f"  Embedding model loaded (dim={_embedding_model.get_sentence_embedding_dimension()})")
         except ImportError:
             print("  ERROR: sentence-transformers not found. Use the b12-venv:")
@@ -177,13 +180,13 @@ def create_test_db(db_path, use_vectors=False):
             conn.enable_load_extension(True)
             sqlite_vec.load(conn)
             conn.enable_load_extension(False)
-            conn.execute("""
+            conn.execute(f"""
                 CREATE VIRTUAL TABLE IF NOT EXISTS memory_vec USING vec0(
                     memory_id INTEGER PRIMARY KEY,
-                    embedding float[384]
+                    embedding float[{EMBED_DIM}]
                 )
             """)
-            print("  sqlite-vec loaded (384-dim vector table created)")
+            print(f"  sqlite-vec loaded ({EMBED_DIM}-dim vector table created)")
         except ImportError:
             print("  WARNING: sqlite-vec not found, vector search disabled")
             print("    Use: $HOME/.local/b12-venv/bin/python3 eval_b12.py")
@@ -452,7 +455,7 @@ def retrieve_vector(conn, question, conv_id, top_k=5):
                 "SELECT embedding FROM memory_vec WHERE memory_id = ?", (mem_id,)
             ).fetchone()
             if emb_row:
-                stored = struct.unpack(f'{384}f', emb_row[0])
+                stored = struct.unpack(f'{EMBED_DIM}f', emb_row[0])
                 cos_sim = sum(a*b for a,b in zip(q_emb, stored))
                 scores.append((row[0], row[1], row[2], row[3], 1.0 - cos_sim))
         scores.sort(key=lambda x: x[4])
@@ -489,7 +492,7 @@ def retrieve_hybrid(conn, question, conv_id, top_k=5, bm25_weight=0.7, vec_weigh
         ).fetchone()
         cos_sim = 0.0
         if emb_row:
-            stored = struct.unpack(f'{384}f', emb_row[0])
+            stored = struct.unpack(f'{EMBED_DIM}f', emb_row[0])
             cos_sim = max(0.0, sum(a * b for a, b in zip(q_emb, stored)))
 
         # Normalize BM25: rank is negative, closer to 0 = better
@@ -518,7 +521,7 @@ def retrieve_hybrid(conn, question, conv_id, top_k=5, bm25_weight=0.7, vec_weigh
             "SELECT embedding FROM memory_vec WHERE memory_id = ?", (mem[0],)
         ).fetchone()
         if emb_row:
-            stored = struct.unpack(f'{384}f', emb_row[0])
+            stored = struct.unpack(f'{EMBED_DIM}f', emb_row[0])
             cos_sim = sum(a * b for a, b in zip(q_emb, stored))
             if cos_sim > 0.3:  # Only add if reasonably similar
                 vec_candidates.append((mem[0], mem[1], mem[2], mem[3], cos_sim))

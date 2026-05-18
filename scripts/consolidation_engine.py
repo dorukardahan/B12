@@ -68,7 +68,9 @@ except ImportError:
                                     "mcp-memory", "sqlite_vec.db")
 
 # ── Constants ────────────────────────────────────────────────────
-EMBEDDING_DIM = 384
+# 1024 for BGE-M3 (default since v11.34 / P-FOUNDATION); override via
+# B12_EMBED_DIM to stay compatible with pre-migration 384-dim DBs.
+EMBEDDING_DIM = int(os.environ.get("B12_EMBED_DIM", "1024"))
 DEDUP_THRESHOLD = 0.95       # cosine >= this AND same tags → deduplicate
 MERGE_THRESHOLD = 0.80       # cosine >= this (within cluster) → merge
 NLI_CONTRADICTION_THRESHOLD = 0.90  # NLI contradiction score → flag

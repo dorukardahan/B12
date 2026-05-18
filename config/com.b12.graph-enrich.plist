@@ -34,7 +34,7 @@
         <key>HOME</key>
         <string>/path/to/home</string>
         <key>MCP_EMBEDDING_MODEL</key>
-        <string>paraphrase-multilingual-MiniLM-L12-v2</string>
+        <string>BAAI/bge-m3</string>
     </dict>
     <key>StandardOutPath</key>
     <string>/path/to/home/.B12/memory-logs/graph-enrich-stdout.log</string>

@@ -28,7 +28,7 @@ Custom FastMCP server providing 5 memory tools and 4 MCP resources. Replaces the
 - **Tools**: `memory_store`, `memory_search`, `memory_update`, `memory_quality`, `memory_session_context`
 - **Resources**: `b12://context/project/{name}`, `b12://stats`, `b12://profile`, `b12://health`
 - **Database**: SQLite + sqlite-vec (local file)
-- **Embeddings**: multilingual-MiniLM-L12-v2 via `embed_daemon.py` (runs locally, no API)
+- **Embeddings**: BGE-M3 (BAAI/bge-m3, 1024-dim, multilingual, cls pooling) via `embed_daemon.py` (runs locally, no API). Override via `MCP_EMBEDDING_MODEL`. Opt-in Q8_0 / Q4_K_M GGUF: set `B12_EMBED_BACKEND=gguf` + `B12_EMBED_GGUF_PATH=...`.
 - **Search**: FTS5 hybrid — BM25 keyword + vector cosine + optional porter stemming
 - **FTS5 tables**: `memory_fts` (unicode61, exact match), `memory_fts_stemmed` (porter unicode61, morphological), `memory_content_fts` (trigram, legacy)
 - **Scoring**: Ebbinghaus decay-aware — combines retention, importance, and relevance
@@ -334,7 +334,7 @@ Resources complement tools by providing passive, cacheable content that any MCP 
 
 ### Current limitations
 
-1. **English-optimized embeddings**: MiniLM-L12-v2 is multilingual but primarily optimized for English. Mixed-language content may have reduced semantic accuracy.
+1. **Embedding-quality vs disk**: BGE-M3 (1024-dim, 100+ languages) is the default since v11.34. FP32 weights are ~2.2GB on disk; users on tight disk budgets can switch to a Q8_0 or Q4_K_M GGUF via `B12_EMBED_BACKEND=gguf` after installing `llama-cpp-python`. `docs/B12_embed_quant_eval_2026-05.md` (P-EVAL) tracks the quality/speed/disk trade-off.
 
 2. **Contradiction detection coverage**: `contradiction_resolver.py` provides ONNX NLI-based contradiction detection, but it runs as a scheduled task (graph enrichment), not inline at write time. Contradicting memories may coexist until the next enrichment cycle.
 

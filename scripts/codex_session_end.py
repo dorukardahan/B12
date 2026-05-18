@@ -131,7 +131,7 @@ def _get_embedding_direct(text):
         if _model is None:
             from sentence_transformers import SentenceTransformer
             model_name = os.environ.get(
-                "MCP_EMBEDDING_MODEL", "paraphrase-multilingual-MiniLM-L12-v2"
+                "MCP_EMBEDDING_MODEL", "BAAI/bge-m3"
             )
             _model = SentenceTransformer(model_name)
         import base64, numpy as np

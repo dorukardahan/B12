@@ -394,7 +394,7 @@ config['mcpServers']['B12'] = {
     "command": venv_python,
     "args": [server_script],
     "env": {
-        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
         "MCP_MAX_RESPONSE_CHARS": "40000"
     }
 }
@@ -579,7 +579,7 @@ enabled = true
 startup_timeout_sec = 30
 
 [mcp_servers.B12.env]
-MCP_EMBEDDING_MODEL = "paraphrase-multilingual-MiniLM-L12-v2"
+MCP_EMBEDDING_MODEL = "BAAI/bge-m3"
 MCP_MAX_RESPONSE_CHARS = "40000"
 '''
 
@@ -826,7 +826,7 @@ settings['mcpServers']['B12'] = {
     'command': venv_python,
     'args': [server_script],
     'env': {
-        'MCP_EMBEDDING_MODEL': 'paraphrase-multilingual-MiniLM-L12-v2',
+        'MCP_EMBEDDING_MODEL': 'BAAI/bge-m3',
         'MCP_MAX_RESPONSE_CHARS': '40000'
     },
     'timeout': 30000
@@ -1053,7 +1053,7 @@ config["servers"]["B12"] = {
     "command": venv_python,
     "args": [server_script],
     "env": {
-        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
         "MCP_MAX_RESPONSE_CHARS": "40000"
     }
 }
@@ -1194,7 +1194,7 @@ config['mcpServers']['B12'] = {
     'command': venv_python,
     'args': [server_script],
     'env': {
-        'MCP_EMBEDDING_MODEL': 'paraphrase-multilingual-MiniLM-L12-v2',
+        'MCP_EMBEDDING_MODEL': 'BAAI/bge-m3',
         'MCP_MAX_RESPONSE_CHARS': '40000'
     }
 }
@@ -1333,7 +1333,7 @@ config['mcpServers']['B12'] = {
     "command": venv_python,
     "args": [server_script],
     "env": {
-        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
         "MCP_MAX_RESPONSE_CHARS": "40000"
     }
 }
@@ -1447,7 +1447,7 @@ config['mcpServers']['B12'] = {
     'command': venv_python,
     'args': [server_script],
     'env': {
-        'MCP_EMBEDDING_MODEL': 'paraphrase-multilingual-MiniLM-L12-v2',
+        'MCP_EMBEDDING_MODEL': 'BAAI/bge-m3',
         'MCP_MAX_RESPONSE_CHARS': '40000'
     }
 }
@@ -1615,7 +1615,7 @@ config['mcpServers']['B12'] = {
     "command": venv_python,
     "args": [server_script],
     "env": {
-        "MCP_EMBEDDING_MODEL": "paraphrase-multilingual-MiniLM-L12-v2",
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
         "MCP_MAX_RESPONSE_CHARS": "40000"
     },
     "alwaysAllow": [
@@ -1747,7 +1747,7 @@ config['mcp']['B12'] = {
     'command': [venv_python, server_script],
     'enabled': True,
     'environment': {
-        'MCP_EMBEDDING_MODEL': 'paraphrase-multilingual-MiniLM-L12-v2',
+        'MCP_EMBEDDING_MODEL': 'BAAI/bge-m3',
         'MCP_MAX_RESPONSE_CHARS': '40000'
     }
 }
