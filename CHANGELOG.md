@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.40.1](https://github.com/dorukardahan/B12/compare/v11.40.0...v11.40.1) (2026-05-18)
+
+
+### Bug Fixes
+
+* **speed:** C14 sync-path microopt — vectorise daemon recall cosine ([#37](https://github.com/dorukardahan/B12/issues/37)) ([05f3588](https://github.com/dorukardahan/B12/commit/05f3588cc771c3dd36782213b4fea7a40eeaf172))
+
 # [11.40.0](https://github.com/dorukardahan/B12/compare/v11.39.0...v11.40.0) (2026-05-18)
 
 
