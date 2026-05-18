@@ -399,6 +399,97 @@ def topic_shift_check(
     return (cos < float(threshold), cos)
 
 
+# ── Cross-session re-surface candidates (Phase E) ────────────────
+# Complements pick_resurface_ids: same-project, high-importance, OLD
+# memories from OTHER sessions. Designed to be merged into the Q2
+# periodic re-surface so cross-session continuity also benefits, not
+# just within-session anchoring.
+CROSS_SESSION_DEFAULT_LIMIT = 2
+CROSS_SESSION_MIN_IMPORTANCE = 0.8
+CROSS_SESSION_MIN_AGE_DAYS = 7
+
+
+def pick_cross_session_ids(
+    db_path: str,
+    session_id: str,
+    project: str,
+    limit: int = CROSS_SESSION_DEFAULT_LIMIT,
+    min_importance: float = CROSS_SESSION_MIN_IMPORTANCE,
+    min_age_days: float = CROSS_SESSION_MIN_AGE_DAYS,
+    skip_ids: list[int] | None = None,
+) -> list[dict]:
+    """High-importance memories from PRIOR sessions of the same project.
+
+    Selection rule:
+      - source_session != current (cross-session — that's the point)
+      - importance_score >= 0.8
+      - created_at older than ``min_age_days`` ago (so we re-surface
+        durable knowledge, not yesterday's in-flight notes)
+      - project == current project (scope discipline — don't pollute
+        with universal-tag memories from unrelated projects)
+      - id NOT IN skip_ids (ledger dedup, same as same-session path)
+
+    Returns same item shape as ``pick_resurface_ids`` so the caller
+    can merge the two lists with a single format function.
+    """
+    if not os.path.exists(db_path):
+        return []
+    if not project:
+        return []
+    sid12 = _sid12(session_id)
+    skip_set = set(int(x) for x in (skip_ids or []) if str(x).isdigit())
+
+    # `memories.created_at` is stored as Unix-epoch REAL (Codex PR #36 P1
+    # caught the mixed-type compare bug in the first iteration). Compute
+    # the cutoff in Python and pass as a numeric REAL parameter so the
+    # filter is REAL-vs-REAL throughout.
+    age_cutoff_ts = time.time() - float(min_age_days) * 86400.0
+    conn = sqlite3.connect(db_path, timeout=10)
+    try:
+        rows = conn.execute(
+            """
+            SELECT m.id,
+                   m.content_hash,
+                   COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) AS importance,
+                   COALESCE(json_extract(m.metadata, '$.project'), '') AS project,
+                   COALESCE(SUBSTR(json_extract(m.metadata, '$.source_session'), 1, 12), '') AS source_session,
+                   m.memory_type,
+                   SUBSTR(replace(replace(m.content, char(10), ' '), char(9), ' '), 1, 80) AS preview
+            FROM memories m
+            WHERE m.deleted_at IS NULL
+              AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
+              AND m.memory_type NOT IN ('session_summary', 'progress')
+              AND COALESCE(json_extract(m.metadata, '$.project'), '') = ?
+              AND COALESCE(SUBSTR(json_extract(m.metadata, '$.source_session'), 1, 12), '') != ?
+              AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?
+              AND m.created_at < ?
+            ORDER BY importance DESC, m.created_at DESC
+            LIMIT 50
+            """,
+            (project, sid12, float(min_importance), age_cutoff_ts),
+        ).fetchall()
+    finally:
+        conn.close()
+
+    out = []
+    for row in rows:
+        mid = int(row[0])
+        if mid in skip_set:
+            continue
+        out.append({
+            'id': mid,
+            'content_hash': row[1],
+            'importance': float(row[2] or 0.5),
+            'project': row[3] or '',
+            'source_session': row[4] or '',
+            'memory_type': row[5] or '',
+            'preview': row[6] or '',
+        })
+        if len(out) >= max(1, int(limit)):
+            break
+    return out
+
+
 # ── Self-test ───────────────────────────────────────────────────
 def _self_test() -> int:
     failures: list[str] = []
@@ -516,12 +607,66 @@ def _self_test() -> int:
         if 2 in ts_ids or 3 in ts_ids or 4 in ts_ids:
             failures.append(f'pick_topic_shift_ids leaked low-importance/cross-session/deleted: {ts_ids}')
 
+        # ── Cross-session re-surface (Phase E) ──
+        # Production stores created_at as Unix-epoch REAL — use numeric
+        # timestamps so the age filter exercises the same REAL-vs-REAL
+        # path real data takes (Codex PR #36 P2).
+        _now_ts = time.time()
+        _old_ts = _now_ts - 30 * 86400.0   # 30 days ago — past the 7-day gate
+        _recent_ts = _now_ts - 600.0       # 10 minutes ago — inside the gate
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute(
+                "INSERT INTO memories (id, content_hash, content, metadata, created_at, updated_at, memory_type) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (110, 'h110', 'cross-session high-importance OLD same-project, should surface',
+                 '{"importance_score":0.9,"source_session":"OTHERSESS","project":"B12"}',
+                 _old_ts, _old_ts, 'decision'),
+            )
+            conn.execute(
+                "INSERT INTO memories (id, content_hash, content, metadata, created_at, updated_at, memory_type) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (111, 'h111', 'cross-session high-importance RECENT, should NOT surface (age gate)',
+                 '{"importance_score":0.9,"source_session":"OTHERSESS","project":"B12"}',
+                 _recent_ts, _recent_ts, 'decision'),
+            )
+            conn.execute(
+                "INSERT INTO memories (id, content_hash, content, metadata, created_at, updated_at, memory_type) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (112, 'h112', 'cross-session low-importance, should NOT surface',
+                 '{"importance_score":0.6,"source_session":"OTHERSESS","project":"B12"}',
+                 _old_ts, _old_ts, 'decision'),
+            )
+            conn.execute(
+                "INSERT INTO memories (id, content_hash, content, metadata, created_at, updated_at, memory_type) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (113, 'h113', 'cross-session wrong-project, should NOT surface',
+                 '{"importance_score":0.9,"source_session":"OTHERSESS","project":"OtherProj"}',
+                 _old_ts, _old_ts, 'decision'),
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        cs_picks = pick_cross_session_ids(db_path, sid, project='B12', limit=5)
+        cs_ids = {p['id'] for p in cs_picks}
+        if cs_ids != {110}:
+            failures.append(f'pick_cross_session_ids returned {cs_ids}, expected {{110}}')
+
+        cs_skip = pick_cross_session_ids(db_path, sid, project='B12', limit=5, skip_ids=[110])
+        if cs_skip:
+            failures.append(f'pick_cross_session_ids with skip_ids=[110] should be empty, got {cs_skip}')
+
+        cs_noproj = pick_cross_session_ids(db_path, sid, project='', limit=5)
+        if cs_noproj:
+            failures.append(f'pick_cross_session_ids with empty project should be empty, got {cs_noproj}')
+
     if failures:
         print('SELF-TEST FAILED:')
         for f in failures:
             print(f'  - {f}')
         return 1
-    print('SELF-TEST OK (11 cases: counter init, fire at N, fire at 2N, peek, project-scoped pick, skip_ids, cosine self, cosine orth, topic_shift first/same/orth, pick_topic_shift filtering)')
+    print('SELF-TEST OK (14 cases: counter init, fire at N, fire at 2N, peek, project-scoped pick, skip_ids, cosine self, cosine orth, topic_shift first/same/orth, pick_topic_shift filtering, cross_session filter, cross_session skip, cross_session empty-project)')
     return 0
 
 

@@ -872,12 +872,18 @@ if [ "$_RESURFACE_EVERY_N" -gt 0 ] 2>/dev/null && \
   _RESURFACE_FIRE=true
 fi
 if [ "$_RESURFACE_FIRE" = true ] && [ -n "$VENV_PYTHON" ] && [ -x "$VENV_PYTHON" ]; then
-  _RESURFACE_OUT=$("$VENV_PYTHON" - "$SESSION_ID" "$DB_PATH" "$_Q2_TURN" "$_DEDUP_IDS" << 'PYEOF' 2>/dev/null
+  # Phase E: same-session re-surface PLUS cross-session anchors. The
+  # python heredoc returns both lists in one process so we don't pay
+  # ~30ms of Python startup twice. Cross-session is opt-in only when
+  # we have a project name (PARENT_PROJECT or PROJECT_NAME) — the
+  # filter requires a concrete project string for scope discipline.
+  _RESURFACE_PROJ="${PARENT_PROJECT:-$PROJECT_NAME}"
+  _RESURFACE_OUT=$("$VENV_PYTHON" - "$SESSION_ID" "$DB_PATH" "$_Q2_TURN" "$_DEDUP_IDS" "$_RESURFACE_PROJ" << 'PYEOF' 2>/dev/null
 import os, sys, json
 _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
 sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
 try:
-    from b12_long_session import pick_resurface_ids
+    from b12_long_session import pick_resurface_ids, pick_cross_session_ids
 except ImportError:
     sys.exit(0)
 sid = sys.argv[1]
@@ -888,24 +894,46 @@ except (TypeError, ValueError):
     turn = 0
 skip_raw = sys.argv[4] if len(sys.argv) > 4 else ''
 skip_ids = [int(x) for x in skip_raw.split(',') if x.strip().isdigit()]
+project = sys.argv[5] if len(sys.argv) > 5 else ''
 
 hits = pick_resurface_ids(db_path, sid, limit=3, skip_ids=skip_ids)
-print(json.dumps({"fired": True, "turn": turn, "hits": hits}, ensure_ascii=False))
+already = list(skip_ids) + [int(h['id']) for h in hits]
+cross = []
+if project:
+    cross = pick_cross_session_ids(
+        db_path, sid, project=project, limit=2, skip_ids=already,
+    )
+print(json.dumps({"fired": True, "turn": turn, "hits": hits, "cross": cross}, ensure_ascii=False))
 PYEOF
   )
   if [ -n "$_RESURFACE_OUT" ]; then
     _RESURFACE_TURN=$(echo "$_RESURFACE_OUT" | jq -r '.turn // ""' 2>/dev/null)
     _RESURFACE_HITS_JSON=$(echo "$_RESURFACE_OUT" | jq -c '.hits // []' 2>/dev/null)
     _RESURFACE_HIT_COUNT=$(echo "$_RESURFACE_HITS_JSON" | jq -r 'length' 2>/dev/null)
-    if [ "${_RESURFACE_HIT_COUNT:-0}" -gt 0 ]; then
-      _RESURFACE_BODY=$(echo "$_RESURFACE_HITS_JSON" | \
-        jq -r '.[] | "[\(.memory_type)|src:\(.source_session)|imp:\(.importance|tostring)|proj:\(.project)] \(.preview)"')
-      _RESURFACE_BLOCK=$'\n[long-session re-surface (turn '"${_RESURFACE_TURN}"$', high-importance from this session)]\n'"${_RESURFACE_BODY}"$'\n'
-      # Stash the IDs but DON'T write the ledger yet. T1 trim or T2
-      # cumulative-cap may drop these rows from the actual injection —
-      # if we ledger now, we'd suppress IDs the model never saw on later
-      # turns. Ledger write moved to after the T1/T2 gates land.
-      _RESURFACE_IDS=$(echo "$_RESURFACE_HITS_JSON" | jq -r '.[].id')
+    _RESURFACE_CROSS_JSON=$(echo "$_RESURFACE_OUT" | jq -c '.cross // []' 2>/dev/null)
+    _RESURFACE_CROSS_COUNT=$(echo "$_RESURFACE_CROSS_JSON" | jq -r 'length' 2>/dev/null)
+    if [ "${_RESURFACE_HIT_COUNT:-0}" -gt 0 ] || [ "${_RESURFACE_CROSS_COUNT:-0}" -gt 0 ]; then
+      _RESURFACE_BODY=""
+      if [ "${_RESURFACE_HIT_COUNT:-0}" -gt 0 ]; then
+        _RESURFACE_BODY=$(echo "$_RESURFACE_HITS_JSON" | \
+          jq -r '.[] | "[\(.memory_type)|src:\(.source_session)|imp:\(.importance|tostring)|proj:\(.project)] \(.preview)"')
+      fi
+      _RESURFACE_CROSS_BODY=""
+      if [ "${_RESURFACE_CROSS_COUNT:-0}" -gt 0 ]; then
+        _RESURFACE_CROSS_BODY=$(echo "$_RESURFACE_CROSS_JSON" | \
+          jq -r '.[] | "[\(.memory_type)|src:\(.source_session)|imp:\(.importance|tostring)|proj:\(.project)|cross-session] \(.preview)"')
+      fi
+      if [ -n "$_RESURFACE_BODY" ] && [ -n "$_RESURFACE_CROSS_BODY" ]; then
+        _RESURFACE_BLOCK=$'\n[long-session re-surface (turn '"${_RESURFACE_TURN}"$', same-session high-importance + cross-session anchors)]\n'"${_RESURFACE_BODY}"$'\n'"${_RESURFACE_CROSS_BODY}"$'\n'
+      elif [ -n "$_RESURFACE_BODY" ]; then
+        _RESURFACE_BLOCK=$'\n[long-session re-surface (turn '"${_RESURFACE_TURN}"$', high-importance from this session)]\n'"${_RESURFACE_BODY}"$'\n'
+      else
+        _RESURFACE_BLOCK=$'\n[long-session re-surface (turn '"${_RESURFACE_TURN}"$', cross-session anchors for project '"${_RESURFACE_PROJ}"')]\n'"${_RESURFACE_CROSS_BODY}"$'\n'
+      fi
+      _RESURFACE_IDS=$( {
+        echo "$_RESURFACE_HITS_JSON" | jq -r '.[].id' 2>/dev/null
+        echo "$_RESURFACE_CROSS_JSON" | jq -r '.[].id' 2>/dev/null
+      } )
     fi
   fi
 fi
