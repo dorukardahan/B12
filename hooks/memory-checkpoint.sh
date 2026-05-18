@@ -143,7 +143,7 @@ project_name = sys.argv[4]
 now = int(sys.argv[5])
 last_flush_file = sys.argv[6]
 
-# ── Concurrency lock (Codex PR #24 P1) ─────────────────────
+# ── Concurrency lock (PR #28 P1) ─────────────────────
 # S1 backgrounding means multiple checkpoint hooks can overlap on the
 # same per-session BUFFER_FILE + LAST_FLUSH. fcntl.flock on a sidecar
 # `.lock` file serializes the critical sections (append-to-buffer,

@@ -489,6 +489,21 @@ if daemon_alive; then
           continue
         fi
         RESULT_IDS="${RESULT_IDS}${_id},"
+        # Q4 4-field format: when the recall op returned source_session +
+        # importance + project + preview, replace the bare `[type] preview`
+        # with `[type|src:sid12|imp:0.85|proj:B12] preview` so the LLM can
+        # tell where the memory came from at a glance.
+        if [ "$_USED_RECALL" = true ]; then
+          _META=$(echo "$_RESP" | jq -r --argjson id "$_id" \
+            '.results[] | select(.id==$id) | "\(.memory_type)|\(.source_session)|\(.importance)|\(.project)|\(.preview)"' 2>/dev/null)
+          if [ -n "$_META" ] && [ "$_META" != "||||" ]; then
+            IFS='|' read -r _mt _ssid _imp _proj _prev <<< "$_META"
+            _ssid_clean="${_ssid:-?}"
+            _proj_clean="${_proj:-?}"
+            _imp_clean="${_imp:-0.50}"
+            _display="[${_mt}|src:${_ssid_clean}|imp:${_imp_clean}|proj:${_proj_clean}] ${_prev}"
+          fi
+        fi
         RESULT_DISPLAY="${RESULT_DISPLAY}${_display}\n"
         RESULT_COUNT=$((RESULT_COUNT + 1))
         _SEM_ADDED=$((_SEM_ADDED + 1))
@@ -750,9 +765,26 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
   TOP_3_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | head -3 | tr '\n' ',' | sed 's/,$//')
   ALL_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | tr '\n' ',' | sed 's/,$//')
   if [ -n "$TOP_3_IDS" ]; then
+    # Graph-expanded rows carry the same Q4 4-field surface format as the
+    # primary results (`[type|src:sid12|imp:X|proj:Y] preview`). Without
+    # this, the model sees a mixed-format inject where top-3 hits have the
+    # 4-field anchor and the graph block reverts to legacy `[mtype] preview`,
+    # which (a) defeats the format consistency Codex flagged in round-3
+    # and (b) breaks T1's `^\[[^]]*\|src:` line counter on the graph rows.
+    # Single-column SELECT — the printf at line 1010 emits the value
+    # verbatim, so an extra `id|` prefix would clutter the inject.
     GRAPH_EXPANDED=$(sqlite3 "$DB_PATH" "
-      SELECT DISTINCT m2.id,
-             '[' || m2.memory_type || '] ' || replace(substr(m2.content, 1, 200), char(10), ' ')
+      SELECT DISTINCT
+             '[' || m2.memory_type ||
+             '|src:' || COALESCE(SUBSTR(json_extract(m2.metadata, '\$.source_session'), 1, 12), '?') ||
+             '|imp:' || COALESCE(
+               CASE WHEN json_extract(m2.metadata, '\$.importance_score') IS NOT NULL
+                    THEN printf('%.2f', json_extract(m2.metadata, '\$.importance_score'))
+               END,
+               '0.50'
+             ) ||
+             '|proj:' || COALESCE(json_extract(m2.metadata, '\$.project'), '?') ||
+             '] ' || replace(substr(m2.content, 1, 200), char(10), ' ')
       FROM (
         SELECT mg.target_hash AS neighbor_hash, mg.similarity
         FROM memory_graph mg
@@ -802,6 +834,56 @@ fi
 # ── Output ─────────────────────────────────────────────────────
 if [ -z "$RESULT_DISPLAY" ] || [ "$RESULT_COUNT" -eq 0 ]; then
   exit 0
+fi
+
+# ── Q4 4-field surface format ────────────────────────────────
+# Rewrite RESULT_DISPLAY so every line carries `[type|src:sid12|imp:X|proj:Y]`
+# regardless of whether it came from FTS5, rerank, daemon recall, or graph.
+# Source-of-truth is a single SQLite roundtrip; falls back to the original
+# RESULT_DISPLAY on any error so we never lose an inject because of a
+# format issue.
+# Honor the DISPLAY_LIMIT cap (5 default, 8 on recall-verb) when picking
+# the Q4 ID set — the FTS-only trim earlier already capped RESULT_IDS at
+# DISPLAY_LIMIT, so using `head -10` here would surface rows the FTS pass
+# deliberately skipped (prompt-size + recall-quality drift).
+_FINAL_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | head -"$DISPLAY_LIMIT" | tr '\n' ',' | sed 's/,$//')
+if [ -n "$_FINAL_IDS" ]; then
+  # Build ORDER BY CASE map in bash so we don't have to fight nested
+  # shell-quoting inside an awk-inside-sqlite3-inside-bash sandwich.
+  _Q4_ORDER=""
+  _idx=0
+  for _qid in $(echo "$_FINAL_IDS" | tr ',' ' '); do
+    _idx=$((_idx + 1))
+    _Q4_ORDER="${_Q4_ORDER} WHEN ${_qid} THEN ${_idx}"
+  done
+  # NOTE on importance fallback: `printf('%.2f', NULL)` in SQLite returns
+  # the string `'0.00'`, which the outer COALESCE then treats as a non-NULL
+  # match — so legacy memories without `importance_score` in metadata would
+  # surface as `imp:0.00` instead of the neutral `imp:0.50` default. Guard
+  # with CASE before printf so the COALESCE actually applies.
+  _Q4_ROWS=$(sqlite3 "$DB_PATH" "
+    SELECT m.id,
+           m.memory_type,
+           COALESCE(SUBSTR(json_extract(m.metadata, '\$.source_session'), 1, 12), '?'),
+           COALESCE(
+             CASE WHEN json_extract(m.metadata, '\$.importance_score') IS NOT NULL
+                  THEN printf('%.2f', json_extract(m.metadata, '\$.importance_score'))
+             END,
+             '0.50'
+           ),
+           COALESCE(json_extract(m.metadata, '\$.project'), '?'),
+           SUBSTR(replace(replace(m.content, char(10), ' '), char(9), ' '), 1, 80)
+    FROM memories m
+    WHERE m.id IN (${_FINAL_IDS})
+    ORDER BY CASE m.id${_Q4_ORDER} END
+  " 2>/dev/null)
+  if [ -n "$_Q4_ROWS" ]; then
+    RESULT_DISPLAY=""
+    while IFS='|' read -r _mid _mt _ssid _imp _proj _prev; do
+      [ -z "$_mid" ] && continue
+      RESULT_DISPLAY="${RESULT_DISPLAY}[${_mt}|src:${_ssid}|imp:${_imp}|proj:${_proj}] ${_prev}\n"
+    done <<< "$_Q4_ROWS"
+  fi
 fi
 
 # Build context with adaptive hint

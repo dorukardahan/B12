@@ -175,12 +175,17 @@ def _recall(model, data):
     q_emb = model.encode([query], normalize_embeddings=True)[0]
     conn = _open_db(db_path)
 
+    # source_session (from metadata.source_session, written by
+    # memory-session-end.sh:907 regex pipeline) is surfaced as a tracing
+    # anchor — Q4 of docs/B12_proactive_recall_plan_2026-05-18.md.
     sql = """
         SELECT m.id,
                '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') AS display,
                m.content_hash,
                COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) AS importance,
                COALESCE(json_extract(m.metadata, '$.project'), '') AS project,
+               COALESCE(json_extract(m.metadata, '$.source_session'), '') AS source_session,
+               m.memory_type,
                m.content,
                e.content_embedding
         FROM memories m
@@ -201,7 +206,8 @@ def _recall(model, data):
 
     hits = []
     for row in rows:
-        mem_id, display, content_hash, importance, project_tag, content, emb_bytes = row
+        (mem_id, display, content_hash, importance, project_tag,
+         source_session, memory_type, content, emb_bytes) = row
         if mem_id in skip_ids:
             continue
         if not emb_bytes:
@@ -217,6 +223,10 @@ def _recall(model, data):
         preview = (content or '').replace('\n', ' ').replace('\t', ' ').strip()
         if len(preview) > 80:
             preview = preview[:77] + '...'
+        # Q4 hits carry the regex-pipeline source_session (12-char) so the
+        # model can tell whether a memory came from this session or a prior
+        # one. memory_type is duplicated outside `display` so a hook can
+        # build a custom format without re-parsing the prefix.
         hits.append({
             'id': int(mem_id),
             'display': display,
@@ -224,6 +234,8 @@ def _recall(model, data):
             'content_hash': content_hash,
             'importance': round(float(importance or 0.5), 3),
             'project': project_tag,
+            'source_session': (source_session or '')[:12],
+            'memory_type': memory_type or '',
             'preview': preview,
         })
 
