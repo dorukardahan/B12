@@ -27,7 +27,7 @@
 #   1. Injects B12 MCP server into ~/.codex/config.toml
 #   2. Appends B12 memory instructions to ~/.codex/AGENTS.md
 #   3. Configures notify hook for session-end processing
-#   4. Installs B12 skill to ~/.codex/skills/b12/
+#   4. Installs B12 skill to ~/.codex/skills/b12-memory/
 #   (Requires venv — use with --full on first run)
 #
 # Standard install:
@@ -656,8 +656,9 @@ inject_codex_agents() {
 # ─────────────────────────────────────────────
 install_codex_skill() {
   local CODEX_DIR="$HOME/.codex"
-  local SKILL_SRC="$SCRIPT_DIR/skills/b12"
-  local SKILL_DEST="$CODEX_DIR/skills/b12"
+  local SKILL_SRC="$SCRIPT_DIR/skills/b12-memory"
+  local SKILL_DEST="$CODEX_DIR/skills/b12-memory"
+  local LEGACY_DEST="$CODEX_DIR/skills/b12"
 
   if [ ! -d "$CODEX_DIR" ]; then
     return
@@ -666,6 +667,46 @@ install_codex_skill() {
   if [ ! -f "$SKILL_SRC/SKILL.md" ]; then
     warn "B12 skill template not found at $SKILL_SRC/SKILL.md"
     return
+  fi
+
+  # Legacy cleanup: prior installer versions wrote the B12 skill (with
+  # `name: b12-memory`) to ~/.codex/skills/b12/. Without this cleanup,
+  # Codex sees two SKILL.md files declaring the same name and may
+  # silently pick the older one — defeating the collision fix.
+  #
+  # Two-tier fingerprint:
+  #   (a) BYTE-IDENTICAL to the current install source → safe to delete.
+  #       Covers users who installed the latest skill at the legacy
+  #       path manually or via a future re-run.
+  #   (b) Declares `name: b12-memory` AND contains the canonical B12
+  #       header "B12 Memory System" → installer-generated (matches
+  #       all prior installer revisions that shipped this skill).
+  #       Safe to delete even when content differs, because both
+  #       markers together are extremely unlikely in a user-authored
+  #       skill.
+  #
+  # Files that match (a) or (b) → removed. Files that declare only
+  # `name: b12-memory` (without the B12 header) → preserved with a
+  # warn() so the user inspects manually. Codex review on PR #18
+  # rounds 2-3 walked this tradeoff: byte-identical alone misses the
+  # upgrade case from prior installer revisions, name-only deletes
+  # user content.
+  if [ -f "$LEGACY_DEST/SKILL.md" ]; then
+    if cmp -s "$LEGACY_DEST/SKILL.md" "$SKILL_SRC/SKILL.md"; then
+      rm -f "$LEGACY_DEST/SKILL.md"
+      rmdir "$LEGACY_DEST" 2>/dev/null || true
+      info "Removed legacy skill at $LEGACY_DEST (byte-identical to current install)"
+    elif grep -q '^name: b12-memory$' "$LEGACY_DEST/SKILL.md" 2>/dev/null \
+         && grep -q 'B12 Memory System' "$LEGACY_DEST/SKILL.md" 2>/dev/null; then
+      rm -f "$LEGACY_DEST/SKILL.md"
+      rmdir "$LEGACY_DEST" 2>/dev/null || true
+      info "Removed legacy skill at $LEGACY_DEST (B12-installer fingerprint matched)"
+    elif grep -q '^name: b12-memory$' "$LEGACY_DEST/SKILL.md" 2>/dev/null; then
+      warn "Legacy skill at $LEGACY_DEST/SKILL.md has \`name: b12-memory\` but does"
+      warn "not match the B12 installer fingerprint. Inspect manually — if it's a"
+      warn "user-authored skill, rename its frontmatter; if it's stale installer"
+      warn "output, delete the file."
+    fi
   fi
 
   mkdir -p "$SKILL_DEST"
@@ -713,8 +754,10 @@ verify_codex() {
     errors=$((errors + 1))
   fi
 
-  # Check B12 skill installed
-  if [ -f "$HOME/.codex/skills/b12/SKILL.md" ]; then
+  # Check B12 skill installed (canonical path is skills/b12-memory/ since the
+  # b12-memory name-collision cleanup; older installs may still have
+  # ~/.codex/skills/b12/ on disk — harmless, will be ignored)
+  if [ -f "$HOME/.codex/skills/b12-memory/SKILL.md" ]; then
     info "Verify: B12 skill installed"
   else
     warn "Verify: B12 skill NOT found"
