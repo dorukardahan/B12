@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.38.1](https://github.com/dorukardahan/B12/compare/v11.38.0...v11.38.1) (2026-05-18)
+
+
+### Bug Fixes
+
+* **hooks:** pipefail sweep + surfacing-state flock ([#32](https://github.com/dorukardahan/B12/issues/32)) ([8d4c516](https://github.com/dorukardahan/B12/commit/8d4c5163fdc12dd63c77acee96f571796a747111))
+
 # [11.38.0](https://github.com/dorukardahan/B12/compare/v11.37.0...v11.38.0) (2026-05-18)
 
 
