@@ -422,6 +422,209 @@ def check_mcp_config() -> CheckResult:
     return CheckResult(severity, "MCP server config issues", "; ".join(issues))
 
 
+# ── Host-side MCP plugin-load probe ──────────────────────────────────
+
+
+# Per-host probe table:
+#   name           — display name shown in the probe table
+#   config_path    — absolute path to the host's MCP config file
+#   detect_b12     — callable(config_dict, raw_text) → bool ("is B12 registered")
+#   plugin_paths   — list of extra files (JS, Py) to verify exist+load on disk
+_PluginCheck = tuple[str, callable, bool]
+
+
+def _detect_b12_json(cfg: dict, _raw: str) -> bool:
+    """Generic JSON config: look for B12 under common mcpServers shapes."""
+    if not isinstance(cfg, dict):
+        return False
+    for key in ("mcpServers", "mcp_servers", "mcp"):
+        v = cfg.get(key)
+        if isinstance(v, dict) and "B12" in v:
+            return True
+    return False
+
+
+def _detect_b12_opencode(cfg: dict, _raw: str) -> bool:
+    if not isinstance(cfg, dict):
+        return False
+    # OpenCode uses a top-level "mcp" map keyed by server name.
+    mcp = cfg.get("mcp")
+    if isinstance(mcp, dict) and "B12" in mcp:
+        return True
+    return False
+
+
+def _detect_b12_toml(_cfg: dict, raw: str) -> bool:
+    # Codex / Grok use TOML; no stdlib parser in 3.10 fallback path, so
+    # use the same string match install.sh uses.
+    return "[mcp_servers.B12]" in raw or 'mcp_servers."B12"' in raw
+
+
+def _load_json_safe(path: Path) -> tuple[dict | None, str, str | None]:
+    """Read a JSON file. Returns (parsed | None, raw_text, error | None)."""
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as e:
+        return None, "", f"read failed: {e}"
+    try:
+        return json.loads(raw), raw, None
+    except json.JSONDecodeError as e:
+        return None, raw, f"json parse error: {e}"
+
+
+def _opencode_plugin_loadable(opencode_dir: Path) -> tuple[bool, str]:
+    """For OpenCode, the B12 plugin lives at plugins/b12/index.js (bundled).
+
+    Returns (loadable, detail). "Loadable" here means the bundled JS file
+    exists and is non-empty. We can't actually `import` it without bun;
+    file presence + size is the strongest signal a non-bun probe gets.
+    """
+    plugin_dir = opencode_dir / "plugins" / "b12"
+    js_path = plugin_dir / "index.js"
+    if not plugin_dir.is_dir():
+        return False, f"plugin dir missing: {plugin_dir}"
+    if not js_path.is_file():
+        return False, f"plugin js missing: {js_path}"
+    try:
+        size = js_path.stat().st_size
+    except OSError as e:
+        return False, f"stat failed: {e}"
+    if size == 0:
+        return False, "plugin js is empty (build may have failed)"
+    return True, f"index.js {size} bytes"
+
+
+def check_mcp_hosts() -> CheckResult:
+    """Probe each known MCP host for B12 registration + plugin loadability.
+
+    Builds a per-host table:
+        host | registered | plugin loadable | last load error
+
+    Returned as a single CheckResult whose `detail` carries the table.
+    Status:
+      OK   — every host directory present has B12 registered.
+      WARN — at least one detected host directory is missing B12.
+      FAIL — a B12-registered host references a plugin/server that
+             doesn't exist on disk.
+    """
+    server_path = _SCRIPT_DIR / "b12_mcp_server.py"
+    server_exists = server_path.is_file()
+
+    hosts = [
+        ("claude",   _HOME / ".claude.json",                       _detect_b12_json),
+        ("codex",    _HOME / ".codex" / "config.toml",             _detect_b12_toml),
+        ("gemini",   _HOME / ".gemini" / "settings.json",          _detect_b12_json),
+        ("kimi",     _HOME / ".kimi" / "mcp.json",                 _detect_b12_json),
+        ("cursor",   _HOME / ".cursor" / "mcp.json",               _detect_b12_json),
+        ("windsurf", _HOME / ".codeium" / "windsurf" / "mcp_config.json", _detect_b12_json),
+        ("opencode", _HOME / ".config" / "opencode" / "opencode.json", _detect_b12_opencode),
+        ("grok",     _HOME / ".grok" / "config.toml",              _detect_b12_toml),
+    ]
+
+    rows: list[tuple[str, str, str, str]] = []
+    any_warn = False
+    any_fail = False
+
+    for name, cfg_path, detect in hosts:
+        # Detect "host present at all". For most hosts a parent-dir
+        # check is correct, but ~/.claude.json's parent is $HOME which
+        # always exists — that would surface Claude as "installed,
+        # config missing" on every machine. Treat Claude as present
+        # only when the config file itself exists.
+        if name == "claude":
+            if not cfg_path.is_file():
+                continue
+        else:
+            parent = cfg_path.parent
+            if not parent.is_dir():
+                continue  # Not installed; nothing to probe.
+
+        registered = "no"
+        plugin_loadable = "n/a"
+        last_error = ""
+
+        if not cfg_path.is_file():
+            rows.append((name, "no", "n/a", "config file missing"))
+            any_warn = True
+            continue
+
+        try:
+            if name in ("codex", "grok"):
+                raw = cfg_path.read_text(encoding="utf-8")
+                cfg = {}
+                is_registered = detect(cfg, raw)
+            else:
+                cfg, raw, parse_err = _load_json_safe(cfg_path)
+                if cfg is None:
+                    rows.append((name, "?", "n/a", parse_err or "parse failed"))
+                    any_warn = True
+                    continue
+                is_registered = detect(cfg, raw)
+        except OSError as e:
+            rows.append((name, "?", "n/a", f"read failed: {e}"))
+            any_warn = True
+            continue
+
+        registered = "yes" if is_registered else "no"
+        if not is_registered:
+            any_warn = True
+
+        # Plugin/server loadability check
+        if name == "opencode":
+            loadable, detail = _opencode_plugin_loadable(cfg_path.parent)
+            plugin_loadable = "yes" if loadable else "no"
+            if registered == "yes" and not loadable:
+                any_fail = True
+                last_error = detail
+            elif not loadable:
+                last_error = detail
+        else:
+            # All non-OpenCode hosts use the same MCP server script.
+            if server_exists:
+                plugin_loadable = "yes"
+            else:
+                plugin_loadable = "no"
+                if registered == "yes":
+                    any_fail = True
+                    last_error = f"server missing: {server_path}"
+
+        rows.append((name, registered, plugin_loadable, last_error))
+
+    if not rows:
+        return CheckResult(Status.WARN, "MCP hosts: no host directories detected")
+
+    # Build table for detail.
+    widths = (
+        max(len("host"), max(len(r[0]) for r in rows)),
+        max(len("registered"), max(len(r[1]) for r in rows)),
+        max(len("plugin loadable"), max(len(r[2]) for r in rows)),
+        max(len("last load error"), max(len(r[3]) for r in rows)),
+    )
+    sep = "  "
+    header = sep.join((
+        "host".ljust(widths[0]),
+        "registered".ljust(widths[1]),
+        "plugin loadable".ljust(widths[2]),
+        "last load error".ljust(widths[3]),
+    ))
+    lines = [header, sep.join("-" * w for w in widths)]
+    for r in rows:
+        lines.append(sep.join((
+            r[0].ljust(widths[0]),
+            r[1].ljust(widths[1]),
+            r[2].ljust(widths[2]),
+            r[3].ljust(widths[3]),
+        )))
+
+    detail = "\n" + "\n".join(lines)
+
+    if any_fail:
+        return CheckResult(Status.FAIL, "MCP hosts: at least one registered host cannot load plugin", detail)
+    if any_warn:
+        return CheckResult(Status.WARN, "MCP hosts: at least one detected host missing B12", detail)
+    return CheckResult(Status.OK, f"MCP hosts: {len(rows)}/{len(rows)} healthy", detail)
+
+
 # ── Auto-fix helpers ─────────────────────────────────────────────────
 
 def _apply_fixes() -> list[str]:
@@ -460,6 +663,7 @@ def run_health_check(fix: bool = False) -> list[CheckResult]:
         check_launchd_plists(),
         check_claude_setups(),
         check_mcp_config(),
+        check_mcp_hosts(),
     ]
 
     return results, fix_actions
