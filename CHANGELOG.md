@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.44.0](https://github.com/dorukardahan/B12/compare/v11.43.0...v11.44.0) (2026-05-18)
+
+
+### Features
+
+* **hooks:** InstructionsLoaded telemetry + FileChanged on rule files ([#40](https://github.com/dorukardahan/B12/issues/40)) ([73cea73](https://github.com/dorukardahan/B12/commit/73cea731f2467b33d4a49bf31389e53796f22ee6)), closes [#52176](https://github.com/dorukardahan/B12/issues/52176) [#44925](https://github.com/dorukardahan/B12/issues/44925) [#38](https://github.com/dorukardahan/B12/issues/38) [#38](https://github.com/dorukardahan/B12/issues/38) [#38](https://github.com/dorukardahan/B12/issues/38) [#52176](https://github.com/dorukardahan/B12/issues/52176)
+
 # [11.43.0](https://github.com/dorukardahan/B12/compare/v11.42.0...v11.43.0) (2026-05-18)
 
 
