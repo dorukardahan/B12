@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.34.0](https://github.com/dorukardahan/B12/compare/v11.33.0...v11.34.0) (2026-05-18)
+
+
+### Features
+
+* **foundation:** BGE-M3 multilingual embed + token budget + daemon recall (P-FOUNDATION) ([#23](https://github.com/dorukardahan/B12/issues/23)) ([f668a03](https://github.com/dorukardahan/B12/commit/f668a03af6d2c1b67b8f68eb26b2ae64b76fcbb4)), closes [#26](https://github.com/dorukardahan/B12/issues/26) [#26](https://github.com/dorukardahan/B12/issues/26)
+
 # [11.33.0](https://github.com/dorukardahan/B12/compare/v11.32.0...v11.33.0) (2026-05-18)
 
 
