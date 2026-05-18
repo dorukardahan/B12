@@ -115,6 +115,8 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Working Memory** — tracks active files and search patterns, restored after context compaction
 - **B12 pill notifications** — visible inline indicators when memories are stored or retrieved
 - **Proactive surfacing** — automatically injects relevant past memories when you open files or hit errors
+- **Long-session re-surface** — on every Nth UserPromptSubmit turn (default 20), re-injects a small batch of THIS session's early-captured high-importance memories so they don't fade out of the model's effective working window
+- **Token budget guardrails** — per-turn char-based cap (~800 tokens) + cumulative session cap (~80K tokens) with skip-event logging to `~/.B12/memory-logs/token-budget-skips.jsonl`
 - **Smart consolidation** — deduplication, merge groups, and NLI contradiction detection across memories
 - **Export/import** — portable `.b12` format for backup, migration, or sharing memory snapshots
 - **Web dashboard** — Flask + Cytoscape.js visual browser for memory graph and statistics
@@ -287,6 +289,10 @@ B12/
 │   ├── graph_enrich.py             #   Memory graph enrichment
 │   ├── consolidation_engine.py     #   Smart consolidation (dedup, merge, contradictions)
 │   ├── surfacing_engine.py         #   Proactive memory surfacing engine
+│   ├── b12_long_session.py         #   Q2 long-session re-surface (turn-counter + early-batch picker)
+│   ├── b12_token_budget.py         #   T1/T2/T3 token budget guardrails (per-turn cap + cumulative + dedup ledger)
+│   ├── b12_embed_quant_eval.py     #   S5 BGE-M3 quantization mini-bench (FP32 / Q8_0 / Q4_K_M)
+│   ├── migrate_embed_to_bge_m3.py  #   384→1024 dim migration with .bak snapshot + WAL-safe rollback
 │   ├── dashboard_server.py         #   Flask web dashboard backend
 │   ├── export_import.py            #   Memory export/import (.b12 format)
 │   ├── b12_health_report.py        #   Comprehensive health report generator

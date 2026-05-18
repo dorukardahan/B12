@@ -143,7 +143,22 @@ Process:
 3. Build FTS5 query with OR operators
 4. Run hybrid scoring: `0.3×decay + 0.3×importance + 0.4×FTS5_relevance`
 5. Boost strength of top 3 results (+0.2, max 5.0) via CTE-aligned UPDATE
-6. Return results as `additionalContext`
+6. **Q2 long-session re-surface** (every Nth turn, default 20): asks
+   `scripts/b12_long_session.py` for a small batch of THIS session's
+   early-captured high-importance memories so they don't fade out of
+   the model's effective working window
+7. **T1 per-turn token cap** (~800 token chars-proxy) trims context
+   tail before injection; survived memory rows are counted via either
+   the Q4 4-field `|src:` anchor or, when Q4 reformat fell back to
+   legacy `[type] preview` rows, an awk pattern that excludes the
+   known header tokens (`directive`, `Note`, `long-session`, `trimmed`)
+8. **T2 cumulative cap** (~80K token chars-proxy per session): logs
+   skip events to `memory-logs/token-budget-skips.jsonl` and exits
+   without inject when crossing the ceiling
+9. **T3 dedup ledger** (`session-dedup-<sid>.txt`): only writes IDs
+   AFTER T1/T2 accept the inject, so re-surface IDs that the model
+   never saw won't suppress later turns
+10. Return results as `additionalContext`
 
 **SQL injection protection**: All keywords stripped of `'"();{}` characters before SQL interpolation.
 

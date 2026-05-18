@@ -153,12 +153,13 @@ PYROT
 fi
 
 # Clean up stale search sequence temp files (older than 4 hours).
-# Cleanup glob excludes `*.lock` — if a cleanup deletes a lock sidecar
-# while a concurrent worker holds flock on its inode, the next worker
-# creates a new inode under the same name and the two writers race
-# (the flocks no longer serialize). Lock sidecars are 0 bytes; let
-# them accumulate and prune separately on a 7-day mtime cadence.
+# Exclude `*.lock` sidecars — if cleanup deletes a lock while a concurrent
+# worker holds flock on its inode, the next worker creates a new inode
+# under the same name and the two writers race (the locks no longer
+# serialize). Sidecar locks are 0 bytes so accumulation cost is negligible.
 find "$FEEDBACK_DIR" -name ".search-seq-*" ! -name "*.lock" -mmin +240 -delete 2>/dev/null || true
+# Lock sidecars are pruned on a much longer cadence (7d) since they're
+# only stale when the originating session itself is no longer relevant.
 find "$FEEDBACK_DIR" -name ".search-seq-*.lock" -mtime +7 -delete 2>/dev/null || true
 } >/dev/null 2>&1 &
 disown

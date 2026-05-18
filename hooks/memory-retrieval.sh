@@ -86,6 +86,20 @@ if [ "$_TOK_USED" -ge "$B12_TOK_SESSION_MAX" ]; then
   exit 0
 fi
 
+# Q2 (P-LONGSESSION) turn counter bump — happens BEFORE any prompt-trivial
+# skip so the counter tracks actual UserPromptSubmit fires, not just
+# fires that produced retrieval work. The expensive re-surface decision
+# still lives later in the script behind the same early-exit guards.
+_Q2_TURN_FILE="$B12_STATE_DIR/session-turn-counter-${SESSION_ID12}.txt"
+_Q2_TURN=0
+if [ -f "$_Q2_TURN_FILE" ]; then
+  _Q2_TURN=$(cat "$_Q2_TURN_FILE" 2>/dev/null | tr -cd '0-9')
+  [ -z "$_Q2_TURN" ] && _Q2_TURN=0
+fi
+_Q2_TURN=$((_Q2_TURN + 1))
+echo "$_Q2_TURN" > "${_Q2_TURN_FILE}.tmp" 2>/dev/null && \
+  mv "${_Q2_TURN_FILE}.tmp" "$_Q2_TURN_FILE" 2>/dev/null
+
 # Skip trivial messages (short, greetings, confirmations)
 PROMPT_LEN=${#PROMPT}
 if [ "$PROMPT_LEN" -lt 15 ]; then
@@ -437,8 +451,13 @@ if [ "$_DEDUP_IDS" != "," ] && [ "$RESULT_COUNT" -gt 0 ]; then
   RESULT_DISPLAY="$_FILTERED_DISPLAY"
   RESULT_COUNT="$_FILTERED_COUNT"
   _FTS_COUNT="$RESULT_COUNT"
+  # When dedup empties the pool there's nothing left to rerank — clear the
+  # flag so the cold-fallback semantic loader doesn't fire just because
+  # SHOULD_RERANK was decided BEFORE the dedup filter ran.
   if [ "$RESULT_COUNT" -eq 0 ]; then
     NEEDS_COLD_SEMANTIC=true
+    SHOULD_RERANK=false
+    SKIP_REASON="dedup_emptied"
   fi
 fi
 
@@ -831,9 +850,73 @@ if [ -d "$FEEDBACK_DIR" ] || mkdir -p "$FEEDBACK_DIR" 2>/dev/null; then
     >> "$FEEDBACK_FILE" 2>/dev/null
 fi
 
+# ── Q2 long-session re-surface (P-LONGSESSION) ───────────────
+# Bump the turn counter once per UserPromptSubmit. On every Nth turn
+# (default 20, override via B12_RESURFACE_EVERY_N) ask
+# scripts/b12_long_session.py for a small batch of THIS session's
+# early-captured high-importance memories so they don't fade out of
+# the model's effective working window. The Python module is small
+# enough that the import cost (~30ms) is comfortably inside the S3
+# sync cap.
+_RESURFACE_BLOCK=""
+# Counter was already bumped at the top of the hook; here we just *peek*
+# at the value and decide whether to fire. The peek path lets short
+# greeting prompts still advance the turn counter (correct
+# UserPromptSubmit accounting) without firing the expensive Python
+# pick_resurface_ids on them.
+_RESURFACE_EVERY_N="${B12_RESURFACE_EVERY_N:-20}"
+_RESURFACE_FIRE=false
+if [ "$_RESURFACE_EVERY_N" -gt 0 ] 2>/dev/null && \
+   [ "$_Q2_TURN" -ge "$_RESURFACE_EVERY_N" ] && \
+   [ $((_Q2_TURN % _RESURFACE_EVERY_N)) -eq 0 ]; then
+  _RESURFACE_FIRE=true
+fi
+if [ "$_RESURFACE_FIRE" = true ] && [ -n "$VENV_PYTHON" ] && [ -x "$VENV_PYTHON" ]; then
+  _RESURFACE_OUT=$("$VENV_PYTHON" - "$SESSION_ID" "$DB_PATH" "$_Q2_TURN" "$_DEDUP_IDS" << 'PYEOF' 2>/dev/null
+import os, sys, json
+_hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
+sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
+try:
+    from b12_long_session import pick_resurface_ids
+except ImportError:
+    sys.exit(0)
+sid = sys.argv[1]
+db_path = sys.argv[2]
+try:
+    turn = int(sys.argv[3])
+except (TypeError, ValueError):
+    turn = 0
+skip_raw = sys.argv[4] if len(sys.argv) > 4 else ''
+skip_ids = [int(x) for x in skip_raw.split(',') if x.strip().isdigit()]
+
+hits = pick_resurface_ids(db_path, sid, limit=3, skip_ids=skip_ids)
+print(json.dumps({"fired": True, "turn": turn, "hits": hits}, ensure_ascii=False))
+PYEOF
+  )
+  if [ -n "$_RESURFACE_OUT" ]; then
+    _RESURFACE_TURN=$(echo "$_RESURFACE_OUT" | jq -r '.turn // ""' 2>/dev/null)
+    _RESURFACE_HITS_JSON=$(echo "$_RESURFACE_OUT" | jq -c '.hits // []' 2>/dev/null)
+    _RESURFACE_HIT_COUNT=$(echo "$_RESURFACE_HITS_JSON" | jq -r 'length' 2>/dev/null)
+    if [ "${_RESURFACE_HIT_COUNT:-0}" -gt 0 ]; then
+      _RESURFACE_BODY=$(echo "$_RESURFACE_HITS_JSON" | \
+        jq -r '.[] | "[\(.memory_type)|src:\(.source_session)|imp:\(.importance|tostring)|proj:\(.project)] \(.preview)"')
+      _RESURFACE_BLOCK=$'\n[long-session re-surface (turn '"${_RESURFACE_TURN}"$', high-importance from this session)]\n'"${_RESURFACE_BODY}"$'\n'
+      # Stash the IDs but DON'T write the ledger yet. T1 trim or T2
+      # cumulative-cap may drop these rows from the actual injection —
+      # if we ledger now, we'd suppress IDs the model never saw on later
+      # turns. Ledger write moved to after the T1/T2 gates land.
+      _RESURFACE_IDS=$(echo "$_RESURFACE_HITS_JSON" | jq -r '.[].id')
+    fi
+  fi
+fi
+
 # ── Output ─────────────────────────────────────────────────────
+# Re-surface block alone is enough to inject even if regular retrieval
+# came up empty — the model still benefits from the periodic anchor.
 if [ -z "$RESULT_DISPLAY" ] || [ "$RESULT_COUNT" -eq 0 ]; then
-  exit 0
+  if [ -z "$_RESURFACE_BLOCK" ]; then
+    exit 0
+  fi
 fi
 
 # ── Q4 4-field surface format ────────────────────────────────
@@ -883,8 +966,10 @@ if [ -n "$_FINAL_IDS" ]; then
       [ -z "$_mid" ] && continue
       RESULT_DISPLAY="${RESULT_DISPLAY}[${_mt}|src:${_ssid}|imp:${_imp}|proj:${_proj}] ${_prev}\n"
     done <<< "$_Q4_ROWS"
+    _Q4_REFORMAT_OK=true
   fi
 fi
+_Q4_REFORMAT_OK="${_Q4_REFORMAT_OK:-false}"
 
 # Build context with adaptive hint
 HINT=""
@@ -933,6 +1018,9 @@ _CANDIDATE_CONTEXT=$({
     printf '\nRelated (graph):\n'
     printf '%s\n' "$GRAPH_EXPANDED"
   fi
+  if [ -n "$_RESURFACE_BLOCK" ]; then
+    printf '%b' "$_RESURFACE_BLOCK"
+  fi
   printf '%s' "$HINT"
   printf '%s' "$CONTRADICTION_WARN"
 })
@@ -946,15 +1034,20 @@ _SURVIVED_MEMORY_LINES=""
 if [ "$_CAND_LEN" -gt "$B12_TOK_PER_TURN_CHARS" ]; then
   _CAND_LEN_BEFORE_TRIM="$_CAND_LEN"
   _CANDIDATE_CONTEXT="${_CANDIDATE_CONTEXT:0:$B12_TOK_PER_TURN_CHARS}"
-  # Count fully-rendered RESULT_DISPLAY memory rows that survived the cut.
-  # Memory rows are `[mtype] preview` where mtype is a lowercase identifier
-  # (decision, fact, observation, learning, ...). HEADERS we render also
-  # start with `[` — `[directive]`, `[Note: ...]`, `[trimmed: ...]` — so
-  # anchor on `^\[[a-z_]+\] ` and exclude the known header tokens so the
-  # dedup ledger doesn't burn slots on IDs the model never saw.
-  _SURVIVED_MEMORY_LINES=$(printf '%s' "$_CANDIDATE_CONTEXT" | awk '
-    /^\[[a-z_]+\] / && !/^\[(directive|Note|long-session|trimmed)/ { c++ }
-    END { print c+0 }' 2>/dev/null || echo 0)
+  # Count ONLY memory rows that fit before the cut. Two formats are
+  # possible:
+  #   Q4 reformat succeeded → `[type|src:sid|imp:X|proj:Y] preview`
+  #   Q4 reformat fell back → legacy `[mtype] preview`
+  # Headers (`[directive]`, `[Note: ...]`, `[long-session re-surface (...)]`,
+  # `[trimmed: ...]`) also start with `[`, so we use an awk pattern that
+  # picks the right row format and excludes the known header tokens.
+  if [ "$_Q4_REFORMAT_OK" = true ]; then
+    _SURVIVED_MEMORY_LINES=$(printf '%s' "$_CANDIDATE_CONTEXT" | grep -cE '^\[[^]]*\|src:' 2>/dev/null || echo 0)
+  else
+    _SURVIVED_MEMORY_LINES=$(printf '%s' "$_CANDIDATE_CONTEXT" | awk '
+      /^\[[a-z_]+\] / && !/^\[(directive|Note|long-session|trimmed)/ { c++ }
+      END { print c+0 }' 2>/dev/null || echo 0)
+  fi
   _CANDIDATE_CONTEXT="${_CANDIDATE_CONTEXT}"$'\n[trimmed: per-turn token cap hit]'
   _CAND_LEN=${#_CANDIDATE_CONTEXT}
 fi
@@ -998,10 +1091,25 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
   fi
 fi
 
+# ── T3 dedup ledger (re-surfaced IDs from Q2 long-session block) ──
+# Deferred from the earlier resurface block so T1 trim + T2 cumulative
+# cap have already vetoed (or accepted) the inject. We only get here
+# when the candidate context passed both gates, so the re-surface IDs
+# really were rendered to the assistant.
+if [ -n "$_RESURFACE_IDS" ]; then
+  _NEW_LEDGER=$( {
+    echo "$_RESURFACE_IDS"
+    [ -f "$B12_DEDUP_LEDGER" ] && cat "$B12_DEDUP_LEDGER"
+  } | awk 'NF && !seen[$0]++' | head -500 )
+  echo "$_NEW_LEDGER" > "${B12_DEDUP_LEDGER}.tmp" 2>/dev/null && \
+    mv "${B12_DEDUP_LEDGER}.tmp" "$B12_DEDUP_LEDGER" 2>/dev/null
+fi
+
 # Flag stdout as "primary output" so a late-firing sync-cap watchdog
 # (b12_sync_watchdog at script top) doesn't append a `{}` and corrupt
 # the JSON we're about to emit. See _b12_common.sh:_b12_sync_cap_handler.
 b12_mark_output_emitted 2>/dev/null || _B12_OUTPUT_EMITTED=1
+
 printf '%s' "$_CANDIDATE_CONTEXT" | \
   jq -Rs '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}'
 
