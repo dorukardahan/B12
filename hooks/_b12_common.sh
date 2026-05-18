@@ -44,8 +44,40 @@ _B12_DATA_DIR="${B12_DATA_DIR:-$HOME/.B12}"
 b12_sync_watchdog() {
   local _t="${1:-0.2}"
   local _label="${2:-sync_cap}"
-  # Background sleeper sends USR1 to the parent script when the cap fires.
-  ( sleep "$_t" && kill -USR1 $$ 2>/dev/null ) &
+  local _parent=$$
+  # HARD timeout: when the cap fires, kill the script's direct children (the
+  # in-flight slow subprocess bash would otherwise queue the signal behind)
+  # FIRST, then raise USR1 so the existing handler emits {} and exits cleanly.
+  # Without the explicit kill, bash queues USR1 while waiting on a foreground
+  # command — that's the soft-only limitation Codex PR #24 flagged. With the
+  # kill, the foreground returns immediately (subprocess died) and the queued
+  # signal is delivered at the next bash statement boundary, where the handler
+  # fires.
+  #
+  # Excludes the watchdog subshell itself (BASHPID inside the subshell is
+  # different from the script's $$, which is what the subshell inherits).
+  #
+  # Caveat: also kills any in-flight `b12_async_fork` work that hasn't yet
+  # completed (those are children of $$ until the script exits). Async work
+  # is best-effort by design (logging, checkpoint flush, FSRS update), so
+  # the tradeoff is acceptable: cap firing is rare, and losing not-yet-
+  # finished async work beats leaving a stuck synchronous hook on the
+  # Read/Edit/Write/Bash hot path.
+  (
+    sleep "$_t"
+    # macOS /bin/bash is 3.2 and does NOT export BASHPID — relying on it
+    # to exclude the watchdog subshell from its own pkill would mis-fire
+    # the kill against self on bash 3.2 (Codex PR #33 P1). Capture the
+    # subshell PID portably via `sh -c 'echo $PPID'` (the inner `sh`'s
+    # PPID is the watchdog subshell). Works on bash 3.2 and 4+.
+    _wd_self=$(sh -c 'echo $PPID' 2>/dev/null)
+    for _p in $(pgrep -P "$_parent" 2>/dev/null); do
+      [ "$_p" = "$_wd_self" ] && continue
+      [ -n "$BASHPID" ] && [ "$_p" = "$BASHPID" ] && continue
+      kill -TERM "$_p" 2>/dev/null
+    done
+    kill -USR1 "$_parent" 2>/dev/null
+  ) &
   _B12_WD_PID=$!
   trap "_b12_sync_cap_handler '$_label' '$_t'" USR1
   trap "kill $_B12_WD_PID 2>/dev/null; wait $_B12_WD_PID 2>/dev/null" EXIT
