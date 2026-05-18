@@ -742,8 +742,12 @@ register_codex_hooks_json() {
 
   # Verify deployed hooks exist; without them the json entries point at
   # missing files and Codex's StartupHooksReview will flag them.
+  # CX2 expands the required set to include PreToolUse/PostToolUse/
+  # PreCompact scripts.
   local missing=0
-  for h in memory-codex-session-start.sh memory-codex-prompt-submit.sh memory-codex-stop.sh; do
+  for h in memory-codex-session-start.sh memory-codex-prompt-submit.sh \
+           memory-codex-stop.sh memory-codex-pre-tool.sh \
+           memory-codex-post-tool.sh memory-codex-pre-compact.sh; do
     if [ ! -x "$HOOK_DEST/$h" ]; then
       warn "Codex hook missing at $HOOK_DEST/$h — run copy_hooks first"
       missing=$((missing + 1))
@@ -770,13 +774,32 @@ if not isinstance(data, dict):
     data = {}
 data.setdefault('hooks', {})
 
-# Event → script-name mapping. The keys are exactly what
-# codex-rs/hooks/src/lib.rs:18 HOOK_EVENT_NAMES declares.
-plan = {
-    'SessionStart':     'memory-codex-session-start.sh',
-    'UserPromptSubmit': 'memory-codex-prompt-submit.sh',
-    'Stop':             'memory-codex-stop.sh',
-}
+# Event → (script-name, matcher, timeout_sec). The keys are exactly
+# what codex-rs/hooks/src/lib.rs:18 HOOK_EVENT_NAMES declares. CX2
+# added PreToolUse/PostToolUse/PreCompact entries.
+#
+# Timeout policy (CLAUDE.md "hook timeout >= watchdog + 5s"):
+#   - SessionStart, UserPromptSubmit, Stop, PreToolUse, PostToolUse →
+#     20s; their work is bounded (DB read, prompt regex, telemetry log).
+#   - PreCompact → 30s; the delegated memory-precompact.sh runs a 25s
+#     watchdog timer of its own, so the outer Codex timeout must be
+#     watchdog+5 = 30s to avoid Codex killing PreCompact early
+#     (Codex review PR #42 round 2 P1).
+plan = [
+    ('SessionStart',     'memory-codex-session-start.sh', None,                              20),
+    ('UserPromptSubmit', 'memory-codex-prompt-submit.sh', None,                              20),
+    ('Stop',             'memory-codex-stop.sh',          None,                              20),
+    # PreToolUse matcher targets B12's MCP store tool. mcp_* handlers
+    # opt into pre_tool_use_payload (codex-rs/core/src/tools/handlers/
+    # mcp.rs:173), so this matcher will fire reliably.
+    ('PreToolUse',       'memory-codex-pre-tool.sh',      'mcp__B12__memory_store',          20),
+    # PostToolUse matcher targets file-modification tools that opt in.
+    # `cloud_exec`/`cloud_apply` are NOT tool handlers (they're CLI
+    # subcommands under `codex cloud`); the CLI↔App bridge is captured
+    # via rollout-scrape in codex_session_end.py instead.
+    ('PostToolUse',      'memory-codex-post-tool.sh',     'shell|apply_patch|unified_exec',  20),
+    ('PreCompact',       'memory-codex-pre-compact.sh',   None,                              30),
+]
 
 def is_b12_entry(entry):
     """Identify a hook entry that B12 previously inserted."""
@@ -787,13 +810,13 @@ def is_b12_entry(entry):
             return True
     return False
 
-for event_name, script in plan.items():
+for event_name, script, matcher, timeout_sec in plan:
     arr = data['hooks'].get(event_name, [])
     if not isinstance(arr, list):
         arr = []
     # Drop any prior B12 entry; preserve everything else verbatim.
     arr = [e for e in arr if not is_b12_entry(e)]
-    arr.append({
+    entry = {
         'hooks': [
             {
                 'type': 'command',
@@ -803,10 +826,16 @@ for event_name, script in plan.items():
                 # milliseconds for the same field name; do not copy a
                 # value across without a unit check.
                 'command': os.path.join(hook_dest, script),
-                'timeout': 20,
+                'timeout': timeout_sec,
             }
         ]
-    })
+    }
+    # Matcher syntax is per Codex docs: top-level "matcher" key on the
+    # group object, only meaningful for events in HOOK_EVENT_NAMES_WITH_
+    # MATCHERS (codex-rs/hooks/src/lib.rs:34).
+    if matcher is not None:
+        entry['matcher'] = matcher
+    arr.append(entry)
     data['hooks'][event_name] = arr
 
 with open(hooks_path, 'w') as fh:
@@ -940,7 +969,8 @@ verify_codex() {
     errors=$((errors + 1))
   fi
 
-  # CX1 hooks (SessionStart / UserPromptSubmit / Stop) registered?
+  # CX1+CX2 hooks registered? Expected 6: SessionStart, UserPromptSubmit,
+  # Stop, PreToolUse, PostToolUse, PreCompact.
   local HOOKS_JSON="$HOME/.codex/hooks.json"
   if [ -f "$HOOKS_JSON" ]; then
     local registered
@@ -951,7 +981,7 @@ try:
 except Exception:
     print(0); sys.exit(0)
 count = 0
-for evt in ('SessionStart', 'UserPromptSubmit', 'Stop'):
+for evt in ('SessionStart', 'UserPromptSubmit', 'Stop', 'PreToolUse', 'PostToolUse', 'PreCompact'):
     for entry in data.get('hooks', {}).get(evt, []):
         for sub in entry.get('hooks', []):
             if 'memory-codex-' in str(sub.get('command', '')):
@@ -960,10 +990,10 @@ for evt in ('SessionStart', 'UserPromptSubmit', 'Stop'):
 print(count)
 PYEOF
 )
-    if [ "$registered" = "3" ]; then
-      info "Verify: 3 B12 Codex hooks registered in $HOOKS_JSON"
+    if [ "$registered" = "6" ]; then
+      info "Verify: 6 B12 Codex hooks registered in $HOOKS_JSON"
     else
-      warn "Verify: expected 3 Codex hook entries in $HOOKS_JSON, found ${registered:-0}"
+      warn "Verify: expected 6 Codex hook entries in $HOOKS_JSON, found ${registered:-0}"
       errors=$((errors + 1))
     fi
   fi
