@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.39.0](https://github.com/dorukardahan/B12/compare/v11.38.2...v11.39.0) (2026-05-18)
+
+
+### Features
+
+* **longsession:** Q2 topic-shift cosine-drift trigger (P-BURNIN-C) ([#34](https://github.com/dorukardahan/B12/issues/34)) ([5010d48](https://github.com/dorukardahan/B12/commit/5010d48e1fc77cb1bb12b397a57be250c31a847e)), closes [hi#importance](https://github.com/hi/issues/importance) [hi#importance](https://github.com/hi/issues/importance)
+
 ## [11.38.2](https://github.com/dorukardahan/B12/compare/v11.38.1...v11.38.2) (2026-05-18)
 
 
