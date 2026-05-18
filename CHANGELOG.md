@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.38.0](https://github.com/dorukardahan/B12/compare/v11.37.0...v11.38.0) (2026-05-18)
+
+
+### Features
+
+* **eval+final:** S5 quantization mini-bench + R11 sprint summary (P-EVAL+P-FINAL) ([#31](https://github.com/dorukardahan/B12/issues/31)) ([c22080a](https://github.com/dorukardahan/B12/commit/c22080a4a779e3cb62b17821a30d95ceb4f9c52d)), closes [#27](https://github.com/dorukardahan/B12/issues/27) [#27](https://github.com/dorukardahan/B12/issues/27) [#27](https://github.com/dorukardahan/B12/issues/27) [#27](https://github.com/dorukardahan/B12/issues/27) [#27](https://github.com/dorukardahan/B12/issues/27) [#27](https://github.com/dorukardahan/B12/issues/27)
+
 # [11.37.0](https://github.com/dorukardahan/B12/compare/v11.36.0...v11.37.0) (2026-05-18)
 
 
