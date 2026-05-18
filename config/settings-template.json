@@ -64,6 +64,29 @@
         ]
       }
     ],
+    "InstructionsLoaded": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.B12/hooks/memory-instructions-loaded.sh",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "FileChanged": [
+      {
+        "matcher": "CLAUDE.md|CLAUDE.local.md|MEMORY.md",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.B12/hooks/memory-file-changed.sh",
+            "timeout": 9
+          }
+        ]
+      }
+    ],
     "UserPromptSubmit": [
       {
         "hooks": [

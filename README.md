@@ -269,6 +269,8 @@ B12/
 │   ├── memory-session-end.sh       #   SessionEnd — extract & persist memories
 │   ├── memory-proactive-surface.sh #   PostToolUse — proactive memory surfacing
 │   ├── memory-checkpoint.sh        #   PostToolUse — mid-session memory capture (rate-limited)
+│   ├── memory-instructions-loaded.sh # InstructionsLoaded — CLAUDE.md / rules load telemetry
+│   ├── memory-file-changed.sh      #   FileChanged — capture user edits to CLAUDE.md/MEMORY.md
 │   ├── memory-tool-failure.sh      #   PostToolUseFailure — capture tool errors as memories
 │   ├── memory-turn-end.sh          #   Stop — end-of-turn response scan
 │   ├── memory-prompt-expansion.sh  #   UserPromptExpansion — /goal lifecycle + slash log
@@ -361,7 +363,7 @@ Environment variables:
 
 ### Hooks (Claude Code `settings.json`)
 
-All 9 hook events are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically. See `docs/setup.md` for manual configuration.
+All 9 lifecycle hook events plus 2 telemetry/observability hooks (InstructionsLoaded, FileChanged) are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically. See `docs/setup.md` for manual configuration.
 
 ### Multi-setup
 
