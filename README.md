@@ -271,6 +271,8 @@ B12/
 │   ├── memory-checkpoint.sh        #   PostToolUse — mid-session memory capture (rate-limited)
 │   ├── memory-tool-failure.sh      #   PostToolUseFailure — capture tool errors as memories
 │   ├── memory-turn-end.sh          #   Stop — end-of-turn response scan
+│   ├── memory-prompt-expansion.sh  #   UserPromptExpansion — /goal lifecycle + slash log
+│   ├── memory-subagent-stop.sh     #   SubagentStop — capture subagent findings
 │   ├── memory-backup.sh            #   Scheduled — daily WAL-safe backup
 │   ├── memory-consolidate.py       #   Scheduled — dedup, stale detection
 │   ├── memory-quality-audit.sh     #   Scheduled — weekly health score
@@ -432,17 +434,28 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 
 ## Changelog (recent)
 
-### v11.42 (2026-05-18) — Claude Code v2.1.139+ hook coverage expansion
+### v11.42+ (2026-05-18) — Claude Code v2.1.139+ hook coverage
 
-- **`Stop` hook** (`hooks/memory-turn-end.sh`) — scans the assistant's
-  end-of-turn response text for decision / learning / error patterns
-  and queues them into the existing checkpoint buffer. Captures
-  commentary that `PostToolUse` never sees.
-- **`PostToolUseFailure` hook** (`hooks/memory-tool-failure.sh`) —
-  records failed tool calls (Bash, Edit, Write, WebFetch, MCP) as
-  high-importance error memories. Skips noise sources (Read / Glob /
-  Grep failures). The "X did not work because Y" signal that B12
-  previously missed entirely.
+- **`UserPromptExpansion` hook** (`memory-prompt-expansion.sh`) —
+  detects native `/goal <condition>` and `/goal clear|stop|off`
+  expansions, persists active-goal text to
+  `~/.B12/state/active-goal-<sid>.txt`, and writes goal-start /
+  goal-end memories into the checkpoint buffer with score=9 (decision
+  category). `/plan`, `/memory`, `/clear`, `/resume`, `/branch`
+  expansions are logged to `~/.B12/memory-logs/slash-commands.jsonl`
+  for future analysis.
+- **`SubagentStop` hook** (`memory-subagent-stop.sh`) — captures
+  subagent responses (Agent tool, `/batch`, Explore/Plan/general-purpose)
+  as candidate memories before they vanish from parent context. Tags
+  with `[subagent:<type>]` prefix so future retrieval can distinguish
+  who said what. Caps at 4 candidates per subagent return.
+- **`Stop` hook** (`memory-turn-end.sh`) — scans the assistant's
+  end-of-turn response text for decision / learning / error / preference
+  / correction patterns and queues matches into the existing
+  checkpoint buffer. Captures commentary that `PostToolUse` never sees.
+- **`PostToolUseFailure` hook** (`memory-tool-failure.sh`) — records
+  failed tool calls (Bash, Edit, Write, WebFetch, MCP) as high-importance
+  error memories. Skips noise sources (Read / Glob / Grep failures).
 
 ### v11.7 (2026-03-03) — Tier 3: Stemming, Health Report, Gemini Hooks, MCP Resources
 

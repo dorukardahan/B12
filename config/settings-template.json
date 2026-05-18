@@ -48,7 +48,7 @@
           {
             "type": "command",
             "command": "~/.B12/hooks/memory-turn-end.sh",
-            "timeout": 5
+            "timeout": 9
           }
         ]
       }
@@ -59,7 +59,7 @@
           {
             "type": "command",
             "command": "~/.B12/hooks/memory-tool-failure.sh",
-            "timeout": 5
+            "timeout": 8
           }
         ]
       }
@@ -71,6 +71,28 @@
             "type": "command",
             "command": "~/.B12/hooks/memory-retrieval.sh",
             "timeout": 15
+          }
+        ]
+      }
+    ],
+    "UserPromptExpansion": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.B12/hooks/memory-prompt-expansion.sh",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
+    "SubagentStop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.B12/hooks/memory-subagent-stop.sh",
+            "timeout": 10
           }
         ]
       }
