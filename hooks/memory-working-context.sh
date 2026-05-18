@@ -58,7 +58,10 @@ if [ "$ENTITY_TYPE" = "search" ]; then
   ENTITY=$(echo "$ENTITY" | head -c 80)
 fi
 
-# Update working memory JSON atomically via Python (jq can't do in-place array dedup easily)
+# S1 (P-SPEED): the working-memory JSON update is side-effect only and the
+# hook emits an empty `{}` either way. Run the Python heredoc in a backgrounded
+# disown'd subshell so the foreground returns instantly.
+{
 python3 - "$WM_FILE" "$ENTITY" "$ENTITY_TYPE" "$SESSION_ID" "$NOW" << 'PYEOF'
 import sys, json, os
 
@@ -67,6 +70,17 @@ entity = sys.argv[2]
 entity_type = sys.argv[3]
 session_id = sys.argv[4]
 now = int(sys.argv[5])
+
+# Concurrency lock (Codex PR #24 P2): backgrounded S1 fires can overlap on
+# the same working-memory.json; without serialization the read-modify-write
+# can drop an entity. fcntl.flock on a sidecar `.lock` makes the read +
+# transform + atomic-rename one logical unit.
+import fcntl as _b12_fcntl
+_b12_lock_fh = open(wm_file + ".lock", "a+")
+try:
+    _b12_fcntl.flock(_b12_lock_fh.fileno(), _b12_fcntl.LOCK_EX)
+except OSError:
+    pass
 
 # Load or initialize
 wm = {"active_files": [], "modified_files": [], "search_patterns": [], "session_id": "", "updated_at": 0}
@@ -115,6 +129,8 @@ with open(tmp, 'w') as f:
     json.dump(wm, f)
 os.rename(tmp, wm_file)
 PYEOF
+} >/dev/null 2>&1 &
+disown
 
 echo '{}'
 exit 0

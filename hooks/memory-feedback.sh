@@ -35,6 +35,11 @@ TIMESTAMP=$(date +%s)
 
 mkdir -p "$FEEDBACK_DIR" 2>/dev/null
 
+# S1 (P-SPEED): everything below is pure side-effect (appending one JSON line
+# to feedback.jsonl + an occasional log rotation). Wrap it in a backgrounded
+# disown'd subshell so the foreground returns in ~5ms instead of paying for
+# 4-6 sequential jq spawns.
+{
 if [ "$TOOL_NAME" = "mcp__B12__memory_store" ]; then
   # Track store quality — metadata, tags, scope compliance
   HAS_METADATA=$(echo "$INPUT" | jq -r 'if .tool_input.metadata then "true" else "false" end' 2>/dev/null)
@@ -75,11 +80,34 @@ elif [ "$TOOL_NAME" = "mcp__B12__memory_search" ]; then
     IS_EMPTY="true"
   fi
 
-  # Per-session search sequence tracking
+  # Per-session search sequence tracking — Codex PR #24 P2: backgrounded
+  # S1 fires can race the read-modify-write here. Wrap in a Python heredoc
+  # with fcntl.flock so the increment is atomic. Python startup is ~30ms
+  # but we're already in a backgrounded subshell so that's invisible.
   SESSION_SEARCH_FILE="$FEEDBACK_DIR/.search-seq-${SESSION_ID}"
-  SEARCH_SEQ=$(cat "$SESSION_SEARCH_FILE" 2>/dev/null || echo "0")
-  SEARCH_SEQ=$((SEARCH_SEQ + 1))
-  echo "$SEARCH_SEQ" > "${SESSION_SEARCH_FILE}.tmp" && mv "${SESSION_SEARCH_FILE}.tmp" "$SESSION_SEARCH_FILE"
+  SEARCH_SEQ=$(python3 - "$SESSION_SEARCH_FILE" 2>/dev/null << 'PYSEQ' || echo "0"
+import os, sys, fcntl
+path = sys.argv[1]
+fh = open(path + ".lock", "a+")
+try:
+    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+except OSError:
+    pass
+val = 0
+try:
+    with open(path) as f:
+        val = int((f.read() or "0").strip() or "0")
+except (FileNotFoundError, ValueError):
+    val = 0
+val += 1
+tmp = path + ".tmp"
+with open(tmp, "w") as f:
+    f.write(str(val))
+os.replace(tmp, path)
+print(val)
+PYSEQ
+)
+  SEARCH_SEQ=${SEARCH_SEQ:-0}
 
   jq -nc --argjson ts "$TIMESTAMP" --arg action "search" --arg project "$PROJECT_NAME" --arg session "$SESSION_ID" \
     --argjson query_length "$QUERY_LEN" --arg query_text "$QUERY_TEXT" --argjson result_count "$RESULT_COUNT" \
@@ -97,17 +125,43 @@ elif [ "$TOOL_NAME" = "mcp__B12__memory_update" ]; then
     '{ts: $ts, action: $action, project: $project, session: $session}' >> "$FEEDBACK_FILE"
 fi
 
-# Keep feedback file reasonable (max 5000 lines)
+# Keep feedback file reasonable (max 5000 lines). Codex PR #24 P2:
+# concurrent rotations can race; tail-then-mv stomps each other's writes.
+# Serialize through Python flock so a backgrounded fire can't drop lines
+# from a peer's rotation in-flight.
 if [ -f "$FEEDBACK_FILE" ]; then
-  LINE_COUNT=$(wc -l < "$FEEDBACK_FILE" 2>/dev/null || echo "0")
-  if [ "$LINE_COUNT" -gt 5000 ]; then
-    tail -2500 "$FEEDBACK_FILE" > "$FEEDBACK_FILE.tmp"
-    mv "$FEEDBACK_FILE.tmp" "$FEEDBACK_FILE"
-  fi
+  python3 - "$FEEDBACK_FILE" >/dev/null 2>&1 << 'PYROT' || true
+import fcntl, os, sys
+path = sys.argv[1]
+fh = open(path + ".lock", "a+")
+try:
+    fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+except OSError:
+    pass
+try:
+    with open(path) as f:
+        lines = f.readlines()
+except FileNotFoundError:
+    lines = []
+if len(lines) > 5000:
+    keep = lines[-2500:]
+    tmp = path + ".rot.tmp"
+    with open(tmp, "w") as f:
+        f.writelines(keep)
+    os.replace(tmp, path)
+PYROT
 fi
 
-# Clean up stale search sequence temp files (older than 4 hours)
-find "$FEEDBACK_DIR" -name ".search-seq-*" -mmin +240 -delete 2>/dev/null || true
+# Clean up stale search sequence temp files (older than 4 hours).
+# Cleanup glob excludes `*.lock` — if a cleanup deletes a lock sidecar
+# while a concurrent worker holds flock on its inode, the next worker
+# creates a new inode under the same name and the two writers race
+# (the flocks no longer serialize). Lock sidecars are 0 bytes; let
+# them accumulate and prune separately on a 7-day mtime cadence.
+find "$FEEDBACK_DIR" -name ".search-seq-*" ! -name "*.lock" -mmin +240 -delete 2>/dev/null || true
+find "$FEEDBACK_DIR" -name ".search-seq-*.lock" -mtime +7 -delete 2>/dev/null || true
+} >/dev/null 2>&1 &
+disown
 
 # Always output empty JSON (PostToolUse doesn't need additionalContext)
 echo '{}'

@@ -202,6 +202,14 @@ copy_hooks() {
     chmod +x "$HOOK_DEST/$(basename "$f")"
     count=$((count + 1))
   done
+  # Shared hook helper (b12_async_fork, b12_sync_watchdog, b12_should_skip_trivial)
+  # sourced by memory-retrieval / memory-proactive-surface / memory-checkpoint /
+  # memory-working-context / memory-feedback as of v11.34 / P-SPEED.
+  if [ -f "$HOOK_SOURCE/_b12_common.sh" ]; then
+    cp "$HOOK_SOURCE/_b12_common.sh" "$HOOK_DEST/"
+    chmod +x "$HOOK_DEST/_b12_common.sh"
+    count=$((count + 1))
+  fi
   # Copy Codex notify hook if present
   if [ -f "$HOOK_SOURCE/b12-codex-notify.sh" ]; then
     cp "$HOOK_SOURCE/b12-codex-notify.sh" "$HOOK_DEST/"

@@ -38,12 +38,18 @@
 # Output: additionalContext with relevant memories
 # Performance target: <500ms (re-rank skipped on attribute queries → ~50ms)
 
+# Shared helpers (b12_sync_watchdog, b12_async_fork). Soft sync cap from
+# S3 (P-SPEED): once exceeded, emit empty `{}` + log to sync-cap-hits.jsonl
+# instead of blocking the user's prompt with a slow retrieval.
+_B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
+# shellcheck disable=SC1091
+. "$_B12_HOOK_DIR/_b12_common.sh"
+
 # ── Self-timeout watchdog ─────────────────────────────────────
-# Kills this script if it exceeds max runtime. Prevents orphan processes.
-( sleep 10 && kill -USR1 $$ 2>/dev/null ) &
-_WATCHDOG=$!
-trap 'echo "{}"; kill $_WATCHDOG 2>/dev/null; exit 0' USR1
-trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
+# S3 hard cap: B12_SYNC_CAP_S overrides for benchmarks; default 1.5s
+# (FSRS update + graph expansion + contradiction join finish here;
+# the heavy Python boost path is moved to disown'd background below).
+b12_sync_watchdog "${B12_SYNC_CAP_S:-1.5}" memory-retrieval
 
 INPUT=$(cat)
 PROMPT=$(echo "$INPUT" | jq -r '.prompt // ""')
@@ -447,18 +453,28 @@ if daemon_alive; then
     '{op:"recall",query:$q,db_path:$db,limit:5,threshold:0.55,skip_ids:$skip}')
   _RESP=$(daemon_request "$_REQ")
   _USED_RECALL=false
+  _DAEMON_ANSWERED=false
   if echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
     _USED_RECALL=true
+    _DAEMON_ANSWERED=true
     _SEM_DATA=$(echo "$_RESP" | jq -r '.results[] | "\(.id)|\(.display)"')
   else
     # Older daemon: fall back to semantic_search.
     _REQ=$(jq -nc --arg q "$PROMPT" --arg db "$DB_PATH" '{op:"semantic_search",query:$q,db_path:$db,limit:5}')
     _RESP=$(daemon_request "$_REQ")
     if echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
+      _DAEMON_ANSWERED=true
       _SEM_DATA=$(echo "$_RESP" | jq -r '.results[] | "\(.id)|\(.display)"')
     else
       _SEM_DATA=""
     fi
+  fi
+  # If the daemon answered at all (recall or legacy semantic_search), trust
+  # the result — don't fire the 2-3s cold fallback just because we got
+  # back zero hits. Cold fallback exists for daemon-down emergencies, not
+  # for "no semantic match above threshold" — which is a legitimate signal.
+  if [ "$_DAEMON_ANSWERED" = true ]; then
+    NEEDS_COLD_SEMANTIC=false
   fi
   if [ -n "$_SEM_DATA" ]; then
     _EXISTING_IDS=",${RESULT_IDS}"
@@ -650,9 +666,14 @@ if [ "$RERANK_DONE" = false ] && [ "$RESULT_COUNT" -gt "$DISPLAY_LIMIT" ]; then
 fi
 
 # ── Boost strength via FSRS (spaced repetition) ────────────────
+# S3 (P-SPEED): Python startup + DB UPDATE = ~80-120ms. The injection's
+# already decided at this point, so backgrounding the strength boost
+# keeps the foreground under the 200ms cap while the FSRS update
+# still completes for the next session's recall.
 if [ "$RESULT_COUNT" -gt 0 ]; then
   BOOST_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | head -5 | tr '\n' ',' | sed 's/,$//')
   B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.B12/hooks}/scripts"
+  {
   python3 - "$DB_PATH" "$BOOST_IDS" "$B12_SCRIPTS" << 'FSRS_EOF' >/dev/null 2>&1
 import sys, os, sqlite3, json
 db_path, boost_ids_str, scripts_dir = sys.argv[1], sys.argv[2], sys.argv[3]
@@ -718,6 +739,8 @@ for mid in ids:
 conn.commit()
 conn.close()
 FSRS_EOF
+  } >/dev/null 2>&1 &
+  disown
 fi
 
 # ── Graph-aware context expansion (Phase 2) ──────────────────
@@ -893,6 +916,10 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
   fi
 fi
 
+# Flag stdout as "primary output" so a late-firing sync-cap watchdog
+# (b12_sync_watchdog at script top) doesn't append a `{}` and corrupt
+# the JSON we're about to emit. See _b12_common.sh:_b12_sync_cap_handler.
+b12_mark_output_emitted 2>/dev/null || _B12_OUTPUT_EMITTED=1
 printf '%s' "$_CANDIDATE_CONTEXT" | \
   jq -Rs '{hookSpecificOutput:{hookEventName:"UserPromptSubmit",additionalContext:.}}'
 

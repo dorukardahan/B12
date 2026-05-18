@@ -16,16 +16,33 @@
 # Output: JSON additionalContext or empty {} on no-surface / cap-hit / cooldown.
 # Performance target: p50 < 150ms.
 
-# ── Self-timeout watchdog ─────────────────────────────────────
-( sleep 4 && kill -TERM $$ 2>/dev/null ) &
-_WATCHDOG=$!
-trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
+# Shared helpers (b12_sync_watchdog, b12_should_skip_trivial).
+_B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
+# shellcheck disable=SC1091
+. "$_B12_HOOK_DIR/_b12_common.sh"
+
+# S3 sync cap: this hook hits on EVERY Read/Edit/Write PreToolUse + every
+# Bash PostToolUse, so a slow fire is user-visible. Default 1.0s; override
+# via B12_PROACTIVE_CAP_S for benchmarks.
+b12_sync_watchdog "${B12_PROACTIVE_CAP_S:-1.0}" memory-proactive-surface
 
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')
 HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // ""')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
 SESSION_ID12="${SESSION_ID:0:12}"
+TOOL_INPUT_JSON=$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null)
+
+# ── S4 trivial-call skip (P-SPEED) ───────────────────────────
+# Tiny Reads (<1KB), Bash builtins (pwd/ls/cd/echo/which/env/date), and
+# .gitignore/.gitkeep-class sentinels never benefit from a memory surface
+# — we'd just spend ~50ms scanning the DB to find nothing relevant. The
+# whitelist lives in hooks/_b12_common.sh so memory-checkpoint can adopt
+# the same heuristic if it ever wants one.
+if b12_should_skip_trivial "$TOOL_NAME" "$TOOL_INPUT_JSON"; then
+  echo '{}'
+  exit 0
+fi
 
 B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 B12_STATE_DIR="$B12_BASE/state"
@@ -238,6 +255,10 @@ echo "{\"last_surfaced_at\":${NOW},\"tool_calls\":0}" > "${SURFACE_STATE}.tmp" 2
 # silently drops the inject on the error-surfacing path. Default to PreToolUse
 # only when the input did not carry an event (defensive — should not happen).
 _EVENT_OUT="${HOOK_EVENT:-PreToolUse}"
+# Flag stdout as "primary output" so a late-firing sync-cap watchdog
+# doesn't append a `{}` and corrupt the JSON we're about to emit.
+# See _b12_common.sh:_b12_sync_cap_handler.
+b12_mark_output_emitted 2>/dev/null || _B12_OUTPUT_EMITTED=1
 printf '%s' "$_CAND_CONTEXT" | \
   jq -Rs --arg ev "$_EVENT_OUT" \
     '{hookSpecificOutput:{hookEventName:$ev,additionalContext:.}}'

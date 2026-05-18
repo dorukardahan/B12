@@ -15,6 +15,11 @@
 #   5. Buffer ≥ 3 items → batch INSERT to DB
 #   Fallback: DB contention or daemon down → skip silently
 
+# Shared helpers (b12_async_fork, b12_sync_watchdog, b12_should_skip_trivial).
+_B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
+# shellcheck disable=SC1091
+. "$_B12_HOOK_DIR/_b12_common.sh"
+
 # ── Self-timeout watchdog (3s — this hook MUST be fast) ──────
 ( sleep 3 && kill -TERM $$ 2>/dev/null ) &
 _WATCHDOG=$!
@@ -23,6 +28,11 @@ trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
 INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
+
+# Q5 (P-RECALL) telemetry — start timestamp + log path.
+_Q5_START_MS=$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null || echo 0)
+_Q5_SESSION_ID12="${SESSION_ID:0:12}"
+_Q5_TELEMETRY_LOG="${B12_DATA_DIR:-$HOME/.B12}/memory-logs/checkpoint-telemetry.jsonl"
 
 # Skip if essential tools — don't slow down critical paths
 case "$TOOL_NAME" in
@@ -41,10 +51,17 @@ COUNTER_FILE="$CHECKPOINT_DIR/.call-counter-${SESSION_ID:0:12}"
 BUFFER_FILE="$CHECKPOINT_DIR/.buffer-${SESSION_ID:0:12}.jsonl"
 LAST_FLUSH="$CHECKPOINT_DIR/.last-flush-${SESSION_ID:0:12}"
 
-# Cleanup stale session files (older than 24 hours)
-find "$CHECKPOINT_DIR" -name '.call-counter-*' -mtime +1 -delete 2>/dev/null || true
-find "$CHECKPOINT_DIR" -name '.buffer-*' -mtime +1 -delete 2>/dev/null || true
-find "$CHECKPOINT_DIR" -name '.last-flush-*' -mtime +1 -delete 2>/dev/null || true
+# Cleanup stale session files (older than 24 hours).
+# Cleanup globs exclude `*.lock` — the new fcntl.flock sidecars on the
+# buffer file (e.g., `.buffer-<sid>.jsonl.lock`) would otherwise be
+# deleted while a concurrent worker holds flock on the inode, causing
+# the next worker to create a new inode under the same name and racing
+# the writers. Lock sidecars are 0 bytes; they get a 7-day mtime sweep
+# separately so they don't accumulate forever either.
+find "$CHECKPOINT_DIR" -name '.call-counter-*' ! -name '*.lock' -mtime +1 -delete 2>/dev/null || true
+find "$CHECKPOINT_DIR" -name '.buffer-*' ! -name '*.lock' -mtime +1 -delete 2>/dev/null || true
+find "$CHECKPOINT_DIR" -name '.last-flush-*' ! -name '*.lock' -mtime +1 -delete 2>/dev/null || true
+find "$CHECKPOINT_DIR" -name '*.lock' -mtime +7 -delete 2>/dev/null || true
 
 NOW=$(date +%s)
 
@@ -64,8 +81,15 @@ if [ -f "$LAST_FLUSH" ]; then
 fi
 ELAPSED=$(( NOW - LAST_FLUSH_TIME ))
 
-# Not time yet? Exit early (every 15 calls or 600 seconds)
+# Not time yet? Exit early (every 15 calls or 600 seconds).
+# Q5: log the early-skip so we can tell "no opportunity to capture" apart
+# from "captured but found nothing" in the daily checkpoint audit.
 if [ "$COUNT" -lt 15 ] && [ "$ELAPSED" -lt 600 ]; then
+  _Q5_END_MS=$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null || echo "$_Q5_START_MS")
+  _Q5_LAT=$(( _Q5_END_MS - _Q5_START_MS ))
+  [ "$_Q5_LAT" -lt 0 ] && _Q5_LAT=0
+  echo "{\"ts\":$(date +%s),\"session_id\":\"${_Q5_SESSION_ID12}\",\"tool\":\"${TOOL_NAME}\",\"phase\":\"rate_limit_skip\",\"counter\":${COUNT},\"elapsed_s\":${ELAPSED},\"latency_ms\":${_Q5_LAT}}" \
+    >> "$_Q5_TELEMETRY_LOG" 2>/dev/null
   echo '{}'
   exit 0
 fi
@@ -100,7 +124,14 @@ B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.B12/hooks}/scripts"
 # Detect project name from CWD
 PROJECT_NAME=$(basename "${PWD:-/tmp}")
 
-python3 - "$SCAN_TEXT" "$BUFFER_FILE" "$B12_SCRIPTS" "$PROJECT_NAME" "$NOW" "$LAST_FLUSH" << 'PYEOF'
+# S1 (P-SPEED): run the regex + classifier + DB write entirely in
+# background. This hook fires on EVERY PostToolUse and emits no
+# additionalContext — there is zero reason to block the tool flow on
+# the ~50-200ms Python heredoc. The main script falls through to the
+# `echo '{}'` immediately, the child process finishes the work,
+# disown'd so a parent exit cannot SIGHUP it.
+{
+python3 - "$SCAN_TEXT" "$BUFFER_FILE" "$B12_SCRIPTS" "$PROJECT_NAME" "$NOW" "$LAST_FLUSH" "$_Q5_TELEMETRY_LOG" "$_Q5_SESSION_ID12" "$TOOL_NAME" "$_Q5_START_MS" << 'PYEOF'
 import sys
 import os
 import json
@@ -111,6 +142,69 @@ scripts_dir = sys.argv[3]
 project_name = sys.argv[4]
 now = int(sys.argv[5])
 last_flush_file = sys.argv[6]
+
+# ── Concurrency lock (Codex PR #24 P1) ─────────────────────
+# S1 backgrounding means multiple checkpoint hooks can overlap on the
+# same per-session BUFFER_FILE + LAST_FLUSH. fcntl.flock on a sidecar
+# `.lock` file serializes the critical sections (append-to-buffer,
+# read-buffer, batch-insert, remove-buffer, write-last-flush). The
+# lock is released when this Python process exits — even on hard kill —
+# so a crashed worker won't deadlock the next fire.
+import fcntl as _b12_fcntl
+_b12_lock_path = buffer_file + ".lock"
+_b12_lock_fh = open(_b12_lock_path, "a+")
+try:
+    _b12_fcntl.flock(_b12_lock_fh.fileno(), _b12_fcntl.LOCK_EX)
+except OSError:
+    # Locks unsupported (rare — e.g. NFS without flock) — proceed unlocked.
+    pass
+
+# ── Q5 (P-RECALL) telemetry plumbing ───────────────────────
+# We're inside a backgrounded subshell — write our own JSONL line so the
+# parent doesn't need to wait. Latency is measured from the parent's start
+# mark (sys.argv[10]) so a "captured" telemetry line covers the full
+# scan→insert path.
+import time as _q5_time
+_q5_log_path = sys.argv[7] if len(sys.argv) > 7 else ""
+_q5_sid12 = sys.argv[8] if len(sys.argv) > 8 else ""
+_q5_tool = sys.argv[9] if len(sys.argv) > 9 else ""
+try:
+    _q5_start_ms = int(sys.argv[10]) if len(sys.argv) > 10 else int(_q5_time.time()*1000)
+except (TypeError, ValueError):
+    _q5_start_ms = int(_q5_time.time()*1000)
+
+def _q5_log(phase, captured=0, dropped_dedup=0, inserted=0, error=None):
+    if not _q5_log_path:
+        return
+    lat_ms = max(0, int(_q5_time.time()*1000) - _q5_start_ms)
+    import json as _json
+    rec = {
+        "ts": int(_q5_time.time()),
+        "session_id": _q5_sid12,
+        "tool": _q5_tool,
+        "phase": phase,
+        "captured": int(captured),
+        "dropped_dedup": int(dropped_dedup),
+        "inserted": int(inserted),
+        "latency_ms": int(lat_ms),
+    }
+    if error:
+        rec["error"] = str(error)[:120]
+    try:
+        with open(_q5_log_path, "a") as f:
+            f.write(_json.dumps(rec, ensure_ascii=False) + "\n")
+    except OSError:
+        pass
+
+# Q5 final-line bookkeeping — log no matter how we exit unless explicit phase=flush already wrote.
+_q5_final_phase = "scan_only"
+_q5_final_stats = {"captured": 0, "dropped_dedup": 0, "inserted": 0}
+
+import atexit as _q5_atexit
+def _q5_finalize():
+    if _q5_final_phase != "logged":
+        _q5_log(_q5_final_phase, **_q5_final_stats)
+_q5_atexit.register(_q5_finalize)
 
 # Import shared patterns
 sys.path.insert(0, scripts_dir)
@@ -124,6 +218,7 @@ try:
     )
 except ImportError:
     # shared_patterns not available — skip silently
+    _q5_final_phase = "import_fail"
     sys.exit(0)
 
 # ── Layer 0: Skip session summary recitations ───────────────
@@ -259,8 +354,10 @@ try:
         pass
 
     inserted = 0
+    dropped_dedup = 0
     for item in buffer_items:
         if item["hash"] in existing_hashes:
+            dropped_dedup += 1
             continue
 
         tags = f"proj:{project_name},checkpoint,{item['category']}"
@@ -281,14 +378,19 @@ try:
             inserted += 1
             existing_hashes.add(item["hash"])
         except sqlite3.IntegrityError:
-            pass
+            dropped_dedup += 1
 
     if inserted > 0:
         conn.commit()
 
     conn.close()
-except (sqlite3.OperationalError, sqlite3.DatabaseError):
+    _q5_log("flush", captured=len(buffer_items),
+            dropped_dedup=dropped_dedup, inserted=inserted)
+    _q5_final_phase = "logged"
+except (sqlite3.OperationalError, sqlite3.DatabaseError) as _q5_err:
     # DB locked or unavailable — skip silently
+    _q5_log("db_error", captured=len(buffer_items), error=_q5_err)
+    _q5_final_phase = "logged"
     pass
 
 # Clear buffer after flush
@@ -302,6 +404,8 @@ with open(last_flush_file, "w") as f:
     f.write(str(now))
 
 PYEOF
+} >/dev/null 2>&1 &
+disown
 
 echo '{}'
 exit 0
