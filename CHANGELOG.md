@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.41.0](https://github.com/dorukardahan/B12/compare/v11.40.1...v11.41.0) (2026-05-18)
+
+
+### Features
+
+* **recall:** cross-session high-importance candidates ([#36](https://github.com/dorukardahan/B12/issues/36)) ([c7d5a17](https://github.com/dorukardahan/B12/commit/c7d5a1705f60dc876fbd31a819c17972e608f47c)), closes [hi#importance](https://github.com/hi/issues/importance) [#34](https://github.com/dorukardahan/B12/issues/34) [hi#importance](https://github.com/hi/issues/importance)
+
 ## [11.40.1](https://github.com/dorukardahan/B12/compare/v11.40.0...v11.40.1) (2026-05-18)
 
 
