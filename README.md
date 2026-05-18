@@ -368,6 +368,22 @@ If you run multiple Claude Code setups (e.g., personal + work):
 | `B12_HOOK_DIR` | Hook code: script imports, embed daemon | `~/.B12/hooks` | (rarely needed) |
 | `B12_WORK_PATTERN` | Work setup detection pattern | (none) | `mycompany` |
 
+#### LLM extraction (opt-in, default off)
+
+The LLM extraction subagent runs at SessionEnd in a detached background process and writes through the same `merge_or_insert` path as regex extraction. Default-off; set `B12_LLM_PROVIDER` to enable.
+
+| Variable | Controls | Default | Example |
+|----------|----------|---------|---------|
+| `B12_LLM_PROVIDER` | Provider selector. `none` disables LLM extraction entirely. | `none` | `anthropic` / `ollama` / `none` |
+| `B12_LLM_MODEL` | Override provider's default model id. | provider default | `claude-haiku-4-5-20251001` / `qwen2.5:1.5b` |
+| `ANTHROPIC_API_KEY` | Required when provider is `anthropic`. Never logged. | (unset) | `sk-ant-…` |
+| `OLLAMA_HOST` | Ollama HTTP endpoint. Used when provider is `ollama`. | `http://127.0.0.1:11434` | `http://localhost:11434` |
+| `B12_LLM_TIMEOUT_S` | Background per-call timeout. Hook is already done; this only protects the detached worker. | `60` | `90` |
+| `B12_LLM_MAX_MEMORIES` | Hard cap on memories returned per call. | `10` | `5` |
+| `B12_LLM_TRANSCRIPT_CAP_CHARS` | Transcript chunk sent to the LLM. Ollama auto-caps at 25K when this is unset. | `50000` (Anthropic) / `25000` (Ollama) | `30000` |
+
+Failure modes are silent: API outage, rate limit, missing key, or malformed output all log to `~/.B12/memory-logs/llm-extraction-errors.log` and the hook still exits 0. LLM-written memories carry `tag:llm-extracted` and `metadata.extraction_method=llm-<provider>` for downstream filtering. See `docs/B12_llm_extraction_design.md` for full architecture, cost estimate, and dedup logic.
+
 **Important:** `B12_DATA_DIR` and `B12_HOOK_DIR` are separate by design. Data can be per-setup while hook code stays shared. Set them in your setup's `settings.json`:
 ```json
 {

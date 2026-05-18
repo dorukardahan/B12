@@ -1075,6 +1075,28 @@ MEMPYEOF
   disown 2>/dev/null
 fi
 
+# ── LLM extraction (background, opt-in) ─────────────────────────────
+# Default-off: gated on B12_LLM_PROVIDER != "none". When opted in,
+# extractor runs detached with its own timeout — the hook is already
+# exit-0 by the time the LLM call returns. See
+# docs/B12_llm_extraction_design.md "Why SessionEnd only".
+if [ "${B12_LLM_PROVIDER:-none}" != "none" ] && [ -f "$TRANSCRIPT_PATH" ]; then
+  _B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
+  LLM_EXTRACTOR="$_B12_HOOK_DIR/scripts/b12_llm_extractor.py"
+  if [ -f "$LLM_EXTRACTOR" ] && [ -x "$VENV_PYTHON" ]; then
+    (
+      "$VENV_PYTHON" "$LLM_EXTRACTOR" \
+        --transcript "$TRANSCRIPT_PATH" \
+        --session "$SESSION_ID" \
+        --project "$PROJECT_NAME" \
+        --setup "$SETUP_CONTEXT" \
+        --event session_end \
+        >> "$LOG_DIR/llm-extraction.log" 2>&1
+    ) &
+    disown 2>/dev/null
+  fi
+fi
+
 # Log session end
 echo "{\"session\":\"$SESSION_ID\",\"project\":\"$PROJECT_NAME\",\"setup\":\"$SETUP_CONTEXT\",\"reason\":\"$REASON\",\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >> "$LOG_DIR/sessions.jsonl"
 
