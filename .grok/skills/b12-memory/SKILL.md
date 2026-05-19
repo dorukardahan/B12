@@ -24,7 +24,7 @@ You have a high-quality persistent memory system powered by the B12 MCP server (
 
 When starting work in the B12 directory (or any project using B12):
 
-1. Call `B12__memory_session_context(project_name="B12", cwd="~/Desktop/B12")` for rich startup context.
+1. Call `B12__memory_session_context(project_name="B12", cwd="<your project working directory>")` for rich startup context.
 2. Follow with targeted `B12__memory_search` (hybrid mode, proper tags, time filters if relevant).
 3. Output a short, clean **B12 pill** in this exact format (one line):
 

@@ -3,10 +3,10 @@
     "B12": {
       "command": "python3",
       "args": [
-        "~/Desktop/B12/scripts/b12_mcp_server.py"
+        "__SCRIPT_PATH__"
       ],
       "env": {
-        "B12_DATA_DIR": "~/.B12"
+        "B12_DATA_DIR": "__B12_DATA_DIR__"
       },
       "enabled": true,
       "startup_timeout_sec": 20,

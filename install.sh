@@ -2868,6 +2868,8 @@ PYEOF
 deploy_grok_plugin() {
   local PLUGIN_SRC="$SCRIPT_DIR/.grok/plugins-available/b12"
   local PLUGIN_DEST="$HOME/.grok/plugins/b12"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+  local DATA_DIR="${B12_DATA_DIR:-$HOME/.B12}"
 
   if [ ! -d "$PLUGIN_SRC" ]; then
     warn "Grok plugin source not found at $PLUGIN_SRC (expected in plugins-available/)"
@@ -2877,6 +2879,16 @@ deploy_grok_plugin() {
   rm -rf "$PLUGIN_DEST" 2>/dev/null || true
   mkdir -p "$PLUGIN_DEST"
   cp -r "$PLUGIN_SRC"/* "$PLUGIN_DEST"/ 2>/dev/null || true
+
+  # Substitute path markers in copied .mcp.json so the deployed plugin
+  # points at the user's actual B12 install (not the source-repo author).
+  if [ -f "$PLUGIN_DEST/.mcp.json" ]; then
+    sed -i.bak \
+      -e "s|__SCRIPT_PATH__|$SERVER_SCRIPT|g" \
+      -e "s|__B12_DATA_DIR__|$DATA_DIR|g" \
+      "$PLUGIN_DEST/.mcp.json"
+    rm -f "$PLUGIN_DEST/.mcp.json.bak"
+  fi
 
   info "B12 Grok plugin deployed to $PLUGIN_DEST (from plugins-available/)"
   return 0
