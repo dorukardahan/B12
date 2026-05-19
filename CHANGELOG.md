@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.57.0](https://github.com/dorukardahan/B12/compare/v11.56.0...v11.57.0) (2026-05-19)
+
+
+### Features
+
+* **cc:** SessionEnd idle-timeout skip (B12_IDLE_TIMEOUT_SECONDS) ([#54](https://github.com/dorukardahan/B12/issues/54)) ([5c23731](https://github.com/dorukardahan/B12/commit/5c23731010dafbde82164856e5a605359270150e))
+
 # [11.56.0](https://github.com/dorukardahan/B12/compare/v11.55.0...v11.56.0) (2026-05-19)
 
 

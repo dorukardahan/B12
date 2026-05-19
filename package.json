@@ -1,6 +1,6 @@
 {
   "name": "b12-memory-system",
-  "version": "11.56.0",
+  "version": "11.57.0",
   "private": true,
   "description": "Persistent memory system for AI coding assistants",
   "repository": {
