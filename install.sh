@@ -123,6 +123,8 @@ INSTALL_DAEMON=false
 UNINSTALL_DAEMON=false
 INSTALL_SMOKE_CRON=false
 UNINSTALL_SMOKE_CRON=false
+INSTALL_GC_CRON=false
+UNINSTALL_GC_CRON=false
 FIX_DRIFT=false
 TARGET_DIR=""
 for arg in "$@"; do
@@ -143,6 +145,8 @@ for arg in "$@"; do
     --daemon-uninstall) UNINSTALL_DAEMON=true ;;
     --smoke-cron) INSTALL_SMOKE_CRON=true ;;
     --smoke-cron-uninstall) UNINSTALL_SMOKE_CRON=true ;;
+    --gc-cron) INSTALL_GC_CRON=true ;;
+    --gc-cron-uninstall) UNINSTALL_GC_CRON=true ;;
     --fix-drift) FIX_DRIFT=true ;;
     --health)
       # Run health check and exit — only forward --json and --fix
@@ -272,6 +276,53 @@ uninstall_smoke_cron() {
       ' \
     | crontab -
   info "Removed smoke cron entry"
+}
+
+# Soft-delete GC + VACUUM (§C2) — opt-in via --gc-cron, mirrors smoke-cron.
+# Runs b12_gc.py weekly; idempotent. User crontab only.
+_gc_cron_marker="# B12_GC_CRON v1 — managed by install.sh; remove via './install.sh --gc-cron-uninstall'"
+
+install_gc_cron() {
+  local script_path="$SCRIPT_DEST/b12_gc.py"
+  if [ ! -f "$script_path" ]; then
+    warn "GC script not deployed at $script_path. Run './install.sh --all' first."
+    return 1
+  fi
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON. Run './install.sh --full' first."
+    return 1
+  fi
+  local current
+  current=$(crontab -l 2>/dev/null || true)
+  if printf '%s' "$current" | grep -qF "$_gc_cron_marker"; then
+    info "GC cron already installed (skipping)"
+    return 0
+  fi
+  # 04:23 Sunday — weekly, off-peak, distinct from smoke (daily 03:17).
+  local entry="23 4 * * 0 $VENV_PYTHON $script_path >/dev/null 2>&1"
+  {
+    printf '%s\n' "$current"
+    printf '%s\n' "$_gc_cron_marker"
+    printf '%s\n' "$entry"
+  } | crontab -
+  info "Installed GC cron entry: $entry"
+}
+
+uninstall_gc_cron() {
+  local current
+  current=$(crontab -l 2>/dev/null || true)
+  if ! printf '%s' "$current" | grep -qF "$_gc_cron_marker"; then
+    info "GC cron not installed (nothing to remove)"
+    return 0
+  fi
+  printf '%s\n' "$current" \
+    | awk -v marker="$_gc_cron_marker" '
+        skip > 0     { skip--; next }
+        $0 == marker { skip = 1; next }
+                     { print }
+      ' \
+    | crontab -
+  info "Removed GC cron entry"
 }
 
 # ─────────────────────────────────────────────
@@ -3001,6 +3052,21 @@ if $INSTALL_SMOKE_CRON; then
   echo ""
   echo "── B12 Smoke Cron Setup ─────────"
   install_smoke_cron
+  echo ""
+fi
+
+# Soft-delete GC cron (§C2) — opt-in only. Weekly Sunday VACUUM + hard
+# delete of soft-deleted rows past TTL (default 30d).
+if $UNINSTALL_GC_CRON; then
+  echo ""
+  echo "── B12 GC Cron Uninstall ────────"
+  uninstall_gc_cron
+  echo ""
+fi
+if $INSTALL_GC_CRON; then
+  echo ""
+  echo "── B12 GC Cron Setup ────────────"
+  install_gc_cron
   echo ""
 fi
 
