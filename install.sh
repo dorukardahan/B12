@@ -2031,8 +2031,6 @@ inject_continue_mcp_config() {
 
 # ─────────────────────────────────────────────
 # Continue.dev: install behavioral rules into ~/.continue/rules/.
-# Continue honors per-file Markdown rules in the rules/ tree as of late
-# 2025; this drops B12's recall/store rule alongside any user rules.
 # ─────────────────────────────────────────────
 inject_continue_rules() {
   local TEMPLATE="$SCRIPT_DIR/config/continue-instructions-template.md"
@@ -2066,6 +2064,40 @@ verify_continue() {
     errors=$((errors + 1))
   fi
   return "$errors"
+}
+
+# ─────────────────────────────────────────────
+# Cline: deploy lifecycle hook shims to ~/Documents/Cline/Hooks/.
+# Codex review PR #47 P1: global Cline hooks live at
+# ~/Documents/Cline/Hooks/, NOT ~/.cline/hooks/ (verified against
+# cline/cline:.clinerules/hooks/README.md). Hook files must have NO
+# extension and start with a shebang line. Each shim delegates to the
+# matching B12 hook and translates `additionalContext` ↔ Cline's
+# `contextModification` (camelCase JSON wire key, NOT proto's snake_case).
+# Ships: TaskStart, UserPromptSubmit, PreCompact (passive placeholder
+# until Cline finalizes PreCompact wire shape upstream).
+# Deferred to a focused follow-up: TaskComplete (needs Cline transcript
+# adapter for ~/Library/.../tasks/<id>/api_conversation_history.json).
+# ─────────────────────────────────────────────
+inject_cline_hooks() {
+  local TEMPLATE_DIR="$SCRIPT_DIR/config/cline-hooks"
+  local CLINE_HOOK_DIR="$HOME/Documents/Cline/Hooks"
+  if [ ! -d "$TEMPLATE_DIR" ]; then
+    warn "Cline hooks template dir not found at $TEMPLATE_DIR"
+    return 1
+  fi
+  mkdir -p "$CLINE_HOOK_DIR"
+  local n=0
+  for shim in "$TEMPLATE_DIR"/TaskStart \
+              "$TEMPLATE_DIR"/UserPromptSubmit \
+              "$TEMPLATE_DIR"/PreCompact; do
+    [ -f "$shim" ] || continue
+    cp "$shim" "$CLINE_HOOK_DIR/"
+    chmod +x "$CLINE_HOOK_DIR/$(basename "$shim")"
+    n=$((n + 1))
+  done
+  info "Deployed $n Cline hook shims to $CLINE_HOOK_DIR"
+  info "Enable Cline hooks: VSCode → Cline settings → Feature Settings → check 'Enable Hooks'"
 }
 
 # ─────────────────────────────────────────────
@@ -2899,6 +2931,7 @@ if $INSTALL_CLINE; then
   echo "── Cline (VS Code) Setup ────────"
   inject_cline_mcp_config
   inject_cline_rules
+  inject_cline_hooks
   echo ""
 fi
 

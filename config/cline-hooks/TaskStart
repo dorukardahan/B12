@@ -1,0 +1,40 @@
+#!/bin/bash
+# B12 ↔ Cline TaskStart hook (Plan §D2)
+# Cline's TaskStart event ≡ Claude Code's SessionStart(source=startup).
+# Delegates to memory-session-start.sh and translates the output's
+# `hookSpecificOutput.additionalContext` → Cline's `contextModification`
+# JSON wire key (camelCase, NOT proto's snake_case context_modification —
+# verified against src/core/hooks/templates.ts in cline/cline).
+#
+# Cline hook contract: JSON on stdin, JSON on stdout. Hook file MUST
+# have no extension and start with a shebang (per Cline's hooks docs).
+# Global location: ~/Documents/Cline/Hooks/TaskStart.
+
+set -o pipefail 2>/dev/null || true
+B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
+BACKING="$B12_HOOK_DIR/memory-session-start.sh"
+[ -x "$BACKING" ] || { echo '{"cancel": false}'; exit 0; }
+
+# Normalize Cline's payload to Claude Code's shape:
+#   .workspaceRoots[0] → .cwd
+#   force source=startup (Cline doesn't distinguish startup/resume here)
+INPUT=$(cat)
+INPUT_NORM=$(printf '%s' "$INPUT" | jq -c '
+  . + {
+    source: "startup",
+    cwd: (.cwd // .workspaceRoots[0]? // .workspace_roots[0]? // "")
+  }
+' 2>/dev/null)
+[ -z "$INPUT_NORM" ] && INPUT_NORM="$INPUT"
+
+OUT=$(printf '%s' "$INPUT_NORM" | "$BACKING" 2>/dev/null)
+
+if [ -n "$OUT" ]; then
+  printf '%s' "$OUT" | jq -c '
+    if (.hookSpecificOutput?.additionalContext // "") != "" then
+      {cancel: false, contextModification: .hookSpecificOutput.additionalContext}
+    else {cancel: false} end
+  ' 2>/dev/null
+else
+  echo '{"cancel": false}'
+fi

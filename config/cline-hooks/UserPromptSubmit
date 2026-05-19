@@ -1,0 +1,38 @@
+#!/bin/bash
+# B12 ↔ Cline UserPromptSubmit hook (Plan §D2)
+# Delegates to memory-retrieval.sh and translates output's
+# `additionalContext` → Cline's `contextModification` (camelCase wire
+# key, verified against cline/cline:src/core/hooks/templates.ts).
+#
+# Cline's UserPromptSubmit JSON payload nests the prompt under
+# .userPromptSubmit.prompt + workspace under .workspaceRoots[0]
+# (proto3 JSON camelCase), while memory-retrieval.sh reads top-level
+# .prompt / .cwd. Normalize before delegation.
+
+set -o pipefail 2>/dev/null || true
+B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
+BACKING="$B12_HOOK_DIR/memory-retrieval.sh"
+[ -x "$BACKING" ] || { echo '{"cancel": false}'; exit 0; }
+
+INPUT=$(cat)
+INPUT_NORM=$(printf '%s' "$INPUT" | jq -c '
+  . + {
+    prompt: (.prompt
+              // .userPromptSubmit.prompt?
+              // .user_prompt_submit.prompt?
+              // ""),
+    cwd: (.cwd // .workspaceRoots[0]? // .workspace_roots[0]? // "")
+  }
+' 2>/dev/null)
+[ -z "$INPUT_NORM" ] && INPUT_NORM="$INPUT"
+
+OUT=$(printf '%s' "$INPUT_NORM" | "$BACKING" 2>/dev/null)
+if [ -n "$OUT" ]; then
+  printf '%s' "$OUT" | jq -c '
+    if (.hookSpecificOutput?.additionalContext // "") != "" then
+      {cancel: false, contextModification: .hookSpecificOutput.additionalContext}
+    else {cancel: false} end
+  ' 2>/dev/null
+else
+  echo '{"cancel": false}'
+fi

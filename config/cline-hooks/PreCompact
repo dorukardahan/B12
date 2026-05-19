@@ -1,0 +1,16 @@
+#!/bin/bash
+# B12 ↔ Cline PreCompact hook (Plan §D2)
+# Codex review PR #47 round 2 P1: Cline's PreCompact wire payload is a
+# `.preCompact` metrics object, NOT `.transcript_path`. memory-
+# precompact.sh reads `.transcript_path` to find the JSONL to stage —
+# so delegating would silently no-op even when Cline calls the hook.
+#
+# Cline docs also flag PreCompact as "coming soon" as of 2026-05-19.
+# Until upstream stabilizes the payload (or backfills .transcript_path),
+# this shim is a registered-but-passive placeholder so Cline doesn't
+# error on a missing hook script. Re-wire via a normalization layer
+# similar to UserPromptSubmit once Cline ships the final shape.
+# Tracked in docs/B12_polyglot_plan_2026-05-19.md §P2 backlog.
+set -o pipefail 2>/dev/null || true
+cat >/dev/null  # consume stdin so Cline's pipe doesn't block
+echo '{"cancel": false}'
