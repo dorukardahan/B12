@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.53.0](https://github.com/dorukardahan/B12/compare/v11.52.0...v11.53.0) (2026-05-19)
+
+
+### Features
+
+* **common:** cross-platform DB-path resolver ([#52](https://github.com/dorukardahan/B12/issues/52)) ([0556758](https://github.com/dorukardahan/B12/commit/05567588ab5cd34be6e08af7efd3806f3b1a1df4))
+
 # [11.52.0](https://github.com/dorukardahan/B12/compare/v11.51.0...v11.52.0) (2026-05-19)
 
 
