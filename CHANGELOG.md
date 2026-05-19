@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.49.0](https://github.com/dorukardahan/B12/compare/v11.48.0...v11.49.0) (2026-05-19)
+
+
+### Features
+
+* **cc:** C13 24h smoke harness + C14 ANN index over memory_embeddings ([#43](https://github.com/dorukardahan/B12/issues/43)) ([64b952f](https://github.com/dorukardahan/B12/commit/64b952fb7a4dab2e7cb8e9ee60660f8a5a69ecc6)), closes [#1](https://github.com/dorukardahan/B12/issues/1) [#2](https://github.com/dorukardahan/B12/issues/2)
+
 # [11.48.0](https://github.com/dorukardahan/B12/compare/v11.47.0...v11.48.0) (2026-05-19)
 
 
