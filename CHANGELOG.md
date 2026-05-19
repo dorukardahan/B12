@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.50.0](https://github.com/dorukardahan/B12/compare/v11.49.0...v11.50.0) (2026-05-19)
+
+
+### Features
+
+* **continue:** MCP template + transcript adapter + --continue install flag ([#46](https://github.com/dorukardahan/B12/issues/46)) ([99981a3](https://github.com/dorukardahan/B12/commit/99981a32e966aabf521444386365a1721ea11b97))
+
 # [11.49.0](https://github.com/dorukardahan/B12/compare/v11.48.0...v11.49.0) (2026-05-19)
 
 
