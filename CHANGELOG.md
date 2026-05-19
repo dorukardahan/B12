@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.58.2](https://github.com/dorukardahan/B12/compare/v11.58.1...v11.58.2) (2026-05-19)
+
+
+### Bug Fixes
+
+* **classifier:** dim-guard warning + B12_CLASSIFIER_BACKEND=off escape hatch ([#56](https://github.com/dorukardahan/B12/issues/56)) ([814690f](https://github.com/dorukardahan/B12/commit/814690f3e053450851270f2c6326dbad7dda992b)), closes [#23](https://github.com/dorukardahan/B12/issues/23)
+
 ## [11.58.1](https://github.com/dorukardahan/B12/compare/v11.58.0...v11.58.1) (2026-05-19)
 
 
