@@ -224,6 +224,66 @@ export function extractPatterns(text: string, maxLen: number = 500): ExtractedIt
   return matches
 }
 
+// ── OpenCode `[M#]` macro verbs ────────────────────────────
+// Mirror of transcript_adapter.extract_macro_verbs (Python). Format:
+// `[M#<type>] <content>` or `[M#<type>:<importance>] <content>`.
+// Codex PR #50 round 3 P2: anchor to line start (optional leading
+// whitespace + optional `>` quote marker) via /m flag so quoted
+// examples / template docs aren't ingested as real macros.
+const MACRO_VERB_RE =
+  /^[ \t>]*\[M#([a-zA-Z_][a-zA-Z0-9_-]{0,31})(?::([123]))?\]\s+([^\n]{4,400})/gm
+
+const MACRO_TYPE_ALIASES: Record<string, string> = {
+  dec: "decision", err: "gotcha", err_fix: "gotcha", fix: "gotcha",
+  learn: "learning", pref: "preference", arch: "architecture",
+}
+// Codex PR #50 round 2 P2: drop unknown types so memory_type stays
+// canonical. Mirror of Python's _MACRO_TYPE_ALLOWLIST.
+const MACRO_TYPE_ALLOWLIST = new Set([
+  "decision", "learning", "gotcha", "preference", "architecture", "pattern",
+])
+const MACRO_IMPORTANCE: Record<string, number> = { "1": 1.0, "2": 1.5, "3": 2.0 }
+
+export interface MacroVerb {
+  type: string
+  importance: number
+  content: string
+  source: "user" | "assistant" | "system"
+}
+
+export function extractMacroVerbs(
+  messages: { role: string; content: string }[],
+  maxCount: number = 20,
+): MacroVerb[] {
+  const seen = new Set<string>()
+  const out: MacroVerb[] = []
+  for (const msg of messages) {
+    const text = msg.content || ""
+    if (!text || !text.includes("[M#")) continue
+    MACRO_VERB_RE.lastIndex = 0
+    let m: RegExpExecArray | null
+    while ((m = MACRO_VERB_RE.exec(text)) !== null) {
+      let t = (m[1] || "").toLowerCase()
+      t = MACRO_TYPE_ALIASES[t] || t
+      if (!MACRO_TYPE_ALLOWLIST.has(t)) continue
+      const content = m[3].trim()
+      const key = `${t}::${content.slice(0, 120)}`
+      if (seen.has(key)) continue
+      seen.add(key)
+      const role = msg.role === "user" || msg.role === "assistant"
+        ? (msg.role as "user" | "assistant") : "system"
+      out.push({
+        type: t,
+        importance: MACRO_IMPORTANCE[m[2] || "1"] || 1.0,
+        content,
+        source: role,
+      })
+      if (out.length >= maxCount) return out
+    }
+  }
+  return out
+}
+
 export function dedup(items: string[], maxCount: number = 5): string[] {
   const seen = new Set<string>();
   const result: string[] = [];

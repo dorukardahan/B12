@@ -5,6 +5,7 @@ import { B12Database, computeContentHash } from "../lib/db.js"
 import * as daemon from "../lib/daemon.js"
 import {
   extractPatterns,
+  extractMacroVerbs,
   summaryFilter,
   scoreExtraction,
   dedup,
@@ -231,6 +232,32 @@ export async function sessionEnd(
         },
       })
     } catch {}
+  }
+
+  // OpenCode `[M#]` macro verbs (Codex review PR #50). Gated on
+  // B12_OPENCODE_MACRO_INGEST=true so default behavior is unchanged.
+  // User-typed `[M#decision] ...` lines bypass the regex pipeline.
+  const macroFlag = (process.env.B12_OPENCODE_MACRO_INGEST || "false").toLowerCase()
+  if (["1", "true", "yes"].includes(macroFlag)) {
+    const macros = extractMacroVerbs(messages)
+    for (const mv of macros) {
+      try {
+        db.store({
+          content: mv.content,
+          tags: `proj:${project},${mv.type},extraction:macro_verbs,${new Date().toISOString().slice(0, 7)}`,
+          memory_type: mv.type,
+          metadata: {
+            type: mv.type,
+            source: "session_end",
+            importance_score: mv.importance,
+            project,
+            session_id: sessionId.slice(0, 12),
+            extraction_method: "macro_verbs",
+            source_role: mv.source,
+          },
+        })
+      } catch {}
+    }
   }
 }
 

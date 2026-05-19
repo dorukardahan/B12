@@ -28,7 +28,10 @@ from datetime import datetime, timezone
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _script_dir)
 
-from transcript_adapter import parse, extract_user_messages, extract_assistant_texts, extract_files_modified
+from transcript_adapter import (
+    parse, extract_user_messages, extract_assistant_texts,
+    extract_files_modified, extract_macro_verbs,
+)
 from shared_patterns import (
     DECISION_RE, ERROR_RE, LEARNING_RE, PREFERENCE_RE,
     IMPLICIT_DECISION_RE, REASON_RE, BLOCKER_RE,
@@ -363,6 +366,15 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
     if os.environ.get("B12_CODEX_CLOUD_INGEST", "false").lower() in ("1", "true", "yes"):
         cloud_tasks = _extract_cloud_tasks(info)
 
+    # OpenCode `[M#]` macro verbs (Plan §P2, polyglot cleanup C1). Users
+    # of OpenCode (or any platform that shares this transcript adapter)
+    # can annotate their own session text with `[M#decision] ...` lines
+    # to nominate specific facts for explicit memory promotion. Default
+    # off; opt in via B12_OPENCODE_MACRO_INGEST=true.
+    macro_verbs = []
+    if os.environ.get("B12_OPENCODE_MACRO_INGEST", "false").lower() in ("1", "true", "yes"):
+        macro_verbs = extract_macro_verbs(messages)
+
     # Pattern matching on assistant texts (v2: all shared_patterns)
     decisions = []
     errors = []
@@ -394,6 +406,8 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
     summary_lines.append(f"- **Files modified**: {len(files_modified)}")
     if cloud_tasks:
         summary_lines.append(f"- **Cloud tasks**: {len(cloud_tasks)}")
+    if macro_verbs:
+        summary_lines.append(f"- **Macro verbs**: {len(macro_verbs)}")
     summary_lines.append("")
 
     if cloud_tasks:
@@ -473,6 +487,30 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         memory_type='session_summary', hash_salt=git_tags,
     )
 
+    # Store macro-verb micro-memories (user-nominated facts).
+    # extraction_method='macro_verbs' so downstream filters can isolate
+    # them from regex-extracted candidates.
+    macro_count = 0
+    for mv in macro_verbs[:20]:
+        mv_tags = (f"proj:{project_name},user:codex,{mv['type']},"
+                   f"platform:codex,extraction:macro_verbs{tag_suffix}")
+        mv_meta = json.dumps({
+            "type": mv["type"],
+            "importance_score": mv["importance"],
+            "platform": "codex",
+            "extraction_method": "macro_verbs",
+            "source_role": mv["source"],
+            "git_branch": info.git_branch,
+            "git_repo_url": info.git_repo_url,
+        })
+        mv_emb = get_embedding(mv["content"])
+        mid = store_memory(
+            db_path, mv["content"], mv_meta, mv_tags, mv_emb,
+            memory_type=mv["type"], hash_salt=git_tags,
+        )
+        if mid:
+            macro_count += 1
+
     # Store micro-memories (decisions, learnings, errors)
     micro_count = 0
     for category, items, importance in [
@@ -519,6 +557,7 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         "learnings": len(learnings),
         "summary_id": summary_id,
         "micro_memories": micro_count,
+        "macro_verbs": macro_count,
     }
 
 

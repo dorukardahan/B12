@@ -140,6 +140,15 @@ Higher importance = higher ranking in search results and pre-fetch.
 4. **Session end**: Store key findings, decisions, and progress
 5. **Preferences**: When learning a new user preference, store with `user:pref` tag
 
+### `[M#]` Macro Verbs (opt-in)
+
+If `B12_OPENCODE_MACRO_INGEST=true` is set in the environment, any line in the session text matching the pattern `[M#<type>] <content>` (e.g. `[M#decision] Chose PostgreSQL over SQLite for concurrent writes.`) is auto-promoted to a memory at session end.
+
+- **Supported types**: `decision`, `learning`, `gotcha`, `preference`, `architecture`, `pattern` (plus aliases: `dec`, `err` → `gotcha`, `learn`, `pref`, `arch`).
+- **Importance override**: `[M#decision:2]` sets `importance_score=1.5` (1=1.0, 2=1.5, 3=2.0).
+- **Dedup**: a session emits at most 20 macros, deduped by `(type, content[:120])`.
+- **Why this exists**: the auto-extractor occasionally misses high-value facts the user knows are important. `[M#]` is an explicit nomination — no chance of getting filtered out by the regex pipeline.
+
 ### Important
 
 - Memories are shared across **all** MCP-connected sessions (Claude Code, Codex, Gemini, VS Code, Cursor, Kimi, Windsurf, Cline, OpenCode) — same SQLite database

@@ -441,6 +441,68 @@ def extract_assistant_texts(messages: list) -> list:
     return texts
 
 
+# ─── OpenCode `[M#]` macro verbs ──────────────────────
+# Format: `[M#<type>] <content>` or `[M#<type>:<importance>] <content>`
+# `type` ∈ {decision, learning, gotcha, preference, architecture, pattern};
+# `importance` ∈ {1,2,3} maps to 1.0/1.5/2.0. Default 1.0.
+# Codex PR #50 round 3 P2: anchor to line start (with optional leading
+# whitespace + optional `>` quote marker) so quoted examples and
+# documentation snippets like the AGENTS template's
+# `[M#decision] Chose PostgreSQL` are NOT ingested as real macros when
+# the model echoes them mid-paragraph. Without anchoring, the AGENTS
+# template would itself pollute memory the first time a user asked
+# Claude to read it.
+_MACRO_VERB_RE = re.compile(
+    r"(?m)^[ \t>]*"
+    r"\[M#(?P<type>[a-zA-Z_][a-zA-Z0-9_-]{0,31})"
+    r"(?::(?P<importance>[123]))?\]\s+(?P<content>[^\n]{4,400})",
+)
+_MACRO_TYPE_ALIASES = {
+    "dec": "decision", "err": "gotcha", "err_fix": "gotcha", "fix": "gotcha",
+    "learn": "learning", "pref": "preference", "arch": "architecture",
+}
+# Codex PR #50 round 2 P2: drop matches with unknown types so the
+# memory_type column stays canonical. Typos like `[M#preferrence]` and
+# freeform `[M#todo]` would otherwise pollute downstream filtering.
+_MACRO_TYPE_ALLOWLIST = {
+    "decision", "learning", "gotcha", "preference", "architecture", "pattern",
+}
+_MACRO_IMPORTANCE = {"1": 1.0, "2": 1.5, "3": 2.0}
+
+
+def extract_macro_verbs(messages: list, max_count: int = 20) -> list:
+    """Scan both sides of the transcript for `[M#<type>] <content>` lines.
+
+    Returns list of {type, importance, content, source}. Dedupes within a
+    session by (type, content[:120]).
+    """
+    seen = set()
+    out = []
+    for msg in messages:
+        text = (msg.content or "")
+        if not text or "[M#" not in text:
+            continue
+        for m in _MACRO_VERB_RE.finditer(text):
+            t = (m.group("type") or "").lower()
+            t = _MACRO_TYPE_ALIASES.get(t, t)
+            if t not in _MACRO_TYPE_ALLOWLIST:
+                continue
+            content = m.group("content").strip()
+            key = (t, content[:120])
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append({
+                "type": t,
+                "importance": _MACRO_IMPORTANCE.get(m.group("importance") or "1", 1.0),
+                "content": content,
+                "source": msg.role,
+            })
+            if len(out) >= max_count:
+                return out
+    return out
+
+
 # ─── Quick test ───────────────────────────────────────
 
 if __name__ == '__main__':
