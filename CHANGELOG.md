@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.56.0](https://github.com/dorukardahan/B12/compare/v11.55.0...v11.56.0) (2026-05-19)
+
+
+### Features
+
+* **zed:** MCP context_server template + --zed install flag ([#53](https://github.com/dorukardahan/B12/issues/53)) ([7668a69](https://github.com/dorukardahan/B12/commit/7668a69bf1d2d1c17c8c3cd4158143b5a80d21dd)), closes [#1](https://github.com/dorukardahan/B12/issues/1) [#2](https://github.com/dorukardahan/B12/issues/2) [#1](https://github.com/dorukardahan/B12/issues/1) [#2](https://github.com/dorukardahan/B12/issues/2)
+
 # [11.55.0](https://github.com/dorukardahan/B12/compare/v11.54.0...v11.55.0) (2026-05-19)
 
 
