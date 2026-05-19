@@ -345,6 +345,46 @@ Four read-only resources registered via `@server.resource()` decorator, accessib
 
 Resources complement tools by providing passive, cacheable content that any MCP client can read without triggering side effects.
 
+## SubagentStart per-agent recall (v11.48+)
+
+Three cooperating hooks (Codex review PR #49 noted the split — earlier draft attributed all responsibilities to `memory-subagent-start.sh` alone, which was wrong):
+
+- **`hooks/memory-team-create.sh`** — PostToolUse hook matching the `TeamCreate` tool. Writes `~/.B12/state/team-<team_id>.json` capturing the team roster (per-member `agent_id`, `agent_type`, `name`) plus the caller session_id for re-entry lookups.
+- **`hooks/memory-subagent-start.sh`** — fires when a teammate Claude actually starts up. Tails the parent transcript for the last `Agent` / `Task` tool_use to recover the original task description (subagent payloads don't carry `.description` natively), then performs task-scoped recall (daemon socket first, direct SQLite FTS5 fallback on cold-daemon path).
+- **`hooks/memory-session-start.sh`** — when launched as a teammate, matches the runtime `CLAUDE_CODE_AGENT_ID` env against `.members[].agent_id` in any recent `team-*.json` file. On hit, injects a `TEAMMATES` block listing co-spawned agents as `additionalContext`. (The team-roster lookup is here, not in subagent-start, because SessionStart fires for every Claude launch including teammates.)
+
+Cross-platform DB-path resolution uses a `case "$(uname -s)"` switch (Darwin / Linux / MINGW / CYGWIN) inline. Future cleanup: extract into a shared `b12_resolve_db_path()` helper in `hooks/_b12_common.sh`.
+
+## Cursor MDC + PageRank surfacing (v11.49+)
+
+SessionStart now surfaces two project-derived context blocks:
+
+- **`CURSOR RULES`** (`scripts/cursor_mdc.py`): parses `.cursor/rules/*.mdc` YAML frontmatter (stdlib-only) and emits the rule body for every Auto-Attached rule whose `globs` pattern matches at least one file in the current Working Memory. Globs use `fnmatch`-style matching; multiple globs OR together per rule.
+- **`LIKELY-NEXT FILES`** (`scripts/file_pagerank.py`): pure-numpy PageRank over the import graph of the project's `.py`/`.ts`/`.tsx`/`.js`/`.jsx` files. Cached at `~/.B12/state/pagerank-<repo-hash>.json` with a 24h TTL and git HEAD invalidation; recomputed on first SessionStart after a new commit.
+
+Both blocks are token-budgeted within the SessionStart 6000-char cap and trim before older tier-1b/1c sections.
+
+## ANN index over memory_embeddings (v11.49+)
+
+When `~/.B12/config.toml` enables `[recall.ann]` and the embeddings table grows past `threshold_count` (default 10000), `_semantic_search` and `_recall` in `embed_daemon.py` switch to sqlite-vec's KNN MATCH:
+
+```sql
+SELECT rowid FROM memory_embeddings
+WHERE content_embedding MATCH ? AND k = ?
+```
+
+This bypasses the LIMIT-500 full-scan cap that silently hides ~85% of memories at production scale. The candidate set is oversampled 30× (capped at 150) so the three downstream attrition layers — active-memory filter, skip_ids ledger, similarity threshold — have headroom before triggering a fall-through to the existing full-scan path. ANN errors at any stage fall through transparently.
+
+## Codex cloud_exec / cloud_apply ingestion (v11.52+)
+
+`scripts/codex_session_end.py:_extract_cloud_tasks(info)` pairs `cloud_exec` events with `cloud_apply` events by `cloud_task_id` and emits structured task rows: `{cloud_task_id, task, status, files, branch}`. The rows are appended to the session summary's `## Cloud Tasks` block (one bullet per task) and the whole summary is stored as a single `memory_type='session_summary'` row — there is **no** separate `cloud_task` memory_type. Cloud signal lives inside the per-project session summary file and is searchable via FTS5 / semantic search on the summary content. Gated on `B12_CODEX_CLOUD_INGEST=true` (default off) — cloud sessions are rare and the matching is best-effort.
+
+## Continue.dev + Cline platform glue (v11.50+, v11.51+)
+
+`transcript_adapter._parse_continue()` reads `~/.continue/sessions/*.json` (single-file JSON, not JSONL) and yields normalized turn records. `install.sh --continue` writes `~/.continue/mcpServers/b12.yaml` (MCP entry) + `~/.continue/rules/b12-memory.md` (rules).
+
+`config/cline-hooks/{TaskStart,UserPromptSubmit,PreCompact}` are deployed to `~/Documents/Cline/Hooks/` (authoritative location per `cline/cline:.clinerules/hooks/README.md`). Each shim normalizes Cline's nested JSON payload (`.workspaceRoots[0]` → `.cwd`, `.userPromptSubmit.prompt` → `.prompt`) before delegating to the corresponding B12 hook, and translates the response's `hookSpecificOutput.additionalContext` into Cline's `contextModification` wire key (camelCase, verified against `cline/cline:src/core/hooks/templates.ts`). PreCompact is a passive `{cancel: false}` placeholder pending upstream stabilization of `.transcript_path` + `.preCompact` payload shape.
+
 ## Limitations and future work
 
 ### Current limitations

@@ -74,7 +74,8 @@ B12's MCP server works with any tool that supports MCP stdio. The installer hand
 | Cursor | `--cursor` | ~/.cursor/mcp.json | ~/.cursor/rules/b12-memory.mdc |
 | Kimi Code | `--kimi` | ~/.kimi/mcp.json | ~/.kimi/AGENTS.md |
 | Windsurf | `--windsurf` | ~/.codeium/windsurf/mcp_config.json | ~/.codeium/.../global_rules.md |
-| Cline | `--cline` | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md |
+| Cline | `--cline` | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ (TaskStart/UserPromptSubmit/PreCompact) |
+| Continue.dev | `--continue` | ~/.continue/mcpServers/b12.yaml | ~/.continue/rules/b12-memory.md |
 | OpenCode | `--opencode` | ~/.config/opencode/opencode.json | ~/.config/opencode/AGENTS.md + TypeScript plugin (auto-deployed) |
 
 \* VS Code/Copilot instructions are per-project (`.github/copilot-instructions.md`). The installer creates a template in the B12 repo — copy it to each project where you want B12 active.
@@ -221,8 +222,10 @@ B12 works with any MCP-compatible coding assistant. The same MCP server and SQLi
 ./install.sh --cursor        # Cursor
 ./install.sh --kimi          # Kimi Code
 ./install.sh --windsurf      # Windsurf (Codeium)
-./install.sh --cline         # Cline (VS Code extension)
+./install.sh --cline         # Cline (VS Code extension + TaskStart/UserPromptSubmit hooks)
+./install.sh --continue      # Continue.dev (VS Code/JetBrains extension)
 ./install.sh --opencode      # OpenCode
+./install.sh --smoke-cron    # Opt-in 24h smoke harness via crontab (memory-session-start + memory-retrieval)
 
 # Or full setup from scratch with multiple platforms
 ./install.sh --full --codex --gemini --cursor
@@ -435,6 +438,16 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 | **Working Memory** | Conversation momentum | `~/.B12/memory-staging/working-memory.json` | Post-compaction recovery |
 
 ## Changelog (recent)
+
+### v11.47–v11.52 (2026-05-19) — Polyglot Cleanup + Self-Improve
+
+- **C13 — 24h smoke harness** (`scripts/b12_smoke.sh` + `install.sh --smoke-cron`): opt-in cron job drives `memory-session-start.sh` + `memory-retrieval.sh` against every detected `~/.claude*` setup, flagging damaged installs (all-setups-missing → exit 1). Crontab-only, fully reversible via `--smoke-cron-uninstall`.
+- **C14 — ANN index over `memory_embeddings`** (`scripts/embed_daemon.py` + `[recall.ann]` in `~/.B12/config.toml`): default-off `sqlite-vec` `MATCH` pre-filter that bypasses the LIMIT-500 cap once `COUNT(*) FROM memory_embeddings >= threshold_count` (default 10000). 30× oversample absorbs soft-delete + skip_ids + threshold attrition before falling through to full-scan.
+- **SubagentStart per-agent recall** (`hooks/memory-subagent-start.sh` + `memory-team-create.sh` + `memory-session-start.sh`): `memory-team-create.sh` writes `~/.B12/state/team-<id>.json` on `TeamCreate` PostToolUse; `memory-session-start.sh` matches `CLAUDE_CODE_AGENT_ID` against `.members[]` and injects a TEAMMATES block when a teammate starts; `memory-subagent-start.sh` performs task-scoped recall with cold-daemon FTS5 fallback.
+- **Cursor MDC + PageRank in SessionStart** (`scripts/cursor_mdc.py` + `scripts/file_pagerank.py`): SessionStart now surfaces `.cursor/rules/*.mdc` Auto-Attached rules whose `globs` match active files, plus the top-N files by PageRank over the project's `.py`/`.ts`/`.tsx`/`.js`/`.jsx` import graph (24h cache + git HEAD invalidation).
+- **Continue.dev integration** (`install.sh --continue` + `config/continue-mcp-template.yaml` + `config/continue-instructions-template.md`): MCP server registration + behavioral rules + `transcript_adapter._parse_continue()` for single-file JSON sessions under `~/.continue/sessions/`.
+- **Cline hooks** (`config/cline-hooks/{TaskStart,UserPromptSubmit,PreCompact}` → `~/Documents/Cline/Hooks/`): TaskStart ≡ Claude Code SessionStart(source=startup); UserPromptSubmit delegates to `memory-retrieval.sh`. Output `{cancel: false, contextModification: ...}` (camelCase wire key, verified against `cline/cline:src/core/hooks/templates.ts`). PreCompact is a passive placeholder until Cline upstream finalizes the `.transcript_path` shape.
+- **Codex cloud_exec / cloud_apply ingestion** (`scripts/codex_session_end.py`): `_extract_cloud_tasks(info)` pairs `cloud_exec` with `cloud_apply` by `cloud_task_id` and emits `{cloud_task_id, task, status, files, branch}` rows. Gated on `B12_CODEX_CLOUD_INGEST` (default off).
 
 ### v11.42+ (2026-05-18) — Claude Code v2.1.139+ hook coverage
 

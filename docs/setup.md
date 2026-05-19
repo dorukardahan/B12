@@ -29,6 +29,29 @@ The installer:
 
 For multiple setups: `./install.sh --all` installs to all `~/.claude*` directories.
 
+### Multi-platform flags
+
+```bash
+./install.sh --continue        # Continue.dev (VS Code / JetBrains extension)
+./install.sh --cline           # Cline + hooks under ~/Documents/Cline/Hooks/
+./install.sh --smoke-cron      # Opt-in 24h smoke harness via user crontab
+./install.sh --smoke-cron-uninstall  # Remove the smoke cron entry
+```
+
+`--smoke-cron` edits **only your user crontab** (no `launchctl` admin write) and is fully reversible. The harness logs to `~/.B12/memory-logs/smoke-YYYYMMDD.log`. If every detected `~/.claude*` setup reports a missing hook, the cron exits 1 to surface damaged installs.
+
+### `[recall.ann]` config (`~/.B12/config.toml`)
+
+The installer seeds `~/.B12/config.toml` from `config/b12-config-template.toml` on first run (never overwritten on subsequent installs):
+
+```toml
+[recall.ann]
+enabled = false           # Set true to activate the sqlite-vec MATCH pre-filter
+threshold_count = 10000   # ANN only activates once memory_embeddings hits this many rows
+```
+
+When `B12_DATA_DIR` is set, the template is seeded under `$B12_DATA_DIR/config.toml` so a custom-data-dir setup gets a template at the path `scripts/b12_config.py` actually reads. ANN errors at any stage fall through to the existing full-scan path, so flipping `enabled = true` is safe.
+
 ### Environment variables (multi-setup)
 
 | Variable | Controls | Default |
