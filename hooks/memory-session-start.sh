@@ -400,6 +400,33 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
     CONTEXT="${CONTEXT}\n\n--- MEMORY USAGE FEEDBACK ---\n${FEEDBACK_HINT}\n--- END FEEDBACK ---"
   fi
 
+  # Cursor MDC globs Auto-Attached + PageRank file-rank (Plan §B3) —
+  # surface rules whose globs match active files (extracted from
+  # LAST_SESSION) and the top-5 import-graph-central files. Cursor's own
+  # runtime is unaffected; this primes B12 sessions with the same signal.
+  CURSOR_HINT=""
+  if [ -d "$CWD/.cursor/rules" ] && [ -x "$VENV_PYTHON" ]; then
+    _ACTIVE_FILES=""
+    if [ -n "$LAST_SESSION" ]; then
+      _ACTIVE_FILES=$(printf '%s' "$LAST_SESSION" \
+        | grep -Eo '[A-Za-z0-9_./-]+\.(py|ts|tsx|js|jsx|sh|md|toml|json)' \
+        | sort -u | head -10 | tr '\n' ' ')
+    fi
+    CURSOR_HINT=$("$VENV_PYTHON" "$B12_SCRIPTS/cursor_mdc.py" --lines "$CWD" $_ACTIVE_FILES 2>/dev/null)
+  fi
+  if [ -n "$CURSOR_HINT" ]; then
+    CONTEXT="${CONTEXT}\n\n--- CURSOR RULES (auto-attached) ---\n${CURSOR_HINT}\n--- END CURSOR RULES ---"
+  fi
+
+  PAGERANK_HINT=""
+  if [ -d "$CWD" ] && [ -x "$VENV_PYTHON" ] && [ -f "$B12_SCRIPTS/file_pagerank.py" ]; then
+    PAGERANK_HINT=$("$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$CWD" 5 2>/dev/null \
+                      | head -5 | sed 's/^/- /')
+  fi
+  if [ -n "$PAGERANK_HINT" ]; then
+    CONTEXT="${CONTEXT}\n\n--- LIKELY-NEXT FILES (pagerank) ---\n${PAGERANK_HINT}\n--- END LIKELY-NEXT ---"
+  fi
+
   # Add pre-fetched memories (project-relevant + universal)
   if [ -n "$MEMORY_PREFETCH" ]; then
     CONTEXT="${CONTEXT}\n\n--- MEMORY PRE-FETCH ---\n${MEMORY_PREFETCH}\n--- END PRE-FETCH ---"
@@ -415,6 +442,18 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
     # Tier 1: Remove memory pre-fetch
     CONTEXT=$(echo "$CONTEXT" | sed '/--- MEMORY PRE-FETCH ---/,/--- END PRE-FETCH ---/d')
+    _ctx_len=${#CONTEXT}
+  fi
+  if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
+    # Tier 1b: Remove pagerank likely-next files (B3 — additive, easy
+    # to drop because Cursor handles its own context separately)
+    CONTEXT=$(echo "$CONTEXT" | sed '/--- LIKELY-NEXT FILES (pagerank) ---/,/--- END LIKELY-NEXT ---/d')
+    _ctx_len=${#CONTEXT}
+  fi
+  if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
+    # Tier 1c: Remove cursor rules (B3 — duplicated by Cursor's own
+    # rules pipeline when running inside Cursor)
+    CONTEXT=$(echo "$CONTEXT" | sed '/--- CURSOR RULES (auto-attached) ---/,/--- END CURSOR RULES ---/d')
     _ctx_len=${#CONTEXT}
   fi
   if [ "$_ctx_len" -gt "$MAX_CONTEXT_CHARS" ]; then
