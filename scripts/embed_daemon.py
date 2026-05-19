@@ -41,6 +41,17 @@ import sys
 import time
 import warnings
 
+# B12 user config (~/.B12/config.toml). Stdlib-only reader; safe fallbacks
+# when the file is missing — the daemon must work without any config at all.
+try:
+    _here = os.path.dirname(os.path.abspath(__file__))
+    if _here not in sys.path:
+        sys.path.insert(0, _here)
+    from b12_config import get as _b12_cfg_get
+except Exception:  # pragma: no cover — never block daemon on config import
+    def _b12_cfg_get(*_path, default=None):
+        return default
+
 warnings.filterwarnings('ignore')
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
 os.environ.setdefault('WANDB_DISABLED', 'true')
@@ -99,6 +110,43 @@ def _open_db(db_path):
     return conn
 
 
+def _ann_supported(conn):
+    """Return (use_ann, count) given config + table size.
+    `use_ann` is True only when both gates pass: [recall.ann].enabled = true
+    in ~/.B12/config.toml AND active memory_embeddings count >= threshold_count.
+    """
+    enabled = bool(_b12_cfg_get("recall", "ann", "enabled", default=False))
+    raw_threshold = _b12_cfg_get("recall", "ann", "threshold_count", default=10000)
+    threshold = int(raw_threshold) if isinstance(raw_threshold, (int, float)) else 10000
+    count = 0
+    try:
+        row = conn.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()
+        if row:
+            raw = row[0]
+            if isinstance(raw, int):
+                count = raw
+    except sqlite3.Error:
+        pass
+    return (enabled and count >= threshold, count)
+
+
+def _ann_topk_rowids(conn, q_emb, k):
+    """sqlite-vec MATCH top-k rowid+cosine lookup.
+    Returns list of (rowid, cos_sim) with cos_sim = 1 - distance.
+    Empty list on any error so the caller can fall back to full-scan."""
+    try:
+        q_bytes = struct.pack(f'{len(q_emb)}f', *(float(x) for x in q_emb))
+        rows = conn.execute(
+            "SELECT rowid, distance FROM memory_embeddings "
+            "WHERE content_embedding MATCH ? AND k = ? ORDER BY distance",
+            (q_bytes, int(k)),
+        ).fetchall()
+        return [(int(r[0]), 1.0 - float(r[1])) for r in rows]
+    except sqlite3.Error as e:
+        log(f"ann_topk error: {e}")
+        return []
+
+
 def _semantic_search(model, data):
     """Full-table cosine similarity search (matches cold path behavior)."""
     query = data.get('query', '')
@@ -110,6 +158,34 @@ def _semantic_search(model, data):
 
     q_emb = model.encode([query], normalize_embeddings=True)[0]
     conn = _open_db(db_path)
+
+    use_ann, _ = _ann_supported(conn)
+    if use_ann:
+        # Codex review PR #43 rounds 2+3 P2: the ANN MATCH operator selects
+        # the global top-k BEFORE active-memory filters apply (soft-delete,
+        # expired, session_summary/progress, project-tag) AND before the
+        # downstream similarity threshold / skip_ids ledger filter (in
+        # _recall). Oversample 30× so all three layers of attrition still
+        # leave enough candidates; if too few survive, take the full-scan.
+        topk = _ann_topk_rowids(conn, q_emb, max(limit * 30, 150))
+        if topk:
+            id_to_sim = {rid: sim for rid, sim in topk}
+            ph = ",".join("?" for _ in id_to_sim)
+            rows = conn.execute(
+                f"""SELECT m.id, '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
+                    FROM memories m WHERE m.id IN ({ph}) AND m.deleted_at IS NULL
+                      AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
+                      AND m.memory_type NOT IN ('session_summary', 'progress')
+                      AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')""",
+                list(id_to_sim.keys()),
+            ).fetchall()
+            scores = [{'id': rid, 'display': disp, 'score': round(id_to_sim[rid], 3)}
+                      for rid, disp in rows if id_to_sim.get(rid, 0.0) > 0.3]
+            scores.sort(key=lambda x: x['score'], reverse=True)
+            if len(scores) >= limit:
+                conn.close()
+                return {'ok': True, 'results': scores[:limit], 'path': 'ann'}
+            # Too few filtered survivors — fall through to full-scan.
 
     # TODO: migrate to sqlite-vec kNN (vec_distance_cosine) for O(log N) search
     rows = conn.execute("""
@@ -178,7 +254,7 @@ def _recall(model, data):
     # source_session (from metadata.source_session, written by
     # memory-session-end.sh:907 regex pipeline) is surfaced as a tracing
     # anchor — Q4 of docs/B12_proactive_recall_plan_2026-05-18.md.
-    sql = """
+    base_sql = """
         SELECT m.id,
                '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') AS display,
                m.content_hash,
@@ -195,13 +271,32 @@ def _recall(model, data):
           AND m.memory_type NOT IN ('session_summary', 'progress')
           AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
     """
-    params = []
+    params: list = []
     if project:
-        sql += " AND m.tags LIKE ?"
+        base_sql += " AND m.tags LIKE ?"
         params.append(f"%proj:{project}%")
-    sql += " LIMIT 500"
 
-    rows = conn.execute(sql, params).fetchall()
+    # ANN fast path: gate on config flag + table size. Below threshold or
+    # on ANN error/under-fill, fall through to LIMIT-500 + numpy full-scan.
+    # Codex review PR #43 rounds 2+3 P2: oversample 30× so the active-
+    # memory filter + skip_ids ledger + similarity threshold (all applied
+    # downstream in the numpy pass) leave enough candidates after
+    # exclusion. Residual edge: a session that already injected all
+    # top-150 nearest memories sees fewer than `limit` hits — that is
+    # desirable signal (no fresh memories above threshold), not a bug.
+    use_ann, _ = _ann_supported(conn)
+    rows = None
+    if use_ann:
+        topk = _ann_topk_rowids(conn, q_emb, max(limit * 30, 150))
+        if topk:
+            rowid_set = {r for r, _ in topk}
+            ph = ",".join("?" for _ in rowid_set)
+            rows = conn.execute(base_sql + f" AND m.id IN ({ph})",
+                                params + list(rowid_set)).fetchall()
+            if rows is not None and len(rows) < limit:
+                rows = None  # too few survived → fall through to full-scan
+    if rows is None:
+        rows = conn.execute(base_sql + " LIMIT 500", params).fetchall()
     conn.close()
 
     # C14 microopt (P-BURNIN-F): vectorise the cosine loop with numpy.

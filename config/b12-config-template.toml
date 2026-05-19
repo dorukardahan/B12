@@ -1,0 +1,9 @@
+# B12 user config — seeded by install.sh on first run; never overwritten.
+# Reference: docs/architecture.md (Recall / ANN sections).
+
+[recall.ann]
+# Approximate kNN via sqlite-vec MATCH operator. Active when BOTH:
+#   enabled = true  AND  COUNT(*) FROM memory_embeddings >= threshold_count
+# Below threshold the LIMIT-500 + numpy full-scan always runs.
+enabled = false
+threshold_count = 10000

@@ -120,6 +120,8 @@ INSTALL_OPENCODE=false
 INSTALL_GROK=false
 INSTALL_DAEMON=false
 UNINSTALL_DAEMON=false
+INSTALL_SMOKE_CRON=false
+UNINSTALL_SMOKE_CRON=false
 FIX_DRIFT=false
 TARGET_DIR=""
 for arg in "$@"; do
@@ -137,6 +139,8 @@ for arg in "$@"; do
     --grok)      INSTALL_GROK=true ;;
     --daemon)    INSTALL_DAEMON=true ;;
     --daemon-uninstall) UNINSTALL_DAEMON=true ;;
+    --smoke-cron) INSTALL_SMOKE_CRON=true ;;
+    --smoke-cron-uninstall) UNINSTALL_SMOKE_CRON=true ;;
     --fix-drift) FIX_DRIFT=true ;;
     --health)
       # Run health check and exit — only forward --json and --fix
@@ -192,6 +196,83 @@ create_dirs() {
 }
 
 # ─────────────────────────────────────────────
+# Step 1b: Seed ~/.B12/config.toml from template (first-run only).
+# Never overwrites — user edits persist across upgrades.
+# Source-of-truth: config/b12-config-template.toml
+# ─────────────────────────────────────────────
+seed_user_config() {
+  # Codex review PR #43 round 4 P2: scripts/b12_config.py reads
+  # config.toml from $B12_DATA_DIR when set (else falls back to
+  # ~/.B12/). Seed to whichever directory the daemon will actually
+  # read, so a custom B12_DATA_DIR setup gets a working template.
+  local data_dir="${B12_DATA_DIR:-$HOME/.B12}"
+  local user_config="$data_dir/config.toml"
+  local template="$HOOK_SOURCE/../config/b12-config-template.toml"
+  if [ ! -f "$template" ]; then
+    template="$(cd "$(dirname "$0")" 2>/dev/null && pwd)/config/b12-config-template.toml"
+  fi
+  if [ ! -f "$template" ]; then
+    return 0  # template absent → silent skip; daemon handles missing config fine
+  fi
+  mkdir -p "$data_dir" 2>/dev/null || true
+  if [ ! -f "$user_config" ]; then
+    cp "$template" "$user_config"
+    info "Seeded user config at $user_config (from template)"
+  fi
+}
+
+# ─────────────────────────────────────────────
+# 24h smoke cron (Plan §C13) — opt-in via --smoke-cron.
+# Registers a daily cron entry that runs b12_smoke.sh against every
+# detected ~/.claude* setup. Uses the user crontab (no launchctl admin
+# write), so it's fully reversible by `--smoke-cron-uninstall`.
+# ─────────────────────────────────────────────
+_smoke_cron_marker="# B12_SMOKE_CRON v1 — managed by install.sh; remove via './install.sh --smoke-cron-uninstall'"
+
+install_smoke_cron() {
+  local script_path="$SCRIPT_DEST/b12_smoke.sh"
+  if [ ! -x "$script_path" ]; then
+    warn "Smoke script not deployed at $script_path. Run './install.sh --all' first."
+    return 1
+  fi
+  local current
+  current=$(crontab -l 2>/dev/null || true)
+  if printf '%s' "$current" | grep -qF "$_smoke_cron_marker"; then
+    info "Smoke cron already installed (skipping)"
+    return 0
+  fi
+  # 03:17 daily — off-peak, unlikely to clash with backup/consolidate plists.
+  local entry="17 3 * * * $script_path >/dev/null 2>&1"
+  {
+    printf '%s\n' "$current"
+    printf '%s\n' "$_smoke_cron_marker"
+    printf '%s\n' "$entry"
+  } | crontab -
+  info "Installed smoke cron entry: $entry"
+}
+
+uninstall_smoke_cron() {
+  local current
+  current=$(crontab -l 2>/dev/null || true)
+  if ! printf '%s' "$current" | grep -qF "$_smoke_cron_marker"; then
+    info "Smoke cron not installed (nothing to remove)"
+    return 0
+  fi
+  # Codex review PR #43 round 4 P2: drop the marker line + ONE entry
+  # line that immediately follows. Previously set skip=2 after matching
+  # the marker, but `next` had already consumed it — so awk also dropped
+  # an unrelated user cron line after the B12 entry.
+  printf '%s\n' "$current" \
+    | awk -v marker="$_smoke_cron_marker" '
+        skip > 0     { skip--; next }
+        $0 == marker { skip = 1; next }
+                     { print }
+      ' \
+    | crontab -
+  info "Removed smoke cron entry"
+}
+
+# ─────────────────────────────────────────────
 # Step 2: Copy hook scripts to shared location
 # ─────────────────────────────────────────────
 copy_hooks() {
@@ -242,6 +323,12 @@ copy_scripts() {
     cp "$f" "$SCRIPT_DEST/"
     count=$((count + 1))
   done
+  # Smoke harness — bash script, not matched by the *.py glob above.
+  if [ -f "$SCRIPT_SOURCE/b12_smoke.sh" ]; then
+    cp "$SCRIPT_SOURCE/b12_smoke.sh" "$SCRIPT_DEST/"
+    chmod +x "$SCRIPT_DEST/b12_smoke.sh"
+    count=$((count + 1))
+  fi
   # Make MCP server executable
   if [ -f "$SCRIPT_DEST/b12_mcp_server.py" ]; then
     chmod +x "$SCRIPT_DEST/b12_mcp_server.py"
@@ -2537,6 +2624,7 @@ fi
 
 # Always create dirs and copy files (Claude Code hooks + scripts)
 create_dirs
+seed_user_config
 copy_hooks
 copy_scripts
 update_launchd_plists
@@ -2769,6 +2857,22 @@ if $INSTALL_DAEMON; then
   echo ""
   echo "── B12 MCP Daemon Setup ─────────"
   install_mcp_daemon
+  echo ""
+fi
+
+# 24h smoke cron (Plan §C13) — explicit opt-in via --smoke-cron /
+# --smoke-cron-uninstall. Reversible by definition: edits the user's
+# crontab only, no launchctl writes (avoids STOP-AND-ASK trigger).
+if $UNINSTALL_SMOKE_CRON; then
+  echo ""
+  echo "── B12 Smoke Cron Uninstall ─────"
+  uninstall_smoke_cron
+  echo ""
+fi
+if $INSTALL_SMOKE_CRON; then
+  echo ""
+  echo "── B12 Smoke Cron Setup ─────────"
+  install_smoke_cron
   echo ""
 fi
 
