@@ -109,6 +109,17 @@
         ]
       }
     ],
+    "SubagentStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.B12/hooks/memory-subagent-start.sh",
+            "timeout": 8
+          }
+        ]
+      }
+    ],
     "SubagentStop": [
       {
         "hooks": [
@@ -143,6 +154,16 @@
       }
     ],
     "PostToolUse": [
+      {
+        "matcher": "TeamCreate",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "~/.B12/hooks/memory-team-create.sh",
+            "timeout": 6
+          }
+        ]
+      },
       {
         "matcher": "mcp__B12__memory_store|mcp__B12__memory_search|mcp__B12__memory_quality|mcp__B12__memory_update",
         "hooks": [

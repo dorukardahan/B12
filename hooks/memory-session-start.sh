@@ -432,6 +432,61 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
     CONTEXT="${CONTEXT}\n\n--- MEMORY PRE-FETCH ---\n${MEMORY_PREFETCH}\n--- END PRE-FETCH ---"
   fi
 
+  # Teammate context (Plan §B2) — only fires when THIS session is a
+  # participant in an agent-team. Resolution order (Codex review PR #44
+  # round 3 P2: teammate sessions have different session_ids than the
+  # TeamCreate caller, so the session_id path is best-effort only):
+  #   1. CLAUDE_CODE_AGENT_ID / CLAUDE_CODE_PARENT_AGENT_ID env vars
+  #      → match against .members[].agent_id (runtime), then fall back
+  #      to .members[].name / .agent_type (for older team API revs).
+  #   2. session_id from stdin → match against .caller_session_id
+  #      (lead session re-entering after creating a team — edge case).
+  # Without a match, we DO NOT inject team context, even if a recent
+  # team-*.json exists, preventing cross-session roster leakage between
+  # unrelated projects sharing the same B12_DATA_DIR.
+  TEAM_STATE_DIR="$B12_BASE/state"
+  SESSION_ID=$(printf '%s' "$INPUT" | jq -r '.session_id // ""' 2>/dev/null)
+  AGENT_ID="${CLAUDE_CODE_AGENT_ID:-${CLAUDE_CODE_PARENT_AGENT_ID:-}}"
+  if [ -d "$TEAM_STATE_DIR" ] && [ -n "$SESSION_ID$AGENT_ID" ]; then
+    MATCHED_TEAM=""
+    for team_file in $(ls -t "$TEAM_STATE_DIR"/team-*.json 2>/dev/null); do
+      [ -r "$team_file" ] || continue
+      age=$(( $(date +%s) - $(file_mtime "$team_file") ))
+      [ "$age" -gt 21600 ] && break
+      # Primary: match by AGENT_ID against .members[].agent_id (the
+      # runtime-assigned ID Claude Code teams API yields in tool_response).
+      if [ -n "$AGENT_ID" ] && \
+         jq -e --arg aid "$AGENT_ID" \
+            '.members // [] | any(.agent_id == $aid or .name == $aid or .agent_type == $aid)' \
+            "$team_file" >/dev/null 2>&1; then
+        MATCHED_TEAM="$team_file"
+        break
+      fi
+      # Edge case: lead session re-enters after creating a team
+      # (caller_session_id of the TeamCreate call).
+      caller_sid=$(jq -r '.caller_session_id // .session_id // ""' "$team_file" 2>/dev/null)
+      if [ -n "$SESSION_ID" ] && [ "$caller_sid" = "$SESSION_ID" ]; then
+        MATCHED_TEAM="$team_file"
+        break
+      fi
+    done
+    if [ -n "$MATCHED_TEAM" ]; then
+      TEAMMATE_LINES=$(jq -r '
+        if (.members | length) > 0 then
+          "Team " + (.team_name // .team_id // "") + " members:\n"
+          + ([.members[] |
+              "- " + (.name // "?")
+              + " (" + (.agent_type // "?") + "): "
+              + (.task // "")
+            ] | join("\n"))
+        else "" end
+      ' "$MATCHED_TEAM" 2>/dev/null)
+      if [ -n "$TEAMMATE_LINES" ]; then
+        CONTEXT="${CONTEXT}\n\n--- TEAMMATES ---\n${TEAMMATE_LINES}\n--- END TEAMMATES ---"
+      fi
+    fi
+  fi
+
   # ── Context hard cap — progressive trimming ──────────────────
   # Fixed instructions (~2120 chars) are always kept.
   # Variable sections trimmed in priority order (least valuable first).
