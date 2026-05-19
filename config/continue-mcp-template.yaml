@@ -1,0 +1,20 @@
+# B12 Memory System — Continue.dev MCP Server Configuration
+# Path on disk:    ~/.continue/mcpServers/b12.yaml
+# Or workspace-scoped: .continue/mcpServers/b12.yaml (in repo root)
+# Install via:     ./install.sh --continue
+# Schema ref:      https://docs.continue.dev/customize/deep-dives/mcp
+#
+# Continue CLI ('cn') AND VS Code extension AND JetBrains plugin all
+# read this file because they share the ~/.continue/ tree. One template
+# covers all three surfaces.
+name: B12
+version: 1.0.0
+schema: v1
+mcpServers:
+  - name: B12
+    command: __VENV_PYTHON__
+    args:
+      - __SCRIPT_PATH__
+    env:
+      MCP_EMBEDDING_MODEL: BAAI/bge-m3
+      MCP_MAX_RESPONSE_CHARS: "40000"

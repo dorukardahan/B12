@@ -51,7 +51,19 @@ class SessionInfo:
 
 
 def detect_format(path: str) -> str:
-    """Detect transcript format from first line. Returns 'claude' or 'codex'."""
+    """Detect transcript format from first line. Returns 'claude' / 'codex' / 'continue'."""
+    # Continue.dev writes a single JSON object per session (not JSONL); the
+    # whole file is one valid JSON object with a `history` array. Easy to
+    # detect by trying a whole-file parse first if the path looks Continue-
+    # shaped (~/.continue/sessions/*.json).
+    if "/.continue/sessions/" in path and path.endswith(".json"):
+        try:
+            with open(path, "r") as f:
+                obj = json.load(f)
+            if isinstance(obj, dict) and ("history" in obj or "sessionId" in obj):
+                return "continue"
+        except (json.JSONDecodeError, OSError):
+            pass
     try:
         with open(path, 'r') as f:
             first_line = f.readline().strip()
@@ -88,6 +100,8 @@ def parse(path: str, tail_lines: int = 0) -> tuple:
         return _parse_claude(path, tail_lines)
     elif fmt == "codex":
         return _parse_codex(path, tail_lines)
+    elif fmt == "continue":
+        return _parse_continue(path)
     else:
         return SessionInfo(platform="unknown"), []
 
@@ -324,6 +338,79 @@ def _parse_codex(path: str, tail_lines: int = 0) -> tuple:
 
     # Store all tools on session info for extraction
     info._all_tools = tool_list
+
+    return info, messages
+
+
+# ─── Continue.dev Parser ──────────────────────────────
+
+def _parse_continue(path: str) -> tuple:
+    """Parse a Continue.dev session JSON (~/.continue/sessions/<id>.json).
+    Continue stores one whole-file JSON object per session (NOT JSONL).
+    Shape: {sessionId, title, history: [{role, message, ...}], ...}
+    where each history entry's `message.content` is a string or a list
+    of content blocks. Confirmed against upstream
+    `core/util/paths.ts:getSessionFilePath`.
+    """
+    info = SessionInfo(platform="continue")
+    messages: list = []
+    try:
+        with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+            obj = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return info, messages
+
+    info.session_id = str(obj.get("sessionId") or "")
+    info.cwd = str(obj.get("workspaceDirectory") or obj.get("cwd") or "")
+    info.timestamp = str(obj.get("createdAt") or obj.get("title") or "")
+
+    history = obj.get("history") or []
+    if not isinstance(history, list):
+        return info, messages
+
+    for entry in history:
+        if not isinstance(entry, dict):
+            continue
+        role = entry.get("role") or entry.get("message", {}).get("role") or ""
+        if role not in ("user", "assistant", "system"):
+            continue
+        raw_msg = entry.get("message") or entry
+        content = ""
+        if isinstance(raw_msg, dict):
+            inner = raw_msg.get("content")
+            if isinstance(inner, str):
+                content = inner
+            elif isinstance(inner, list):
+                texts = []
+                for block in inner:
+                    if isinstance(block, dict):
+                        if block.get("type") in ("text", "output_text"):
+                            texts.append(block.get("text", ""))
+                        elif "content" in block and isinstance(block["content"], str):
+                            texts.append(block["content"])
+                content = "\n".join(t for t in texts if t)
+        if not content.strip():
+            continue
+        msg = Message(
+            role=role if role != "system" else "user",
+            timestamp=str(entry.get("timestamp") or ""),
+            content=content,
+        )
+        # Tool uses, when Continue surfaces them per Claude Code's
+        # message-content-block shape.
+        if isinstance(raw_msg, dict) and isinstance(raw_msg.get("content"), list):
+            for block in raw_msg["content"]:
+                if isinstance(block, dict) and block.get("type") == "tool_use":
+                    tool = ToolUse(
+                        name=block.get("name", ""),
+                        input_data=block.get("input", {}) or {},
+                    )
+                    msg.tool_uses.append(tool)
+                    if tool.name in ("Edit", "Write") and isinstance(tool.input_data, dict):
+                        fp = tool.input_data.get("file_path")
+                        if fp:
+                            msg.files_modified.append(str(fp))
+        messages.append(msg)
 
     return info, messages
 

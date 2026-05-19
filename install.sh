@@ -117,6 +117,7 @@ INSTALL_KIMI=false
 INSTALL_WINDSURF=false
 INSTALL_CLINE=false
 INSTALL_OPENCODE=false
+INSTALL_CONTINUE=false
 INSTALL_GROK=false
 INSTALL_DAEMON=false
 UNINSTALL_DAEMON=false
@@ -136,6 +137,7 @@ for arg in "$@"; do
     --windsurf)  INSTALL_WINDSURF=true ;;
     --cline)     INSTALL_CLINE=true ;;
     --opencode)  INSTALL_OPENCODE=true ;;
+    --continue)  INSTALL_CONTINUE=true ;;
     --grok)      INSTALL_GROK=true ;;
     --daemon)    INSTALL_DAEMON=true ;;
     --daemon-uninstall) UNINSTALL_DAEMON=true ;;
@@ -1987,6 +1989,86 @@ inject_cline_rules() {
 }
 
 # ─────────────────────────────────────────────
+# Continue.dev: MCP config injection. Continue uses ~/.continue/ as the
+# shared config root across CLI ('cn'), VS Code extension, and JetBrains
+# plugin — one write covers all three surfaces. MCP servers live in
+# ~/.continue/mcpServers/*.yaml (preferred per docs) or ~/.continue/
+# mcp.json (older shape).
+# ─────────────────────────────────────────────
+inject_continue_mcp_config() {
+  local CONTINUE_DIR="$HOME/.continue"
+  local MCP_DIR="$CONTINUE_DIR/mcpServers"
+  local MCP_FILE="$MCP_DIR/b12.yaml"
+  local TEMPLATE="$SCRIPT_DIR/config/continue-mcp-template.yaml"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$CONTINUE_DIR" ]; then
+    warn "Continue.dev not found at $CONTINUE_DIR — install Continue (CLI 'cn' or extension) first"
+    return 1
+  fi
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --continue"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "Continue MCP template not found at $TEMPLATE"
+    return 1
+  fi
+
+  mkdir -p "$MCP_DIR"
+  sed -e "s|__VENV_PYTHON__|$VENV_PYTHON|g" \
+      -e "s|__SCRIPT_PATH__|$SERVER_SCRIPT|g" \
+      "$TEMPLATE" > "$MCP_FILE"
+  info "B12 MCP server configured at $MCP_FILE"
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+# ─────────────────────────────────────────────
+# Continue.dev: install behavioral rules into ~/.continue/rules/.
+# Continue honors per-file Markdown rules in the rules/ tree as of late
+# 2025; this drops B12's recall/store rule alongside any user rules.
+# ─────────────────────────────────────────────
+inject_continue_rules() {
+  local TEMPLATE="$SCRIPT_DIR/config/continue-instructions-template.md"
+  local RULES_DIR="$HOME/.continue/rules"
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "Continue rules template not found at $TEMPLATE"
+    return 1
+  fi
+  mkdir -p "$RULES_DIR"
+  cp "$TEMPLATE" "$RULES_DIR/b12-memory.md"
+  info "B12 rules installed to $RULES_DIR/b12-memory.md"
+}
+
+# ─────────────────────────────────────────────
+# Continue.dev: verify
+# ─────────────────────────────────────────────
+verify_continue() {
+  local MCP_FILE="$HOME/.continue/mcpServers/b12.yaml"
+  local RULES="$HOME/.continue/rules/b12-memory.md"
+  local errors=0
+  if [ -f "$MCP_FILE" ] && grep -q '^name: B12' "$MCP_FILE" 2>/dev/null; then
+    info "Verify: B12 MCP server configured for Continue.dev"
+  else
+    warn "Verify: B12 NOT found at $MCP_FILE"
+    errors=$((errors + 1))
+  fi
+  if [ -f "$RULES" ]; then
+    info "Verify: B12 rules present at $RULES"
+  else
+    warn "Verify: B12 rules NOT found at $RULES"
+    errors=$((errors + 1))
+  fi
+  return "$errors"
+}
+
+# ─────────────────────────────────────────────
 # Cline: verify installation
 # ─────────────────────────────────────────────
 verify_cline() {
@@ -2833,6 +2915,19 @@ if $INSTALL_OPENCODE; then
   echo ""
 fi
 
+# Continue.dev setup (CLI + VS Code + JetBrains via shared ~/.continue/)
+if $INSTALL_CONTINUE; then
+  echo ""
+  echo "── Continue.dev Setup ───────────"
+  inject_continue_mcp_config
+  inject_continue_rules
+  echo ""
+  info "Continue.dev: hooks are Claude Code-compatible. To wire B12 hooks for"
+  info "  PreToolUse/PostToolUse/SessionStart/SessionEnd, add the matching"
+  info "  entries from ~/.B12/hooks/ to your ~/.continue/config.yaml under"
+  info "  'hooks:' (Continue uses the same JSON-on-stdin contract as Claude)."
+fi
+
 # Grok setup
 if $INSTALL_GROK; then
   echo ""
@@ -2940,6 +3035,13 @@ if $INSTALL_OPENCODE; then
   echo ""
   echo "── OpenCode Verification ────────"
   verify_opencode
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
+fi
+
+if $INSTALL_CONTINUE; then
+  echo ""
+  echo "── Continue.dev Verification ────"
+  verify_continue
   VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
