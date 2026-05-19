@@ -53,20 +53,11 @@ QUERY=$(printf 'agent:%s %s' "$AGENT_TYPE" "${TASK:0:200}")
 _UID=$(id -u 2>/dev/null || echo $$)
 SOCK="/tmp/b12-embed-${_UID}.sock"
 
-# Platform-aware DB path — mirrors codex_session_end.py:get_db_path() so
-# the daemon opens the same DB regardless of OS. Codex review PR #44 P2:
-# previously hardcoded macOS path silently returned empty results on
-# Linux/Windows daemon installs.
-case "$(uname -s)" in
-  Darwin) DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db" ;;
-  *)
-    if [ -d "$HOME/AppData" ]; then
-      DB_PATH="$HOME/AppData/Local/mcp-memory/sqlite_vec.db"
-    else
-      DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
-    fi
-    ;;
-esac
+# Platform-aware DB path via shared resolver (Darwin / Linux / WSL /
+# Windows-bash). Codex review PR #44 P2 originated the inline switch
+# here; v11.54 extracted it into hooks/_b12_common.sh so every shell
+# hook stays in lockstep.
+DB_PATH="$(b12_resolve_db_path)"
 
 # Daemon recall (preferred). On cold-daemon path (socket missing or model
 # still loading) fall through to a direct FTS5 SQLite query — same pattern

@@ -37,10 +37,14 @@ from shared_patterns import (
 
 
 def get_db_path():
-    """Get the B12 SQLite database path (platform-aware)."""
+    """Get the B12 SQLite database path. Must match b12_mcp_server.py
+    DB_PATH verbatim — Codex review PR #52 noted that the previous
+    `os.path.isdir('~/AppData')` check diverged from the server's
+    `sys.platform == 'win32'` rule on WSL (bind-mounted AppData) and
+    on Cygwin/MSYS POSIX-Python installs."""
     if sys.platform == 'darwin':
         return os.path.expanduser('~/Library/Application Support/mcp-memory/sqlite_vec.db')
-    elif os.path.isdir(os.path.expanduser('~/AppData')):
+    elif sys.platform == 'win32':
         return os.path.expanduser('~/AppData/Local/mcp-memory/sqlite_vec.db')
     else:
         return os.path.expanduser('~/.local/share/mcp-memory/sqlite_vec.db')

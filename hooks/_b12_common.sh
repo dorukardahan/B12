@@ -126,6 +126,37 @@ b12_async_fork() {
 # ── b12_should_skip_trivial TOOL_NAME TOOL_INPUT_JSON ─────────
 # S4 trivial-call whitelist. Returns 0 (skip the hook) for cheap
 # operations where surfacing memory is more cost than value. Caller
+# ── b12_resolve_db_path ─────────────────────────────────────
+# Must match scripts/b12_mcp_server.py:DB_PATH verbatim. The server's
+# branch key is `sys.platform` (Python), not `uname -s` (shell). They
+# diverge on WSL (uname says Linux, sys.platform=="linux", AppData
+# bind-mount is irrelevant) AND on Cygwin/MSYS POSIX-Python installs
+# (uname says CYGWIN*, sys.platform=="cygwin", correct path is XDG).
+# So we invoke Python directly — venv first, then any python3 on PATH.
+# Codex PR #52 round 2 P2 surfaced both divergences.
+b12_resolve_db_path() {
+  local _py
+  for _py in "$HOME/.local/b12-venv/bin/python3" python3 python; do
+    if command -v "$_py" >/dev/null 2>&1 || [ -x "$_py" ]; then
+      "$_py" -c '
+import os, sys
+home = os.path.expanduser("~")
+if sys.platform == "darwin":
+    print(home + "/Library/Application Support/mcp-memory/sqlite_vec.db")
+elif sys.platform == "win32":
+    print(home + "/AppData/Local/mcp-memory/sqlite_vec.db")
+else:
+    print(home + "/.local/share/mcp-memory/sqlite_vec.db")
+' 2>/dev/null && return 0
+    fi
+  done
+  # No python on PATH — fall back to uname best-effort.
+  case "$(uname -s 2>/dev/null)" in
+    Darwin) printf '%s\n' "$HOME/Library/Application Support/mcp-memory/sqlite_vec.db" ;;
+    *)      printf '%s\n' "$HOME/.local/share/mcp-memory/sqlite_vec.db" ;;
+  esac
+}
+
 # supplies the JSON-encoded tool_input so we don't re-shell-out to jq.
 b12_should_skip_trivial() {
   local _tool="$1"

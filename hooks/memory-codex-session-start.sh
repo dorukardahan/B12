@@ -66,8 +66,19 @@ ${GOAL_BODY}
 "
   fi
 
-  DB="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
-  [ -f "$DB" ] || DB="$HOME/.local/share/mcp-memory/sqlite_vec.db"
+  # Cross-platform DB resolution via shared helper (closes the real
+  # bug noted in B12_polyglot_audit_2026-05-19.md §C3: this hook
+  # previously only looked at macOS + Linux, missing the Windows /
+  # WSL `~/AppData/Local/mcp-memory/sqlite_vec.db` branch.
+  # shellcheck source=./_b12_common.sh disable=SC1091
+  . "$B12_HOOK_DIR_LOCAL/_b12_common.sh" 2>/dev/null || true
+  if command -v b12_resolve_db_path >/dev/null 2>&1; then
+    DB="$(b12_resolve_db_path)"
+  else
+    DB="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+    [ -f "$DB" ] || DB="$HOME/.local/share/mcp-memory/sqlite_vec.db"
+    [ -f "$DB" ] || DB="$HOME/AppData/Local/mcp-memory/sqlite_vec.db"
+  fi
 
   if [ -f "$DB" ]; then
     BODY="${BODY}📚 B12 — recent context for **${PROJECT}** (Codex SessionStart, source=${SOURCE}):

@@ -15,12 +15,18 @@
 
 set -o pipefail 2>/dev/null || true
 
-if [ "$(uname)" = "Darwin" ]; then
-  DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
-elif [ -d "$HOME/AppData" ]; then
-  DB_PATH="$HOME/AppData/Local/mcp-memory/sqlite_vec.db"
+# shellcheck source=./_b12_common.sh disable=SC1091
+. "${B12_HOOK_DIR:-$HOME/.B12/hooks}/_b12_common.sh" 2>/dev/null || true
+if command -v b12_resolve_db_path >/dev/null 2>&1; then
+  DB_PATH="$(b12_resolve_db_path)"
 else
-  DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
+  if [ "$(uname)" = "Darwin" ]; then
+    DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
+  elif [ -d "$HOME/AppData" ]; then
+    DB_PATH="$HOME/AppData/Local/mcp-memory/sqlite_vec.db"
+  else
+    DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
+  fi
 fi
 
 if [ ! -f "$DB_PATH" ]; then

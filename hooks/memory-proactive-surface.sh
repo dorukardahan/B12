@@ -175,13 +175,7 @@ if [ -z "$QUERY" ] || [ "${#QUERY}" -lt 4 ]; then
 fi
 
 # ── DB path ────────────────────────────────────────────────
-if [ "$(uname)" = "Darwin" ]; then
-  DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
-elif [ -d "$HOME/AppData" ]; then
-  DB_PATH="$HOME/AppData/Local/mcp-memory/sqlite_vec.db"
-else
-  DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
-fi
+DB_PATH="$(b12_resolve_db_path)"
 # Helper: reset the rate-limit counter when an expensive attempt finishes
 # (hit or miss) so we don't pay the daemon round-trip on every subsequent fire
 # until something actually hits. last_surfaced_at is NOT bumped on a miss —

@@ -148,13 +148,7 @@ if [ "$RECALL_VERB_HIT" = false ]; then
   fi
 fi
 
-if [ "$(uname)" = "Darwin" ]; then
-  DB_PATH="$HOME/Library/Application Support/mcp-memory/sqlite_vec.db"
-elif [ -d "$HOME/AppData" ]; then
-  DB_PATH="$HOME/AppData/Local/mcp-memory/sqlite_vec.db"
-else
-  DB_PATH="$HOME/.local/share/mcp-memory/sqlite_vec.db"
-fi
+DB_PATH="$(b12_resolve_db_path)"
 if [ ! -f "$DB_PATH" ]; then
   exit 0
 fi
