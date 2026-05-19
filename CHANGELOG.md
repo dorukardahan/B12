@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.47.0](https://github.com/dorukardahan/B12/compare/v11.46.0...v11.47.0) (2026-05-19)
+
+
+### Features
+
+* **cc:** Cursor MDC globs Auto-Attached + PageRank file-rank in SessionStart ([#45](https://github.com/dorukardahan/B12/issues/45)) ([993e6ea](https://github.com/dorukardahan/B12/commit/993e6ead90c3e47146ab45668f6bc3f8e23fe97a))
+
 # [11.46.0](https://github.com/dorukardahan/B12/compare/v11.45.0...v11.46.0) (2026-05-18)
 
 
