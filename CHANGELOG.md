@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.54.0](https://github.com/dorukardahan/B12/compare/v11.53.0...v11.54.0) (2026-05-19)
+
+
+### Features
+
+* **opencode:** [M#] macro verbs ingestion ([#50](https://github.com/dorukardahan/B12/issues/50)) ([614aedc](https://github.com/dorukardahan/B12/commit/614aedcc49c4bceee8c26f8f3e124ca496cf817d)), closes [hi#value](https://github.com/hi/issues/value) [M#decision](https://github.com/M/issues/decision) [M#decision](https://github.com/M/issues/decision) [M#learning](https://github.com/M/issues/learning) [M#preferrence](https://github.com/M/issues/preferrence) [M#todo](https://github.com/M/issues/todo) [#1](https://github.com/dorukardahan/B12/issues/1) [M#decision](https://github.com/M/issues/decision) [#2](https://github.com/dorukardahan/B12/issues/2)
+
 # [11.53.0](https://github.com/dorukardahan/B12/compare/v11.52.0...v11.53.0) (2026-05-19)
 
 
