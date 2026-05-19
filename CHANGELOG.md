@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.58.1](https://github.com/dorukardahan/B12/compare/v11.58.0...v11.58.1) (2026-05-19)
+
+
+### Bug Fixes
+
+* **grok:** templatize .mcp.json + SKILL.md paths ([ae49620](https://github.com/dorukardahan/B12/commit/ae4962090c4fca9c1d30bb9acb2e3d98535503ab))
+
 # [11.58.0](https://github.com/dorukardahan/B12/compare/v11.57.0...v11.58.0) (2026-05-19)
 
 
