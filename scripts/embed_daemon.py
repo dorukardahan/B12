@@ -734,11 +734,22 @@ _CLASSIFIER_PATH = os.path.join(
 
 
 def _load_classifier():
-    """Lazy-load the LogReg classifier head. Returns True if available."""
+    """Lazy-load the LogReg classifier head. Returns True if available.
+
+    Honors B12_CLASSIFIER_BACKEND=off as an escape hatch (skip load entirely,
+    classify ops return classifier_not_available). On a dim mismatch between
+    the pickled head and the current embedding dim, log a one-time warning
+    so the operator sees the cause instead of a silent per-call error.
+    """
     global _CLASSIFIER_HEAD, _CLASSIFIER_LABELS, _CLASSIFIER_AVAILABLE
 
     if _CLASSIFIER_AVAILABLE is not None:
         return _CLASSIFIER_AVAILABLE
+
+    if os.environ.get('B12_CLASSIFIER_BACKEND', '').lower() == 'off':
+        log("Classifier disabled via B12_CLASSIFIER_BACKEND=off")
+        _CLASSIFIER_AVAILABLE = False
+        return False
 
     try:
         import pickle
@@ -756,6 +767,17 @@ def _load_classifier():
         log(f"Classifier head loaded in {time.time()-t0:.3f}s "
             f"({len(_CLASSIFIER_LABELS)} classes, "
             f"cv_acc={data.get('cv_accuracy', 'N/A'):.3f})")
+
+        # One-time loud warning on dim mismatch — otherwise every classify
+        # op returns classifier_dim_mismatch with no operator-visible cause.
+        head_dim = getattr(_CLASSIFIER_HEAD, 'n_features_in_', None)
+        if head_dim is not None and EXPECTED_DIM is not None \
+                and int(head_dim) != int(EXPECTED_DIM):
+            log(f"WARNING: classifier head trained at dim={head_dim} but "
+                f"daemon embedding dim={EXPECTED_DIM}. Classify ops will "
+                f"return classifier_dim_mismatch. Retrain the head at "
+                f"dim={EXPECTED_DIM} or set B12_CLASSIFIER_BACKEND=off "
+                f"to silence.")
         return True
     except Exception as e:
         log(f"Classifier head load failed: {e}")
