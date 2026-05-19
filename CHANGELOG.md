@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.51.0](https://github.com/dorukardahan/B12/compare/v11.50.0...v11.51.0) (2026-05-19)
+
+
+### Features
+
+* **cline:** wire B12 hooks into ~/.cline/hooks/ (TaskStart + UserPromptSubmit + PreCompact) ([#47](https://github.com/dorukardahan/B12/issues/47)) ([18226ab](https://github.com/dorukardahan/B12/commit/18226ab5357ca78adb7b5ab90bf901234c21768b)), closes [post-#46-merge](https://github.com/post-/issues/46-merge) [post-#46](https://github.com/post-/issues/46)
+
 # [11.50.0](https://github.com/dorukardahan/B12/compare/v11.49.0...v11.50.0) (2026-05-19)
 
 
