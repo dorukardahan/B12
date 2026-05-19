@@ -46,6 +46,62 @@ fi
 # Clean up staging files for this session
 rm -f "$STAGING_DIR/precompact-${SESSION_ID}.txt" 2>/dev/null
 
+# ── Idle-timeout heuristic (v6, 2026-05-19) ─────────────────────
+# Claude Code emits SessionEnd with .reason ∈ {clear, logout,
+# prompt_input_exit, other}. The first three are explicit user
+# intent. "other" is the catch-all — terminal close, parent kill,
+# inactivity timeout — and gets noisy when the user just walked
+# away mid-session. Half-finished transcripts then promote weak
+# signal into long-term memory.
+#
+# Heuristic: when REASON is not an explicit-exit reason AND the
+# transcript file hasn't been touched for longer than
+# B12_IDLE_TIMEOUT_SECONDS (default 1800 = 30min), treat the
+# event as an idle walk-away and skip the heavy extraction.
+# Staging is still cleaned, a log line is still written, and the
+# hook still exits 0 — only the storage path is short-circuited.
+#
+# Disable with B12_IDLE_TIMEOUT_SECONDS=0.
+B12_IDLE_TIMEOUT_SECONDS="${B12_IDLE_TIMEOUT_SECONDS:-1800}"
+_idle_skip="false"
+_idle_seconds=0
+case "$REASON" in
+  clear|logout|prompt_input_exit) : ;;
+  *)
+    if [ "$B12_IDLE_TIMEOUT_SECONDS" -gt 0 ] && [ -f "$TRANSCRIPT_PATH" ]; then
+      _now=$(date +%s)
+      # `stat -f` on BSD/macOS = format; on GNU/Linux = filesystem status
+      # (prints non-numeric text to stdout AND exits non-zero, so a naive
+      # `stat -f ... || stat -c ...` chain concatenates both outputs and
+      # breaks arithmetic). Branch on uname -s instead.
+      case "$(uname -s 2>/dev/null)" in
+        Darwin|FreeBSD|NetBSD|OpenBSD|DragonFly)
+          _mtime=$(stat -f %m "$TRANSCRIPT_PATH" 2>/dev/null) ;;
+        *)
+          _mtime=$(stat -c %Y "$TRANSCRIPT_PATH" 2>/dev/null) ;;
+      esac
+      case "$_mtime" in ''|*[!0-9]*) _mtime="$_now" ;; esac
+      _idle_seconds=$(( _now - _mtime ))
+      if [ "$_idle_seconds" -gt "$B12_IDLE_TIMEOUT_SECONDS" ]; then
+        _idle_skip="true"
+      fi
+    fi
+    ;;
+esac
+
+if [ "$_idle_skip" = "true" ]; then
+  echo "{\"session\":\"$SESSION_ID\",\"project\":\"$PROJECT_NAME\",\"setup\":\"$SETUP_CONTEXT\",\"reason\":\"$REASON\",\"idle_skip\":true,\"idle_seconds\":$_idle_seconds,\"threshold\":$B12_IDLE_TIMEOUT_SECONDS,\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" >> "$LOG_DIR/sessions.jsonl" 2>/dev/null
+  # Mirror end-of-script log pruning so idle-heavy envs don't grow unbounded.
+  if [ -f "$LOG_DIR/sessions.jsonl" ]; then
+    _ll=$(wc -l < "$LOG_DIR/sessions.jsonl" 2>/dev/null || echo 0)
+    if [ "$_ll" -gt 1000 ]; then
+      tail -500 "$LOG_DIR/sessions.jsonl" > "$LOG_DIR/sessions.jsonl.tmp" 2>/dev/null && mv "$LOG_DIR/sessions.jsonl.tmp" "$LOG_DIR/sessions.jsonl" 2>/dev/null
+    fi
+  fi
+  echo '{}'
+  exit 0
+fi
+
 # Extract structured session summary from transcript
 if [ -f "$TRANSCRIPT_PATH" ]; then
   python3 - "$TRANSCRIPT_PATH" "$PROJECT_NAME" "$SESSION_ID" "$SUMMARY_DIR" "$CWD" "$SETUP_CONTEXT" << 'PYEOF'

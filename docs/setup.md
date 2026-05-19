@@ -59,6 +59,7 @@ When `B12_DATA_DIR` is set, the template is seeded under `$B12_DATA_DIR/config.t
 | `B12_DATA_DIR` | Data/state: summaries, staging, logs | `~/.B12` |
 | `B12_HOOK_DIR` | Hook code: script imports, embed daemon | `~/.B12/hooks` |
 | `B12_WORK_PATTERN` | Work setup detection pattern | (none) |
+| `B12_IDLE_TIMEOUT_SECONDS` | SessionEnd idle-timeout skip threshold (s); `0` disables | `1800` |
 
 Set per-setup in each `settings.json` `env` block. `B12_DATA_DIR` and `B12_HOOK_DIR` are separate — data can be per-setup while hook code stays shared.
 
