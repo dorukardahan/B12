@@ -268,6 +268,55 @@ def _is_imported_from_claude(info) -> bool:
     return False
 
 
+def _extract_cloud_tasks(info) -> list:
+    """Pair cloud_exec with cloud_apply tool calls by cloud_task_id.
+
+    transcript_adapter._parse_codex captures every `function_call`
+    item into SessionInfo._all_tools — including `cloud_exec` and
+    `cloud_apply` even though Codex has no PreToolUse/PostToolUse
+    handler for them (the matcher denylist in
+    hooks/memory-codex-post-tool.sh correctly excludes them).
+    This function recovers cloud-task signal from the rollout itself
+    so an App-spawned cloud delegation produces a durable memory.
+
+    Returns: list of {cloud_task_id, task, status, files, branch}.
+    """
+    tools = getattr(info, "_all_tools", None) or []
+    by_id: dict = {}
+    for t in tools:
+        if t.name not in ("cloud_exec", "cloud_apply"):
+            continue
+        inp = t.input_data if isinstance(t.input_data, dict) else {}
+        out_raw = t.output or ""
+        out: dict = {}
+        try:
+            if out_raw:
+                parsed = json.loads(out_raw)
+                if isinstance(parsed, dict):
+                    out = parsed
+        except (json.JSONDecodeError, TypeError):
+            pass
+        cid = (inp.get("cloud_task_id") or out.get("cloud_task_id")
+               or out.get("id") or "")
+        if not cid:
+            continue
+        entry = by_id.setdefault(cid, {
+            "cloud_task_id": cid, "task": "", "status": "",
+            "files": [], "branch": ""
+        })
+        if t.name == "cloud_exec":
+            entry["task"] = (inp.get("task_description") or inp.get("description")
+                             or entry["task"])
+            entry["branch"] = (inp.get("branch") or out.get("branch")
+                               or entry["branch"])
+        else:  # cloud_apply
+            entry["status"] = out.get("status") or entry["status"]
+            files = out.get("files") or []
+            if isinstance(files, list):
+                entry["files"] = [str(f) for f in files][:5]
+    return list(by_id.values())
+
+
 def process_rollout(rollout_path: str, force: bool = False) -> dict:
     """
     Process a single Codex rollout file.
@@ -298,6 +347,18 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
     files_modified = extract_files_modified(messages)
     project_name = os.path.basename(info.cwd) if info.cwd else "unknown"
 
+    # Cloud-task ingestion (Plan §E1, Phase A follow-up). transcript_adapter
+    # captures cloud_exec / cloud_apply function_call items into
+    # SessionInfo._all_tools — but earlier versions of this script never
+    # read that field, silently dropping cloud-task signal. Now we pair
+    # each cloud_exec with its cloud_apply by cloud_task_id and emit
+    # one cloud_tasks entry per pair. Gated on B12_CODEX_CLOUD_INGEST
+    # (default off for first-week opt-in) so default behavior is
+    # unchanged for existing users.
+    cloud_tasks = []
+    if os.environ.get("B12_CODEX_CLOUD_INGEST", "false").lower() in ("1", "true", "yes"):
+        cloud_tasks = _extract_cloud_tasks(info)
+
     # Pattern matching on assistant texts (v2: all shared_patterns)
     decisions = []
     errors = []
@@ -327,7 +388,21 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
     summary_lines.append(f"- **Session**: {info.session_id[:12]}")
     summary_lines.append(f"- **User messages**: {len(user_msgs)}")
     summary_lines.append(f"- **Files modified**: {len(files_modified)}")
+    if cloud_tasks:
+        summary_lines.append(f"- **Cloud tasks**: {len(cloud_tasks)}")
     summary_lines.append("")
+
+    if cloud_tasks:
+        summary_lines.append("## Cloud Tasks (Codex App delegations)")
+        for ct in cloud_tasks[:10]:
+            files_str = ",".join(ct.get("files") or [])[:80]
+            summary_lines.append(
+                f"- [{ct['cloud_task_id'][:16]}] task=\"{(ct.get('task') or '')[:100]}\""
+                f" status={ct.get('status') or 'unknown'}"
+                + (f" branch={ct['branch']}" if ct.get('branch') else "")
+                + (f" files={files_str}" if files_str else "")
+            )
+        summary_lines.append("")
 
     if user_msgs:
         summary_lines.append("## User Requests")
