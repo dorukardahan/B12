@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.55.0](https://github.com/dorukardahan/B12/compare/v11.54.0...v11.55.0) (2026-05-19)
+
+
+### Features
+
+* **maint:** soft-delete GC + VACUUM ([#51](https://github.com/dorukardahan/B12/issues/51)) ([f900fa8](https://github.com/dorukardahan/B12/commit/f900fa85ce465c927cd826bbc9a41c7b8aec73c7)), closes [#1](https://github.com/dorukardahan/B12/issues/1) [#2](https://github.com/dorukardahan/B12/issues/2)
+
 # [11.54.0](https://github.com/dorukardahan/B12/compare/v11.53.0...v11.54.0) (2026-05-19)
 
 
