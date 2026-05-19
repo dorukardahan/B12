@@ -388,6 +388,7 @@ If you run multiple Claude Code setups (e.g., personal + work):
 | `B12_HOOK_DIR` | Hook code: script imports, embed daemon | `~/.B12/hooks` | (rarely needed) |
 | `B12_WORK_PATTERN` | Work setup detection pattern | (none) | `mycompany` |
 | `B12_IDLE_TIMEOUT_SECONDS` | SessionEnd idle-timeout skip threshold (seconds). When the SessionEnd `.reason` is not `clear` / `logout` / `prompt_input_exit` AND the transcript mtime is older than this, the hook short-circuits before heavy extraction — `idle_skip:true` is logged to `sessions.jsonl`. Set to `0` to disable. | `1800` (30min) | `3600` / `0` |
+| `CONTINUE_GLOBAL_DIR` | Continue.dev settings directory override (Continue CLI honors this for `~/.continue/settings.json`). `install.sh --continue` writes hooks to `$CONTINUE_GLOBAL_DIR/settings.json` when set. | `~/.continue` | `~/.continue-work` |
 
 #### LLM extraction (opt-in, default off)
 

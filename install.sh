@@ -2049,7 +2049,7 @@ inject_cline_rules() {
 # mcp.json (older shape).
 # ─────────────────────────────────────────────
 inject_continue_mcp_config() {
-  local CONTINUE_DIR="$HOME/.continue"
+  local CONTINUE_DIR="${CONTINUE_GLOBAL_DIR:-$HOME/.continue}"
   local MCP_DIR="$CONTINUE_DIR/mcpServers"
   local MCP_FILE="$MCP_DIR/b12.yaml"
   local TEMPLATE="$SCRIPT_DIR/config/continue-mcp-template.yaml"
@@ -2087,7 +2087,7 @@ inject_continue_mcp_config() {
 # ─────────────────────────────────────────────
 inject_continue_rules() {
   local TEMPLATE="$SCRIPT_DIR/config/continue-instructions-template.md"
-  local RULES_DIR="$HOME/.continue/rules"
+  local RULES_DIR="${CONTINUE_GLOBAL_DIR:-$HOME/.continue}/rules"
   if [ ! -f "$TEMPLATE" ]; then
     warn "Continue rules template not found at $TEMPLATE"
     return 1
@@ -2095,6 +2095,63 @@ inject_continue_rules() {
   mkdir -p "$RULES_DIR"
   cp "$TEMPLATE" "$RULES_DIR/b12-memory.md"
   info "B12 rules installed to $RULES_DIR/b12-memory.md"
+}
+
+# ─────────────────────────────────────────────
+# Continue.dev: install B12 hooks into ~/.continue/settings.json. Per
+# continuedev/continue extensions/cli/src/hooks/hookConfig.ts, Continue
+# CLI ('cn') reads ~/.continue/settings.json with the Claude Code hook
+# schema verbatim. The cli also reads ~/.claude/settings.json for
+# cross-compat, but writing the Continue copy lets B12 work on
+# Continue-only setups (no Claude Code installed) too.
+# ─────────────────────────────────────────────
+inject_continue_hooks() {
+  local CONTINUE_DIR="${CONTINUE_GLOBAL_DIR:-$HOME/.continue}"
+  local SETTINGS="$CONTINUE_DIR/settings.json"
+  local TEMPLATE="$SCRIPT_DIR/config/settings-template.json"
+  if [ ! -d "$CONTINUE_DIR" ]; then
+    warn "Continue.dev not found at $CONTINUE_DIR — install Continue first"
+    return 1
+  fi
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "Claude Code settings template not found at $TEMPLATE"
+    return 1
+  fi
+  # Continue CLI's hookConfig.ts loads ~/.claude/settings.json AND
+  # ~/.continue/settings.json and APPENDS handlers from each source.
+  # If a Claude Code install already registered B12 hooks under
+  # ~/.claude/settings.json, writing the same block to the Continue
+  # location would double-fire every hook (Codex PR #55 R2 P1).
+  # Skip when Claude Code is already a source — Continue picks them
+  # up via the cross-load path.
+  if python3 -c "import json,sys; d=json.load(open('$HOME/.claude/settings.json')); sys.exit(0 if any('memory-session-start' in (h.get('command','') or '') for g in d.get('hooks',{}).get('SessionStart',[]) for h in g.get('hooks',[])) else 1)" 2>/dev/null; then
+    info "Continue.dev: skipping settings.json write — B12 hooks already in ~/.claude/settings.json (Continue cross-loads both files)"
+    return 0
+  fi
+  if ! python3 - "$TEMPLATE" "$SETTINGS" <<'PYEOF'
+import json, os, sys
+template_path, settings_path = sys.argv[1], sys.argv[2]
+with open(template_path) as f:
+    hooks_block = json.load(f).get('hooks', {})
+settings = {}
+if os.path.exists(settings_path):
+    try:
+        with open(settings_path) as f:
+            settings = json.load(f)
+    except Exception:
+        settings = {}
+# Overwrite only the .hooks key — preserve any non-hook Continue config
+# the user has set (theme, model overrides, etc.).
+settings['hooks'] = hooks_block
+with open(settings_path, 'w') as f:
+    json.dump(settings, f, indent=2)
+    f.write('\n')
+PYEOF
+  then
+    warn "Failed to merge B12 hooks into $SETTINGS"
+    return 1
+  fi
+  info "B12 hooks registered in $SETTINGS"
 }
 
 # ═════════════════════════════════════════════
@@ -2316,8 +2373,10 @@ verify_zed() {
 # Continue.dev: verify
 # ─────────────────────────────────────────────
 verify_continue() {
-  local MCP_FILE="$HOME/.continue/mcpServers/b12.yaml"
-  local RULES="$HOME/.continue/rules/b12-memory.md"
+  local CONTINUE_DIR="${CONTINUE_GLOBAL_DIR:-$HOME/.continue}"
+  local MCP_FILE="$CONTINUE_DIR/mcpServers/b12.yaml"
+  local RULES="$CONTINUE_DIR/rules/b12-memory.md"
+  local SETTINGS="$CONTINUE_DIR/settings.json"
   local errors=0
   if [ -f "$MCP_FILE" ] && grep -q '^name: B12' "$MCP_FILE" 2>/dev/null; then
     info "Verify: B12 MCP server configured for Continue.dev"
@@ -2329,6 +2388,17 @@ verify_continue() {
     info "Verify: B12 rules present at $RULES"
   else
     warn "Verify: B12 rules NOT found at $RULES"
+    errors=$((errors + 1))
+  fi
+  # Hooks may live in Continue's settings.json OR be cross-loaded from
+  # ~/.claude/settings.json (Continue's hookConfig.ts loads both files).
+  # Accept either path as "B12 hooks active for Continue."
+  if python3 -c "import json,sys; d=json.load(open('$SETTINGS')); sys.exit(0 if any('memory-session-start' in (h.get('command','') or '') for g in d.get('hooks',{}).get('SessionStart',[]) for h in g.get('hooks',[])) else 1)" 2>/dev/null; then
+    info "Verify: B12 hooks registered in $SETTINGS"
+  elif python3 -c "import json,sys; d=json.load(open('$HOME/.claude/settings.json')); sys.exit(0 if any('memory-session-start' in (h.get('command','') or '') for g in d.get('hooks',{}).get('SessionStart',[]) for h in g.get('hooks',[])) else 1)" 2>/dev/null; then
+    info "Verify: B12 hooks cross-loaded from ~/.claude/settings.json (no duplicate write to $SETTINGS)"
+  else
+    warn "Verify: B12 hooks NOT found in $SETTINGS or ~/.claude/settings.json"
     errors=$((errors + 1))
   fi
   return "$errors"
@@ -3222,11 +3292,7 @@ if $INSTALL_CONTINUE; then
   echo "── Continue.dev Setup ───────────"
   inject_continue_mcp_config
   inject_continue_rules
-  echo ""
-  info "Continue.dev: hooks are Claude Code-compatible. To wire B12 hooks for"
-  info "  PreToolUse/PostToolUse/SessionStart/SessionEnd, add the matching"
-  info "  entries from ~/.B12/hooks/ to your ~/.continue/config.yaml under"
-  info "  'hooks:' (Continue uses the same JSON-on-stdin contract as Claude)."
+  inject_continue_hooks
 fi
 
 # Zed (agentic mode) — MCP-only today; SQLite-poller capture is a v2 follow-up.

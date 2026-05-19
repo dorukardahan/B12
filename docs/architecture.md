@@ -381,7 +381,7 @@ This bypasses the LIMIT-500 full-scan cap that silently hides ~85% of memories a
 
 ## Continue.dev + Cline platform glue (v11.50+, v11.51+)
 
-`transcript_adapter._parse_continue()` reads `~/.continue/sessions/*.json` (single-file JSON, not JSONL) and yields normalized turn records. `install.sh --continue` writes `~/.continue/mcpServers/b12.yaml` (MCP entry) + `~/.continue/rules/b12-memory.md` (rules).
+`transcript_adapter._parse_continue()` reads `~/.continue/sessions/*.json` (single-file JSON, not JSONL) and yields normalized turn records. `install.sh --continue` writes `~/.continue/mcpServers/b12.yaml` (MCP entry) + `~/.continue/rules/b12-memory.md` (rules) + `~/.continue/settings.json` (lifecycle hooks, v11.58+). Continue CLI's `extensions/cli/src/hooks/hookConfig.ts` reads `~/.continue/settings.json` with the Claude Code hook schema verbatim, so the install writes the same `.hooks` block as `config/settings-template.json` and merges non-hook keys (theme, model overrides) without overwriting them.
 
 `config/cline-hooks/{TaskStart,UserPromptSubmit,PreCompact}` are deployed to `~/Documents/Cline/Hooks/` (authoritative location per `cline/cline:.clinerules/hooks/README.md`). Each shim normalizes Cline's nested JSON payload (`.workspaceRoots[0]` → `.cwd`, `.userPromptSubmit.prompt` → `.prompt`) before delegating to the corresponding B12 hook, and translates the response's `hookSpecificOutput.additionalContext` into Cline's `contextModification` wire key (camelCase, verified against `cline/cline:src/core/hooks/templates.ts`). PreCompact is a passive `{cancel: false}` placeholder pending upstream stabilization of `.transcript_path` + `.preCompact` payload shape.
 
