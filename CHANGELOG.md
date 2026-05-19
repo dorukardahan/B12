@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.58.0](https://github.com/dorukardahan/B12/compare/v11.57.0...v11.58.0) (2026-05-19)
+
+
+### Features
+
+* **continue:** auto-install B12 lifecycle hooks to ~/.continue/settings.json ([#55](https://github.com/dorukardahan/B12/issues/55)) ([c30704d](https://github.com/dorukardahan/B12/commit/c30704db6e3895844544f917e703521261894736))
+
 # [11.57.0](https://github.com/dorukardahan/B12/compare/v11.56.0...v11.57.0) (2026-05-19)
 
 
