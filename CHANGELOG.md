@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.52.0](https://github.com/dorukardahan/B12/compare/v11.51.0...v11.52.0) (2026-05-19)
+
+
+### Features
+
+* **codex:** _all_tools ingestion for cloud_exec/cloud_apply (Phase E self-improve E1) ([#48](https://github.com/dorukardahan/B12/issues/48)) ([c41bb58](https://github.com/dorukardahan/B12/commit/c41bb5871b307b6dab33862934da730941dfe256))
+
 # [11.51.0](https://github.com/dorukardahan/B12/compare/v11.50.0...v11.51.0) (2026-05-19)
 
 
