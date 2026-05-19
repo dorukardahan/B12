@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.48.0](https://github.com/dorukardahan/B12/compare/v11.47.0...v11.48.0) (2026-05-19)
+
+
+### Features
+
+* **cc:** SubagentStart per-agent recall + agent-teams teammate-aware SessionStart ([#44](https://github.com/dorukardahan/B12/issues/44)) ([84824ce](https://github.com/dorukardahan/B12/commit/84824ce1cc063698315e7fe0a95bd6c131ece552)), closes [anthropics/claude-code#52628](https://github.com/anthropics/claude-code/issues/52628) [#1](https://github.com/dorukardahan/B12/issues/1) [#2](https://github.com/dorukardahan/B12/issues/2) [#2](https://github.com/dorukardahan/B12/issues/2)
+
 # [11.47.0](https://github.com/dorukardahan/B12/compare/v11.46.0...v11.47.0) (2026-05-19)
 
 
