@@ -118,6 +118,7 @@ INSTALL_WINDSURF=false
 INSTALL_CLINE=false
 INSTALL_OPENCODE=false
 INSTALL_CONTINUE=false
+INSTALL_ZED=false
 INSTALL_GROK=false
 INSTALL_DAEMON=false
 UNINSTALL_DAEMON=false
@@ -140,6 +141,7 @@ for arg in "$@"; do
     --cline)     INSTALL_CLINE=true ;;
     --opencode)  INSTALL_OPENCODE=true ;;
     --continue)  INSTALL_CONTINUE=true ;;
+    --zed)       INSTALL_ZED=true ;;
     --grok)      INSTALL_GROK=true ;;
     --daemon)    INSTALL_DAEMON=true ;;
     --daemon-uninstall) UNINSTALL_DAEMON=true ;;
@@ -2095,6 +2097,221 @@ inject_continue_rules() {
   info "B12 rules installed to $RULES_DIR/b12-memory.md"
 }
 
+# ═════════════════════════════════════════════
+# Zed (agentic mode)
+# ═════════════════════════════════════════════
+
+# ─────────────────────────────────────────────
+# Zed: inject B12 "context_server" into settings.json. Zed names MCP
+# servers "context_servers" (not mcpServers); template carries that key
+# and is rendered via python merge so we don't clobber user-edited Zed
+# settings (themes, keymap, AI prompts).
+# ─────────────────────────────────────────────
+inject_zed_mcp_config() {
+  # Codex PR #53 round 3 P2: XDG_CONFIG_HOME is honored by Zed on
+  # Linux only; macOS Zed always reads ~/.config/zed regardless of
+  # the env var. So: macOS → always ~/.config/zed; Linux → respect
+  # $XDG_CONFIG_HOME, fall back to $HOME/.config.
+  local ZED_DIR
+  if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    ZED_DIR="$HOME/.config/zed"
+  else
+    ZED_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/zed"
+  fi
+  local SETTINGS="$ZED_DIR/settings.json"
+  local TEMPLATE="$SCRIPT_DIR/config/zed-settings-template.json"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -d "$ZED_DIR" ]; then
+    warn "Zed config dir not found at $ZED_DIR — install Zed first"
+    return 1
+  fi
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --zed"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "Zed template not found at $TEMPLATE"
+    return 1
+  fi
+
+  if [ ! -f "$SETTINGS" ]; then
+    echo '{}' > "$SETTINGS"
+    info "Created $SETTINGS"
+  fi
+
+  if ! python3 - "$SETTINGS" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys, json
+
+settings_path, venv_python, server_script = sys.argv[1], sys.argv[2], sys.argv[3]
+def _strip_jsonc_comments(text: str) -> str:
+    # Zed settings.json is JSONC: // line comments, /* block */, and trailing
+    # commas are all legal per https://zed.dev/docs/configuring-zed. Both
+    # comment types must respect string boundaries (Codex PR #53 round 2 P2):
+    # a user's AI system_prompt containing the substring "/* ... */" would
+    # otherwise be silently corrupted by a naive regex strip.
+    import re as _re
+    out_chars = []
+    in_str = False
+    esc = False
+    i = 0
+    n = len(text)
+    while i < n:
+        ch = text[i]
+        if in_str:
+            out_chars.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out_chars.append(ch)
+            i += 1
+            continue
+        if ch == "/" and i + 1 < n:
+            nxt = text[i + 1]
+            if nxt == "/":
+                # Line comment — skip until newline.
+                while i < n and text[i] != "\n":
+                    i += 1
+                continue
+            if nxt == "*":
+                # Block comment — skip until closing */.
+                i += 2
+                while i < n - 1 and not (text[i] == "*" and text[i + 1] == "/"):
+                    i += 1
+                i += 2
+                continue
+        out_chars.append(ch)
+        i += 1
+    # Strip trailing commas before } or ]. Codex PR #53 round 3 P2:
+    # a naive `re.sub(r",(\s*[}\]])", r"\1", text)` runs over the
+    # entire file post-comment-strip including inside strings. A
+    # user value like "preserve: ,}" would lose its comma. Walk
+    # the post-strip text with the same in_str tracking and only
+    # remove commas in non-string context.
+    out2 = []
+    in_str = False
+    esc = False
+    i = 0
+    n = len(out_chars)
+    while i < n:
+        ch = out_chars[i]
+        if in_str:
+            out2.append(ch)
+            if esc:
+                esc = False
+            elif ch == "\\":
+                esc = True
+            elif ch == '"':
+                in_str = False
+            i += 1
+            continue
+        if ch == '"':
+            in_str = True
+            out2.append(ch)
+            i += 1
+            continue
+        if ch == ",":
+            # Look ahead for `[whitespace]* ( '}' | ']' )` outside strings.
+            j = i + 1
+            while j < n and out_chars[j] in " \t\n\r":
+                j += 1
+            if j < n and out_chars[j] in "}]":
+                # Drop this comma; keep the whitespace + closer.
+                i += 1
+                continue
+        out2.append(ch)
+        i += 1
+    return "".join(out2)
+
+
+try:
+    with open(settings_path, "r") as f:
+        raw = f.read()
+    try:
+        config = json.loads(raw)
+    except json.JSONDecodeError:
+        config = json.loads(_strip_jsonc_comments(raw))
+    if not isinstance(config, dict):
+        raise ValueError("Zed settings root is not an object")
+except FileNotFoundError:
+    config = {}
+except (json.JSONDecodeError, ValueError) as exc:
+    # Don't silently clobber user prefs. Fail loud — exits with error so
+    # install.sh's `then ... else error` branch surfaces the path.
+    sys.stderr.write(
+        f"ERROR: refusing to overwrite {settings_path}: {exc}\n"
+        f"Hand-merge the B12 entry from config/zed-settings-template.json.\n"
+    )
+    sys.exit(2)
+
+if "context_servers" not in config or not isinstance(config["context_servers"], dict):
+    config["context_servers"] = {}
+
+config["context_servers"]["B12"] = {
+    "source": "custom",
+    "command": venv_python,
+    "args": [server_script],
+    "env": {
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
+        "MCP_MAX_RESPONSE_CHARS": "40000",
+    },
+}
+
+with open(settings_path, "w") as f:
+    json.dump(config, f, indent=2)
+    f.write("\n")
+PYEOF
+  then
+    error "Failed to merge B12 into $SETTINGS"
+    return 1
+  fi
+  info "B12 context_server configured in $SETTINGS"
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+# ─────────────────────────────────────────────
+# Zed: verify B12 context_server is registered + venv reachable.
+# (No rules-file step — Zed has no global instructions surface analogous
+# to .cursorrules / AGENTS.md; behavioral guidance lives in the B12 MCP
+# server's tool descriptions.)
+# ─────────────────────────────────────────────
+verify_zed() {
+  # Match inject_zed_mcp_config's platform-aware resolution.
+  local SETTINGS
+  if [ "$(uname -s 2>/dev/null)" = "Darwin" ]; then
+    SETTINGS="$HOME/.config/zed/settings.json"
+  else
+    SETTINGS="${XDG_CONFIG_HOME:-$HOME/.config}/zed/settings.json"
+  fi
+  local errors=0
+  if [ -f "$SETTINGS" ] && grep -q '"B12"' "$SETTINGS" 2>/dev/null; then
+    info "Verify: B12 context_server configured in $SETTINGS"
+  else
+    warn "Verify: B12 NOT found in $SETTINGS"
+    errors=$((errors + 1))
+  fi
+  if [ -x "$VENV_PYTHON" ]; then
+    info "Verify: B12 venv accessible at $VENV_PATH"
+  else
+    warn "Verify: B12 venv NOT found (Zed MCP server will fail)"
+    errors=$((errors + 1))
+  fi
+  return "$errors"
+}
+
 # ─────────────────────────────────────────────
 # Continue.dev: verify
 # ─────────────────────────────────────────────
@@ -3012,6 +3229,17 @@ if $INSTALL_CONTINUE; then
   info "  'hooks:' (Continue uses the same JSON-on-stdin contract as Claude)."
 fi
 
+# Zed (agentic mode) — MCP-only today; SQLite-poller capture is a v2 follow-up.
+if $INSTALL_ZED; then
+  echo ""
+  echo "── Zed Setup ────────────────────"
+  inject_zed_mcp_config
+  echo ""
+  info "Zed: B12 registered as a context_server. Restart Zed for the change"
+  info "  to take effect. Transcript capture (threads.db poller) is deferred"
+  info "  to a v2 follow-up; today B12 is MCP-only on Zed."
+fi
+
 # Grok setup
 if $INSTALL_GROK; then
   echo ""
@@ -3144,6 +3372,13 @@ if $INSTALL_CONTINUE; then
   VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
+if $INSTALL_ZED; then
+  echo ""
+  echo "── Zed Verification ─────────────"
+  verify_zed
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
+fi
+
 if $INSTALL_GROK; then
   echo ""
   echo "── Grok CLI Verification ────────"
@@ -3162,6 +3397,7 @@ $INSTALL_CODEX && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Codex"
 $INSTALL_GEMINI && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Gemini"
 $INSTALL_VSCODE && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED VS-Code"
 $INSTALL_CURSOR && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Cursor"
+$INSTALL_ZED && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Zed"
 $INSTALL_KIMI && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Kimi"
 $INSTALL_WINDSURF && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Windsurf"
 $INSTALL_CLINE && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Cline"
@@ -3180,7 +3416,7 @@ fi
 
 # Show helpful tips
 ANY_PLATFORM=false
-$INSTALL_CODEX || $INSTALL_GEMINI || $INSTALL_VSCODE || $INSTALL_CURSOR || $INSTALL_KIMI || $INSTALL_WINDSURF || $INSTALL_CLINE || $INSTALL_OPENCODE || $INSTALL_GROK && ANY_PLATFORM=true
+$INSTALL_CODEX || $INSTALL_GEMINI || $INSTALL_VSCODE || $INSTALL_CURSOR || $INSTALL_KIMI || $INSTALL_WINDSURF || $INSTALL_CLINE || $INSTALL_OPENCODE || $INSTALL_GROK || $INSTALL_CONTINUE || $INSTALL_ZED && ANY_PLATFORM=true
 
 if ! $FULL_SETUP && ! $ANY_PLATFORM; then
   echo ""
