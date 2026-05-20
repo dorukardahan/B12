@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.72.0](https://github.com/dorukardahan/B12/compare/v11.71.0...v11.72.0) (2026-05-20)
+
+
+### Features
+
+* **demo:** Ink-rendered Claude Code TUI sim — pixel-close (v11.72.0) ([#75](https://github.com/dorukardahan/B12/issues/75)) ([753ff41](https://github.com/dorukardahan/B12/commit/753ff41cf694f6a887c9978fd28447e8eb58f12b))
+
 # [11.71.0](https://github.com/dorukardahan/B12/compare/v11.70.0...v11.71.0) (2026-05-20)
 
 
