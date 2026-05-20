@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.61.0](https://github.com/dorukardahan/B12/compare/v11.60.0...v11.61.0) (2026-05-20)
+
+
+### Features
+
+* **mcp:** memory_delete tool + b12_gc.collect_one helper ([#58](https://github.com/dorukardahan/B12/issues/58)) ([50fbb3d](https://github.com/dorukardahan/B12/commit/50fbb3dae02a33da9aa1976a64986d07ba2d7a16))
+
 # [11.60.0](https://github.com/dorukardahan/B12/compare/v11.59.0...v11.60.0) (2026-05-20)
 
 
