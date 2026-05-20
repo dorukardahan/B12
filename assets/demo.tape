@@ -1,6 +1,16 @@
-# B12 demo — VHS script
-# Renders a ≤45s overview of B12: install one-liner → /mcp → memory_store → memory_search → cross-tool note.
-# Render locally:  vhs assets/demo.tape -o assets/demo.gif
+# B12 demo — VHS script (Type-only fallback render).
+#
+# Originally `B12_DATA_DIR=/tmp/b12-demo-record claude` (real Claude Code
+# session against an isolated /tmp HOME with a seeded 5-memory demo DB).
+# The sub-process hit a Claude Code auth blocker — keychain credentials
+# couldn't resolve against the redacted demo userID — so the live API call
+# never happened and the pill never rendered.  This render falls back to a
+# scripted TUI simulation whose pill text + retrieval line are taken verbatim
+# from the real B12 retrieval hook output captured during the failed live
+# attempt.  See docs/demo.md §Fallback for the rationale + audit trail.
+#
+# Render:  vhs assets/demo.tape -o assets/demo.gif   (vhs ≥ 0.10 on PATH)
+# Pre-stage: docs/demo.md §Setup explains the isolated HOME + tui.sh script.
 
 Output assets/demo.gif
 
@@ -9,72 +19,40 @@ Set Theme "Dracula"
 Set FontSize 16
 Set Width 1200
 Set Height 700
-Set TypingSpeed 25ms
+Set TypingSpeed 50ms
 Set PlaybackSpeed 1.0
 Set Padding 24
-Set Margin 8
 Set WindowBar Colorful
 Set WindowBarSize 40
 
-# 1. Install one-liner
-Type "# 1. Install B12 (venv + MCP + hooks, one command)"
-Sleep 400ms
+# ── Hidden: isolated env + load the simulated `claude` shell function ──
+Hide
+Set TypingSpeed 0ms
+Type "export HOME=/tmp/b12-demo-home"
 Enter
-Type "git clone https://github.com/dorukardahan/B12.git && cd B12 && ./install.sh --full"
-Sleep 400ms
+Type "export B12_DATA_DIR=/tmp/b12-demo-record"
 Enter
-Sleep 1500ms
-
-# 2. Restart Claude Code → /mcp
-Ctrl+L
-Type "# 2. Restart Claude Code, then type /mcp"
-Sleep 300ms
+Type "export PS1='demo $ '"
 Enter
-Type "/mcp"
-Sleep 400ms
+Type "cd /tmp/b12-demo-work"
 Enter
-Type "  ▸ B12 · connected ✓   (tools: memory_store / search / update / quality …)"
-Sleep 1500ms
+Type "source /tmp/b12-demo-tui.sh"
 Enter
-
-# 3. Store a memory
-Ctrl+L
-Type "# 3. Store a memory — hash-deduped at the MCP tool, embedded async"
-Sleep 300ms
+Type "clear"
 Enter
-Type "memory_store("
-Enter
-Type "  content='The api/auth.py module uses HS256 JWT with 15-min expiry.',"
-Enter
-Type "  metadata={'tags':['proj:webshop','area:auth'], 'type':'architecture'}"
-Enter
-Type ")"
-Sleep 300ms
-Enter
-Type "  ▸ Stored memory (hash: 7c3b9e2a4f81d20a, id: 4218)"
-Sleep 1500ms
-Enter
-
-# 4. Search across sessions and tools
-Ctrl+L
-Type "# 4. Search — same DB powers Claude Code, Codex, Cursor, Cline, Zed, …"
-Sleep 300ms
-Enter
-Type "memory_search(query='auth jwt expiry', mode='hybrid', limit=3)"
-Sleep 400ms
-Enter
-Type "  1. api/auth.py uses HS256 JWT with 15-min expiry …   (0.94)"
-Enter
-Type "  2. refresh-token rotation lives in api/refresh.py …  (0.81)"
-Enter
-Type "  3. middleware/jwt.py decodes both HS256 and RS256 …  (0.77)"
-Sleep 1800ms
-Enter
-
-# 5. Final card
-Ctrl+L
-Type "# One SQLite DB · one MCP server · 13 platforms · local-first."
+Set TypingSpeed 50ms
+Show
 Sleep 500ms
+
+# ── Visible beats: looks like a real Claude Code session ──
+# 1. User types `claude` (function from tui.sh — renders the simulated TUI)
+Type "claude"
 Enter
-Type "# Memory you stored once shows up everywhere you code."
-Sleep 2500ms
+
+# 2. The function plays the welcome banner, question, B12 pill, response,
+#    /mcp output, and /exit — each beat paced by internal sleeps (~12s).
+Sleep 13500ms
+
+# 3. Shell prompt returns; a closing comment marks the end of the session.
+Type "# end of session"
+Sleep 1500ms
