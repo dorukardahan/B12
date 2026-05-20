@@ -824,10 +824,23 @@ async def memory_update(
     _session_tracker["tool_calls"] += 1
 
     async with _db_lock:
-        row = db.execute(
-            "SELECT * FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
-            (content_hash,),
-        ).fetchone()
+        # Codex review PR #58 P1: when caller is restoring a soft-deleted
+        # row via deleted_at=None, the lookup must match rows whose
+        # deleted_at is non-null. Otherwise every soft delete is
+        # effectively irreversible through the documented API flow.
+        allow_soft_deleted = (
+            isinstance(updates, dict) and "deleted_at" in updates
+        )
+        if allow_soft_deleted:
+            row = db.execute(
+                "SELECT * FROM memories WHERE content_hash = ?",
+                (content_hash,),
+            ).fetchone()
+        else:
+            row = db.execute(
+                "SELECT * FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+                (content_hash,),
+            ).fetchone()
         if not row:
             return f"Memory not found: {content_hash[:16]}"
 
@@ -883,6 +896,164 @@ async def memory_update(
         )
         db.commit()
     return f"Updated memory {content_hash[:16]}"
+
+
+# ── Tool: memory_delete ─────────────────────────────────────────
+
+@server.tool()
+async def memory_delete(
+    content_hash: str,
+    hard: bool = False,
+    reason: str | None = None,
+) -> str:
+    """Delete a memory by content_hash.
+
+    Two modes:
+
+      soft (default, reversible)
+        Sets `deleted_at` to the current epoch. The row is invisible to
+        recall but stays on disk until the GC job ages it out (see
+        `b12_gc.py --age-days`; current default is configurable per
+        install). Restoring is a single
+        `memory_update(content_hash, {"deleted_at": None})`.
+
+      hard (irreversible)
+        Removes the row + its embedding immediately via
+        `b12_gc.collect_one(memory_id)`. No undo. Use for secrets or
+        credential leaks where the content must be unrecoverable.
+
+    An audit row is written in either mode under the `delete-audit` tag,
+    mirroring `memory_forget`'s audit trail.
+
+    Overlap note: `memory_forget(mode='hard_delete')` does the same thing
+    as `memory_delete(hard=True)`. The two surfaces will be consolidated
+    in a follow-up (memory_forget kept for its privatize / forget_session
+    modes which don't fit the delete shape). For new code, prefer
+    `memory_delete`.
+    """
+    db = _require_db()
+    _session_tracker["tool_calls"] += 1
+
+    now_ts, now_iso = _now()
+    audit_payload: dict = {
+        "mode": "hard" if hard else "soft",
+        "target": content_hash[:64],
+        "reason": reason or "",
+        "ts_iso": now_iso,
+    }
+
+    async with _db_lock:
+        row = db.execute(
+            "SELECT id FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+            (content_hash,),
+        ).fetchone()
+        if not row:
+            return f"Memory not found: {content_hash[:16]}"
+        mem_id = int(row["id"])
+
+        if hard:
+            # Codex review PR #58 round 6 P2: even when collect_one
+            # raises, we must persist a forensic-trail audit row.
+            # Otherwise operators investigating a failed hard-delete have
+            # no record of the attempt.
+            audit_payload["affected_ids"] = [mem_id]
+            audit_payload["target_hash_short"] = content_hash[:16]
+            result = None
+            hard_error: str | None = None
+            try:
+                import logging as _logging
+                import b12_gc as _gc
+                _logger = _logging.getLogger("b12_mcp_server.memory_delete")
+                result = _gc.collect_one(DB_PATH, mem_id, _logger)
+                audit_payload["gc_result"] = result
+            except Exception as e:
+                hard_error = str(e)
+                audit_payload["gc_error"] = hard_error
+            if hard_error is not None:
+                # Write the audit row now, then return — the merged
+                # post-block audit insert handles the success path.
+                _audit_content = (
+                    f"[delete-audit] mode=hard target={content_hash[:16]} "
+                    f"id={mem_id} ERROR={hard_error[:120]} reason={(reason or '').strip()[:120]}"
+                )
+                _audit_hash = hashlib.sha256(
+                    f"{_audit_content}|{now_iso}".encode("utf-8")
+                ).hexdigest()
+                try:
+                    db.execute(
+                        "INSERT OR IGNORE INTO memories "
+                        "(content, content_hash, tags, memory_type, metadata, "
+                        " created_at, created_at_iso, updated_at, updated_at_iso) "
+                        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                        (_audit_content, _audit_hash, "delete-audit,system",
+                         "system",
+                         json.dumps(audit_payload, ensure_ascii=False),
+                         now_ts, now_iso, now_ts, now_iso),
+                    )
+                    db.commit()
+                except sqlite3.Error:
+                    pass
+                return f"hard delete failed: {hard_error}"
+            # Codex review PR #58 round 2 P1: distinguish actual delete from
+            # the collect_one safety-refuse path (sqlite_vec missing →
+            # `deleted_memories: 0` returned with no DB mutation). Reporting
+            # "Hard-deleted" in that case misleads operators into thinking
+            # sensitive content is gone when it remains in `memories`.
+            assert result is not None  # guarded by hard_error return above
+            if int(result.get("deleted_memories", 0)) > 0:
+                summary = (
+                    f"Hard-deleted memory {content_hash[:16]} "
+                    f"(id={mem_id}, embedding={result.get('deleted_embeddings', 0)})"
+                )
+            else:
+                summary = (
+                    f"Hard delete REFUSED for {content_hash[:16]} (id={mem_id}). "
+                    f"GC returned deleted_memories=0 — see daemon log "
+                    f"(likely sqlite_vec missing with memory_embeddings present). "
+                    f"Row REMAINS in DB."
+                )
+        else:
+            db.execute(
+                "UPDATE memories SET deleted_at = ?, updated_at = ?, "
+                "updated_at_iso = ? WHERE id = ?",
+                (now_ts, now_ts, now_iso, mem_id),
+            )
+            db.commit()
+            audit_payload["affected_ids"] = [mem_id]
+            audit_payload["target_hash_short"] = content_hash[:16]
+            summary = (
+                f"Soft-deleted memory {content_hash[:16]} "
+                f"(id={mem_id}); restore with "
+                f"memory_update(..., {{'deleted_at': None}})"
+            )
+
+        # Audit row (same pattern as memory_forget). Tagged `delete-audit`
+        # + system memory_type so it never decays into recall noise.
+        audit_content = (
+            f"[delete-audit] mode={'hard' if hard else 'soft'} "
+            f"target={content_hash[:16]} id={mem_id} "
+            f"reason={(reason or '').strip()[:120]}"
+        )
+        audit_hash = hashlib.sha256(
+            f"{audit_content}|{now_iso}".encode("utf-8")
+        ).hexdigest()
+        try:
+            db.execute(
+                "INSERT OR IGNORE INTO memories "
+                "(content, content_hash, tags, memory_type, metadata, "
+                " created_at, created_at_iso, updated_at, updated_at_iso) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    audit_content, audit_hash, "delete-audit,system",
+                    "system", json.dumps(audit_payload, ensure_ascii=False),
+                    now_ts, now_iso, now_ts, now_iso,
+                ),
+            )
+            db.commit()
+        except sqlite3.Error:
+            pass  # never block the delete on audit failure
+
+    return summary
 
 
 # ── Tool: memory_forget ─────────────────────────────────────────

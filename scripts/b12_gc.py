@@ -178,6 +178,85 @@ def collect(db_path: str, age_days: int, dry_run: bool, vacuum: bool,
         conn.close()
 
 
+def collect_one(db_path: str, memory_id: int,
+                logger: logging.Logger) -> dict:
+    """Hard-delete a single memory row (+ its embedding) by id, ignoring
+    the age-based filter that `collect` enforces.
+
+    Used by the `memory_delete(hard=True)` MCP tool when the caller wants
+    an immediate, irreversible removal instead of relying on the
+    background GC job. Returns the same shape as `collect`:
+      {found, deleted_memories, deleted_embeddings, vacuumed=False}
+    """
+    if not os.path.exists(db_path):
+        logger.warning("DB missing at %s — cannot collect_one", db_path)
+        return {"found": 0, "deleted_memories": 0,
+                "deleted_embeddings": 0, "vacuumed": False}
+
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA busy_timeout=30000")
+    vec_loaded = _load_sqlite_vec(conn, logger)
+    try:
+        row = conn.execute(
+            "SELECT id FROM memories WHERE id = ?", (memory_id,)
+        ).fetchone()
+        if not row:
+            return {"found": 0, "deleted_memories": 0,
+                    "deleted_embeddings": 0, "vacuumed": False}
+
+        # Codex review PR #58 P1: mirror collect()'s safety check —
+        # refuse to delete the memories row if memory_embeddings is a
+        # vec0 virtual table that we can't clean (would orphan the
+        # embedding row permanently).
+        if not vec_loaded:
+            has_vec_table = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' "
+                "AND name='memory_embeddings'"
+            ).fetchone() is not None
+            if has_vec_table:
+                logger.error(
+                    "collect_one id=%d: memory_embeddings present but "
+                    "sqlite_vec missing — refusing to hard-delete (would "
+                    "orphan vec0 row). Install sqlite-vec and retry.",
+                    memory_id,
+                )
+                return {"found": 1, "deleted_memories": 0,
+                        "deleted_embeddings": 0, "vacuumed": False}
+
+        conn.execute("PRAGMA journal_mode=WAL")
+        emb_deleted = 0
+        # Codex review PR #58 round 5 P2: mirror collect()'s FTS-safe
+        # trigger swap. Hard-deleting a row whose FTS index entry was
+        # already pruned by soft-delete raises "database disk image is
+        # malformed" otherwise.
+        saved_triggers = _swap_fts_delete_triggers(conn)
+        try:
+            if vec_loaded:
+                cur = conn.execute(
+                    "DELETE FROM memory_embeddings WHERE rowid = ?", (memory_id,)
+                )
+                emb_deleted = cur.rowcount or 0
+            cur = conn.execute(
+                "DELETE FROM memories WHERE id = ?", (memory_id,)
+            )
+            mem_deleted = cur.rowcount or 0
+        finally:
+            for _, sql in saved_triggers:
+                if sql:
+                    conn.execute(sql.replace(
+                        "CREATE TRIGGER", "CREATE TRIGGER IF NOT EXISTS", 1
+                    ))
+        conn.commit()
+        logger.info(
+            "collect_one id=%d: %d memory + %d embedding rows deleted",
+            memory_id, mem_deleted, emb_deleted,
+        )
+        return {"found": 1, "deleted_memories": mem_deleted,
+                "deleted_embeddings": emb_deleted, "vacuumed": False}
+    finally:
+        conn.close()
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="B12 GC: hard-delete soft-deleted rows + VACUUM")
     parser.add_argument("--age-days", type=int, default=90,
