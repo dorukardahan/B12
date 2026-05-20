@@ -180,8 +180,8 @@ def collect(db_path: str, age_days: int, dry_run: bool, vacuum: bool,
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="B12 GC: hard-delete soft-deleted rows + VACUUM")
-    parser.add_argument("--age-days", type=int, default=30,
-                        help="Age threshold for soft-deleted rows (default 30)")
+    parser.add_argument("--age-days", type=int, default=90,
+                        help="Age threshold for soft-deleted rows (default 90)")
     parser.add_argument("--dry-run", action="store_true",
                         help="Report what would be deleted; do not modify the DB")
     parser.add_argument("--no-vacuum", action="store_true",

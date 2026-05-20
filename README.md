@@ -226,7 +226,7 @@ B12 works with any MCP-compatible coding assistant. The same MCP server and SQLi
 ./install.sh --continue      # Continue.dev (VS Code/JetBrains extension)
 ./install.sh --opencode      # OpenCode
 ./install.sh --smoke-cron    # Opt-in 24h smoke harness via crontab (memory-session-start + memory-retrieval)
-./install.sh --gc-cron       # Opt-in weekly soft-delete GC + VACUUM (--gc-cron-uninstall to remove)
+./install.sh --gc-cron       # Default ON since v11.63 (weekly soft-delete GC + VACUUM); --no-gc-cron to opt out, --gc-cron-uninstall to remove existing schedule
 
 # Or full setup from scratch with multiple platforms
 ./install.sh --full --codex --gemini --cursor

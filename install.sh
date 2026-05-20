@@ -124,7 +124,9 @@ INSTALL_DAEMON=false
 UNINSTALL_DAEMON=false
 INSTALL_SMOKE_CRON=false
 UNINSTALL_SMOKE_CRON=false
-INSTALL_GC_CRON=false
+# GC cron defaults to ON since v11.63 — 90-day soft-delete TTL is the
+# documented behavior and prevents storage bloat. Opt out with --no-gc-cron.
+INSTALL_GC_CRON=true
 UNINSTALL_GC_CRON=false
 FIX_DRIFT=false
 TARGET_DIR=""
@@ -148,7 +150,11 @@ for arg in "$@"; do
     --smoke-cron) INSTALL_SMOKE_CRON=true ;;
     --smoke-cron-uninstall) UNINSTALL_SMOKE_CRON=true ;;
     --gc-cron) INSTALL_GC_CRON=true ;;
-    --gc-cron-uninstall) UNINSTALL_GC_CRON=true ;;
+    --no-gc-cron) INSTALL_GC_CRON=false ;;
+    # Explicit uninstall must also clear the now-default install flag,
+    # otherwise the install block re-adds the cron immediately after
+    # uninstall_gc_cron removes it (Codex review PR #60 P1).
+    --gc-cron-uninstall) UNINSTALL_GC_CRON=true; INSTALL_GC_CRON=false ;;
     --fix-drift) FIX_DRIFT=true ;;
     --health)
       # Run health check and exit — only forward --json and --fix
@@ -3370,10 +3376,24 @@ if $UNINSTALL_GC_CRON; then
   echo ""
 fi
 if $INSTALL_GC_CRON; then
-  echo ""
-  echo "── B12 GC Cron Setup ────────────"
-  install_gc_cron
-  echo ""
+  # Codex review PR #60 round 2 P1: the new default-on behavior must
+  # auto-disable when `crontab` is unavailable (Windows Git Bash,
+  # minimal containers). Otherwise install_gc_cron() runs, fails to
+  # actually register, and the user finishes install thinking GC is
+  # active when it isn't.
+  # Codex review PR #60 round 3 P1: also require the venv to exist —
+  # install_gc_cron writes a scheduled command that calls the venv
+  # python, so without it the scheduled job fails on every tick.
+  if ! command -v crontab >/dev/null 2>&1; then
+    warn "crontab not found — skipping GC cron install (B12 GC stays opt-in via './scripts/b12_gc.py'). Pass --gc-cron explicitly once crontab is available."
+  elif [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv not found at $VENV_PYTHON — skipping GC cron install. Re-run with './install.sh --full' first, then './install.sh --gc-cron' to schedule."
+  else
+    echo ""
+    echo "── B12 GC Cron Setup ────────────"
+    install_gc_cron
+    echo ""
+  fi
 fi
 
 # Run migration
