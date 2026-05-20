@@ -79,6 +79,25 @@ DEFAULT_MODEL_NAME = "BAAI/bge-m3"
 SIMILARITY_THRESHOLD = 0.85
 STRENGTH_BOOST_ON_MERGE = 0.2
 STRENGTH_CAP = 5.0
+# Bumped from 0.7 → 0.8 in v12.3 to match the contradiction surface filter
+# in memory-retrieval.sh (B12_CONTRA_SURFACE_THRESHOLD default 0.85). The
+# legacy 0.71-0.79 edges were over-emitting cross-domain false positives.
+def _resolve_nli_threshold() -> float:
+    """Codex review PR #57 round 3 P2: a malformed B12_NLI_CONTRA_THRESHOLD
+    (e.g. "abc", "0,8") would raise ValueError at module-import time,
+    breaking every caller that imports write_time_merge. Guard the cast
+    and fall back to the documented default on any parse failure."""
+    raw = os.environ.get("B12_NLI_CONTRA_THRESHOLD", "0.8")
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 0.8
+    if 0.0 <= v <= 1.0:
+        return v
+    return 0.8
+
+
+NLI_CONTRADICTION_THRESHOLD = _resolve_nli_threshold()
 # 1024 for BGE-M3 (default since v11.34 / P-FOUNDATION); override via env to
 # stay compatible with pre-migration 384-dim DBs.
 EMBEDDING_DIM = int(os.environ.get("B12_EMBED_DIM", "1024"))
@@ -434,15 +453,25 @@ def check_contradictions(
     """
     Check if new content contradicts existing memories via daemon NLI.
 
-    Returns list of dicts: [{id, hash, score, snippet}] for contradictions > 0.7.
-    Returns empty list if daemon unavailable or no contradictions found.
-    Skips memories shorter than 30 chars.
+    Returns list of dicts: [{id, hash, score, snippet}] for contradictions
+    above NLI_CONTRADICTION_THRESHOLD (default 0.8, overridable via
+    B12_NLI_CONTRA_THRESHOLD). Returns empty list if daemon unavailable,
+    no contradictions found, or the input is a fragment.
+
+    Fragment pre-filter: drops short/incomplete utterances before NLI
+    (these otherwise create spurious cross-domain edges).
 
     IMPORTANT: Must be called BEFORE any writes on the parent connection,
     as this opens a separate DB connection for neighbor lookups.
     """
     if len(content) < 30:
         return []
+    try:
+        from shared_patterns import is_fragment as _is_fragment
+        if _is_fragment(content):
+            return []
+    except Exception:
+        pass
 
     # Step 1: Find top-5 similar memories via daemon
     # We need a memory_id but we don't have one yet (new content).
@@ -496,7 +525,7 @@ def check_contradictions(
     contradictions = []
     for i, result in enumerate(nli_resp.get('results', [])):
         scores = result.get('scores', {})
-        if scores.get('contradiction', 0) > 0.7:
+        if scores.get('contradiction', 0) > NLI_CONTRADICTION_THRESHOLD:
             info = neighbor_info[i]
             contradictions.append({
                 'id': info['id'],

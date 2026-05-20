@@ -331,6 +331,66 @@ def classify_by_prefix(content: str):
     return None
 
 
+# ── Fragment detection (write-time + NLI pre-filter) ─────────
+# Literal stub set: short utterances we never want to store, store-merge,
+# or run NLI against. Turkish + English. Case-insensitive matching.
+_FRAGMENT_STUBS = {
+    'ok.', 'okay.', 'evet.', 'tamam.', 'yes.', 'no.', 'hayır.', 'şu.',
+    'shot.', 'cool.', 'sure.', 'fine.', 'done.',
+}
+
+
+def is_fragment(content: str) -> bool:
+    """Return True for short/incomplete utterances we shouldn't process.
+
+    Used by both the write-time gate (PR4) and the NLI surface filter (PR2)
+    to skip candidates that would produce noisy results. Rules:
+
+      - Literal stub set ({shot., ok., evet., tamam., ...})
+      - Ends with `:` or `...` or unbalanced quote
+      - Starts lowercase + no recognized `[Label]` prefix
+      - <50 chars AND no recognized `[Label]` prefix
+
+    Turkish-aware: uses an explicit "is uppercase letter" test rather than
+    `str.islower()` so `ş`, `ç`, `ı`, `ö`, `ü`, `ğ` are not mis-classified
+    (Python treats these as lowercase regardless of the local convention).
+    """
+    if not content:
+        return True
+    stripped = content.strip()
+    if not stripped:
+        return True
+
+    # Codex review PR #57 round 5 P2: use casefold() for Turkish-safe
+    # case-insensitive match. `.lower()` doesn't handle `İ → i` / `I → ı`
+    # so `EVET.` / `TAMAM.` (caps lock user input) wouldn't match.
+    if stripped.casefold() in {s.casefold() for s in _FRAGMENT_STUBS}:
+        return True
+    if stripped.endswith((':', '...')):
+        return True
+    # Codex review PR #57 P1: only check double quotes here. Apostrophes
+    # are routine in normal sentences ("It's working with PostgreSQL")
+    # and treating them as unbalanced would mark a large class of valid
+    # English input as fragments — silently disabling NLI contradiction
+    # detection on most real content.
+    if stripped.count('"') % 2 == 1:
+        return True
+
+    has_prefix = _PREFIX_RE.match(stripped) is not None
+    if has_prefix:
+        return False
+
+    # Heuristic: first letter must be an uppercase ASCII letter OR Turkish
+    # uppercase (İŞÇÖÜĞ). Anything else → fragment when no [Label] prefix.
+    first = stripped[0]
+    is_upper = first.isupper() or first in 'İŞÇÖÜĞ'
+    if not is_upper:
+        return True
+    if len(stripped) < 50:
+        return True
+    return False
+
+
 # ── v12.1 patterns — implicit decisions, reasons, blockers ───
 
 IMPLICIT_DECISION_RE = re.compile(

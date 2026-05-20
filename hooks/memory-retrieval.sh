@@ -1099,6 +1099,16 @@ CONTRADICTION_WARN=""
 if [ "$RESULT_COUNT" -gt 0 ]; then
   _CONTRA_IDS=$(echo "$RESULT_IDS" | tr ',' '\n' | grep -E '^[0-9]+$' | head -5 | tr '\n' ',' | sed 's/,$//')
   if [ -n "$_CONTRA_IDS" ]; then
+    # Surface threshold: legacy 0.71-0.79 edges (pre-v12.3) over-emit
+    # cross-domain false positives like SQLite vs PostgreSQL. Default 0.85.
+    # Codex review PR #57 P2: coerce + validate the env var BEFORE
+    # interpolating into SQL. Malformed values (e.g. "abc", "0,85") cause
+    # sqlite3 parse failures that, with stderr suppressed, silently kill
+    # the contradiction warning. Fall back to default on any parse error.
+    _CONTRA_SURFACE_RAW="${B12_CONTRA_SURFACE_THRESHOLD:-0.85}"
+    _CONTRA_SURFACE_THRESHOLD=$(awk -v v="$_CONTRA_SURFACE_RAW" 'BEGIN{
+      if (v+0 == v && v+0 >= 0 && v+0 <= 1) { printf("%.4f", v+0) } else { print "0.85" }
+    }')
     _CONTRA_HITS=$(sqlite3 "$DB_PATH" "
       SELECT DISTINCT m.id || ' ' || m2.id
       FROM memory_graph mg
@@ -1106,6 +1116,7 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
       JOIN memories m2 ON m2.content_hash = mg.target_hash
       WHERE m.id IN (${_CONTRA_IDS})
         AND mg.relationship_type = 'contradicts'
+        AND mg.similarity >= ${_CONTRA_SURFACE_THRESHOLD}
         AND m2.deleted_at IS NULL
       LIMIT 3
     " 2>/dev/null)
