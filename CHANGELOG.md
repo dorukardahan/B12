@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.66.0](https://github.com/dorukardahan/B12/compare/v11.65.0...v11.66.0) (2026-05-20)
+
+
+### Features
+
+* **quality:** write-time fragment gate (re-opened from [#59](https://github.com/dorukardahan/B12/issues/59) after PR [#57](https://github.com/dorukardahan/B12/issues/57) squash) ([#69](https://github.com/dorukardahan/B12/issues/69)) ([52c3869](https://github.com/dorukardahan/B12/commit/52c386982aaf136f2c1bcfd1477160c4e2dbc0a8))
+
 # [11.65.0](https://github.com/dorukardahan/B12/compare/v11.64.0...v11.65.0) (2026-05-20)
 
 
