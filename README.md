@@ -86,7 +86,7 @@ All platforms share the same SQLite database — memories stored in one session 
 
 ## Setup via AI Assistant
 
-If you're feeding this repo to Claude Code, Cursor, or another AI coding assistant to set it up for you, here's what the AI needs to do:
+If you're feeding this repo to Claude Code, Cursor, or another AI coding assistant to set it up for you, here's what the AI needs to do (v11.68+ — `./install.sh` no-flag detects first-run and auto-promotes to `--full --gc-cron --smoke-cron`; pass `--minimal` to opt out, or `--full` explicitly):
 
 ```bash
 # 1. Clone and run full installer (one command does everything)

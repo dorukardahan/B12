@@ -106,9 +106,14 @@ PYEOF
   fi
 }
 
+# Codex review PR #64 round 2 P1: capture the original argc before
+# the parse loop. Safe-default promotion fires only when argc == 0.
+_ORIG_ARGC=$#
+
 # Parse flags
 FULL_SETUP=false
 INSTALL_ALL=false
+MINIMAL=false
 INSTALL_CODEX=false
 INSTALL_GEMINI=false
 INSTALL_VSCODE=false
@@ -133,6 +138,7 @@ TARGET_DIR=""
 for arg in "$@"; do
   case "$arg" in
     --full)      FULL_SETUP=true ;;
+    --minimal)   MINIMAL=true ;;
     --all)       INSTALL_ALL=true ;;
     --codex)     INSTALL_CODEX=true ;;
     --gemini)    INSTALL_GEMINI=true ;;
@@ -175,6 +181,50 @@ for arg in "$@"; do
     *)           TARGET_DIR="$arg" ;;
   esac
 done
+
+# ─────────────────────────────────────────────
+# Safe-defaults — no-flag first-run promotes to a working install.
+#
+# Pre-v11.68 `./install.sh` with no flags would deploy hooks but skip
+# the venv + MCP config, leaving new users staring at `B12 · disconnected`
+# in /mcp and concluding the project was broken. This block detects
+# "fresh install" (no ~/.B12/hooks/) and promotes the defaults to:
+#   --full --gc-cron --smoke-cron
+# Existing installs (hooks dir present) keep the legacy hooks-only
+# behavior on re-run so nothing changes underfoot.
+# Opt-out: --minimal preserves the pre-v11.68 hooks-only path.
+# Explicit --full keeps its existing semantics.
+# ─────────────────────────────────────────────
+# Codex review PR #64 round 2 P1: only promote on TRUE no-flag invocation.
+# `$#` checks the original arg count — any user-supplied flag (incl.
+# platform flags, --install-daemon, --gc-cron explicit yes/no, --health, etc.)
+# means the user has expressed intent and we should not silently expand it.
+# Codex review PR #64 round 4 P2 + round 6 P2: don't treat any
+# ~/.claude/hooks dir as a prior B12 install — that dir may exist for
+# unrelated Claude Code reasons. Use the canonical
+# `memory-session-start.sh` marker file as the legacy fingerprint
+# instead, so only actual prior B12 deployments suppress safe-defaults.
+_legacy_marker="$HOME/.claude/hooks/memory-session-start.sh"
+if [ "$_ORIG_ARGC" = "0" ] && [ ! -d "$HOOK_DEST" ] && [ ! -f "$_legacy_marker" ]; then
+  # Codex review PR #64 round 2 P2: only enable the cron defaults when
+  # `crontab` is available. Without it, install_gc_cron / install_smoke_cron
+  # would silently fail and the user thinks GC + smoke are scheduled when
+  # they're not.
+  if command -v crontab >/dev/null 2>&1; then
+    _safe_crons="--gc-cron --smoke-cron"
+    INSTALL_GC_CRON=true
+    INSTALL_SMOKE_CRON=true
+  else
+    _safe_crons="(crontab missing — cron scheduling skipped)"
+  fi
+  echo "═══════════════════════════════════════════════════════════"
+  echo "  B12 first-run detected. Running safe defaults:"
+  echo "    --full $_safe_crons"
+  echo "  (Pass --minimal to skip the venv + MCP config + crons.)"
+  echo "═══════════════════════════════════════════════════════════"
+  echo ""
+  FULL_SETUP=true
+fi
 
 # ─────────────────────────────────────────────
 # Step 1: Create required directories
