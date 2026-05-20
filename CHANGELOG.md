@@ -1,5 +1,13 @@
 # Changelog
 
+# [11.60.0](https://github.com/dorukardahan/B12/compare/v11.59.0...v11.60.0) (2026-05-20)
+
+
+### Features
+
+* **maint:** GC cron default-on, 90-day TTL, --no-gc-cron opt-out ([#60](https://github.com/dorukardahan/B12/issues/60)) ([bf84b90](https://github.com/dorukardahan/B12/commit/bf84b90b52da41ebceaa44e1bea2f14574f7bf21))
+* **quality:** NLI surface threshold + fragment pre-filter + migration ([#57](https://github.com/dorukardahan/B12/issues/57)) ([a3d52bb](https://github.com/dorukardahan/B12/commit/a3d52bb8154bfdf00de8a8561f437d4cf0934259))
+
 # [11.59.0](https://github.com/dorukardahan/B12/compare/v11.58.2...v11.59.0) (2026-05-20)
 
 
