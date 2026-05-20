@@ -3,9 +3,10 @@
 This document accompanies [`assets/demo.gif`](../assets/demo.gif), a
 high-fidelity simulation of a B12-augmented Claude Code session rendered
 by **React + Ink** — the same framework Claude Code itself uses. The
-banner, spinner, `● Memory(…)` tool call, `⎿` tree output, retrieval
-pill, response formatting, and `/mcp` slash-command layout match Claude
-Code v2.1.x closely enough to read like a real screencast.
+rounded-rect banner, chunky orange robot avatar, Braille spinner,
+`● Memory(…)` tool call, `⎿` tree output, retrieval pill, response
+formatting, and `/mcp` slash-command layout all match Claude Code
+v2.1.x closely enough to read like a real screencast.
 
 The retrieval pill count is **live**: the Ink app's `liveCount()` shells
 out to `sqlite3` against an isolated demo DB at
@@ -13,9 +14,8 @@ out to `sqlite3` against an isolated demo DB at
 (seeded with five public-facing facts from this repo's README and
 CLAUDE.md), so the number in the pill reflects actual seeded content.
 
-The GIF is rendered from [`assets/demo.tape`](../assets/demo.tape) (VHS
-script, ~50 lines). Re-render with `vhs assets/demo.tape -o assets/demo.gif`
-after running §Setup below.
+Re-render with `vhs assets/demo.tape -o assets/demo.gif` (vhs ≥ 0.10 on
+`PATH`) after running §Setup below.
 
 ---
 
@@ -24,24 +24,30 @@ after running §Setup below.
 ### 1. Banner
 
 ```text
-✻  ╭───╮    Claude Code v2.1.145
-✻ ╭╯███╰╮   Opus 4.7 · 1M context · API Usage Billing
-✻ │ ◠ ◠ │   /tmp/b12-demo-work
-✻ ╰─────╯   MCP: ● B12 connected · 5 tools · 5 memories indexed
+╭─────────────────────────────────────────────────────────────────────╮
+│             Claude Code v2.1.145                                    │
+│  ▄▀▀▀▀▀▀▄                                                           │
+│  █▛▀▀▀▀▜█  Welcome back Demo User!                                  │
+│  █ ◠ ◠ █                                                            │
+│  █▄▄▄▄▄▄█  Opus 4.7 · 1M context · API Usage Billing                │
+│  ▀▀▀▀▀▀▀▀  /tmp/b12-demo-work                                       │
+│            MCP: ● B12 connected · 5 tools · 5 memories indexed      │
+╰─────────────────────────────────────────────────────────────────────╯
 ```
 
-The cwd is an isolated `/tmp` path. The `●` is bright green, signaling
-the B12 MCP server is up. The `5 memories indexed` count is the row
-count of the seeded demo DB.
+Chunky orange Claude robot avatar on the left, welcome + model meta +
+cwd + MCP status on the right. The bright green `●` signals B12 is
+connected. The `5 memories indexed` count is the row count of the
+seeded demo DB.
 
-### 2. Turkish recall question
+### 2. Recall question
 
 ```text
-> B12 nasıl çalışıyor? MCP server nerede tanımlı?
+> How does B12 work? Where is the MCP server defined?
 ```
 
 Auto-typed character-by-character with a blinking cursor (the Ink app
-ships its own typing animation; VHS just records the terminal output).
+ships its own typing animation).
 
 ### 3. Memory tool call
 
@@ -60,22 +66,24 @@ grey, output line in green under a `⎿` tree branch.
 ```
 
 The count comes from a live `sqlite3` query against the seeded demo
-DB. Re-seed with different memories and the number changes.
+DB. Re-seed with different memories and the number changes. If the
+query fails (missing DB, missing `sqlite3` on PATH), the pill renders
+`?` instead of fabricating a count.
 
 ### 5. Memory-cited response
 
 ```text
-B12 üç parçadan oluşur:
+B12 has three pieces:
 
-1. MCP server — scripts/b12_mcp_server.py içinde tanımlı. Host
-   uygulama (Claude Code, Codex, Cursor) onu stdio üzerinden
-   alt süreç olarak spawn eder.
+1. MCP server — defined in scripts/b12_mcp_server.py. The host
+   application (Claude Code, Codex, Cursor) spawns it as a child
+   process over stdio.
 
-2. Hook scripts — ~/.B12/hooks/ altında. Her hook 0 exit kodu
-   döndürmek zorunda; non-zero exit host tool çağrısını bloklar.
+2. Hook scripts — under ~/.B12/hooks/. Each hook must exit 0; a
+   non-zero exit blocks the host tool call.
 
-3. SQLite + sqlite-vec — yerel kalıcı depo; 1024-dim BAAI/bge-m3
-   embedding'leriyle hibrit FTS5 + vektör arama.
+3. SQLite + sqlite-vec — the local persistent store; hybrid FTS5
+   + vector search over 1024-dim BAAI/bge-m3 embeddings.
 ```
 
 Every fact matches a seeded memory and the public README.
@@ -100,12 +108,11 @@ Manage MCP servers   (1 connected)
 
 ## Live-session blocker
 
-The original plan was to record a fully-live Claude Code session against
-an isolated `/tmp/b12-demo-home` HOME. Multiple render attempts confirmed
-two hard blockers:
+A fully-live Claude Code session against an isolated demo HOME would be
+ideal, but two hard blockers force the sim path:
 
-1. **Sub-process auth never resolves in an isolated HOME.** `claude auth
-   status` with `HOME=/tmp/b12-demo-home` returns
+1. **Sub-process auth never resolves in an isolated HOME.** `claude
+   auth status` with `HOME=/tmp/b12-demo-home` returns
    `{"loggedIn": false, "authMethod": "none"}` even after copying the
    full real `oauthAccount` block (real `userID` + `accountUuid` +
    `organizationUuid` + display fields) into the demo `.claude.json`.

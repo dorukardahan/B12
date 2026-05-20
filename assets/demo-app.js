@@ -1,20 +1,17 @@
 #!/usr/bin/env node
-// B12 demo Ink app — high-fidelity Claude Code v2.1.x TUI simulation
-// driven by React + Ink (same framework Claude Code uses).  Adapted
-// from the maintainer's prior internal-prior-art pattern, customized for
-// B12: Memory tool call rendering, live retrieval pill, /mcp output.
-//
-// Run:    node assets/demo-app.js
-// Render: vhs assets/demo.tape -o assets/demo.gif
-//
-// Requires ink + react in node_modules. The .tape pre-stage script
-// in docs/demo.md §Setup walks through `npm install` (or symlinking
-// an existing node_modules tree for offline renders).
+// B12 demo Ink app — Claude Code v2.1.x TUI simulation.
+// Banner styled after the real Claude Code launch screen: rounded-rect
+// frame with the title on the top edge, the chunky orange robot avatar
+// on the left, welcome line + model meta + cwd + MCP status on the right.
+// Below the frame: typed input → Memory tool call → live B12 pill → 3-part
+// English response → /mcp slash-command → /exit.
 
 import React, { useState, useEffect, createElement as e } from 'react';
 import { render, Box, Text, useApp } from 'ink';
 import { execSync } from 'child_process';
 
+const ORANGE = '#da7756';   // Claude Code primary accent
+const BLUE   = '#5b9bd5';   // tool-call / brand secondary
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const thinkingVerbs = ['Crunching', 'Pondering', 'Thinking', 'Processing'];
 
@@ -26,62 +23,59 @@ function liveCount() {
       : `${home}/.local/share/mcp-memory/sqlite_vec.db`;
     const sql = `SELECT COUNT(*) FROM memories WHERE content LIKE '%MCP server%' OR content LIKE '%mcp_server%' OR content LIKE '%spawned%'`;
     const n = parseInt(execSync(`sqlite3 "${db}" "${sql}"`, { encoding: 'utf8', stdio: ['ignore','pipe','ignore'] }).trim(), 10);
-    return Number.isNaN(n) ? null : n;   // null = query failed/empty; Pill renders '?'
+    return Number.isNaN(n) ? null : n;
   } catch { return null; }
 }
 
 const SCRIPT = {
-  question: 'B12 nasıl çalışıyor? MCP server nerede tanımlı?',
+  question: 'How does B12 work? Where is the MCP server defined?',
   toolName: 'Memory',
   toolArgs: 'memory_search(query="B12 MCP server", mode="hybrid")',
   toolOutput: 'found 2 matches in /tmp/b12-demo-work',
   response: [
     { type: 'pill' },
-    { type: 'text', text: 'B12 üç parçadan oluşur:' },
+    { type: 'text', text: 'B12 has three pieces:' },
     { type: 'br' },
-    { type: 'numbered', n: 1, label: 'MCP server', body: '— scripts/b12_mcp_server.py içinde tanımlı. Host uygulama (Claude\nCode, Codex, Cursor) onu stdio üzerinden alt süreç olarak spawn eder.' },
-    { type: 'numbered', n: 2, label: 'Hook scripts', body: '— ~/.B12/hooks/ altında. Her hook 0 exit kodu döndürmek zorunda;\nnon-zero exit host tool çağrısını bloklar.' },
-    { type: 'numbered', n: 3, label: 'SQLite + sqlite-vec', body: '— yerel kalıcı depo; 1024-dim BAAI/bge-m3 embedding\'leriyle\nhibrit FTS5 + vektör arama.' },
+    { type: 'numbered', n: 1, label: 'MCP server', body: '— defined in scripts/b12_mcp_server.py. The host application\n(Claude Code, Codex, Cursor) spawns it as a child process over stdio.' },
+    { type: 'numbered', n: 2, label: 'Hook scripts', body: '— under ~/.B12/hooks/. Each hook must exit 0; a non-zero\nexit blocks the host tool call.' },
+    { type: 'numbered', n: 3, label: 'SQLite + sqlite-vec', body: '— the local persistent store; hybrid FTS5 + vector\nsearch over 1024-dim BAAI/bge-m3 embeddings.' },
   ],
 };
 
+// ─── Banner: rounded-rect frame with title on the top edge, avatar
+// on the left, meta column on the right.  Uses Ink's flexbox + fixed
+// borderStyle so the right edge stays aligned regardless of inner text.
 function Banner() {
-  return e(Box, { flexDirection: 'column', marginBottom: 1 },
-    e(Box, null,
-      e(Text, { color: 'gray' }, '  '),
-      e(Text, { color: '#da7756' }, '✻'),
-      e(Text, { color: 'gray' }, '  '),
-      e(Text, { color: '#5b9bd5' }, '╭───╮'),
-      e(Text, { color: 'gray' }, '   '),
-      e(Text, { bold: true, color: 'white' }, 'Claude Code'),
-      e(Text, { color: 'gray' }, ' v2.1.145')),
-    e(Box, null,
-      e(Text, { color: 'gray' }, '  '),
-      e(Text, { color: '#da7756' }, '✻'),
-      e(Text, { color: 'gray' }, ' '),
-      e(Text, { color: '#5b9bd5' }, '╭╯'),
-      e(Text, { color: '#da7756' }, '███'),
-      e(Text, { color: '#5b9bd5' }, '╰╮'),
-      e(Text, { color: 'gray' }, '   '),
-      e(Text, { color: 'white' }, 'Opus 4.7'),
-      e(Text, { color: 'gray' }, ' · 1M context · API Usage Billing')),
-    e(Box, null,
-      e(Text, { color: 'gray' }, '  '),
-      e(Text, { color: '#da7756' }, '✻'),
-      e(Text, { color: 'gray' }, ' '),
-      e(Text, { color: '#5b9bd5' }, '│'),
-      e(Text, { color: 'white' }, ' ◠ ◠ '),
-      e(Text, { color: '#5b9bd5' }, '│'),
-      e(Text, { color: 'gray' }, '   /tmp/b12-demo-work')),
-    e(Box, null,
-      e(Text, { color: 'gray' }, '  '),
-      e(Text, { color: '#da7756' }, '✻'),
-      e(Text, { color: 'gray' }, ' '),
-      e(Text, { color: '#5b9bd5' }, '╰─────╯'),
-      e(Text, { color: 'gray' }, '   MCP: '),
-      e(Text, { color: 'green' }, '●'),
-      e(Text, { color: 'gray' }, ' B12 '),
-      e(Text, { dimColor: true }, 'connected · 5 tools · 5 memories indexed')),
+  return e(Box, { borderStyle: 'round', borderColor: 'gray', paddingX: 1, width: 80 },
+    e(Box, { flexDirection: 'column', width: 12, marginRight: 2 },
+      e(Text, { color: ORANGE }, ' ▄▀▀▀▀▀▀▄ '),
+      e(Text, { color: ORANGE }, ' █▛▀▀▀▀▜█ '),
+      e(Text, { color: ORANGE }, ' █ ◠ ◠ █ '),
+      e(Text, { color: ORANGE }, ' █▄▄▄▄▄▄█ '),
+      e(Text, { color: ORANGE }, ' ▀▀▀▀▀▀▀▀ '),
+    ),
+    e(Box, { flexDirection: 'column', flexGrow: 1 },
+      e(Box, null,
+        e(Text, { bold: true, color: 'white' }, 'Claude Code'),
+        e(Text, { color: 'gray' }, ' v2.1.145')),
+      e(Text, null, ''),
+      e(Box, null,
+        e(Text, { color: 'white' }, 'Welcome back '),
+        e(Text, { bold: true, color: 'white' }, 'Demo User'),
+        e(Text, { color: 'white' }, '!')),
+      e(Box, null,
+        e(Text, { color: 'white' }, 'Opus 4.7 '),
+        e(Text, { color: 'gray' }, '·'),
+        e(Text, { color: 'white' }, ' 1M context '),
+        e(Text, { color: 'gray' }, '·'),
+        e(Text, { color: 'white' }, ' API Usage Billing')),
+      e(Text, { dimColor: true }, '/tmp/b12-demo-work'),
+      e(Box, null,
+        e(Text, { color: 'white' }, 'MCP: '),
+        e(Text, { color: 'green' }, '●'),
+        e(Text, { color: 'white' }, ' B12 '),
+        e(Text, { dimColor: true }, 'connected · 5 tools · 5 memories indexed')),
+    ),
   );
 }
 
@@ -91,23 +85,23 @@ function Spinner({ verb }) {
     const t = setInterval(() => setFrame(f => (f + 1) % spinnerFrames.length), 80);
     return () => clearInterval(t);
   }, []);
-  return e(Box, { marginLeft: 2 },
-    e(Text, { color: '#da7756' }, spinnerFrames[frame]),
+  return e(Box, null,
+    e(Text, { color: ORANGE }, spinnerFrames[frame]),
     e(Text, { color: 'gray' }, ` ${verb}…`),
     e(Text, { dimColor: true }, '  (esc to interrupt)'));
 }
 
 function UserPrompt({ value, typing }) {
-  return e(Box, { marginLeft: 2 },
+  return e(Box, null,
     e(Text, { color: 'gray', bold: true }, '> '),
     e(Text, { color: 'white' }, value),
-    typing && e(Text, { color: '#5b9bd5' }, '▋'));
+    typing && e(Text, { color: BLUE }, '▋'));
 }
 
 function ToolCall({ name, args, output }) {
-  return e(Box, { flexDirection: 'column', marginLeft: 2, marginTop: 1 },
+  return e(Box, { flexDirection: 'column', marginTop: 1 },
     e(Box, null,
-      e(Text, { color: '#5b9bd5' }, '● '),
+      e(Text, { color: BLUE }, '● '),
       e(Text, { color: 'white' }, `${name}(`),
       e(Text, { color: 'gray' }, args),
       e(Text, { color: 'white' }, ')')),
@@ -117,11 +111,8 @@ function ToolCall({ name, args, output }) {
 }
 
 function Pill({ count }) {
-  // count === null signals the live sqlite query failed (missing DB / sqlite3
-  // not on PATH / setup skipped) — render '?' so reviewers notice instead of
-  // seeing a fabricated number.
   const display = count == null ? '?' : String(count);
-  return e(Box, { marginLeft: 2, marginTop: 1 },
+  return e(Box, { marginTop: 1 },
     e(Text, { dimColor: true }, `( 💊 B12 🧠 : found ${display} memories about MCP server ✅ )`));
 }
 
@@ -132,7 +123,7 @@ function ResponseLine({ block, count }) {
   if (block.type === 'numbered') {
     return e(Box, { flexDirection: 'column' },
       e(Box, null,
-        e(Text, { color: '#da7756' }, `${block.n}. `),
+        e(Text, { color: ORANGE }, `${block.n}. `),
         e(Text, { bold: true, color: 'white' }, block.label),
         e(Text, { color: 'white' }, ' '),
         e(Text, { color: 'gray' }, block.body.split('\n')[0])),
@@ -143,7 +134,7 @@ function ResponseLine({ block, count }) {
 }
 
 function McpStatus() {
-  return e(Box, { flexDirection: 'column', marginLeft: 2, marginTop: 1 },
+  return e(Box, { flexDirection: 'column', marginTop: 1 },
     e(Box, null,
       e(Text, { color: 'gray', bold: true }, '> '),
       e(Text, { color: 'white' }, '/mcp')),
@@ -205,12 +196,12 @@ function App() {
 
   return e(Box, { flexDirection: 'column', padding: 1 },
     e(Banner),
-    e(UserPrompt, { value: typed, typing: charIdx < SCRIPT.question.length }),
+    e(Box, { marginTop: 1 }, e(UserPrompt, { value: typed, typing: charIdx < SCRIPT.question.length })),
     showSpinner && e(Box, { marginTop: 1 }, e(Spinner, { verb })),
     showTool && e(ToolCall, { name: SCRIPT.toolName, args: SCRIPT.toolArgs, output: SCRIPT.toolOutput }),
     ...SCRIPT.response.slice(0, shownLines).map((b, i) => e(ResponseLine, { key: i, block: b, count })),
     showMcp && e(McpStatus),
-    showExit && e(Box, { marginLeft: 2, marginTop: 1 },
+    showExit && e(Box, { marginTop: 1 },
       e(Text, { color: 'gray', bold: true }, '> '),
       e(Text, { color: 'white' }, '/exit')),
   );
