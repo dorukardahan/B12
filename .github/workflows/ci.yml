@@ -31,7 +31,8 @@ jobs:
           done
 
       - name: Bash syntax check (installer)
-        run: bash -n install.sh && echo "OK: install.sh"
+        run: |
+          bash -n install.sh && echo "OK: install.sh"
 
       - name: Python syntax check (scripts/)
         run: |
@@ -55,7 +56,7 @@ jobs:
           rc = 0
           for path in sorted(glob.glob("hooks/memory-*.sh")):
               content = open(path).read()
-              for m in re.finditer(r"<< 'PYEOF'(.*?)PYEOF", content, re.DOTALL):
+              for m in re.finditer(r"<< 'PYEOF'[^\n]*\n(.*?)PYEOF", content, re.DOTALL):
                   try:
                       ast.parse(m.group(1))
                   except SyntaxError as e:

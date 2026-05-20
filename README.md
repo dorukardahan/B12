@@ -7,8 +7,7 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/dorukardahan/B12/ci.yml?branch=main&label=ci)](https://github.com/dorukardahan/B12/actions)
 [![Platforms](https://img.shields.io/badge/platforms-13-green)](#supported-platforms)
 
-<!-- assets/demo.gif (lands in Phase 4 PR16). Until then, see
-     docs/demo.md for the recorded VHS walkthrough text. -->
+![B12 demo](assets/demo.gif)
 
 > One SQLite database. One MCP server. Hook automation in Claude Code. Native
 > integration in 12 other tools. Memory you stored in one session shows up in
@@ -36,14 +35,13 @@ plain `./install.sh` without flags will also work for fresh installs —
 **Jump to:** [Supported Platforms](#supported-platforms) · [Features](#features) · [Architecture](docs/architecture.md) · [Security](SECURITY.md)
 <!--
   Codex review PR #65 P2: removed dead jump links (#benchmarks,
-  docs/demo.md, docs/comparison.md, CONTRIBUTING.md). The first two
-  ship later in the v1 sprint (Phase 4 PR14, PR16). The latter two
-  exist on sibling PR branches and will be re-added once their PRs
-  merge.
+  docs/comparison.md, CONTRIBUTING.md). #benchmarks lands in the
+  v1 sprint (PR14); the other two exist on sibling PR branches and
+  will be re-added once their PRs merge.
 -->
-The demo GIF placeholder above + comparison-vs-alternatives matrix
-ship in follow-up PRs; the [LICENSE](LICENSE) and [SECURITY.md](SECURITY.md)
-links above are live now.
+For a deeper walkthrough of the demo above see [`docs/demo.md`](docs/demo.md).
+The comparison-vs-alternatives matrix ships in a follow-up PR; the
+[LICENSE](LICENSE) and [SECURITY.md](SECURITY.md) links above are live now.
 
 ---
 
