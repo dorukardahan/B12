@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.74.0](https://github.com/dorukardahan/B12/compare/v11.73.0...v11.74.0) (2026-05-20)
+
+
+### Features
+
+* **demo:** adapt OrangeClaudeTerminal banner to Ink ([#77](https://github.com/dorukardahan/B12/issues/77)) ([7f0b408](https://github.com/dorukardahan/B12/commit/7f0b408f5f7785e85174adf3018c1a13b0aa7fb4))
+
 # [11.73.0](https://github.com/dorukardahan/B12/compare/v11.72.0...v11.73.0) (2026-05-20)
 
 

@@ -3236,7 +3236,7 @@ uninstall_mcp_daemon() {
 # Main
 # ═════════════════════════════════════════════
 
-echo "B12 Memory System Installer (v11.73.0 — multi-platform)"
+echo "B12 Memory System Installer (v11.74.0 — multi-platform)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first
