@@ -580,32 +580,40 @@ def merge_or_insert(
     if not content:
         raise ValueError("content must be a non-empty string")
 
-    # PII / secret scrubber — sweep BEFORE any embedding or hash work so
-    # the redacted version is what gets stored AND embedded. The scrubber
-    # honors B12_DISABLE_PII_SCRUB=1 internally.
-    # Codex review PR #67 P2: if scrub mutated content, force a hash
-    # recompute. Otherwise the stored row's hash points at pre-scrub
-    # plaintext and dedupe/undelete lookups silently miss.
-    # PR #67 round 2 P1: also drop the caller-supplied embedding when
-    # content changes — otherwise vector search retrieves the secret-bearing
-    # plaintext on semantic match. Re-embed inside the merge path (via the
-    # existing _encode_for_merge() helper used on update); fall through to
-    # None so the downstream insert uses fresh bytes.
+    # Fragment gate (write-time twin of the MCP memory_store filter). Reject
+    # short/incomplete utterances before the embedding + DB work. Bypassable
+    # via B12_DISABLE_FRAGMENT_FILTER=1 for callers that intentionally store
+    # short tagged notes.
+    # Codex review PR #69 round 3 P1: respect caller-supplied memory_type.
+    # When a caller explicitly classifies the memory (anything other than
+    # "general" / "note" / empty), they've already declared intent.
+    _typed_explicitly = bool(memory_type) and memory_type not in ("general", "note", "")
+    if not _typed_explicitly and \
+       os.environ.get("B12_DISABLE_FRAGMENT_FILTER", "").lower() not in ("1", "true", "yes"):
+        try:
+            from shared_patterns import is_fragment as _is_fragment
+            if _is_fragment(content):
+                return MergeResult(
+                    action="noop_duplicate",
+                    memory_id=0,
+                    reason="rejected_fragment",
+                )
+        except ImportError:
+            pass
+
+    # PII / secret scrubber (PR #67). Runs after fragment gate so we don't
+    # waste an embedding call on content that would be rejected anyway.
     try:
         from b12_pii_scrubber import scrub as _pii_scrub
         _scrubbed = _pii_scrub(content)
         if _scrubbed != content:
             content = _scrubbed
             content_hash = None
-            # Codex review PR #67 round 2 P1 follow-up: actually recompute
-            # the embedding instead of just zeroing it out. The downstream
-            # INSERT path would happily store empty bytes otherwise, and
-            # semantic search would still hit on the pre-scrub query path.
             try:
                 _model_name = os.environ.get("MCP_EMBEDDING_MODEL", DEFAULT_MODEL_NAME)
                 embedding_bytes = _encode_embedding_bytes(content, _model_name)
             except Exception:
-                embedding_bytes = b""  # signal stale; INSERT will skip
+                embedding_bytes = b""
     except ImportError:
         pass
 
@@ -929,7 +937,21 @@ def main(argv: List[str]) -> int:
     args = parser.parse_args(argv)
 
     if args.self_test:
-        _self_test()
+        # Codex review PR #59 round 2 P2: bypass the new fragment gate
+        # for the documented self-test fixtures.
+        # Round 3 P2 follow-up: restore the prior env value in
+        # try/finally so an in-process caller hitting main() (e.g. a
+        # test harness importing this module) doesn't get a leak that
+        # silently disables fragment rejection for the rest of the run.
+        _prior = os.environ.get("B12_DISABLE_FRAGMENT_FILTER")
+        os.environ["B12_DISABLE_FRAGMENT_FILTER"] = "1"
+        try:
+            _self_test()
+        finally:
+            if _prior is None:
+                os.environ.pop("B12_DISABLE_FRAGMENT_FILTER", None)
+            else:
+                os.environ["B12_DISABLE_FRAGMENT_FILTER"] = _prior
         return 0
 
     parser.print_help()

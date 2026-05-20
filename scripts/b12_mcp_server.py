@@ -546,7 +546,26 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
     """Store a new memory with optional metadata, tags, and type."""
     db = _require_db()
     _session_tracker["tool_calls"] += 1
+
+    # Fragment gate — short/incomplete utterances ("ok.", "evet.", lowercase
+    # snippets without a [Label] prefix, unbalanced quotes) pollute search.
+    # Allow [Label]-prefixed entries through even when short (handled inside
+    # `is_fragment`). Escape hatch: B12_DISABLE_FRAGMENT_FILTER=1.
+    # Codex review PR #59 P2: stored_count is incremented AFTER this gate so
+    # rejected writes don't pollute session summaries with phantom counts.
+    if os.environ.get("B12_DISABLE_FRAGMENT_FILTER", "").lower() not in ("1", "true", "yes"):
+        try:
+            from shared_patterns import is_fragment as _is_fragment
+            if _is_fragment(content):
+                return (
+                    f"Rejected as fragment (len={len(content)}). "
+                    "Add a [Label] prefix or expand the note. "
+                    "Set B12_DISABLE_FRAGMENT_FILTER=1 to bypass."
+                )
+        except ImportError:
+            pass
     _session_tracker["stored_count"] += 1
+
     # Detect project from tags
     metadata = metadata or {}
     if not _session_tracker["project"]:
