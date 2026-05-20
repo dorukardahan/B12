@@ -124,6 +124,7 @@ INSTALL_CLINE=false
 INSTALL_OPENCODE=false
 INSTALL_CONTINUE=false
 INSTALL_ZED=false
+INSTALL_AMP=false
 INSTALL_GROK=false
 INSTALL_DAEMON=false
 UNINSTALL_DAEMON=false
@@ -150,6 +151,7 @@ for arg in "$@"; do
     --opencode)  INSTALL_OPENCODE=true ;;
     --continue)  INSTALL_CONTINUE=true ;;
     --zed)       INSTALL_ZED=true ;;
+    --amp)       INSTALL_AMP=true ;;
     --grok)      INSTALL_GROK=true ;;
     --daemon)    INSTALL_DAEMON=true ;;
     --daemon-uninstall) UNINSTALL_DAEMON=true ;;
@@ -2401,6 +2403,107 @@ PYEOF
 # to .cursorrules / AGENTS.md; behavioral guidance lives in the B12 MCP
 # server's tool descriptions.)
 # ─────────────────────────────────────────────
+# ─────────────────────────────────────────────
+# Amp (Sourcegraph successor to Cody) MCP integration.
+# https://ampcode.com — native MCP support since 2026.04. Settings live at
+# ${XDG_CONFIG_HOME:-~/.config}/amp/settings.json. Pure JSON — no JSONC,
+# no comment stripping needed.
+# ─────────────────────────────────────────────
+inject_amp_mcp_config() {
+  local AMP_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/amp"
+  local SETTINGS="$AMP_DIR/settings.json"
+  local TEMPLATE="$SCRIPT_DIR/config/amp-settings-template.json"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --amp"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+  if [ ! -f "$TEMPLATE" ]; then
+    warn "Amp template not found at $TEMPLATE"
+    return 1
+  fi
+
+  mkdir -p "$AMP_DIR"
+  if [ ! -f "$SETTINGS" ]; then
+    echo '{}' > "$SETTINGS"
+    info "Created $SETTINGS"
+  fi
+
+  if ! python3 - "$SETTINGS" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import json, sys
+settings_path, venv_python, server_script = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(settings_path) as f:
+        cfg = json.load(f)
+    if not isinstance(cfg, dict):
+        raise ValueError("Amp settings root is not an object")
+except FileNotFoundError:
+    cfg = {}
+except (json.JSONDecodeError, ValueError) as exc:
+    sys.stderr.write(
+        f"ERROR: refusing to overwrite {settings_path}: {exc}\n"
+        f"Hand-merge the B12 entry from config/amp-settings-template.json.\n"
+    )
+    sys.exit(2)
+# Codex review PR #62 round 3 P1: Amp's settings schema namespaces
+# MCP servers under `amp.mcpServers`, not the bare `mcpServers` key
+# used elsewhere. Write under the Amp-native key so the IDE actually
+# discovers the server.
+cfg.setdefault("amp.mcpServers", {})
+cfg["amp.mcpServers"]["B12"] = {
+    "command": venv_python,
+    "args": [server_script],
+    "env": {
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
+        "MCP_MAX_RESPONSE_CHARS": "40000",
+    },
+}
+with open(settings_path, "w") as f:
+    json.dump(cfg, f, indent=2)
+    f.write("\n")
+PYEOF
+  then
+    error "Failed to merge B12 into $SETTINGS"
+    return 1
+  fi
+  info "B12 mcpServers entry configured in $SETTINGS"
+  echo "     command: $VENV_PYTHON"
+  echo "     script:  $SERVER_SCRIPT"
+}
+
+verify_amp() {
+  local SETTINGS="${XDG_CONFIG_HOME:-$HOME/.config}/amp/settings.json"
+  # Codex review PR #62 round 2 P2: use a JSON-path probe rather than
+  # a string grep. `grep '"B12"'` matches the key anywhere in the file
+  # (e.g. inside a chat-history serialization), which gives false
+  # positives. Read via python json.load + check `mcpServers.B12`.
+  if [ ! -f "$SETTINGS" ]; then
+    warn "Verify: $SETTINGS not found"
+    return 1
+  fi
+  if python3 - "$SETTINGS" << 'PYEOF' 2>/dev/null
+import sys, json
+try:
+    cfg = json.load(open(sys.argv[1]))
+except Exception:
+    sys.exit(2)
+sys.exit(0 if isinstance(cfg, dict) and isinstance(cfg.get('amp.mcpServers'), dict)
+         and 'B12' in cfg['amp.mcpServers'] else 1)
+PYEOF
+  then
+    info "Verify: B12 mcpServer configured in $SETTINGS"
+    return 0
+  fi
+  warn "Verify: B12 NOT found at amp.mcpServers.B12 in $SETTINGS"
+  return 1
+}
+
 verify_zed() {
   # Match inject_zed_mcp_config's platform-aware resolution.
   local SETTINGS
@@ -3363,6 +3466,16 @@ if $INSTALL_CONTINUE; then
   inject_continue_hooks
 fi
 
+# Amp (Sourcegraph) — Cody's successor with native MCP support.
+if $INSTALL_AMP; then
+  echo ""
+  echo "── Amp Setup ────────────────────"
+  inject_amp_mcp_config
+  echo ""
+  info "Amp: B12 registered as an mcpServer. Restart Amp to activate."
+  echo ""
+fi
+
 # Zed (agentic mode) — MCP-only today; SQLite-poller capture is a v2 follow-up.
 if $INSTALL_ZED; then
   echo ""
@@ -3527,6 +3640,13 @@ if $INSTALL_ZED; then
   VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
+if $INSTALL_AMP; then
+  echo ""
+  echo "── Amp Verification ─────────────"
+  verify_amp
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
+fi
+
 if $INSTALL_GROK; then
   echo ""
   echo "── Grok CLI Verification ────────"
@@ -3546,6 +3666,7 @@ $INSTALL_GEMINI && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Gemini"
 $INSTALL_VSCODE && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED VS-Code"
 $INSTALL_CURSOR && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Cursor"
 $INSTALL_ZED && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Zed"
+$INSTALL_AMP && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Amp"
 $INSTALL_KIMI && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Kimi"
 $INSTALL_WINDSURF && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Windsurf"
 $INSTALL_CLINE && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Cline"
@@ -3564,7 +3685,7 @@ fi
 
 # Show helpful tips
 ANY_PLATFORM=false
-$INSTALL_CODEX || $INSTALL_GEMINI || $INSTALL_VSCODE || $INSTALL_CURSOR || $INSTALL_KIMI || $INSTALL_WINDSURF || $INSTALL_CLINE || $INSTALL_OPENCODE || $INSTALL_GROK || $INSTALL_CONTINUE || $INSTALL_ZED && ANY_PLATFORM=true
+$INSTALL_CODEX || $INSTALL_GEMINI || $INSTALL_VSCODE || $INSTALL_CURSOR || $INSTALL_KIMI || $INSTALL_WINDSURF || $INSTALL_CLINE || $INSTALL_OPENCODE || $INSTALL_GROK || $INSTALL_CONTINUE || $INSTALL_ZED || $INSTALL_AMP && ANY_PLATFORM=true
 
 if ! $FULL_SETUP && ! $ANY_PLATFORM; then
   echo ""
