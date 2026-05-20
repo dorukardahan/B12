@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.69.0](https://github.com/dorukardahan/B12/compare/v11.68.0...v11.69.0) (2026-05-20)
+
+
+### Features
+
+* **bench:** LoCoMo 9-cell matrix + benchmark workflow ([#72](https://github.com/dorukardahan/B12/issues/72)) ([d56179c](https://github.com/dorukardahan/B12/commit/d56179c6104404c523b8aaf80b9518f8d4b7346a)), closes [#9](https://github.com/dorukardahan/B12/issues/9)
+
 # [11.68.0](https://github.com/dorukardahan/B12/compare/v11.67.0...v11.68.0) (2026-05-20)
 
 
