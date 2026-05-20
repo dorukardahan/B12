@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.63.0](https://github.com/dorukardahan/B12/compare/v11.62.0...v11.63.0) (2026-05-20)
+
+
+### Features
+
+* **install:** no-flag default → safe-defaults for first-run ([#64](https://github.com/dorukardahan/B12/issues/64)) ([456603a](https://github.com/dorukardahan/B12/commit/456603a4a5bdf4f5f918ed6f75e5537eb65d5a8d))
+
 # [11.62.0](https://github.com/dorukardahan/B12/compare/v11.61.0...v11.62.0) (2026-05-20)
 
 
