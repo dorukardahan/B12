@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.70.0](https://github.com/dorukardahan/B12/compare/v11.69.0...v11.70.0) (2026-05-20)
+
+
+### Features
+
+* **demo:** real Claude Code session GIF — replaces synthetic MCP-tool demo ([#73](https://github.com/dorukardahan/B12/issues/73)) ([e6447a8](https://github.com/dorukardahan/B12/commit/e6447a853e3fd0e9f8922609d14c84f20587ef6b))
+
 # [11.69.0](https://github.com/dorukardahan/B12/compare/v11.68.0...v11.69.0) (2026-05-20)
 
 
