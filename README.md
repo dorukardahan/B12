@@ -77,8 +77,22 @@ B12's MCP server works with any tool that supports MCP stdio. The installer hand
 | Cline | `--cline` | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ (TaskStart, UserPromptSubmit, PreCompact with active staging, TaskComplete) |
 | Continue.dev | `--continue` | ~/.continue/mcpServers/b12.yaml | ~/.continue/rules/b12-memory.md |
 | OpenCode | `--opencode` | ~/.config/opencode/opencode.json | ~/.config/opencode/AGENTS.md + TypeScript plugin (auto-deployed) |
+| JetBrains AI (PyCharm/IDEA/etc.) | *paste-only* | Settings → Tools → AI Assistant → MCP | `config/jetbrains-ai-mcp-template.json` (manual paste) |
+| Amp | `--amp` | `${XDG_CONFIG_HOME:-~/.config}/amp/settings.json` | Built-in |
 
 \* VS Code/Copilot instructions are per-project (`.github/copilot-instructions.md`). The installer creates a template in the B12 repo — copy it to each project where you want B12 active.
+
+\*** JetBrains AI ships native MCP support since 2026.1, but it stores the
+configuration as undocumented `options/*.xml` IDE state — there is no
+disk file we can safely merge into. Workflow: open Settings → Tools →
+AI Assistant → MCP, paste the entry from
+[`config/jetbrains-ai-mcp-template.json`](config/jetbrains-ai-mcp-template.json)
+(or click *Import from Claude Desktop* and point at the same template
+file), and replace `<HOME>` with your absolute home path (macOS:
+`/Users/<you>` · Linux: `/home/<you>` · Windows: `C:/Users/<you>`).
+No install.sh wiring for
+the same reason — automating it would mean writing to an unsupported
+binary surface that the next IDE update could break.
 
 \** OpenCode also receives a TypeScript plugin (deployed to `~/.config/opencode/plugins/b12/`) for full lifecycle hooks (SessionStart, PreCompact, SessionEnd, tool tracking, memory retrieval). Requires Bun runtime.
 
