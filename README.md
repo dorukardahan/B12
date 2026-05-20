@@ -100,6 +100,21 @@ B12 MCP Server (b12_mcp_server.py)
 
 </details>
 
+## Benchmarks
+
+LoCoMo10 retrieval matrix on `v11.67.0`: each storage representation (rows)
+crossed with each search strategy (columns). Cells show `Recall@5 / Token-F1`.
+Raw JSON in [`benchmarks/locomo/results-v11.67.json`](benchmarks/locomo/results-v11.67.json);
+the runner that produced it is [`benchmarks/locomo/run_full_matrix.sh`](benchmarks/locomo/run_full_matrix.sh).
+
+| Storage \ Search | **keyword (BM25)** | **hybrid (BM25+vec)** | **vector (cosine)** |
+|---|---|---|---|
+| **observations** | 0.353 / 0.040 | 0.362 / 0.030 | **0.440 / 0.042** |
+| **summaries**    | 0.340 / 0.009 | 0.298 / 0.006 | 0.338 / 0.009 |
+| **dialogues**    | **0.489** / 0.003 | 0.345 / 0.002 | 0.456 / 0.003 |
+
+<sub>BAAI/bge-m3 1024-dim, LoCoMo10 (10 conversations, 1986 questions), v11.67.0 baseline, M-series Mac. Token-F1 is intentionally low because LoCoMo gold answers are short (1-5 tokens) and the retrieved context is long — the metric measures *content overlap*, not *answer quality*. Recall@5 is the headline number for "did we surface the right context?". Reproduce with `bash benchmarks/locomo/run_full_matrix.sh`. The CI job at [`.github/workflows/benchmark.yml`](.github/workflows/benchmark.yml) refreshes this on a monthly cron and can be triggered per-PR by adding the `bench` label.</sub>
+
 ## Prerequisites
 
 - **Python 3.11+** — required for the MCP server and embedding model

@@ -410,19 +410,7 @@ def retrieve_vector(conn, question, conv_id, top_k=5):
     q_emb = embed_texts([question])[0]
     q_blob = serialize_f32(q_emb)
 
-    results = conn.execute("""
-        SELECT m.id, m.content, m.memory_type, m.session_key,
-               v.distance as cosine_dist
-        FROM memory_vec v
-        JOIN memories m ON m.id = v.memory_id
-        WHERE m.conv_id = ?
-          AND m.deleted_at IS NULL
-        ORDER BY v.distance
-        LIMIT ?
-    """, (q_blob, conv_id, top_k)).fetchall()
-    # Note: vec0 distance query syntax requires embedding as first WHERE param
-    # Let's use a different approach — query vec0 then filter
-
+    results = []
     try:
         # sqlite-vec: query with embedding, then join
         results = conn.execute("""
