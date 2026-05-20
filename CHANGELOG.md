@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.71.0](https://github.com/dorukardahan/B12/compare/v11.70.0...v11.71.0) (2026-05-20)
+
+
+### Features
+
+* **demo:** high-fidelity B12 walkthrough — live retrieval pill (v11.71.0) ([#74](https://github.com/dorukardahan/B12/issues/74)) ([163c909](https://github.com/dorukardahan/B12/commit/163c9097300178b50cf68d54abdead18ccff62a3)), closes [hi#fidelity](https://github.com/hi/issues/fidelity) [hi#fidelity](https://github.com/hi/issues/fidelity)
+
 # [11.70.0](https://github.com/dorukardahan/B12/compare/v11.69.0...v11.70.0) (2026-05-20)
 
 
