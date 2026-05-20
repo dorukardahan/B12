@@ -385,6 +385,56 @@ This bypasses the LIMIT-500 full-scan cap that silently hides ~85% of memories a
 
 `config/cline-hooks/{TaskStart,UserPromptSubmit,PreCompact}` are deployed to `~/Documents/Cline/Hooks/` (authoritative location per `cline/cline:.clinerules/hooks/README.md`). Each shim normalizes Cline's nested JSON payload (`.workspaceRoots[0]` → `.cwd`, `.userPromptSubmit.prompt` → `.prompt`) before delegating to the corresponding B12 hook, and translates the response's `hookSpecificOutput.additionalContext` into Cline's `contextModification` wire key (camelCase, verified against `cline/cline:src/core/hooks/templates.ts`). PreCompact is a passive `{cancel: false}` placeholder pending upstream stabilization of `.transcript_path` + `.preCompact` payload shape.
 
+## Classifier retraining recipe (PR15 — v11.x BGE-M3 1024-dim)
+
+The shipped `models/classifier-head.pkl` is a sklearn `LogisticRegression`
+fitted on 1024-dim BGE-M3 embeddings, mapping content to 7 canonical
+memory types (`decision`, `error_fix`, `learning`, `preference`,
+`observation`, `knowledge`, `session_summary`). The embed daemon loads
+it at startup; on classify ops it encodes the input → predicts.
+
+To regenerate the head against a different base model or with fresh
+training data:
+
+```bash
+# 1. Build silver-label corpus from your live DB
+#    (or substitute /tmp/b12-setfit-candidates.json with a hand-labeled file
+#    of the same {content_preview, proposed_label, split} shape)
+~/.local/b12-venv/bin/python3 scripts/build_classifier_corpus.py
+
+# 2. Train head + save daemon-compatible pickle
+~/.local/b12-venv/bin/python3 scripts/train_classifier_head_pkl.py
+
+# 3. (optional) override base model
+B12_TRAIN_MODEL=BAAI/bge-large-en-v1.5 \
+  ~/.local/b12-venv/bin/python3 scripts/train_classifier_head_pkl.py
+
+# 4. Restart the embed daemon — it lazy-loads from
+#    ~/.B12/models/classifier-head.pkl on the next classify op
+```
+
+The training writes `~/.B12/models/classifier-head.pkl`. The repo
+copy under `models/classifier-head.pkl` is the version shipped to new
+installers (copied at install time).
+
+**Silver-label corpus**: `scripts/build_classifier_corpus.py` reads
+typed memories from the live DB and maps fine-grained types (`gotcha`,
+`bugfix`, `architecture`, etc.) to the canonical 7-label schema. This
+is a "trust the prior typing" approach — it works because most live
+memories were typed either by Claude using `classify_by_prefix` or by
+the user explicitly. For higher-quality training, run a TeamCreate
+gold-label pass (Claude + Gemini + Codex cross-validation) and replace
+the corpus.
+
+**Baseline accuracy**: silver-label corpus (1797 items, 80/20 split) →
+~69% test accuracy. Gold-validation typically lifts this to ~84% on
+the same architecture.
+
+**Embedding dim guard**: the daemon refuses to use a pickle whose
+`head.n_features_in_` doesn't match its runtime `EXPECTED_DIM` (set
+from the loaded model). Set `B12_CLASSIFIER_BACKEND=off` to silence
+the per-call error while you regenerate.
+
 ## Limitations and future work
 
 ### Current limitations
