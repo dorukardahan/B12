@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.73.0](https://github.com/dorukardahan/B12/compare/v11.72.0...v11.73.0) (2026-05-20)
+
+
+### Features
+
+* **demo:** English content + faithful Claude Code v2.1.x banner ([#76](https://github.com/dorukardahan/B12/issues/76)) ([e22fcc8](https://github.com/dorukardahan/B12/commit/e22fcc812220ba84d2476e5487a41a2fb7d9e7cd))
+
 # [11.72.0](https://github.com/dorukardahan/B12/compare/v11.71.0...v11.72.0) (2026-05-20)
 
 
