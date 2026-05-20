@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.68.0](https://github.com/dorukardahan/B12/compare/v11.67.0...v11.68.0) (2026-05-20)
+
+
+### Features
+
+* **demo:** VHS-rendered demo.gif + walkthrough doc ([#71](https://github.com/dorukardahan/B12/issues/71)) ([471645d](https://github.com/dorukardahan/B12/commit/471645d949a8217dbc3c255ac1839329a3b53048))
+
 # [11.67.0](https://github.com/dorukardahan/B12/compare/v11.66.0...v11.67.0) (2026-05-20)
 
 
