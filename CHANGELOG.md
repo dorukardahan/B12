@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.62.0](https://github.com/dorukardahan/B12/compare/v11.61.0...v11.62.0) (2026-05-20)
+
+
+### Features
+
+* **security:** PII / secret scrubber + 11 unit tests + write-time wiring ([#67](https://github.com/dorukardahan/B12/issues/67)) ([a05aebe](https://github.com/dorukardahan/B12/commit/a05aebed78dec396216b0f91b33192f2c08c0eb2))
+
 # [11.61.0](https://github.com/dorukardahan/B12/compare/v11.60.0...v11.61.0) (2026-05-20)
 
 
