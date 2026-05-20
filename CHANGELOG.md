@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.64.0](https://github.com/dorukardahan/B12/compare/v11.63.0...v11.64.0) (2026-05-20)
+
+
+### Features
+
+* **jetbrains:** paste template + README docs (no install.sh wiring) ([#63](https://github.com/dorukardahan/B12/issues/63)) ([ef1c740](https://github.com/dorukardahan/B12/commit/ef1c7407087bb8d304bc01c8e51c8b9389182098))
+
 # [11.63.0](https://github.com/dorukardahan/B12/compare/v11.62.0...v11.63.0) (2026-05-20)
 
 
