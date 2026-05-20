@@ -111,6 +111,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Ebbinghaus decay** — frequently accessed memories strengthen, unused ones fade (but never disappear)
 - **Write-time merge** — deduplicates at storage time (cosine > 0.85 triggers merge, not insert)
 - **Contradiction detection** — ONNX NLI model flags conflicting memories
+- **PII / secret scrubber** — regex sweep on every write redacts `sk-ant-`, `ghp_`, `xoxb-`, AWS keys, JWT, `api_key=…`, etc. before content hits SQLite or the embedding daemon. Escape hatch: `B12_DISABLE_PII_SCRUB=1`. See [SECURITY.md](SECURITY.md).
 - **Memory graph** — related/follows/contradicts edges between memories
 - **Scope system** — 4 scopes (project, universal, preference, setup) with automatic tagging
 - **Working Memory** — tracks active files and search patterns, restored after context compaction

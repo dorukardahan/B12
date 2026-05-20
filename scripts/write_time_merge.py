@@ -580,6 +580,35 @@ def merge_or_insert(
     if not content:
         raise ValueError("content must be a non-empty string")
 
+    # PII / secret scrubber — sweep BEFORE any embedding or hash work so
+    # the redacted version is what gets stored AND embedded. The scrubber
+    # honors B12_DISABLE_PII_SCRUB=1 internally.
+    # Codex review PR #67 P2: if scrub mutated content, force a hash
+    # recompute. Otherwise the stored row's hash points at pre-scrub
+    # plaintext and dedupe/undelete lookups silently miss.
+    # PR #67 round 2 P1: also drop the caller-supplied embedding when
+    # content changes — otherwise vector search retrieves the secret-bearing
+    # plaintext on semantic match. Re-embed inside the merge path (via the
+    # existing _encode_for_merge() helper used on update); fall through to
+    # None so the downstream insert uses fresh bytes.
+    try:
+        from b12_pii_scrubber import scrub as _pii_scrub
+        _scrubbed = _pii_scrub(content)
+        if _scrubbed != content:
+            content = _scrubbed
+            content_hash = None
+            # Codex review PR #67 round 2 P1 follow-up: actually recompute
+            # the embedding instead of just zeroing it out. The downstream
+            # INSERT path would happily store empty bytes otherwise, and
+            # semantic search would still hit on the pre-scrub query path.
+            try:
+                _model_name = os.environ.get("MCP_EMBEDDING_MODEL", DEFAULT_MODEL_NAME)
+                embedding_bytes = _encode_embedding_bytes(content, _model_name)
+            except Exception:
+                embedding_bytes = b""  # signal stale; INSERT will skip
+    except ImportError:
+        pass
+
     if isinstance(embedding_bytes, memoryview):
         embedding_blob = embedding_bytes.tobytes()
     else:
