@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.65.0](https://github.com/dorukardahan/B12/compare/v11.64.0...v11.65.0) (2026-05-20)
+
+
+### Features
+
+* **amp:** MCP template + --amp install flag (Cody → Amp pivot) ([#62](https://github.com/dorukardahan/B12/issues/62)) ([4151157](https://github.com/dorukardahan/B12/commit/415115714a1b1694e14ff6dd5d1e16b0d7043c2a))
+
 # [11.64.0](https://github.com/dorukardahan/B12/compare/v11.63.0...v11.64.0) (2026-05-20)
 
 
