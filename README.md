@@ -1,12 +1,58 @@
-# B12 — Persistent Memory System for AI Coding Assistants
+# B12
 
-A local-first, fully automated memory system that makes your AI coding assistant remember everything across sessions. No cloud, no API keys, no manual effort — just persistent context that gets smarter over time.
+**Local-first persistent memory for your AI coding assistant — across every tool you use.**
 
-Works with Claude Code, Codex CLI, Gemini CLI, VS Code/Copilot, Cursor, Kimi Code, Windsurf, Cline, and OpenCode — all sharing the same memory database.
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/dorukardahan/B12?sort=semver)](https://github.com/dorukardahan/B12/releases)
+[![CI](https://img.shields.io/github/actions/workflow/status/dorukardahan/B12/ci.yml?branch=main&label=ci)](https://github.com/dorukardahan/B12/actions)
+[![Platforms](https://img.shields.io/badge/platforms-13-green)](#supported-platforms)
+
+<!-- assets/demo.gif (lands in Phase 4 PR16). Until then, see
+     docs/demo.md for the recorded VHS walkthrough text. -->
+
+> One SQLite database. One MCP server. Hook automation in Claude Code. Native
+> integration in 12 other tools. Memory you stored in one session shows up in
+> every other tool you open — same project, same DB.
+
+- **Cross-tool memory** — the same DB powers Claude Code, Codex CLI, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI
+- **Truly local** — SQLite + sqlite-vec on disk, no cloud calls, no API keys, no telemetry
+- **Hybrid retrieval** — FTS5 BM25 + 1024-dim BGE-M3 vector + Ebbinghaus strength decay (frequently used memories rise, stale ones fade)
+- **Write-time merge + NLI contradiction detection** — duplicates collapse at storage time; conflicting memories flag for review
+- **Hook automation** — session-end micro-extraction, sprint handoffs, working-memory restore through compaction, classifier-driven tagging
+- **Comparison vs alternatives** — full matrix vs Mem0 / Letta / Cursor memory / Claude Projects / ChatGPT memory ships in PR #68 (`docs/comparison.md`).
+
+### Install (one command)
+
+```bash
+git clone https://github.com/dorukardahan/B12.git && cd B12 && ./install.sh --full
+```
+
+Restart your AI tool, type `/mcp` (or the platform equivalent), and you
+should see `B12 · connected`. `--full` installs the venv, configures the
+MCP server in `~/.claude.json`, and deploys hooks. (Once PR #64 lands,
+plain `./install.sh` without flags will also work for fresh installs —
+`--minimal` will be the documented opt-out for hooks-only behavior.)
+
+**Jump to:** [Supported Platforms](#supported-platforms) · [Features](#features) · [Architecture](docs/architecture.md) · [Security](SECURITY.md)
+<!--
+  Codex review PR #65 P2: removed dead jump links (#benchmarks,
+  docs/demo.md, docs/comparison.md, CONTRIBUTING.md). The first two
+  ship later in the v1 sprint (Phase 4 PR14, PR16). The latter two
+  exist on sibling PR branches and will be re-added once their PRs
+  merge.
+-->
+The demo GIF placeholder above + comparison-vs-alternatives matrix
+ship in follow-up PRs; the [LICENSE](LICENSE) and [SECURITY.md](SECURITY.md)
+links above are live now.
+
+---
 
 ## How It Works
 
 The hook-based automation below runs in Claude Code. Other platforms use the MCP server directly with static instruction files — see [Supported Platforms](#supported-platforms).
+
+<details>
+<summary>Architecture (click to expand)</summary>
 
 ```
 Claude Code Session (full hook automation)
@@ -53,6 +99,8 @@ B12 MCP Server (b12_mcp_server.py)
     ├── Write-time semantic merge (cosine > 0.85 = merge, not duplicate)
     └── Auto-backup (daily, 7-day rotation)
 ```
+
+</details>
 
 ## Prerequisites
 
