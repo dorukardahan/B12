@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // B12 demo Ink app — Claude Code v2.1.x TUI simulation.
-// Banner styled after the real Claude Code launch screen: rounded-rect
-// frame with the title on the top edge, the chunky orange robot avatar
-// on the left, welcome line + model meta + cwd + MCP status on the right.
+// Banner adapted from the OrangeClaudeTerminal Remotion template: rounded
+// frame with title on top, two columns split by a vertical divider —
+// left column carries the greeting + compact bird mascot + model meta +
+// cwd, right column carries the Connected MCP block and a Tips line.
 // Below the frame: typed input → Memory tool call → live B12 pill → 3-part
 // English response → /mcp slash-command → /exit.
 
@@ -10,8 +11,10 @@ import React, { useState, useEffect, createElement as e } from 'react';
 import { render, Box, Text, useApp } from 'ink';
 import { execSync } from 'child_process';
 
-const ORANGE = '#da7756';   // Claude Code primary accent
+const ORANGE = '#D97706';   // Anthropic brand orange
+const CORAL  = '#DC6843';   // section-header accent
 const BLUE   = '#5b9bd5';   // tool-call / brand secondary
+const GREEN  = '#22c55e';   // welcome-line accent
 const spinnerFrames = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 const thinkingVerbs = ['Crunching', 'Pondering', 'Thinking', 'Processing'];
 
@@ -42,39 +45,49 @@ const SCRIPT = {
   ],
 };
 
-// ─── Banner: rounded-rect frame with title on the top edge, avatar
-// on the left, meta column on the right.  Uses Ink's flexbox + fixed
-// borderStyle so the right edge stays aligned regardless of inner text.
+// ─── Banner: rounded-rect frame with the title row on top, then two
+// columns split by a vertical divider.  Left column: green greeting,
+// compact bird mascot (3 lines, from the OrangeClaudeTerminal template),
+// model · plan, cwd.  Right column: Connected MCP block (B12 status,
+// tools, indexed memories) + a Tips line.
 function Banner() {
-  return e(Box, { borderStyle: 'round', borderColor: 'gray', paddingX: 1, width: 80 },
-    e(Box, { flexDirection: 'column', width: 12, marginRight: 2 },
-      e(Text, { color: ORANGE }, ' ▄▀▀▀▀▀▀▄ '),
-      e(Text, { color: ORANGE }, ' █▛▀▀▀▀▜█ '),
-      e(Text, { color: ORANGE }, ' █ ◠ ◠ █ '),
-      e(Text, { color: ORANGE }, ' █▄▄▄▄▄▄█ '),
-      e(Text, { color: ORANGE }, ' ▀▀▀▀▀▀▀▀ '),
-    ),
-    e(Box, { flexDirection: 'column', flexGrow: 1 },
-      e(Box, null,
-        e(Text, { bold: true, color: 'white' }, 'Claude Code'),
-        e(Text, { color: 'gray' }, ' v2.1.145')),
-      e(Text, null, ''),
-      e(Box, null,
-        e(Text, { color: 'white' }, 'Welcome back '),
-        e(Text, { bold: true, color: 'white' }, 'Demo User'),
-        e(Text, { color: 'white' }, '!')),
-      e(Box, null,
-        e(Text, { color: 'white' }, 'Opus 4.7 '),
-        e(Text, { color: 'gray' }, '·'),
-        e(Text, { color: 'white' }, ' 1M context '),
-        e(Text, { color: 'gray' }, '·'),
-        e(Text, { color: 'white' }, ' API Usage Billing')),
-      e(Text, { dimColor: true }, '/tmp/b12-demo-work'),
-      e(Box, null,
-        e(Text, { color: 'white' }, 'MCP: '),
-        e(Text, { color: 'green' }, '●'),
-        e(Text, { color: 'white' }, ' B12 '),
-        e(Text, { dimColor: true }, 'connected · 5 tools · 5 memories indexed')),
+  return e(Box, { borderStyle: 'round', borderColor: 'gray', paddingX: 2, width: 86, flexDirection: 'column' },
+    e(Box, { justifyContent: 'center' },
+      e(Text, { color: ORANGE, bold: true }, 'Claude Code'),
+      e(Text, { dimColor: true }, ' v2.1.145')),
+    e(Text, null, ''),
+    e(Box, { flexDirection: 'row' },
+      e(Box, { flexDirection: 'column', flexGrow: 1, alignItems: 'center', paddingRight: 2 },
+        e(Text, { color: GREEN }, 'Welcome back Demo User!'),
+        e(Text, null, ''),
+        e(Text, { color: ORANGE }, '▐▛███▜▌'),
+        e(Text, { color: ORANGE }, '▝▜█████▛▘'),
+        e(Text, { color: ORANGE }, '▘▘ ▝▝'),
+        e(Text, null, ''),
+        e(Text, { dimColor: true }, 'Opus 4.7 · Claude Max'),
+        e(Text, { dimColor: true }, '/tmp/b12-demo-work'),
+      ),
+      e(Box, {
+        flexDirection: 'column',
+        flexGrow: 1,
+        paddingLeft: 2,
+        borderStyle: 'single',
+        borderTop: false,
+        borderRight: false,
+        borderBottom: false,
+        borderColor: 'gray',
+      },
+        e(Text, { color: CORAL, bold: true }, 'Connected MCP server'),
+        e(Box, null,
+          e(Text, { color: 'green' }, '● '),
+          e(Text, { bold: true, color: 'white' }, 'B12'),
+          e(Text, { dimColor: true }, '   connected')),
+        e(Text, { dimColor: true }, '5 tools available'),
+        e(Text, { dimColor: true }, '5 memories indexed'),
+        e(Text, null, ''),
+        e(Text, { color: CORAL, bold: true }, 'Tips for getting started'),
+        e(Text, { dimColor: true }, 'Run /mcp to inspect tools.'),
+      ),
     ),
   );
 }

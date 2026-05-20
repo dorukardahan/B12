@@ -3,10 +3,12 @@
 This document accompanies [`assets/demo.gif`](../assets/demo.gif), a
 high-fidelity simulation of a B12-augmented Claude Code session rendered
 by **React + Ink** — the same framework Claude Code itself uses. The
-rounded-rect banner, chunky orange robot avatar, Braille spinner,
-`● Memory(…)` tool call, `⎿` tree output, retrieval pill, response
-formatting, and `/mcp` slash-command layout all match Claude Code
-v2.1.x closely enough to read like a real screencast.
+rounded-rect banner (centered title, two columns split by a vertical
+divider, compact bird mascot adapted from the OrangeClaudeTerminal
+Remotion template), Braille spinner, `● Memory(…)` tool call, `⎿` tree
+output, retrieval pill, response formatting, and `/mcp` slash-command
+layout all match Claude Code v2.1.x closely enough to read like a real
+screencast.
 
 The retrieval pill count is **live**: the Ink app's `liveCount()` shells
 out to `sqlite3` against an isolated demo DB at
@@ -24,21 +26,26 @@ Re-render with `vhs assets/demo.tape -o assets/demo.gif` (vhs ≥ 0.10 on
 ### 1. Banner
 
 ```text
-╭─────────────────────────────────────────────────────────────────────╮
-│             Claude Code v2.1.145                                    │
-│  ▄▀▀▀▀▀▀▄                                                           │
-│  █▛▀▀▀▀▜█  Welcome back Demo User!                                  │
-│  █ ◠ ◠ █                                                            │
-│  █▄▄▄▄▄▄█  Opus 4.7 · 1M context · API Usage Billing                │
-│  ▀▀▀▀▀▀▀▀  /tmp/b12-demo-work                                       │
-│            MCP: ● B12 connected · 5 tools · 5 memories indexed      │
-╰─────────────────────────────────────────────────────────────────────╯
+╭──────────────────────────────────────────────────────────────────────────╮
+│                       Claude Code v2.1.145                               │
+│                                                                          │
+│   Welcome back Demo User!     │  Connected MCP server                    │
+│                               │  ● B12    connected                      │
+│        ▐▛███▜▌                │  5 tools available                       │
+│       ▝▜█████▛▘               │  5 memories indexed                      │
+│       ▘▘ ▝▝                   │                                          │
+│                               │  Tips for getting started                │
+│   Opus 4.7 · Claude Max       │  Run /mcp to inspect tools.              │
+│   /tmp/b12-demo-work          │                                          │
+╰──────────────────────────────────────────────────────────────────────────╯
 ```
 
-Chunky orange Claude robot avatar on the left, welcome + model meta +
-cwd + MCP status on the right. The bright green `●` signals B12 is
-connected. The `5 memories indexed` count is the row count of the
-seeded demo DB.
+Centered title on top, then two columns split by a vertical divider.
+Left column carries the green greeting, the compact bird mascot
+(adapted from `OrangeClaudeTerminal.tsx`'s `CLAWD_ASCII` constant),
+model · plan, and cwd. Right column carries the Connected MCP block
+(bright green `●` signals B12 is connected, tool count, indexed memory
+count from the seeded demo DB) and a Tips line.
 
 ### 2. Recall question
 
