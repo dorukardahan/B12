@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.67.0](https://github.com/dorukardahan/B12/compare/v11.66.0...v11.67.0) (2026-05-20)
+
+
+### Features
+
+* **ml:** classifier retrain on bge-m3 1024-dim + reproducible recipe ([#70](https://github.com/dorukardahan/B12/issues/70)) ([a13d8ac](https://github.com/dorukardahan/B12/commit/a13d8ac89bbd8fe3b6d892ac37bb0452231b1301)), closes [#56](https://github.com/dorukardahan/B12/issues/56) [#56](https://github.com/dorukardahan/B12/issues/56)
+
 # [11.66.0](https://github.com/dorukardahan/B12/compare/v11.65.0...v11.66.0) (2026-05-20)
 
 
