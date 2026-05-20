@@ -1,19 +1,20 @@
-# B12 demo — VHS script (high-fidelity sim render).
+# B12 demo — VHS script (Ink-based Claude Code TUI sim).
 #
-# Records a faithful Claude Code v2.1.x TUI walkthrough whose retrieval pill
-# count is LIVE — the sim shells out to the real `~/.B12/hooks/memory-retrieval.sh`
-# against an isolated demo DB at /tmp/b12-demo-home/Library/Application
-# Support/mcp-memory/sqlite_vec.db (seeded with 5 public-facing memories from
-# README and CLAUDE.md).  The shell uses `gum spin` for the thinking spinner
-# and a BG_GRAY-styled input box that captures VHS-typed input via `read -r`.
+# Records a high-fidelity simulation of a B12-augmented Claude Code session
+# rendered by React + Ink (the same framework Claude Code itself uses).
+# The banner, spinner, tool call rendering, response formatting, and /mcp
+# layout match Claude Code v2.1.x pixel-for-pixel.  The retrieval pill count
+# is live — `liveCount()` in /tmp/b12-demo-app/index.js shells out to
+# sqlite3 against the isolated demo DB at /tmp/b12-demo-home/Library/...
 #
 # This is a SIM, not a live Claude Code session — sub-process keychain auth
-# refuses to resolve against any HOME-redirected oauthAccount, and using the
-# real HOME would expose the unrelated real memory DB.  Live attempts and the
-# fallback rationale are documented in docs/demo.md §Live-session blocker.
+# refuses to resolve in any HOME-redirected demo HOME (`claude auth status`
+# returns loggedIn=false even with full real oauthAccount copied over);
+# using the real HOME would surface the maintainer's real memory DB.  See
+# docs/demo.md §Live-session blocker for the full trace.
 #
 # Render:  vhs assets/demo.tape -o assets/demo.gif   (vhs ≥ 0.10 on PATH)
-# Pre-stage: docs/demo.md §Setup spells out /tmp/b12-demo-sim.sh + seeded DB.
+# Pre-stage: docs/demo.md §Setup — seeds the DB and writes the Ink app.
 
 Output assets/demo.gif
 
@@ -28,46 +29,26 @@ Set Padding 24
 Set WindowBar Colorful
 Set WindowBarSize 40
 
-# ── Hidden: isolated env + load the sim shell function ──
+# ── Hidden: isolated env + alias `claude` to the Ink demo app ──
 Hide
 Set TypingSpeed 0ms
-Type "export HOME=/tmp/b12-demo-home"
-Enter
 Type "export B12_DATA_DIR=/tmp/b12-demo-record"
 Enter
 Type "export PS1='demo $ '"
 Enter
 Type "cd /tmp/b12-demo-work"
 Enter
-Type "source /tmp/b12-demo-sim.sh"
+Type "alias claude='node /tmp/b12-demo-app/index.js'"
 Enter
 Type "clear"
 Enter
 Set TypingSpeed 50ms
 Show
-Sleep 500ms
+Sleep 600ms
 
-# 1. Launch the sim (renders banner, awaits input)
+# 1. Launch — the Ink app renders the banner, auto-types the Turkish
+#    question, fires a Memory tool call, shows the live retrieval pill,
+#    walks through the 3-point response, runs /mcp, types /exit.
 Type "claude"
 Enter
-Sleep 3500ms
-
-# 2. Turkish recall question — triggers LIVE B12 retrieval against /tmp DB
-Type "B12 nasıl çalışıyor? MCP server nerede tanımlı?"
-Sleep 600ms
-Enter
-
-# 3. Spinner + live pill count + memory-cited Turkish response
-Sleep 9500ms
-
-# 4. /mcp — confirms the B12 MCP entry
-Type "/mcp"
-Sleep 400ms
-Enter
-Sleep 3500ms
-
-# 5. /exit
-Type "/exit"
-Sleep 400ms
-Enter
-Sleep 1000ms
+Sleep 17000ms
