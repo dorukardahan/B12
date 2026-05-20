@@ -1,5 +1,12 @@
 # Changelog
 
+# [11.59.0](https://github.com/dorukardahan/B12/compare/v11.58.2...v11.59.0) (2026-05-20)
+
+
+### Features
+
+* **cline:** TaskComplete + PreCompact delegation + _parse_cline ([#61](https://github.com/dorukardahan/B12/issues/61)) ([e5f219c](https://github.com/dorukardahan/B12/commit/e5f219c96c55f53ca70f9a6cdfa94cfd6c8a515f)), closes [cline#7510](https://github.com/cline/issues/7510) [cline#7513](https://github.com/cline/issues/7513)
+
 ## [11.58.2](https://github.com/dorukardahan/B12/compare/v11.58.1...v11.58.2) (2026-05-19)
 
 
