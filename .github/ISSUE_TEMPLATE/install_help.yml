@@ -1,0 +1,46 @@
+name: Config / install help
+description: Setup, MCP wiring, or platform integration question.
+labels: ["question", "config"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Before filing, please skim [README.md](../README.md) and
+        [docs/setup.md](../docs/setup.md). For programmable problems
+        (crash, exception, wrong output), use **Bug report** instead.
+  - type: dropdown
+    id: platform
+    attributes:
+      label: Which AI tool?
+      options:
+        - Claude Code
+        - Codex CLI
+        - Cursor
+        - Cline
+        - VS Code / Copilot
+        - Gemini CLI
+        - Kimi Code
+        - Windsurf
+        - OpenCode
+        - Continue.dev
+        - Zed
+        - Grok CLI
+        - Amp
+        - JetBrains AI
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: install-state
+    attributes:
+      label: Install state
+      description: Output of `./install.sh --health` (or what you've tried so far).
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+    validations:
+      required: true

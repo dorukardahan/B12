@@ -1,0 +1,112 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  validate:
+    name: bash + python syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        # Codex review PR #66 round 6 P1: anti-Claude trailer audit
+        # needs full history, not just the shallow PR clone, so
+        # `git log base..head` has access to all PR commits.
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Bash syntax check (hooks)
+        run: |
+          set -e
+          for f in hooks/memory-*.sh; do
+            bash -n "$f" && echo "OK: $f"
+          done
+
+      - name: Bash syntax check (installer)
+        run: bash -n install.sh && echo "OK: install.sh"
+
+      - name: Python syntax check (scripts/)
+        run: |
+          python3 - <<'PYEOF'
+          import ast, glob, sys
+          rc = 0
+          for path in sorted(glob.glob("scripts/*.py")):
+              try:
+                  ast.parse(open(path).read())
+                  print(f"OK: {path}")
+              except SyntaxError as e:
+                  print(f"FAIL: {path}: {e}", file=sys.stderr)
+                  rc = 1
+          sys.exit(rc)
+          PYEOF
+
+      - name: Python syntax check (hook heredocs)
+        run: |
+          python3 - <<'PYEOF'
+          import ast, re, glob, sys
+          rc = 0
+          for path in sorted(glob.glob("hooks/memory-*.sh")):
+              content = open(path).read()
+              for m in re.finditer(r"<< 'PYEOF'(.*?)PYEOF", content, re.DOTALL):
+                  try:
+                      ast.parse(m.group(1))
+                  except SyntaxError as e:
+                      print(f"FAIL: {path}: {e}", file=sys.stderr)
+                      rc = 1
+                      break
+              else:
+                  print(f"OK: {path}")
+          sys.exit(rc)
+          PYEOF
+
+      - name: Personal-path leak check
+        run: |
+          # Codex review PR #66 P2: match any home-dir path
+          # (/Users/<anyone>, /home/<anyone>) instead of hardcoding the
+          # maintainer username. Exclude .github (workflow examples can
+          # contain placeholder paths inside comments) and docs (which
+          # use templated <HOME>/<you> placeholders by convention).
+          # Codex review PR #66 round 2 P2: include `.yml` (GitHub
+          # Actions workflows) alongside `.yaml`.
+          # Codex review PR #66 round 3 P1: skip documented placeholder
+          # usernames (you, user, username) and template / smoke files
+          # that intentionally include `/Users/you/` examples in
+          # comments. Also exclude check.sh which itself owns the
+          # canonical placeholder string.
+          if grep -RInE '/(Users|home)/[a-z][a-z0-9_-]{3,}/' \
+               --include='*.sh' --include='*.py' \
+               --include='*.json' --include='*.toml' \
+               --include='*.yaml' --include='*.yml' \
+               --exclude='check.sh' \
+               --exclude-dir='.git' --exclude-dir='node_modules' \
+               --exclude-dir='.github' --exclude-dir='config' . \
+               | grep -vE '/(Users|home)/(you|user|username|name|me|home)/' ; then
+            echo "FAIL: personal paths in source — use \$HOME / ~ / templated markers" >&2
+            exit 1
+          fi
+          echo "OK: no personal paths"
+
+      - name: Anti-Claude trailer audit
+        run: |
+          # Block any commits with claude/anthropic Co-Authored-By trailers
+          # on incoming PRs. The audit runs against the PR commit range.
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            range="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+            count=$(git log "$range" --format='%(trailers:key=Co-Authored-By)' \
+                    | grep -ci 'claude\|anthropic' || true)
+            if [ "$count" -gt 0 ]; then
+              echo "FAIL: $count commits carry claude/anthropic Co-Authored-By" >&2
+              git log "$range" --format='%(trailers:key=Co-Authored-By) %h %s' \
+                  | grep -i 'claude\|anthropic'
+              exit 1
+            fi
+            echo "OK: 0 claude/anthropic trailers"
+          fi
