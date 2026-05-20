@@ -74,7 +74,7 @@ B12's MCP server works with any tool that supports MCP stdio. The installer hand
 | Cursor | `--cursor` | ~/.cursor/mcp.json | ~/.cursor/rules/b12-memory.mdc |
 | Kimi Code | `--kimi` | ~/.kimi/mcp.json | ~/.kimi/AGENTS.md |
 | Windsurf | `--windsurf` | ~/.codeium/windsurf/mcp_config.json | ~/.codeium/.../global_rules.md |
-| Cline | `--cline` | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ (TaskStart/UserPromptSubmit/PreCompact) |
+| Cline | `--cline` | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ (TaskStart, UserPromptSubmit, PreCompact with active staging, TaskComplete) |
 | Continue.dev | `--continue` | ~/.continue/mcpServers/b12.yaml | ~/.continue/rules/b12-memory.md |
 | OpenCode | `--opencode` | ~/.config/opencode/opencode.json | ~/.config/opencode/AGENTS.md + TypeScript plugin (auto-deployed) |
 

@@ -1,16 +1,37 @@
 #!/bin/bash
-# B12 ↔ Cline PreCompact hook (Plan §D2)
-# Codex review PR #47 round 2 P1: Cline's PreCompact wire payload is a
-# `.preCompact` metrics object, NOT `.transcript_path`. memory-
-# precompact.sh reads `.transcript_path` to find the JSONL to stage —
-# so delegating would silently no-op even when Cline calls the hook.
+# B12 ↔ Cline PreCompact hook.
 #
-# Cline docs also flag PreCompact as "coming soon" as of 2026-05-19.
-# Until upstream stabilizes the payload (or backfills .transcript_path),
-# this shim is a registered-but-passive placeholder so Cline doesn't
-# error on a missing hook script. Re-wire via a normalization layer
-# similar to UserPromptSubmit once Cline ships the final shape.
-# Tracked in docs/B12_polyglot_plan_2026-05-19.md §P2 backlog.
+# Cline's PreCompact wire payload (per cline#7513, merged 2025-12-09) is:
+#   {"preCompact": {"contextRawPath": "<ephemeral path>"}}
+#
+# The file at .preCompact.contextRawPath is ephemeral — Cline deletes it
+# after the hook returns. So the only safe pattern is: copy it to B12
+# staging BEFORE we echo our response. memory-precompact.sh then picks
+# it up on the next cron / session-start sweep.
+#
+# Earlier passive-placeholder logic (PR #47) is replaced; see
+# docs/B12_v1_public_release_plan_2026-05-20.md Phase 2 PR6.
+
 set -o pipefail 2>/dev/null || true
-cat >/dev/null  # consume stdin so Cline's pipe doesn't block
+
+B12_DATA_DIR="${B12_DATA_DIR:-$HOME/.B12}"
+STAGE_DIR="$B12_DATA_DIR/memory-staging"
+mkdir -p "$STAGE_DIR" 2>/dev/null || true
+
+INPUT=$(cat)
+
+CTX_PATH=$(printf '%s' "$INPUT" | jq -r '
+  .preCompact.contextRawPath
+  // .pre_compact.context_raw_path
+  // .preCompact.contextRaw?.path
+  // empty
+' 2>/dev/null)
+
+if [ -n "$CTX_PATH" ] && [ -r "$CTX_PATH" ]; then
+  TS=$(date -u +"%Y-%m-%dT%H-%M-%SZ")
+  DEST="$STAGE_DIR/cline-precompact-$TS.json"
+  cp "$CTX_PATH" "$DEST" 2>/dev/null || true
+fi
+
+# Never block compaction — fail-open even if the copy raised.
 echo '{"cancel": false}'

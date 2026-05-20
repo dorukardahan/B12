@@ -1,0 +1,51 @@
+#!/bin/bash
+# B12 ↔ Cline TaskComplete hook (per cline#7510, merged 2025-11-19).
+#
+# Cline fires TaskComplete when a task wraps. Wire payload:
+#   {"taskComplete": {"taskId": "<id>", "taskDir": "<path>"}}
+# .taskDir may be absent on older Cline builds — fall back to scanning the
+# most-recent dir under the canonical extension data path.
+#
+# We copy the resolved task dir's api_conversation_history.json (or
+# ui_messages.json as fallback) into B12 staging, where the next
+# session-end / scheduled sweep can pick it up via transcript_adapter's
+# _parse_cline path. A pointer-only file would be silently dropped —
+# no existing ingestor consumes the cline-task-*.json pointer shape
+# (Codex review PR #61 P1).
+
+set -o pipefail 2>/dev/null || true
+
+B12_DATA_DIR="${B12_DATA_DIR:-$HOME/.B12}"
+STAGE_DIR="$B12_DATA_DIR/memory-staging"
+mkdir -p "$STAGE_DIR" 2>/dev/null || true
+
+INPUT=$(cat)
+
+TASK_DIR=$(printf '%s' "$INPUT" | jq -r '
+  .taskComplete.taskDir
+  // .task_complete.task_dir
+  // .taskDir
+  // empty
+' 2>/dev/null)
+
+if [ -z "$TASK_DIR" ]; then
+  # macOS canonical Cline extension storage. Linux/Windows callers can set
+  # B12_CLINE_TASKS_DIR to override.
+  CLINE_ROOT="${B12_CLINE_TASKS_DIR:-$HOME/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks}"
+  if [ -d "$CLINE_ROOT" ]; then
+    TASK_DIR=$(ls -t "$CLINE_ROOT" 2>/dev/null | head -1)
+    [ -n "$TASK_DIR" ] && TASK_DIR="$CLINE_ROOT/$TASK_DIR"
+  fi
+fi
+
+if [ -n "$TASK_DIR" ] && [ -d "$TASK_DIR" ]; then
+  TS=$(date -u +"%Y-%m-%dT%H-%M-%SZ")
+  for fname in api_conversation_history.json ui_messages.json; do
+    if [ -r "$TASK_DIR/$fname" ]; then
+      cp "$TASK_DIR/$fname" "$STAGE_DIR/cline-$TS-$fname" 2>/dev/null || true
+      break
+    fi
+  done
+fi
+
+echo '{"cancel": false}'

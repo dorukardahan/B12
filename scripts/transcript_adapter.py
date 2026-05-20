@@ -51,7 +51,7 @@ class SessionInfo:
 
 
 def detect_format(path: str) -> str:
-    """Detect transcript format from first line. Returns 'claude' / 'codex' / 'continue'."""
+    """Detect transcript format from first line. Returns 'claude' / 'codex' / 'continue' / 'cline'."""
     # Continue.dev writes a single JSON object per session (not JSONL); the
     # whole file is one valid JSON object with a `history` array. Easy to
     # detect by trying a whole-file parse first if the path looks Continue-
@@ -62,6 +62,36 @@ def detect_format(path: str) -> str:
                 obj = json.load(f)
             if isinstance(obj, dict) and ("history" in obj or "sessionId" in obj):
                 return "continue"
+        except (json.JSONDecodeError, OSError):
+            pass
+    # Cline conversation files are top-level JSON lists. Canonical location:
+    # `saoudrizwan.claude-dev/tasks/<id>/{api_conversation_history,ui_messages}.json`.
+    # Codex review PR #61 P1: don't rely on path substring alone — B12_CLINE_TASKS_DIR
+    # overrides and .taskComplete.taskDir payloads supply non-canonical roots.
+    # Without this, JSON-list inputs hit the JSONL branch where `obj.get()` on a list
+    # raises AttributeError and parsing aborts. Detect by canonical substring OR
+    # basename OR whole-file shape sniff.
+    if "saoudrizwan.claude-dev/tasks/" in path:
+        return "cline"
+    if os.path.basename(path) in ("api_conversation_history.json", "ui_messages.json"):
+        return "cline"
+    if path.endswith(".json"):
+        try:
+            with open(path, "r", encoding="utf-8", errors="ignore") as fh:
+                obj = json.load(fh)
+            # Codex review PR #61 round 2 P1: empty `[]` is a valid Cline
+            # transcript (fresh task before any turns). Don't gate on
+            # truthiness or we fall through to the JSONL branch, where
+            # `obj.get(...)` on a list raises AttributeError and aborts.
+            if isinstance(obj, list):
+                if not obj:
+                    return "cline"
+                first = obj[0]
+                if isinstance(first, dict) and (
+                    first.get("role") in ("user", "assistant", "system")
+                    or first.get("type") in ("say", "ask")
+                ):
+                    return "cline"
         except (json.JSONDecodeError, OSError):
             pass
     try:
@@ -102,6 +132,8 @@ def parse(path: str, tail_lines: int = 0) -> tuple:
         return _parse_codex(path, tail_lines)
     elif fmt == "continue":
         return _parse_continue(path)
+    elif fmt == "cline":
+        return _parse_cline(path)
     else:
         return SessionInfo(platform="unknown"), []
 
@@ -411,6 +443,111 @@ def _parse_continue(path: str) -> tuple:
                         if fp:
                             msg.files_modified.append(str(fp))
         messages.append(msg)
+
+    return info, messages
+
+
+# ─── Cline Parser ─────────────────────────────────────
+
+def _parse_cline(path: str) -> tuple:
+    """Parse a Cline conversation history file (or task dir).
+
+    Cline stores conversation state at
+    `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/tasks/<id>/`
+    with two files:
+      - `api_conversation_history.json` — raw API turns (Claude /
+        OpenAI message-content-block shape, list of {role, content})
+      - `ui_messages.json` — user-facing turns with type/ts/say/ask
+
+    Accepts:
+      - direct path to either JSON file
+      - path to a task dir (we pick `api_conversation_history.json` first,
+        fall back to `ui_messages.json`)
+    """
+    info = SessionInfo(platform="cline")
+    messages: list = []
+
+    target = path
+    if os.path.isdir(path):
+        for candidate in ("api_conversation_history.json", "ui_messages.json"):
+            cand_path = os.path.join(path, candidate)
+            if os.path.exists(cand_path):
+                target = cand_path
+                break
+        else:
+            return info, messages
+
+    info.session_id = os.path.basename(os.path.dirname(target)) or ""
+    try:
+        with open(target, "r", encoding="utf-8", errors="ignore") as fh:
+            obj = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return info, messages
+
+    # api_conversation_history.json: top-level list[{role, content}]
+    # ui_messages.json: top-level list[{ts, type: 'say'|'ask', say/ask, text}]
+    if not isinstance(obj, list):
+        return info, messages
+
+    for entry in obj:
+        if not isinstance(entry, dict):
+            continue
+
+        # api_conversation_history shape
+        role = entry.get("role")
+        if role in ("user", "assistant", "system"):
+            content_raw = entry.get("content")
+            content = ""
+            if isinstance(content_raw, str):
+                content = content_raw
+            elif isinstance(content_raw, list):
+                texts = []
+                for block in content_raw:
+                    if isinstance(block, dict):
+                        if block.get("type") in ("text", "output_text"):
+                            texts.append(block.get("text", ""))
+                        elif "text" in block and isinstance(block["text"], str):
+                            texts.append(block["text"])
+                content = "\n".join(t for t in texts if t)
+            if content.strip():
+                # Codex review PR #61 round 4 P1: preserve system role
+                # for cline. Downstream extractors (extract_user_messages
+                # etc.) treat system prompts differently from user input;
+                # flattening them to "user" pollutes the corpus with
+                # what's actually agent configuration text.
+                messages.append(Message(
+                    role=role,
+                    timestamp=str(entry.get("ts") or ""),
+                    content=content,
+                ))
+            continue
+
+        # ui_messages shape — flatten say/ask into user/assistant.
+        # Codex review PR #61 round 3 P2: in Cline's wire schema `ask`
+        # represents an *assistant* prompt that requires user input
+        # (followup_question, command-confirmation), while actual user
+        # replies arrive as `say` entries with subtype user_feedback /
+        # user_input / user_response. Treat `ask` as assistant by
+        # default; only flip to user when the subtype explicitly says
+        # so.
+        ui_type = entry.get("type")
+        if ui_type in ("say", "ask"):
+            kind = entry.get(ui_type, "")
+            text = entry.get("text") or ""
+            if not text:
+                continue
+            user_subtypes = ("user_feedback", "user_input", "user_response")
+            if kind in user_subtypes:
+                role = "user"
+            elif ui_type == "ask":
+                role = "assistant"
+            else:  # ui_type == "say"
+                role = "assistant"
+            messages.append(Message(
+                role=role,
+                timestamp=str(entry.get("ts") or ""),
+                content=text,
+            ))
 
     return info, messages
 
