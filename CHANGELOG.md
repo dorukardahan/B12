@@ -1,5 +1,12 @@
 # Changelog
 
+## [11.74.1](https://github.com/dorukardahan/B12/compare/v11.74.0...v11.74.1) (2026-05-21)
+
+
+### Bug Fixes
+
+* resolve B12 Clawpatch audit findings ([0a39ce1](https://github.com/dorukardahan/B12/commit/0a39ce118f5337a4452d5d737a38e9f7474fae34))
+
 # [11.74.0](https://github.com/dorukardahan/B12/compare/v11.73.0...v11.74.0) (2026-05-20)
 
 
