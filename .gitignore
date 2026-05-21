@@ -59,3 +59,11 @@ B12_audit_*.md
 docs/B12_Inceleme_Raporu.pdf
 docs/B12_Gelistirme_Plani.pdf
 docs/B12_*.pdf
+
+# Nested clones / sibling repos that may sit inside this working tree
+# (e.g., stray full clones of dorukardahan/B12 itself, or local fork
+# checkouts named like the parent dir) — prevents accidental nested commits
+B12/
+internal-prior-art/
+B12-sanitized/
+B12-backup-pre-filter/
