@@ -1,13 +1,29 @@
 {
   "name": "b12-opencode-plugin",
-  "version": "1.0.0",
+  "version": "11.74.0",
   "description": "B12 Memory System - OpenCode Plugin",
   "type": "module",
+  "main": "./dist/index.js",
+  "exports": "./dist/index.js",
+  "files": [
+    "dist",
+    "src",
+    "README.md",
+    "package.json"
+  ],
   "scripts": {
-    "build": "bun build src/index.ts --outdir dist --target bun"
+    "build": "bun build src/index.ts --outdir dist --target bun --external better-sqlite3",
+    "test": "bun run typecheck && bun run build && B12_DISABLE_DAEMON=1 bun test",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@opencode-ai/plugin": "^1.3.17",
     "better-sqlite3": "^12.8.0"
+  },
+  "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/node": ">=20.0.0",
+    "bun-types": "^1.3.11",
+    "typescript": ">=5.0.0"
   }
 }

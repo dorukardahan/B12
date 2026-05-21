@@ -15,18 +15,23 @@ import argparse
 import json
 import os
 import plistlib
+import shutil
 import socket
 import sqlite3
 import sys
+try:
+    import tomllib
+except ImportError:  # pragma: no cover - Python < 3.11
+    tomllib = None
 from pathlib import Path
 
 # ── Constants ────────────────────────────────────────────────────────
 
-VERSION = "12.0"
+VERSION = "11.74.0"
 
 _HOME = Path.home()
 _B12_DIR = Path(os.environ.get("B12_DATA_DIR", _HOME / ".B12"))
-_HOOK_DIR = _B12_DIR / "hooks"
+_HOOK_DIR = Path(os.environ.get("B12_HOOK_DIR", str(_B12_DIR / "hooks")))
 _SCRIPT_DIR = _HOOK_DIR / "scripts"
 _VENV_PATH = _HOME / ".local" / "b12-venv"
 
@@ -460,6 +465,79 @@ def _detect_b12_toml(_cfg: dict, raw: str) -> bool:
     return "[mcp_servers.B12]" in raw or 'mcp_servers."B12"' in raw
 
 
+def _b12_json_entry(cfg: dict) -> dict | None:
+    if not isinstance(cfg, dict):
+        return None
+    for key in ("mcpServers", "mcp_servers", "mcp"):
+        section = cfg.get(key)
+        if isinstance(section, dict) and isinstance(section.get("B12"), dict):
+            return section["B12"]
+    return None
+
+
+def _b12_toml_entry(raw: str) -> dict | None:
+    if tomllib is not None:
+        try:
+            cfg = tomllib.loads(raw)
+            section = cfg.get("mcp_servers") or cfg.get("mcpServers") or {}
+            entry = section.get("B12") if isinstance(section, dict) else None
+            if isinstance(entry, dict):
+                return entry
+        except Exception:
+            pass
+    if not _detect_b12_toml({}, raw):
+        return None
+    entry: dict = {}
+    in_b12 = False
+    for line in raw.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("[") and stripped.endswith("]"):
+            in_b12 = stripped in ("[mcp_servers.B12]", '[mcp_servers."B12"]')
+            continue
+        if not in_b12 or "=" not in stripped:
+            continue
+        key, _, value = stripped.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key == "command":
+            entry["command"] = value.strip('"')
+        elif key == "args":
+            try:
+                entry["args"] = json.loads(value)
+            except json.JSONDecodeError:
+                entry["args"] = []
+    return entry
+
+
+def _probe_registered_server_config(name: str, cfg: dict, raw: str) -> tuple[bool, str]:
+    entry = _b12_toml_entry(raw) if name in ("codex", "grok") else _b12_json_entry(cfg)
+    if not entry:
+        return False, "B12 config entry missing"
+    command = entry.get("command")
+    args = entry.get("args", [])
+    if isinstance(args, str):
+        args = [args]
+    if not isinstance(args, list):
+        args = []
+
+    if isinstance(command, str) and command:
+        command_path = Path(os.path.expanduser(command))
+        if (os.sep in command or command.startswith(".")) and not command_path.is_file():
+            return False, f"configured command missing: {command}"
+        if os.sep not in command and shutil.which(command) is None:
+            return False, f"configured command not found on PATH: {command}"
+    else:
+        return False, "configured command missing"
+
+    script_arg = next((str(arg) for arg in args if str(arg).endswith("b12_mcp_server.py")), "")
+    if not script_arg:
+        return False, "configured server script arg missing"
+    script_path = Path(os.path.expanduser(script_arg))
+    if not script_path.is_file():
+        return False, f"configured server missing: {script_path}"
+    return True, f"server: {script_path}"
+
+
 def _load_json_safe(path: Path) -> tuple[dict | None, str, str | None]:
     """Read a JSON file. Returns (parsed | None, raw_text, error | None)."""
     try:
@@ -579,13 +657,15 @@ def check_mcp_hosts() -> CheckResult:
             elif not loadable:
                 last_error = detail
         else:
-            # All non-OpenCode hosts use the same MCP server script.
-            if server_exists:
+            loadable, detail = _probe_registered_server_config(name, cfg, raw)
+            if loadable:
                 plugin_loadable = "yes"
             else:
                 plugin_loadable = "no"
                 if registered == "yes":
                     any_fail = True
+                    last_error = detail
+                elif not server_exists:
                     last_error = f"server missing: {server_path}"
 
         rows.append((name, registered, plugin_loadable, last_error))

@@ -1,4 +1,5 @@
 import Database from "better-sqlite3";
+import { effectiveSearchMode, type SearchMode } from "./search-mode.js";
 import { createHash } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
@@ -50,18 +51,20 @@ export interface StoreOptions {
   tags?: string | string[];
   memory_type?: string;
   metadata?: Record<string, unknown>;
+  embedding?: string | Uint8Array | null;
   valid_until?: string | null;
 }
 
 export interface SearchOptions {
   query?: string;
-  mode?: "hybrid" | "semantic" | "exact";
+  mode?: SearchMode;
   tags?: string | string[];
   limit?: number;
   after?: string | null;
   before?: string | null;
   stemmed?: boolean;
   maxResponseChars?: number;
+  boost?: boolean;
 }
 
 export interface SessionContextResult {
@@ -92,10 +95,33 @@ export function normalizeTags(tags: string | string[] | null | undefined): strin
   return String(tags);
 }
 
+function escapeLike(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+
+function tagPredicate(column: string): string {
+  const normalized = `replace(replace(COALESCE(${column}, ''), ', ', ','), ' ,', ',')`;
+  return `(',' || ${normalized} || ',') LIKE ? ESCAPE '\\'`;
+}
+
+function tagParam(tag: string): string {
+  return `%,${escapeLike(tag.trim())},%`;
+}
+
 function nowTs(): [number, string] {
   const ts = Math.floor(Date.now() / 1000);
   const iso = new Date(ts * 1000).toISOString();
   return [ts, iso];
+}
+
+function isExpiredValidUntil(value: string | null | undefined): boolean {
+  if (!value) return false;
+  const ts = Date.parse(value);
+  return !Number.isNaN(ts) && ts <= Date.now();
+}
+
+function activeValidUntilPredicate(column: string = "valid_until"): string {
+  return `(${column} IS NULL OR datetime(${column}) > datetime('now'))`;
 }
 
 function validateMetadata(value: unknown): string {
@@ -176,25 +202,40 @@ export class B12Database {
   }
 
   store(options: StoreOptions): { hash: string; id: number } {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.storeLocked(options);
+      this.db.exec("COMMIT");
+      return result;
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {}
+      throw err;
+    }
+  }
+
+  private storeLocked(options: StoreOptions): { hash: string; id: number } {
     const { content, valid_until } = options;
     const tags = normalizeTags(options.tags);
-    const memoryType = options.memory_type || "general";
+    const requestedMemoryType = options.memory_type;
+    const memoryType = requestedMemoryType || "general";
     const contentHash = computeContentHash(content);
     const [ts, iso] = nowTs();
 
-    const baseMeta: Record<string, unknown> = {
+    const defaultMeta: Record<string, unknown> = {
       quality_score: 0.5,
       quality_provider: "implicit",
       access_count: 0,
       source_type: "user",
       credibility: 1.0,
     };
-    if (options.metadata) Object.assign(baseMeta, options.metadata);
-    const metaJson = validateMetadata(baseMeta);
+    const explicitMeta = options.metadata || {};
+    const metaJson = validateMetadata({ ...defaultMeta, ...explicitMeta });
 
     const existing = this.db
-      .prepare("SELECT id, deleted_at FROM memories WHERE content_hash = ?")
-      .get(contentHash) as { id: number; deleted_at: number | null } | undefined;
+      .prepare("SELECT id, deleted_at, tags, metadata, valid_until FROM memories WHERE content_hash = ?")
+      .get(contentHash) as { id: number; deleted_at: number | null; tags?: string; metadata?: string; valid_until?: string | null } | undefined;
 
     if (existing && existing.deleted_at !== null) {
       this.db
@@ -213,6 +254,30 @@ export class B12Database {
           valid_until ?? null,
           contentHash,
         );
+    } else if (existing) {
+      const mergedTags = normalizeTags(Array.from(new Set([
+        ...normalizeTags(existing.tags).split(","),
+        ...tags.split(","),
+      ])))
+      let existingMeta: Record<string, unknown> = {}
+      try {
+        existingMeta = existing.metadata ? JSON.parse(existing.metadata) : {}
+      } catch {}
+      const mergedMeta = validateMetadata({ ...defaultMeta, ...existingMeta, ...explicitMeta })
+      const nextValidUntil =
+        valid_until !== undefined
+          ? valid_until
+          : isExpiredValidUntil(existing.valid_until)
+            ? null
+            : existing.valid_until ?? null
+      this.db
+        .prepare(
+          `UPDATE memories SET tags = ?, metadata = ?,
+           memory_type = COALESCE(?, memory_type),
+           updated_at = ?, updated_at_iso = ?, valid_until = ?
+           WHERE content_hash = ?`,
+        )
+        .run(mergedTags, mergedMeta, requestedMemoryType ?? null, ts, iso, nextValidUntil, contentHash);
     } else {
       this.db
         .prepare(
@@ -240,7 +305,31 @@ export class B12Database {
       .prepare("SELECT id FROM memories WHERE content_hash = ?")
       .get(contentHash) as { id: number } | undefined;
 
-    return { hash: contentHash, id: row!.id };
+    if (!row) {
+      throw new Error("memory store failed: row was not created");
+    }
+    if (row && options.embedding) this.storeEmbedding(row.id, options.embedding);
+    return { hash: contentHash, id: row.id };
+  }
+
+  storeEmbedding(memoryId: number, embedding: string | Uint8Array): void {
+    const blob = typeof embedding === "string" ? Buffer.from(embedding, "base64") : embedding;
+    try {
+      const exists = this.db
+        .prepare("SELECT 1 FROM memory_embeddings WHERE rowid = ? LIMIT 1")
+        .get(memoryId);
+      if (exists) {
+        this.db
+          .prepare("UPDATE memory_embeddings SET content_embedding = ? WHERE rowid = ?")
+          .run(blob, memoryId);
+      } else {
+        this.db
+          .prepare("INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)")
+          .run(memoryId, blob);
+      }
+    } catch {
+      // Lightweight installs may not have the vec table yet; backfill can handle it.
+    }
   }
 
   search(options: SearchOptions = {}): SearchResult[] {
@@ -251,6 +340,7 @@ export class B12Database {
       stemmed = false,
       maxResponseChars = 40000,
     } = options;
+    const boost = options.boost ?? true;
     const tagList = normalizeTags(options.tags)
       .split(",")
       .map((t) => t.trim())
@@ -258,13 +348,13 @@ export class B12Database {
 
     const wheres: string[] = [
       "m.deleted_at IS NULL",
-      "(m.valid_until IS NULL OR m.valid_until > datetime('now'))",
+      activeValidUntilPredicate("m.valid_until"),
     ];
     const params: unknown[] = [];
 
     for (const t of tagList) {
-      wheres.push("m.tags LIKE ?");
-      params.push(`%${t}%`);
+      wheres.push(tagPredicate("m.tags"));
+      params.push(tagParam(t));
     }
 
     if (options.after) {
@@ -285,21 +375,23 @@ export class B12Database {
     const whereSql = wheres.join(" AND ");
     const results = new Map<string, { row: MemoryRow; score: number }>();
 
-    if (mode === "exact" && query) {
+    const searchMode = effectiveSearchMode(mode);
+
+    if (searchMode === "exact" && query) {
       const rows = this.db
         .prepare(
           `SELECT * FROM memories m
-           WHERE m.content LIKE ? AND ${whereSql}
+           WHERE m.content LIKE ? ESCAPE '\\' AND ${whereSql}
            ORDER BY m.created_at DESC LIMIT ?`,
         )
-        .all(`%${query}%`, ...params, limit) as MemoryRow[];
+        .all(`%${escapeLike(query)}%`, ...params, limit) as MemoryRow[];
 
       for (const r of rows) {
         results.set(r.content_hash, { row: r, score: unifiedScore(r, 0.9) });
       }
     }
 
-    if (mode === "hybrid" && query) {
+    if (searchMode === "hybrid" && query) {
       const ftsTable = stemmed
         ? "memory_fts_stemmed"
         : "memory_content_fts";
@@ -362,7 +454,7 @@ export class B12Database {
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
 
-    if (query && sorted.length > 0) {
+    if (boost && query && sorted.length > 0) {
       this.boostStrength(
         sorted.map((s) => s.row.id),
       );
@@ -377,6 +469,7 @@ export class B12Database {
 
   searchFormatted(options: SearchOptions = {}): string {
     const { limit = 10, maxResponseChars = 40000 } = options;
+    const boost = options.boost ?? true;
     const tagList = normalizeTags(options.tags)
       .split(",")
       .map((t) => t.trim())
@@ -384,13 +477,13 @@ export class B12Database {
 
     const wheres: string[] = [
       "m.deleted_at IS NULL",
-      "(m.valid_until IS NULL OR m.valid_until > datetime('now'))",
+      activeValidUntilPredicate("m.valid_until"),
     ];
     const params: unknown[] = [];
 
     for (const t of tagList) {
-      wheres.push("m.tags LIKE ?");
-      params.push(`%${t}%`);
+      wheres.push(tagPredicate("m.tags"));
+      params.push(tagParam(t));
     }
     if (options.after) {
       const ts = Math.floor(new Date(options.after).getTime() / 1000);
@@ -410,17 +503,17 @@ export class B12Database {
     const whereSql = wheres.join(" AND ");
     const results = new Map<string, { row: MemoryRow; score: number }>();
     const query = options.query || "";
-    const mode = options.mode || "hybrid";
+    const mode = effectiveSearchMode(options.mode || "hybrid");
     const stemmed = options.stemmed ?? false;
 
     if (mode === "exact" && query) {
       const rows = this.db
         .prepare(
           `SELECT * FROM memories m
-           WHERE m.content LIKE ? AND ${whereSql}
+           WHERE m.content LIKE ? ESCAPE '\\' AND ${whereSql}
            ORDER BY m.created_at DESC LIMIT ?`,
         )
-        .all(`%${query}%`, ...params, limit) as MemoryRow[];
+        .all(`%${escapeLike(query)}%`, ...params, limit) as MemoryRow[];
       for (const r of rows) {
         results.set(r.content_hash, { row: r, score: unifiedScore(r, 0.9) });
       }
@@ -486,7 +579,7 @@ export class B12Database {
       .sort((a, b) => b.score - a.score)
       .slice(0, limit);
 
-    if (query && sorted.length > 0) {
+    if (boost && query && sorted.length > 0) {
       this.boostStrength(sorted.map((s) => s.row.id));
     }
 
@@ -515,12 +608,12 @@ export class B12Database {
 
     const wheres = [
       "deleted_at IS NULL",
-      "(valid_until IS NULL OR valid_until > datetime('now'))",
+      activeValidUntilPredicate("valid_until"),
     ];
     const params: unknown[] = [];
     for (const t of tagList) {
-      wheres.push("tags LIKE ?");
-      params.push(`%${t}%`);
+      wheres.push(tagPredicate("tags"));
+      params.push(tagParam(t));
     }
 
     return this.db
@@ -532,14 +625,43 @@ export class B12Database {
       .all(...params, limit) as MemoryRow[];
   }
 
+  filterSearchResultsByTags(
+    results: SearchResult[],
+    tags: string | string[],
+  ): SearchResult[] {
+    if (!results.length) return [];
+    const tagList = normalizeTags(tags)
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean);
+    if (!tagList.length) return results;
+    const ids = results.map((r) => r.id);
+    const idPlaceholders = ids.map(() => "?").join(",");
+    const wheres = [
+      `id IN (${idPlaceholders})`,
+      "deleted_at IS NULL",
+      activeValidUntilPredicate("valid_until"),
+    ];
+    const params: unknown[] = [...ids];
+    for (const tag of tagList) {
+      wheres.push(tagPredicate("tags"));
+      params.push(tagParam(tag));
+    }
+    const rows = this.db
+      .prepare(`SELECT id FROM memories WHERE ${wheres.join(" AND ")}`)
+      .all(...params) as Array<{ id: number }>;
+    const allowed = new Set(rows.map((row) => row.id));
+    return results.filter((result) => allowed.has(result.id));
+  }
+
   getUniversalKnowledge(limit: number = 5): MemoryRow[] {
     return this.db
       .prepare(
         `SELECT * FROM memories
-         WHERE deleted_at IS NULL
-           AND (valid_until IS NULL OR valid_until > datetime('now'))
+           WHERE deleted_at IS NULL
+           AND ${activeValidUntilPredicate("valid_until")}
            AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
-           AND memory_type NOT IN ('session_summary', 'progress')
+           AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
          ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                   * COALESCE(strength, 1.0) DESC
          LIMIT ?`,
@@ -550,7 +672,9 @@ export class B12Database {
   getByHash(contentHash: string): MemoryRow | undefined {
     return this.db
       .prepare(
-        "SELECT * FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
+        `SELECT * FROM memories
+         WHERE content_hash = ? AND deleted_at IS NULL
+           AND ${activeValidUntilPredicate("valid_until")}`,
       )
       .get(contentHash) as MemoryRow | undefined;
   }
@@ -558,7 +682,9 @@ export class B12Database {
   getById(id: number): MemoryRow | undefined {
     return this.db
       .prepare(
-        "SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL",
+        `SELECT * FROM memories
+         WHERE id = ? AND deleted_at IS NULL
+           AND ${activeValidUntilPredicate("valid_until")}`,
       )
       .get(id) as MemoryRow | undefined;
   }
@@ -656,7 +782,8 @@ export class B12Database {
     }
 
     const userScore: Record<string, number> = { "1": 1.0, "0": 0.5, "-1": 0.0 };
-    const existing = Number(meta.quality_score) || 0.5;
+    const parsedExisting = Number(meta.quality_score);
+    const existing = Number.isFinite(parsedExisting) ? parsedExisting : 0.5;
     const newScore = Math.round(
       (0.6 * (userScore[rating] ?? 0.5) + 0.4 * existing) * 10000,
     ) / 10000;
@@ -771,14 +898,14 @@ export class B12Database {
           `SELECT id, content, memory_type, tags, metadata, strength
            FROM memories
            WHERE deleted_at IS NULL
-             AND (valid_until IS NULL OR valid_until > datetime('now'))
-             AND tags LIKE ?
-             AND memory_type NOT IN ('session_summary', 'progress')
+             AND ${activeValidUntilPredicate("valid_until")}
+             AND ${tagPredicate("tags")}
+             AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
            ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                     * COALESCE(strength, 1.0) DESC
            LIMIT 3`,
         )
-        .all(`%proj:${projectName}%`) as Array<{
+        .all(tagParam(`proj:${projectName}`)) as Array<{
         id: number;
         content: string;
         memory_type: string;
@@ -799,9 +926,9 @@ export class B12Database {
       .prepare(
         `SELECT content, memory_type FROM memories
          WHERE deleted_at IS NULL
-           AND (valid_until IS NULL OR valid_until > datetime('now'))
+           AND ${activeValidUntilPredicate("valid_until")}
            AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
-           AND memory_type NOT IN ('session_summary', 'progress')
+           AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
          ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                   * COALESCE(strength, 1.0) DESC
          LIMIT 2`,
@@ -817,12 +944,12 @@ export class B12Database {
       const summaryRow = this.db
         .prepare(
           `SELECT content FROM memories
-           WHERE memory_type = 'session_summary'
+             WHERE memory_type = 'session_summary'
              AND deleted_at IS NULL
-             AND tags LIKE ?
+             AND ${tagPredicate("tags")}
            ORDER BY created_at DESC LIMIT 1`,
         )
-        .get(`%proj:${projectName}%`) as { content: string } | undefined;
+        .get(tagParam(`proj:${projectName}`)) as { content: string } | undefined;
 
       if (summaryRow) {
         result.lastSessionSummary = summaryRow.content.slice(0, 800);
@@ -850,7 +977,7 @@ export class B12Database {
       .prepare(
         `SELECT content FROM memories
          WHERE deleted_at IS NULL
-           AND (valid_until IS NULL OR valid_until > datetime('now'))
+           AND ${activeValidUntilPredicate("valid_until")}
            AND memory_type = 'guardrail'
          ORDER BY COALESCE(strength, 1.0) DESC`,
       )

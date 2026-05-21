@@ -57,14 +57,15 @@ def migrate(db_path: str) -> None:
     ).fetchone()[0]
     print(f"Found {total} active memories to index.")
 
-    if total == 0:
-        print("Nothing to backfill.")
-        db.close()
-        return
-
     # Clear existing FTS content (idempotent rebuild)
     # FTS5 'delete-all' command removes all entries from the index
     db.execute("INSERT INTO memory_fts_stemmed(memory_fts_stemmed) VALUES('delete-all')")
+
+    if total == 0:
+        db.commit()
+        print("No active memories. Cleared memory_fts_stemmed.")
+        db.close()
+        return
 
     # Backfill in batches
     batch_size = 500

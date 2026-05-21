@@ -1,4 +1,4 @@
-import { join, basename } from "path"
+import { join, basename, relative, isAbsolute } from "path"
 import { existsSync, readFileSync, writeFileSync, mkdirSync } from "fs"
 import { homedir } from "os"
 import { B12Database, computeContentHash } from "../lib/db.js"
@@ -15,9 +15,20 @@ import {
   appendFeedback,
 } from "../lib/state.js"
 
-const B12_BASE = process.env.B12_DATA_DIR || join(homedir(), ".B12")
 const CHECKPOINT_CALL_INTERVAL = 15
 const CHECKPOINT_TIME_INTERVAL = 600000
+
+function getB12Base(): string {
+  return process.env.B12_DATA_DIR || join(homedir(), ".B12")
+}
+
+function projectRelativePath(filePath: string, cwd: string): string {
+  if (!filePath) return ""
+  if (!isAbsolute(filePath)) return filePath
+  const rel = relative(cwd, filePath)
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return filePath
+  return rel
+}
 
 interface ToolInput {
   tool: string
@@ -36,6 +47,7 @@ interface PostToolDeps {
   sessionId: string
   sessionState: SessionState
   workingMemory: WorkingMemory
+  stagingDir?: string
 }
 
 export async function postTool(
@@ -43,7 +55,7 @@ export async function postTool(
   output: ToolOutput,
   deps: PostToolDeps
 ): Promise<{ sessionState: SessionState; workingMemory: WorkingMemory; surfaced?: string }> {
-  const { db, project, sessionId, sessionState, workingMemory } = deps
+  const { db, project, cwd, sessionId, sessionState, workingMemory } = deps
   const toolName = input.tool
   const result = { sessionState, workingMemory, surfaced: undefined as string | undefined }
 
@@ -64,7 +76,7 @@ export async function postTool(
   if (toolName === "read" || toolName === "edit" || toolName === "write") {
     const fp = (input.args.filePath as string) || (output.args.filePath as string) || ""
     if (fp) {
-      entity = basename(fp)
+      entity = projectRelativePath(fp, cwd)
       if (toolName === "edit" || toolName === "write") {
         entityType = "modified"
       }
@@ -87,8 +99,8 @@ export async function postTool(
       result.workingMemory = addSearchPattern(result.workingMemory, entity)
     }
 
-    const stagingDir = join(B12_BASE, "memory-staging")
-    saveWorkingMemory(stagingDir, result.workingMemory)
+    const stagingDir = deps.stagingDir || join(getB12Base(), "memory-staging")
+    await saveWorkingMemory(stagingDir, result.workingMemory)
   }
 
   if (toolName === "read" || toolName === "edit") {
@@ -121,6 +133,7 @@ export async function postTool(
       const errorMemories = db.search({
         query: cmdOutput.slice(0, 200),
         mode: "hybrid",
+        tags: [`proj:${project}`],
         limit: 3,
       })
       if (errorMemories.length > 0) {
@@ -152,7 +165,7 @@ export async function postTool(
   }
 
   try {
-    const stagingDir = join(B12_BASE, "memory-staging")
+    const stagingDir = deps.stagingDir || join(getB12Base(), "memory-staging")
     await appendFeedback(stagingDir, {
       timestamp: Math.floor(Date.now() / 1000),
       session_id: sessionId,

@@ -252,7 +252,8 @@ class IngestQueue:
         file_size = self.ingest_path.stat().st_size
         if stored_ack > file_size:
             # Stale or corrupt ACK pointer — file likely rotated.
-            # Drop the stale offset rather than miss the records.
+            # Persist the reset so ack(record) can advance again.
+            _write_ack_atomic(self.ack_path, 0)
             start = 0
         else:
             start = stored_ack

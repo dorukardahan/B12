@@ -270,6 +270,9 @@ a{color:var(--blue);text-decoration:none}
 (function() {
   'use strict';
   var TOKEN = new URLSearchParams(window.location.search).get('token') || '';
+  if (TOKEN) {
+    document.cookie = 'b12_dashboard_token=' + encodeURIComponent(TOKEN) + '; SameSite=Strict; path=/';
+  }
   var BASE = window.location.origin;
   var PAGE_SIZE = 50;
 
@@ -303,7 +306,6 @@ a{color:var(--blue);text-decoration:none}
   function apiUrl(path, params) {
     params = params || {};
     var url = new URL(path, BASE);
-    if (TOKEN) url.searchParams.set('token', TOKEN);
     Object.keys(params).forEach(function(k) {
       if (params[k] !== '' && params[k] != null) url.searchParams.set(k, params[k]);
     });
@@ -313,6 +315,8 @@ a{color:var(--blue);text-decoration:none}
   function apiFetch(path, params, opts) {
     params = params || {};
     opts = opts || {};
+    opts.headers = opts.headers || {};
+    if (TOKEN) opts.headers.Authorization = 'Bearer ' + TOKEN;
     return fetch(apiUrl(path, params), opts).then(function(res) {
       if (!res.ok) throw new Error('API ' + res.status + ': ' + res.statusText);
       return res.json();

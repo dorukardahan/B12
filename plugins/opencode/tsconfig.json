@@ -9,16 +9,12 @@
     "outDir": "dist",
     "rootDir": "src",
     "sourceMap": true,
-    "declaration": true,
-    "declarationMap": true,
     "resolveJsonModule": true,
     "isolatedModules": true,
     "noEmit": true,
     "lib": ["ES2022"],
-    "types": ["bun-types"],
-    "paths": {
-      "@opencode-ai/plugin": ["~/.cache/opencode/node_modules/@opencode-ai/plugin"]
-    }
+    "typeRoots": ["./src/types"],
+    "types": ["bun-types", "node"]
   },
   "include": ["src/**/*.ts"],
   "exclude": ["node_modules"]

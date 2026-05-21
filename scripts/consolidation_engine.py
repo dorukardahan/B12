@@ -46,15 +46,21 @@ warnings.filterwarnings("ignore", category=FutureWarning)
 import numpy as np
 
 try:
-    from shared_patterns import get_db_path
+    from shared_patterns import exact_tag_param, exact_tag_predicate, get_db_path
 except ImportError:
     # Fallback when running outside scripts/ directory
     _scripts_dir = os.path.dirname(os.path.abspath(__file__))
     if _scripts_dir not in sys.path:
         sys.path.insert(0, _scripts_dir)
     try:
-        from shared_patterns import get_db_path
+        from shared_patterns import exact_tag_param, exact_tag_predicate, get_db_path
     except ImportError:
+        def exact_tag_predicate(column: str = "tags") -> str:
+            normalized = f"replace(replace(COALESCE({column}, ''), ', ', ','), ' ,', ',')"
+            return f"(',' || {normalized} || ',') LIKE ? ESCAPE '\\'"
+        def exact_tag_param(tag: str) -> str:
+            escaped = tag.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+            return f"%,{escaped},%"
         def get_db_path() -> str:
             _home = os.path.expanduser("~")
             if sys.platform == "darwin":
@@ -203,8 +209,8 @@ def _load_memories(conn: sqlite3.Connection, project: Optional[str] = None) -> L
     params: List[Any] = []
 
     if project:
-        sql += " AND m.tags LIKE ?"
-        params.append(f"%proj:{project}%")
+        sql += f" AND {exact_tag_predicate('m.tags')}"
+        params.append(exact_tag_param(f"proj:{project}"))
 
     sql += " ORDER BY m.id"
     rows = conn.execute(sql, params).fetchall()
@@ -461,6 +467,7 @@ def _apply_merge(conn: sqlite3.Connection, memories: List[MemoryRecord]) -> int:
          new_strength, now_ts, now.isoformat(), base.id),
     )
 
+    embedding_written = False
     # Re-embed the merged content via daemon
     if _daemon_alive():
         resp = _daemon_request({'op': 'encode_batch', 'texts': [merged_content]})
@@ -481,6 +488,12 @@ def _apply_merge(conn: sqlite3.Connection, memories: List[MemoryRecord]) -> int:
                     "INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
                     (base.id, emb_bytes),
                 )
+            embedding_written = True
+    if not embedding_written:
+        try:
+            conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (base.id,))
+        except sqlite3.Error:
+            pass
 
     # Soft-delete others and rewrite their graph edges
     for m in others:

@@ -1,7 +1,8 @@
-import { join, basename } from "path"
-import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync } from "fs"
+import { join, basename, dirname } from "path"
+import { randomUUID } from "node:crypto"
+import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, renameSync } from "fs"
 import { homedir } from "os"
-import { B12Database, computeContentHash } from "../lib/db.js"
+import type { B12Database } from "../lib/db.js"
 import * as daemon from "../lib/daemon.js"
 import {
   extractPatterns,
@@ -11,7 +12,9 @@ import {
   dedup,
 } from "../lib/patterns.js"
 
-const B12_BASE = process.env.B12_DATA_DIR || join(homedir(), ".B12")
+function getB12Base(): string {
+  return process.env.B12_DATA_DIR || join(homedir(), ".B12")
+}
 
 interface SessionMessage {
   role: "user" | "assistant" | "system"
@@ -24,6 +27,22 @@ interface Extraction {
   score: number
 }
 
+const FILE_TOKEN_RE =
+  /(?:^|\s)(\.{0,2}\/[\w./-]+\.\w{1,10}|[\w./-]+\/[\w./-]+\.\w{1,10}|[\w.-]+\.(?:py|ts|tsx|js|jsx|json|md|toml|yaml|yml|sql|html|css|scss|sh|zsh|bash|txt))(?:\s|$)/g
+
+export function extractModifiedFileTokens(text: string): string[] {
+  const out: string[] = []
+  let match: RegExpExecArray | null
+  FILE_TOKEN_RE.lastIndex = 0
+  while ((match = FILE_TOKEN_RE.exec(text)) !== null) {
+    const token = match[1].trim()
+    if (/^\d+(?:\.\d+)+$/.test(token)) continue
+    if (/^[\w.-]+\.(?:com|org|net|io|ai|dev)$/i.test(token)) continue
+    out.push(token)
+  }
+  return out
+}
+
 export async function sessionEnd(
   messages: SessionMessage[],
   sessionId: string,
@@ -31,7 +50,9 @@ export async function sessionEnd(
   cwd: string,
   db: B12Database
 ): Promise<void> {
-  const summaryDir = join(B12_BASE, "memory-summaries")
+  if (!messages.some((msg) => msg.content.trim())) return
+
+  const summaryDir = join(getB12Base(), "memory-summaries")
   mkdirSync(summaryDir, { recursive: true })
 
   const decisions: string[] = []
@@ -44,6 +65,7 @@ export async function sessionEnd(
   const corrections: string[] = []
   const infrastructure: string[] = []
   const contentItems: string[] = []
+  const extractedItems: Extraction[] = []
   const userRequests: string[] = []
   const filesModified: string[] = []
 
@@ -63,12 +85,18 @@ export async function sessionEnd(
 
     const extractions = extractPatterns(text)
     for (const ext of extractions) {
-      const score = scoreExtraction(ext.content, ext.category)
+      const categoryMap: Record<string, string> = {
+        implicit_decision: "decision",
+        error_fix: "error",
+        tool_pref: "preference",
+      }
+      const category = categoryMap[ext.category] || ext.category
+      const score = Math.max(ext.score, scoreExtraction(ext.content, category))
       if (score < 2) continue
+      extractedItems.push({ content: ext.content.slice(0, 300), category, score })
 
-      switch (ext.category) {
+      switch (category) {
         case "decision":
-        case "implicit_decision":
           decisions.push(ext.content.slice(0, 300))
           break
         case "error":
@@ -102,15 +130,7 @@ export async function sessionEnd(
       }
     }
 
-    const fileMatches = text.match(/(?:^|\s)([\w./\-]+\.\w{1,10})(?:\s|$)/g)
-    if (fileMatches) {
-      for (const fm of fileMatches) {
-        const cleaned = fm.trim()
-        if (cleaned.length > 3 && cleaned.includes(".")) {
-          filesModified.push(cleaned)
-        }
-      }
-    }
+    filesModified.push(...extractModifiedFileTokens(text))
   }
 
   const summaryLines: string[] = []
@@ -201,6 +221,18 @@ export async function sessionEnd(
     ...corrections.map((c) => ({ content: c, category: "correction", score: 8 })),
     ...infrastructure.map((i) => ({ content: i, category: "infrastructure", score: 5 })),
     ...contentItems.map((c) => ({ content: c, category: "content", score: 6 })),
+    ...extractedItems.filter((item) => ![
+      "decision",
+      "error",
+      "learning",
+      "preference",
+      "architecture",
+      "workflow",
+      "file_convention",
+      "correction",
+      "infrastructure",
+      "content",
+    ].includes(item.category)),
   ]
 
   allItems.sort((a, b) => b.score - a.score)
@@ -218,10 +250,11 @@ export async function sessionEnd(
     const item = topItems[i]
     const prefixed = `[${item.category}] ${item.content}`
     try {
-      db.store({
+      const stored = db.store({
         content: prefixed,
         tags: `proj:${project},session-end,${item.category},${new Date().toISOString().slice(0, 7)}`,
         memory_type: item.category,
+        embedding: embeddings?.[i] ?? null,
         metadata: {
           type: item.category,
           source: "session_end",
@@ -231,6 +264,7 @@ export async function sessionEnd(
           extraction_method: "session_end_plugin",
         },
       })
+      if (embeddings?.[i]) db.storeEmbedding(stored.id, embeddings[i])
     } catch {}
   }
 
@@ -261,13 +295,19 @@ export async function sessionEnd(
   }
 }
 
-function atomicWrite(filePath: string, content: string): void {
-  const dir = join(filePath, "..")
+export function buildAtomicTempPath(filePath: string): string {
+  return join(dirname(filePath), `.${basename(filePath)}.${process.pid}.${randomUUID()}.tmp`)
+}
+
+export function atomicWrite(filePath: string, content: string): void {
+  const dir = dirname(filePath)
   if (!existsSync(dir)) mkdirSync(dir, { recursive: true })
-  const tmpFile = filePath + ".tmp"
+  const tmpFile = buildAtomicTempPath(filePath)
   writeFileSync(tmpFile, content, "utf-8")
-  try { require("fs").renameSync(tmpFile, filePath) } catch {
-    writeFileSync(filePath, content, "utf-8")
+  try {
+    renameSync(tmpFile, filePath)
+  } catch (err) {
     try { unlinkSync(tmpFile) } catch {}
+    throw err
   }
 }

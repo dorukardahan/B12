@@ -200,7 +200,7 @@ def main():
         SELECT id, content_hash, content, memory_type
         FROM memories
         WHERE deleted_at IS NULL
-          AND memory_type NOT IN ('session_summary', 'progress')
+          AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
         ORDER BY updated_at DESC
         LIMIT ?
     """, (MAX_MEMORIES_PER_RUN,)).fetchall()

@@ -21,10 +21,10 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from shared_patterns import DB_PATH
 
 
-def migrate(db_path: str = DB_PATH) -> None:
+def migrate(db_path: str = DB_PATH) -> bool:
     if not os.path.exists(db_path):
         print(f"Database not found at {db_path}")
-        return
+        return False
 
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -58,7 +58,7 @@ def migrate(db_path: str = DB_PATH) -> None:
     if not rows:
         print("No memories need migration")
         conn.close()
-        return
+        return True
 
     print(f"Migrating {len(rows)} memories...")
 
@@ -66,7 +66,7 @@ def migrate(db_path: str = DB_PATH) -> None:
     migrated = 0
 
     for mem_id, strength, metadata_str, created_at in rows:
-        strength = strength or 1.0
+        strength = 1.0 if strength is None else float(strength)
 
         # Extract access_count from metadata
         access_count = 0
@@ -99,7 +99,14 @@ def migrate(db_path: str = DB_PATH) -> None:
     conn.commit()
     conn.close()
     print(f"Migrated {migrated} memories to FSRS format")
+    return True
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = argv if argv is not None else sys.argv[1:]
+    db_path = args[0] if args else DB_PATH
+    return 0 if migrate(db_path) else 1
 
 
 if __name__ == "__main__":
-    migrate()
+    sys.exit(main())

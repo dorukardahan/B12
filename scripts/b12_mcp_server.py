@@ -7,6 +7,7 @@ All embedding/search ops delegated to embed_daemon via Unix socket.
 """
 
 import asyncio, base64, hashlib, json, os, socket, sqlite3, time
+from contextvars import ContextVar
 try:
     import sqlite_vec
     _HAS_VEC = True
@@ -53,7 +54,7 @@ SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 # falls back to legacy in-process stdio mode below — non-Claude-Code consumers
 # (Codex, Gemini, Kimi, OpenCode, Grok) see zero behaviour change either way.
 MCP_DAEMON_SOCK = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
-B12_VERSION = "v11.22.0"
+B12_VERSION = "v11.74.0"
 
 # ── SQLite connection (set during lifespan) ──────────────────────
 _db: sqlite3.Connection | None = None
@@ -63,13 +64,28 @@ _db_lock = asyncio.Lock()
 # Tracks tool calls during a session so we can generate a summary
 # on shutdown. Solves the #13 gap: MCP-only platforms have no
 # SessionEnd hook, so without this, session context is lost.
-_session_tracker = {
-    "search_queries": [],     # recent search queries (topic signals)
-    "stored_count": 0,        # memories explicitly stored this session
-    "tool_calls": 0,          # total MCP tool invocations
-    "start_time": None,       # session start timestamp
-    "project": None,          # detected project name
-}
+def _new_session_tracker() -> dict:
+    return {
+        "search_queries": [],     # recent search queries (topic signals)
+        "stored_count": 0,        # memories explicitly stored this session
+        "tool_calls": 0,          # total MCP tool invocations
+        "start_time": time.time(),  # session start timestamp
+        "project": None,          # detected project name
+    }
+
+
+_session_tracker = _new_session_tracker()
+_session_tracker_var: ContextVar[dict | None] = ContextVar("b12_session_tracker", default=None)
+
+
+def _current_session_tracker() -> dict:
+    return _session_tracker_var.get() or _session_tracker
+
+
+def _reset_session_tracker(tracker: dict | None = None) -> None:
+    target = tracker or _current_session_tracker()
+    target.clear()
+    target.update(_new_session_tracker())
 
 
 def _ensure_schema(db: sqlite3.Connection) -> None:
@@ -116,7 +132,10 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
     # (fts_insert, fts_update, fts_softdel, fts_hardel). Check before creating to avoid
     # duplicate trigger firing which corrupts the FTS index.
     _existing_triggers = {r[0] for r in db.execute(
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_fts_%'"
+        """SELECT name FROM sqlite_master
+           WHERE type='trigger'
+             AND (name LIKE 'memory_fts_%'
+                  OR name IN ('fts_insert', 'fts_update', 'fts_softdel', 'fts_hardel'))"""
     ).fetchall()}
     if not _existing_triggers:
         # Fresh install — create B12 triggers with soft-delete awareness
@@ -204,11 +223,29 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
             tokenize='trigram'
         )
     """)
-    # Triggers for memory_content_fts (with soft-delete guard)
+    # Triggers for memory_content_fts (with soft-delete guard). FTS5
+    # external-content tables require the special 'delete' command; plain
+    # DELETE leaves stale terms searchable after updates/deletes.
+    _content_trigger_rows = db.execute(
+        "SELECT name, sql FROM sqlite_master WHERE type='trigger' AND sql LIKE '%memory_content_fts%'"
+    ).fetchall()
+    for _trigger_name, _trigger_sql in _content_trigger_rows:
+        if "delete from memory_content_fts" in ((_trigger_sql or "").lower()):
+            db.execute(f"DROP TRIGGER IF EXISTS {_trigger_name}")
     _existing_content_triggers = {r[0] for r in db.execute(
         "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%memory_content_fts%'"
     ).fetchall()}
-    if not _existing_content_triggers:
+    _required_content_triggers = {
+        "memories_fts_ai",
+        "memories_fts_au",
+        "memories_fts_softdel",
+        "memories_fts_ad",
+    }
+    if not _required_content_triggers.issubset(_existing_content_triggers):
+        db.execute("DROP TRIGGER IF EXISTS memories_fts_ai")
+        db.execute("DROP TRIGGER IF EXISTS memories_fts_au")
+        db.execute("DROP TRIGGER IF EXISTS memories_fts_softdel")
+        db.execute("DROP TRIGGER IF EXISTS memories_fts_ad")
         db.execute("""
             CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories
             WHEN new.deleted_at IS NULL BEGIN
@@ -218,19 +255,22 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
         db.execute("""
             CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories
             WHEN new.deleted_at IS NULL BEGIN
-                DELETE FROM memory_content_fts WHERE rowid = old.id;
+                INSERT INTO memory_content_fts(memory_content_fts, rowid, content)
+                VALUES('delete', old.id, old.content);
                 INSERT INTO memory_content_fts(rowid, content) VALUES (new.id, new.content);
             END
         """)
         db.execute("""
             CREATE TRIGGER IF NOT EXISTS memories_fts_softdel AFTER UPDATE ON memories
             WHEN new.deleted_at IS NOT NULL AND old.deleted_at IS NULL BEGIN
-                DELETE FROM memory_content_fts WHERE rowid = old.id;
+                INSERT INTO memory_content_fts(memory_content_fts, rowid, content)
+                VALUES('delete', old.id, old.content);
             END
         """)
         db.execute("""
             CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
-                DELETE FROM memory_content_fts WHERE rowid = old.id;
+                INSERT INTO memory_content_fts(memory_content_fts, rowid, content)
+                VALUES('delete', old.id, old.content);
             END
         """)
 
@@ -310,28 +350,31 @@ async def lifespan(server: FastMCP):
             _db.enable_load_extension(True)
             sqlite_vec.load(_db)
         _ensure_schema(_db)
-        _session_tracker["start_time"] = time.time()
         import atexit
         atexit.register(lambda: _flush_session_tracker(_db))
+    tracker = _new_session_tracker()
+    token = _session_tracker_var.set(tracker)
     yield
     # Session flush always runs on disconnect (per-session MCP summary).
     # DB close only runs in legacy mode — the daemon keeps the DB warm
     # across connections and lets the OS clean it up at process exit.
-    _flush_session_tracker(_db)
+    _flush_session_tracker(_db, tracker)
+    _session_tracker_var.reset(token)
     if not _DAEMON_MODE and _db:
         _db.close()
         _db = None
 
 
-def _flush_session_tracker(db: sqlite3.Connection | None) -> None:
+def _flush_session_tracker(db: sqlite3.Connection | None, tracker: dict | None = None) -> None:
     """Store a session summary from tracked MCP tool calls.
 
     This is the ONLY way MCP-only platforms (Cursor, VS Code, Windsurf,
     Cline, Kimi, OpenCode) get automatic session-end memories.
     Claude Code and Gemini CLI have dedicated hooks and don't need this.
     """
-    tracker = _session_tracker
+    tracker = tracker or _current_session_tracker()
     if not db or tracker["tool_calls"] < 3:
+        _reset_session_tracker(tracker)
         return  # Too few calls — not a real session
 
     try:
@@ -377,6 +420,8 @@ def _flush_session_tracker(db: sqlite3.Connection | None) -> None:
         db.commit()
     except Exception:
         pass  # Never block shutdown
+    finally:
+        _reset_session_tracker(tracker)
 
 server = FastMCP("B12", lifespan=lifespan)
 
@@ -545,7 +590,8 @@ def _fmt_memory(row, score=None) -> str:
 async def memory_store(content: str, metadata: dict | None = None) -> str:
     """Store a new memory with optional metadata, tags, and type."""
     db = _require_db()
-    _session_tracker["tool_calls"] += 1
+    tracker = _current_session_tracker()
+    tracker["tool_calls"] += 1
 
     # Fragment gate — short/incomplete utterances ("ok.", "evet.", lowercase
     # snippets without a [Label] prefix, unbalanced quotes) pollute search.
@@ -564,16 +610,16 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
                 )
         except ImportError:
             pass
-    _session_tracker["stored_count"] += 1
+    tracker["stored_count"] += 1
 
     # Detect project from tags
     metadata = metadata or {}
-    if not _session_tracker["project"]:
+    if not tracker["project"]:
         t = metadata.get("tags", "") or ""
         for part in (t if isinstance(t, list) else t.split(",")):
             p = str(part).strip()
             if p.startswith("proj:"):
-                _session_tracker["project"] = p[5:]
+                tracker["project"] = p[5:]
                 break
     tags_raw = metadata.pop("tags", None)
     memory_type = metadata.pop("type", metadata.pop("memory_type", "general"))
@@ -674,9 +720,10 @@ async def memory_search(
     """Search memories by semantic similarity, full-text, or hybrid.
     Set stemmed=True to use porter-stemmed FTS (matches morphological variants: run/running/ran)."""
     db = _require_db()
-    _session_tracker["tool_calls"] += 1
+    tracker = _current_session_tracker()
+    tracker["tool_calls"] += 1
     if query:
-        _session_tracker["search_queries"].append(query[:80])
+        tracker["search_queries"].append(query[:80])
     results: dict[str, tuple[dict, float]] = {}  # content_hash -> (row, score)
 
     tag_list = ([t.strip() for t in tags.split(",")] if isinstance(tags, str)
@@ -840,7 +887,7 @@ async def memory_update(
 ) -> str:
     """Update metadata, tags, or type of an existing memory. Content and hash are immutable."""
     db = _require_db()
-    _session_tracker["tool_calls"] += 1
+    _current_session_tracker()["tool_calls"] += 1
 
     async with _db_lock:
         # Codex review PR #58 P1: when caller is restoring a soft-deleted
@@ -951,7 +998,7 @@ async def memory_delete(
     `memory_delete`.
     """
     db = _require_db()
-    _session_tracker["tool_calls"] += 1
+    _current_session_tracker()["tool_calls"] += 1
 
     now_ts, now_iso = _now()
     audit_payload: dict = {
@@ -1114,7 +1161,7 @@ async def memory_forget(
       reason: free-text reason recorded in the audit row metadata
     """
     db = _require_db()
-    _session_tracker["tool_calls"] += 1
+    _current_session_tracker()["tool_calls"] += 1
 
     valid_modes = {"privatize", "hard_delete", "forget_session"}
     if mode not in valid_modes:
@@ -1423,7 +1470,7 @@ async def memory_session_context(
                 WHERE deleted_at IS NULL
                   AND (valid_until IS NULL OR valid_until > datetime('now'))
                   AND tags LIKE ?
-                  AND memory_type NOT IN ('session_summary', 'progress')
+                  AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
                 ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                          * COALESCE(strength, 1.0) DESC
                 LIMIT 3
@@ -1464,7 +1511,7 @@ async def memory_session_context(
             WHERE deleted_at IS NULL
               AND (valid_until IS NULL OR valid_until > datetime('now'))
               AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
-              AND memory_type NOT IN ('session_summary', 'progress')
+              AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
             ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                      * COALESCE(strength, 1.0) DESC
             LIMIT 2
@@ -1965,7 +2012,7 @@ async def resource_project_context(name: str) -> str:
             WHERE deleted_at IS NULL
               AND (valid_until IS NULL OR valid_until > datetime('now'))
               AND tags LIKE ?
-              AND memory_type NOT IN ('session_summary', 'progress')
+              AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
             ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                      * COALESCE(strength, 1.0) DESC
             LIMIT 3

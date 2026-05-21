@@ -1,10 +1,23 @@
 import { join } from "path"
 import { existsSync, readFileSync } from "fs"
 import { homedir } from "os"
-import { B12Database, getDbPath } from "../lib/db.js"
+import { platform } from "process"
+import type { B12Database } from "../lib/db.js"
 import * as daemon from "../lib/daemon.js"
 
 const B12_BASE = process.env.B12_DATA_DIR || join(homedir(), ".B12")
+const B12_HOOK_DIR = process.env.B12_HOOK_DIR || join(B12_BASE, "hooks")
+const SEMANTIC_CANDIDATE_LIMIT = 25
+
+interface SemanticClient {
+  health(): Promise<{ alive: boolean }>
+  semanticSearch(
+    query: string,
+    dbPath: string,
+    limit: number,
+  ): Promise<Array<{ id: number; display: string; score: number }>>
+  rerank(query: string, dbPath: string, ids: number[]): Promise<number[]>
+}
 
 const STOPWORDS_EN = new Set([
   "the","a","an","is","are","was","were","be","been","being","have","has","had",
@@ -41,6 +54,17 @@ const STOPWORDS_TR = new Set([
 
 const ALL_STOPWORDS = new Set([...STOPWORDS_EN, ...STOPWORDS_TR])
 
+function getDbPath(): string {
+  const home = homedir()
+  if (platform === "darwin") {
+    return join(home, "Library", "Application Support", "mcp-memory", "sqlite_vec.db")
+  }
+  if (platform === "win32") {
+    return join(home, "AppData", "Local", "mcp-memory", "sqlite_vec.db")
+  }
+  return join(home, ".local", "share", "mcp-memory", "sqlite_vec.db")
+}
+
 interface QueryAlias {
   [key: string]: string[]
 }
@@ -49,7 +73,7 @@ let _aliases: QueryAlias | null = null
 
 function loadAliases(): QueryAlias {
   if (_aliases) return _aliases
-  const aliasPath = join(B12_BASE, "hooks", "scripts", "query_aliases.json")
+  const aliasPath = join(B12_HOOK_DIR, "scripts", "query_aliases.json")
   if (existsSync(aliasPath)) {
     try {
       _aliases = JSON.parse(readFileSync(aliasPath, "utf-8"))
@@ -89,11 +113,12 @@ export function buildFtsQuery(keywords: string[]): string {
 
 function isGreeting(text: string): boolean {
   const t = text.toLowerCase().trim()
-  const greetings = [
+  const exactGreetings = new Set([
     "hi","hello","hey","merhaba","selam","naber","nasılsın","good morning",
     "good afternoon","good evening","günaydın","iyi günler","iyi akşamlar",
-  ]
-  return greetings.some((g) => t === g || (t.length < 20 && t.startsWith(g)))
+  ])
+  if (exactGreetings.has(t.replace(/[!.?]+$/g, ""))) return true
+  return /^(hi|hello|hey|merhaba|selam)[!.?]?\s+(there|again|dostum|arkadaşım)[!.?]?$/i.test(t)
 }
 
 function isSlashCommand(text: string): boolean {
@@ -101,41 +126,65 @@ function isSlashCommand(text: string): boolean {
 }
 
 function isShortCommand(text: string): boolean {
-  return text.trim().split(/\s+/).length <= 2 && text.length < 15
+  const normalized = text.toLowerCase().trim().replace(/[!.?]+$/g, "")
+  return new Set([
+    "ok",
+    "yes",
+    "no",
+    "evet",
+    "hayır",
+    "tamam",
+    "done",
+    "continue",
+    "devam",
+    "yap",
+  ]).has(normalized)
+}
+
+export function shouldAttemptMessageRetrieval(text: string): boolean {
+  const userMessage = text.trim()
+  if (!userMessage) return false
+  return !isGreeting(userMessage) && !isSlashCommand(userMessage) && !isShortCommand(userMessage)
 }
 
 export async function messageRetrieval(
   userMessage: string,
   project: string,
-  db: B12Database
+  db: B12Database,
+  semanticClient: SemanticClient = daemon,
 ): Promise<string> {
   const startTime = Date.now()
 
-  if (isGreeting(userMessage) || isSlashCommand(userMessage) || isShortCommand(userMessage)) {
+  if (!shouldAttemptMessageRetrieval(userMessage)) {
     return ""
   }
 
   const keywords = extractKeywords(userMessage)
   if (keywords.length === 0) return ""
 
-  const ftsQuery = buildFtsQuery(keywords)
+  const rawQuery = keywords.join(" ")
 
   let ftsResults = db.search({
-    query: ftsQuery,
+    query: rawQuery,
     mode: "hybrid",
     tags: [`proj:${project}`],
     limit: 10,
+    boost: false,
   })
 
   let semanticResults: Array<{ id: number; display: string; score: number }> = []
   try {
-    const daemonAlive = await daemon.health()
+    const daemonAlive = await semanticClient.health()
     if (daemonAlive.alive) {
-      semanticResults = await daemon.semanticSearch(
+      const semanticCandidates = await semanticClient.semanticSearch(
         keywords.join(" "),
         getDbPath(),
-        5
+        SEMANTIC_CANDIDATE_LIMIT
       )
+      semanticResults = db.filterSearchResultsByTags(
+        semanticCandidates,
+        [`proj:${project}`],
+      ).slice(0, 5)
     }
   } catch {}
 
@@ -165,7 +214,7 @@ export async function messageRetrieval(
   let reranked = false
   if (merged.length > 1) {
     try {
-      const rankedIds = await daemon.rerank(
+      const rankedIds = await semanticClient.rerank(
         keywords.join(" "),
         getDbPath(),
         merged.map((m) => m.id)

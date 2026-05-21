@@ -1,8 +1,13 @@
 import { connect } from "net";
 import { spawn, type Subprocess } from "bun";
+import { chmodSync, existsSync, mkdirSync, statSync } from "node:fs";
+import { join } from "node:path";
+import { homedir } from "os";
 
 const _UID = process.getuid?.() ?? process.pid;
-const SOCKET_PATH = `/tmp/b12-embed-${_UID}.sock`;
+const B12_BASE = process.env.B12_DATA_DIR || join(homedir(), ".B12");
+const RUNTIME_DIR = process.env.B12_EMBED_RUNTIME_DIR || join(B12_BASE, "runtime");
+const SOCKET_PATH = join(RUNTIME_DIR, `b12-embed-${_UID}.sock`);
 
 const REQUEST_TIMEOUT = 4000;
 const BATCH_TIMEOUT = 15000;
@@ -20,7 +25,37 @@ interface DaemonResponse {
   requests_served?: number;
 }
 
+let _startupPromise: Promise<boolean> | null = null;
+
+function ensureRuntimeDir(): void {
+  if (!existsSync(RUNTIME_DIR)) {
+    mkdirSync(RUNTIME_DIR, { recursive: true, mode: 0o700 });
+  }
+  try {
+    chmodSync(RUNTIME_DIR, 0o700);
+  } catch {
+    // Best effort; socket owner/mode check still protects connects.
+  }
+}
+
+function socketLooksSafe(): boolean {
+  try {
+    const st = statSync(SOCKET_PATH);
+    const mode = st.mode & 0o777;
+    if (st.uid !== _UID) return false;
+    if ((mode & 0o077) !== 0) return false;
+    return typeof st.isSocket === "function" ? st.isSocket() : true;
+  } catch {
+    return false;
+  }
+}
+
 function socketRequest<T>(payload: object, timeout: number): Promise<T | null> {
+  if (process.env.B12_DISABLE_DAEMON === "1" || process.env.B12_DISABLE_DAEMON === "true") {
+    return Promise.resolve(null);
+  }
+  ensureRuntimeDir();
+  if (!socketLooksSafe()) return Promise.resolve(null);
   return new Promise((resolve) => {
     const socket = connect(SOCKET_PATH);
     let buffer = Buffer.alloc(0);
@@ -148,6 +183,18 @@ export async function startDaemon(
   venvPython: string,
   scriptPath: string,
 ): Promise<boolean> {
+  if (_startupPromise) return _startupPromise;
+  _startupPromise = startDaemonOnce(venvPython, scriptPath).finally(() => {
+    _startupPromise = null;
+  });
+  return _startupPromise;
+}
+
+async function startDaemonOnce(
+  venvPython: string,
+  scriptPath: string,
+): Promise<boolean> {
+  ensureRuntimeDir();
   const h = await health();
   if (h.alive) return true;
 
@@ -157,6 +204,10 @@ export async function startDaemon(
       stdout: "ignore",
       stderr: "ignore",
       detached: true,
+      env: {
+        ...process.env,
+        B12_EMBED_RUNTIME_DIR: RUNTIME_DIR,
+      },
     });
 
     for (let i = 0; i < 20; i++) {

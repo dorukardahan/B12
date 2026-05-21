@@ -25,6 +25,11 @@ Public API:
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback keeps single-process behavior.
+    fcntl = None
 import math
 import os
 import sys
@@ -61,6 +66,46 @@ def state_path(session_id: str) -> str:
     return os.path.join(_state_dir(), f'session-tok-{_sid12(session_id)}.txt')
 
 
+def _lock_path(kind: str, session_id: str) -> str:
+    return os.path.join(_state_dir(), f'{kind}-{_sid12(session_id)}.lock')
+
+
+@contextmanager
+def _session_lock(kind: str, session_id: str):
+    path = _lock_path(kind, session_id)
+    with open(path, 'a+') as lock:
+        if fcntl is not None:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _read_int_file(path: str) -> int:
+    try:
+        with open(path, 'r') as f:
+            v = f.read().strip()
+        return int(v) if v else 0
+    except (FileNotFoundError, ValueError):
+        return 0
+
+
+def _write_atomic(path: str, prefix: str, content: str) -> None:
+    fd, tmp = tempfile.mkstemp(prefix=prefix, dir=_state_dir())
+    try:
+        with os.fdopen(fd, 'w') as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
 def proxy_tokens(text: str | bytes) -> int:
     """Char-based token proxy. ``chars * 0.25`` rounded up."""
     if not text:
@@ -74,13 +119,8 @@ def proxy_tokens(text: str | bytes) -> int:
 
 def cumulative_used(session_id: str) -> int:
     """Return total tokens recorded for this session (0 if no state)."""
-    p = state_path(session_id)
-    try:
-        with open(p, 'r') as f:
-            v = f.read().strip()
-        return int(v) if v else 0
-    except (FileNotFoundError, ValueError):
-        return 0
+    with _session_lock('session-tok', session_id):
+        return _read_int_file(state_path(session_id))
 
 
 def record_inject(session_id: str, tokens: int) -> int:
@@ -91,20 +131,10 @@ def record_inject(session_id: str, tokens: int) -> int:
     """
     if tokens <= 0:
         return cumulative_used(session_id)
-    total = cumulative_used(session_id) + int(tokens)
-    p = state_path(session_id)
-    fd, tmp = tempfile.mkstemp(prefix='b12tok-', dir=_state_dir())
-    try:
-        with os.fdopen(fd, 'w') as f:
-            f.write(str(total))
-        os.replace(tmp, p)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return total
+    with _session_lock('session-tok', session_id):
+        total = _read_int_file(state_path(session_id)) + int(tokens)
+        _write_atomic(state_path(session_id), 'b12tok-', str(total))
+        return total
 
 
 def can_inject(
@@ -117,18 +147,41 @@ def can_inject(
     Returns (ok, remaining_budget_before_this_inject, would_be_total_after).
     `ok=False` means the requested injection would exceed `ceiling`.
     """
-    used = cumulative_used(session_id)
-    remaining = max(0, ceiling - used)
-    would_be = used + max(0, int(requested_tokens))
-    return (would_be <= ceiling, remaining, would_be)
+    with _session_lock('session-tok', session_id):
+        used = _read_int_file(state_path(session_id))
+        remaining = max(0, ceiling - used)
+        would_be = used + max(0, int(requested_tokens))
+        return (would_be <= ceiling, remaining, would_be)
+
+
+def try_record_inject(
+    session_id: str,
+    requested_tokens: int,
+    ceiling: int = DEFAULT_MAX_TOKENS,
+) -> tuple[bool, int, int]:
+    """Atomically check the budget and record the injection when it fits.
+
+    Returns (ok, remaining_budget_before, total_after_or_would_be).
+    """
+    requested = max(0, int(requested_tokens))
+    with _session_lock('session-tok', session_id):
+        used = _read_int_file(state_path(session_id))
+        remaining = max(0, ceiling - used)
+        would_be = used + requested
+        if would_be > ceiling:
+            return (False, remaining, would_be)
+        if requested:
+            _write_atomic(state_path(session_id), 'b12tok-', str(would_be))
+        return (True, remaining, would_be)
 
 
 def clear_session(session_id: str) -> None:
-    p = state_path(session_id)
-    try:
-        os.unlink(p)
-    except FileNotFoundError:
-        pass
+    with _session_lock('session-tok', session_id):
+        p = state_path(session_id)
+        try:
+            os.unlink(p)
+        except FileNotFoundError:
+            pass
 
 
 # ── Dedup ledger (T3) ────────────────────────────────────────
@@ -145,6 +198,11 @@ def ledger_path(session_id: str) -> str:
 
 def load_ledger(session_id: str) -> list[int]:
     """Return injected memory IDs in most-recent-first order."""
+    with _session_lock('session-injected', session_id):
+        return _load_ledger_unlocked(session_id)
+
+
+def _load_ledger_unlocked(session_id: str) -> list[int]:
     p = ledger_path(session_id)
     try:
         with open(p, 'r') as f:
@@ -164,8 +222,9 @@ def load_ledger(session_id: str) -> list[int]:
 
 def filter_unseen(session_id: str, mem_ids: list[int]) -> list[int]:
     """Return only the IDs that are not yet in the session ledger."""
-    seen = set(load_ledger(session_id))
-    return [m for m in mem_ids if int(m) not in seen]
+    with _session_lock('session-injected', session_id):
+        seen = set(_load_ledger_unlocked(session_id))
+        return [m for m in mem_ids if int(m) not in seen]
 
 
 def record_injected(session_id: str, mem_ids: list[int]) -> int:
@@ -175,31 +234,21 @@ def record_injected(session_id: str, mem_ids: list[int]) -> int:
     """
     if not mem_ids:
         return len(load_ledger(session_id))
-    existing = load_ledger(session_id)
-    seen = set(existing)
-    head = []
-    for m in mem_ids:
-        mi = int(m)
-        if mi in seen:
-            continue
-        head.append(mi)
-        seen.add(mi)
-    merged = head + existing
-    merged = merged[:DEDUP_LRU_LIMIT]
-    p = ledger_path(session_id)
-    fd, tmp = tempfile.mkstemp(prefix='b12led-', dir=_state_dir())
-    try:
-        with os.fdopen(fd, 'w') as f:
-            for mi in merged:
-                f.write(str(mi) + '\n')
-        os.replace(tmp, p)
-    except Exception:
-        try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return len(merged)
+    with _session_lock('session-injected', session_id):
+        existing = _load_ledger_unlocked(session_id)
+        seen = set(existing)
+        head = []
+        for m in mem_ids:
+            mi = int(m)
+            if mi in seen:
+                continue
+            head.append(mi)
+            seen.add(mi)
+        merged = head + existing
+        merged = merged[:DEDUP_LRU_LIMIT]
+        content = ''.join(str(mi) + '\n' for mi in merged)
+        _write_atomic(ledger_path(session_id), 'b12led-', content)
+        return len(merged)
 
 
 def warn_log_path() -> str:

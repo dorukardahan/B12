@@ -58,6 +58,25 @@ _OLLAMA_TRANSCRIPT_CAP = 25000
 _TAG_LLM = "llm-extracted"
 
 
+def _scrub_text(text: str) -> str:
+    try:
+        from b12_pii_scrubber import scrub as scrub_pii  # type: ignore[import-not-found]
+    except ImportError:
+        return text
+    return scrub_pii(text)
+
+
+def _scrub_candidate(candidate: dict) -> dict | None:
+    cleaned = dict(candidate)
+    content = _scrub_text(str(cleaned.get("content", ""))).strip()
+    if not content:
+        return None
+    cleaned["content"] = content
+    if "reason" in cleaned:
+        cleaned["reason"] = _scrub_text(str(cleaned.get("reason") or ""))
+    return cleaned
+
+
 def _env_int(name: str, default: int) -> int:
     try:
         return int(os.environ.get(name, "") or default)
@@ -265,6 +284,7 @@ def extract_and_store(
 
     cap_chars = _resolve_caps(prov.name)
     transcript_text = normalize_transcript(transcript_path, cap_chars=cap_chars)
+    transcript_text = _scrub_text(transcript_text)
     if not transcript_text.strip():
         return 0
 
@@ -284,6 +304,9 @@ def extract_and_store(
             parsed = validate_extraction(json.dumps(raw, ensure_ascii=False))
         except (TypeError, ValueError):
             parsed = None
+        if parsed is None:
+            continue
+        parsed = _scrub_candidate(parsed)
         if parsed is None:
             continue
         candidates.append(parsed)
@@ -340,7 +363,10 @@ def _write_candidates(
     now = datetime.now(timezone.utc)
     try:
         for c in candidates:
-            content = c["content"]
+            scrubbed = _scrub_candidate(c)
+            if scrubbed is None:
+                continue
+            content = scrubbed["content"]
             mtype = c["type"]
             llm_imp = float(c["importance"])
             try:
@@ -377,7 +403,7 @@ def _write_candidates(
                 "importance_score": final_imp,
                 "extraction_method": f"llm-{provider_name}",
                 "extraction_model": model_name,
-                "llm_reason": c.get("reason", ""),
+                "llm_reason": scrubbed.get("reason", ""),
             }
 
             try:
@@ -393,7 +419,7 @@ def _write_candidates(
                     db_path=DB_PATH,
                 )
             except Exception as e:
-                _log_error(f"merge_or_insert raised for content {content[:80]!r}", e)
+                _log_error(f"merge_or_insert raised for content_hash {h}", e)
                 continue
 
             if result.action in ("inserted", "merged"):
@@ -405,6 +431,11 @@ def _write_candidates(
             # discards the writes for this batch; logging it is the
             # only signal the caller has.
             _log_error("commit failed at end of LLM extraction batch", e)
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                pass
+            written = 0
     finally:
         try:
             conn.close()

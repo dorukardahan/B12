@@ -1,22 +1,35 @@
 import { join } from "path"
 import { existsSync, mkdirSync, writeFileSync, readdirSync, statSync, unlinkSync, renameSync } from "fs"
 import { homedir } from "os"
-import { B12Database } from "../lib/db.js"
+import type { B12Database } from "../lib/db.js"
 import * as daemon from "../lib/daemon.js"
 import { extractPatterns, summaryFilter } from "../lib/patterns.js"
 
-const B12_BASE = process.env.B12_DATA_DIR || join(homedir(), ".B12")
 const CHAR_BUDGET = 8000
+
+function getB12Base(): string {
+  return process.env.B12_DATA_DIR || join(homedir(), ".B12")
+}
 
 const PRIORITY_WEIGHTS: Record<string, number> = {
   decision: 10,
+  preference: 10,
   error_fix: 9,
+  error: 9,
+  correction: 9,
+  blocker: 9,
   learning: 8,
-  preference: 8,
-  file_modified: 7,
-  user_request: 6,
-  progress: 5,
-  general_work: 2,
+  tool_pref: 8,
+  implicit_decision: 7,
+  architecture: 7,
+  knowledge: 7,
+  workflow: 6,
+  file_convention: 6,
+  reasoning: 6,
+  content: 6,
+  observation: 5,
+  infrastructure: 5,
+  session_summary: 1,
 }
 
 interface ScoredItem {
@@ -30,14 +43,18 @@ export async function preCompact(
   sessionId: string,
   project: string,
   cwd: string,
-  db: B12Database
+  db: B12Database,
+  modifiedFiles: string[] = [],
 ): Promise<string> {
-  const stagingDir = join(B12_BASE, "memory-staging")
+  const stagingDir = join(getB12Base(), "memory-staging")
   mkdirSync(stagingDir, { recursive: true })
 
   const scoredItems: ScoredItem[] = []
   const userMessages: string[] = []
   const filesModified = new Set<string>()
+  for (const file of modifiedFiles) {
+    if (file && file.trim()) filesModified.add(file.trim())
+  }
 
   for (const msg of messages) {
     if (msg.role === "user") {
@@ -52,7 +69,7 @@ export async function preCompact(
 
       const extractions = extractPatterns(snippet)
       for (const ext of extractions) {
-        const priority = PRIORITY_WEIGHTS[ext.category] ?? PRIORITY_WEIGHTS["general_work"]
+        const priority = Math.max(ext.score, PRIORITY_WEIGHTS[ext.category] ?? 2)
         scoredItems.push({ priority, category: ext.category, text: ext.content.slice(0, 200) })
       }
     }
@@ -139,10 +156,11 @@ async function storeHighValue(
     const prefixed = texts[i]
 
     try {
-      db.store({
+      const stored = db.store({
         content: prefixed,
         tags: `proj:${project},precompact-save,${item.category},${new Date().toISOString().slice(0, 7)}`,
         memory_type: item.category,
+        embedding: embeddings?.[i] ?? null,
         metadata: {
           project,
           type: item.category,
@@ -151,6 +169,7 @@ async function storeHighValue(
           extraction_method: "precompact_plugin",
         },
       })
+      if (embeddings?.[i]) db.storeEmbedding(stored.id, embeddings[i])
     } catch {}
   }
 }

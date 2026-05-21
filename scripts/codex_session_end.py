@@ -39,6 +39,14 @@ from shared_patterns import (
 )
 
 
+def _scrub_text(text):
+    try:
+        from b12_pii_scrubber import scrub as _pii_scrub
+        return _pii_scrub(str(text))
+    except ImportError:
+        return str(text)
+
+
 def get_db_path():
     """Get the B12 SQLite database path. Must match b12_mcp_server.py
     DB_PATH verbatim — Codex review PR #52 noted that the previous
@@ -159,6 +167,16 @@ def store_memory(db_path, content, metadata_str, tags, embedding=None, memory_ty
     produces two distinct rows instead of one being silently dropped by the
     existing SHA-256 dedup precedent (Feb 26 fix on this file).
     """
+    try:
+        from b12_pii_scrubber import scrub as _pii_scrub
+        scrubbed = _pii_scrub(content)
+        if scrubbed != content:
+            content = scrubbed
+            if embedding is not None:
+                embedding = get_embedding(content)
+    except ImportError:
+        pass
+
     # Validate metadata is valid JSON before INSERT
     try:
         from shared_patterns import validate_metadata
@@ -312,15 +330,15 @@ def _extract_cloud_tasks(info) -> list:
             "files": [], "branch": ""
         })
         if t.name == "cloud_exec":
-            entry["task"] = (inp.get("task_description") or inp.get("description")
-                             or entry["task"])
-            entry["branch"] = (inp.get("branch") or out.get("branch")
-                               or entry["branch"])
+            entry["task"] = _scrub_text(
+                inp.get("task_description") or inp.get("description") or entry["task"]
+            )
+            entry["branch"] = _scrub_text(inp.get("branch") or out.get("branch") or entry["branch"])
         else:  # cloud_apply
-            entry["status"] = out.get("status") or entry["status"]
+            entry["status"] = _scrub_text(out.get("status") or entry["status"])
             files = out.get("files") or []
             if isinstance(files, list):
-                entry["files"] = [str(f) for f in files][:5]
+                entry["files"] = [_scrub_text(f) for f in files][:5]
     return list(by_id.values())
 
 
@@ -349,9 +367,9 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         return {"status": "skip", "reason": "too few messages"}
 
     # Extract content
-    user_msgs = extract_user_messages(messages)
+    user_msgs = [_scrub_text(msg) for msg in extract_user_messages(messages)]
     assistant_texts = extract_assistant_texts(messages)
-    files_modified = extract_files_modified(messages)
+    files_modified = [_scrub_text(path) for path in extract_files_modified(messages)]
     project_name = os.path.basename(info.cwd) if info.cwd else "unknown"
 
     # Cloud-task ingestion (Plan §E1, Phase A follow-up). transcript_adapter
@@ -383,7 +401,7 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
     blockers = []
 
     for text in assistant_texts:
-        snippet = text[:500]
+        snippet = _scrub_text(text[:500])
         if DECISION_RE.search(snippet) or IMPLICIT_DECISION_RE.search(snippet):
             decisions.append(snippet[:200])
         if ERROR_RE.search(snippet) or CORRECTION_RE.search(snippet):
@@ -457,13 +475,12 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         for f in sorted(files_modified)[:20]:
             summary_lines.append(f"- {f}")
 
-    summary = '\n'.join(summary_lines)
+    summary = _scrub_text('\n'.join(summary_lines))
 
     # Store to database
     db_path = get_db_path()
     if not os.path.exists(db_path):
         log_error(f"Database not found at {db_path}")
-        save_processed_session(info.session_id)
         return {"status": "error", "reason": "database not found"}
 
     # Round 0 fix #3 — git provenance tags from session_meta.git
@@ -486,12 +503,16 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         db_path, summary, metadata, tags, embedding,
         memory_type='session_summary', hash_salt=git_tags,
     )
+    if summary_id is None:
+        log_error(f"Session summary write failed for {info.session_id[:12]}")
+        return {"status": "error", "reason": "summary write failed"}
 
     # Store macro-verb micro-memories (user-nominated facts).
     # extraction_method='macro_verbs' so downstream filters can isolate
     # them from regex-extracted candidates.
     macro_count = 0
     for mv in macro_verbs[:20]:
+        mv_content = _scrub_text(mv["content"])
         mv_tags = (f"proj:{project_name},user:codex,{mv['type']},"
                    f"platform:codex,extraction:macro_verbs{tag_suffix}")
         mv_meta = json.dumps({
@@ -503,9 +524,9 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
             "git_branch": info.git_branch,
             "git_repo_url": info.git_repo_url,
         })
-        mv_emb = get_embedding(mv["content"])
+        mv_emb = get_embedding(mv_content)
         mid = store_memory(
-            db_path, mv["content"], mv_meta, mv_tags, mv_emb,
+            db_path, mv_content, mv_meta, mv_tags, mv_emb,
             memory_type=mv["type"], hash_salt=git_tags,
         )
         if mid:

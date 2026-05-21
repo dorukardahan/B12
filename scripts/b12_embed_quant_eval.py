@@ -148,7 +148,7 @@ def _load_db_vectors(db_path: str, limit: int = 1000):
         FROM memories m
         JOIN memory_embeddings e ON e.rowid = m.id
         WHERE m.deleted_at IS NULL
-          AND m.memory_type NOT IN ('session_summary', 'progress')
+          AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
         LIMIT ?
         """,
         (int(limit),),

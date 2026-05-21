@@ -1,5 +1,6 @@
 import { renameSync, existsSync, mkdirSync } from "node:fs";
 import { join, dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 
 const MAX_ACTIVE_FILES = 20;
 const MAX_MODIFIED_FILES = 15;
@@ -31,18 +32,18 @@ export interface FeedbackEntry {
   data: Record<string, unknown>;
 }
 
-function atomicWrite(filePath: string, content: string): void {
+async function atomicWrite(filePath: string, content: string): Promise<void> {
   const dir = dirname(filePath);
   if (!existsSync(dir)) {
     mkdirSync(dir, { recursive: true });
   }
-  const tmpPath = filePath + ".tmp";
-  Bun.write(tmpPath, content);
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+  await Bun.write(tmpPath, content);
   renameSync(tmpPath, filePath);
 }
 
-function atomicWriteJSON(filePath: string, data: unknown): void {
-  atomicWrite(filePath, JSON.stringify(data, null, 2) + "\n");
+async function atomicWriteJSON(filePath: string, data: unknown): Promise<void> {
+  await atomicWrite(filePath, JSON.stringify(data, null, 2) + "\n");
 }
 
 export function createWorkingMemory(sessionId: string): WorkingMemory {
@@ -128,12 +129,12 @@ export async function loadWorkingMemory(stagingDir: string): Promise<WorkingMemo
   }
 }
 
-export function saveWorkingMemory(
+export async function saveWorkingMemory(
   stagingDir: string,
   memory: WorkingMemory,
-): void {
+): Promise<void> {
   const filePath = join(stagingDir, "working-memory.json");
-  atomicWriteJSON(filePath, memory);
+  await atomicWriteJSON(filePath, memory);
 }
 
 export async function appendFeedback(
@@ -154,9 +155,9 @@ export async function appendFeedback(
   const lines = combined.split("\n").filter((l) => l.trim().length > 0);
   if (lines.length > FEEDBACK_MAX_LINES) {
     const trimmed = lines.slice(-FEEDBACK_TRIM_TO);
-    atomicWrite(filePath, trimmed.join("\n") + "\n");
+    await atomicWrite(filePath, trimmed.join("\n") + "\n");
   } else {
-    Bun.write(filePath, line, { create: true, append: true });
+    await Bun.write(filePath, line, { create: true, append: true });
   }
 }
 

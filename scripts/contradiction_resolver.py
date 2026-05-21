@@ -155,6 +155,10 @@ def merge_memories(conn, id1, content1, hash1, id2, content2, hash2):
         "UPDATE memories SET content = ?, content_hash = ?, updated_at = ?, updated_at_iso = ? WHERE id = ?",
         (merged, new_hash, now.timestamp(), now.isoformat(), id1)
     )
+    try:
+        conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (id1,))
+    except sqlite3.Error:
+        pass
 
     # Rewrite graph edges from old hashes to new hash (both memories)
     for old_h in (hash1, hash2):

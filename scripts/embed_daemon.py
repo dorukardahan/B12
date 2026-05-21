@@ -48,9 +48,16 @@ try:
     if _here not in sys.path:
         sys.path.insert(0, _here)
     from b12_config import get as _b12_cfg_get
+    from shared_patterns import exact_tag_param, exact_tag_predicate
 except Exception:  # pragma: no cover — never block daemon on config import
     def _b12_cfg_get(*_path, default=None):
         return default
+    def exact_tag_predicate(column: str = "tags") -> str:
+        normalized = f"replace(replace(COALESCE({column}, ''), ', ', ','), ' ,', ',')"
+        return f"(',' || {normalized} || ',') LIKE ? ESCAPE '\\'"
+    def exact_tag_param(tag: str) -> str:
+        escaped = tag.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%,{escaped},%"
 
 warnings.filterwarnings('ignore')
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -58,11 +65,10 @@ os.environ.setdefault('WANDB_DISABLED', 'true')
 os.environ.setdefault('WANDB_MODE', 'disabled')
 
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-# Hardcode /tmp/ — macOS TMPDIR varies per session (/var/folders/...),
-# causing socket path mismatch between daemon and hooks.
-SOCKET_PATH = f"/tmp/b12-embed-{_UID}.sock"
-PID_PATH = f"/tmp/b12-embed-{_UID}.pid"
-LOCK_PATH = f"/tmp/b12-embed-{_UID}.lock"
+_RUNTIME_DIR = os.environ.get('B12_EMBED_RUNTIME_DIR', '/tmp')
+SOCKET_PATH = os.path.join(_RUNTIME_DIR, f"b12-embed-{_UID}.sock")
+PID_PATH = os.path.join(_RUNTIME_DIR, f"b12-embed-{_UID}.pid")
+LOCK_PATH = os.path.join(_RUNTIME_DIR, f"b12-embed-{_UID}.lock")
 LOG_DIR = os.path.join(os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.B12')), 'memory-logs')
 LOG_PATH = os.path.join(LOG_DIR, "embed-daemon.log")
 IDLE_TIMEOUT = 7200  # 2 hours
@@ -175,7 +181,7 @@ def _semantic_search(model, data):
                 f"""SELECT m.id, '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
                     FROM memories m WHERE m.id IN ({ph}) AND m.deleted_at IS NULL
                       AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-                      AND m.memory_type NOT IN ('session_summary', 'progress')
+                      AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
                       AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')""",
                 list(id_to_sim.keys()),
             ).fetchall()
@@ -196,7 +202,7 @@ def _semantic_search(model, data):
         JOIN memory_embeddings e ON m.id = e.rowid
         WHERE m.deleted_at IS NULL
           AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-          AND m.memory_type NOT IN ('session_summary', 'progress')
+          AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
           AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
         LIMIT 500
     """).fetchall()
@@ -268,13 +274,13 @@ def _recall(model, data):
         JOIN memory_embeddings e ON m.id = e.rowid
         WHERE m.deleted_at IS NULL
           AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-          AND m.memory_type NOT IN ('session_summary', 'progress')
+          AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
           AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
     """
     params: list = []
     if project:
-        base_sql += " AND m.tags LIKE ?"
-        params.append(f"%proj:{project}%")
+        base_sql += f" AND {exact_tag_predicate('m.tags')}"
+        params.append(exact_tag_param(f"proj:{project}"))
 
     # ANN fast path: gate on config flag + table size. Below threshold or
     # on ANN error/under-fill, fall through to LIMIT-500 + numpy full-scan.
@@ -761,6 +767,16 @@ def _load_classifier():
         t0 = time.time()
         with open(_CLASSIFIER_PATH, 'rb') as f:
             data = pickle.load(f)
+        head_model = data.get('base_model')
+        allow_model_mismatch = os.environ.get(
+            'B12_CLASSIFIER_ALLOW_MODEL_MISMATCH', ''
+        ).lower() in ('1', 'true', 'yes')
+        if head_model and head_model != MODEL_NAME and not allow_model_mismatch:
+            log(f"Classifier head trained for model={head_model} but daemon "
+                f"model={MODEL_NAME}; refusing to load. Retrain the head with "
+                "the daemon model or set B12_CLASSIFIER_BACKEND=off.")
+            _CLASSIFIER_AVAILABLE = False
+            return False
         _CLASSIFIER_HEAD = data['head']
         _CLASSIFIER_LABELS = data['labels']
         _CLASSIFIER_AVAILABLE = True
@@ -1063,6 +1079,11 @@ def main():
         sys.exit(0)  # atexit handles cleanup
 
     # Create socket AFTER model load (so daemon_alive() = model ready)
+    os.makedirs(_RUNTIME_DIR, mode=0o700, exist_ok=True)
+    try:
+        os.chmod(_RUNTIME_DIR, 0o700)
+    except OSError:
+        pass
     if os.path.exists(SOCKET_PATH):
         os.unlink(SOCKET_PATH)
 

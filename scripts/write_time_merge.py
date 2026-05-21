@@ -304,9 +304,6 @@ def _best_match(
     where: List[str] = ["m.deleted_at IS NULL"]
     params: List[Any] = [embedding_bytes]
 
-    if has_valid_until:
-        where.append("(m.valid_until IS NULL OR m.valid_until > datetime('now'))")
-
     if memory_type is None:
         where.append("m.memory_type IS NULL")
     else:
@@ -323,23 +320,45 @@ def _best_match(
                m.content_hash,
                {strength_expr} AS strength,
                vec_distance_cosine(me.content_embedding, ?) AS distance
+               {", m.valid_until" if has_valid_until else ""}
         FROM memories m
         JOIN memory_embeddings me ON m.id = me.rowid
         WHERE {" AND ".join(where)}
         ORDER BY distance ASC
-        LIMIT 1
+        LIMIT 10
     """
 
-    row = conn.execute(sql, params).fetchone()
-    if not row:
+    rows = conn.execute(sql, params).fetchall()
+    if not rows:
+        return None
+    now_dt = datetime.now(timezone.utc)
+    row = None
+    for candidate in rows:
+        if has_valid_until and not _valid_until_active(candidate[5], now_dt):
+            continue
+        row = candidate
+        break
+    if row is None:
         return None
 
-    mem_id, old_content, old_hash, strength, distance = row
+    mem_id, old_content, old_hash, strength, distance = row[:5]
     if distance is None:
         return None
 
     similarity = 1.0 - float(distance)
     return int(mem_id), str(old_content), str(old_hash), float(strength), similarity
+
+
+def _valid_until_active(value: Any, now_dt: datetime) -> bool:
+    if not value:
+        return True
+    try:
+        expires = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=timezone.utc)
+        return expires > now_dt
+    except (TypeError, ValueError):
+        return True
 
 
 def _upsert_embedding(conn: sqlite3.Connection, memory_id: int, embedding_bytes: bytes) -> None:
@@ -381,11 +400,27 @@ def _rewrite_graph_hashes(conn: sqlite3.Connection, old_hash: str, new_hash: str
         "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_graph' LIMIT 1"
     ).fetchone():
         return
+    graph_cols = {
+        row[1] for row in conn.execute("PRAGMA table_info(memory_graph)").fetchall()
+    }
+    if not {"source_hash", "target_hash"}.issubset(graph_cols):
+        return
+    optional_cols = [
+        col for col in (
+            "similarity",
+            "connection_types",
+            "metadata",
+            "created_at",
+            "relationship_type",
+        )
+        if col in graph_cols
+    ]
+    select_cols = ["source_hash", "target_hash", *optional_cols]
 
     # Insert new edges (IGNORE on PK collisions), then delete old ones.
     rows = conn.execute(
-        """
-        SELECT source_hash, target_hash, similarity, connection_types, metadata, created_at, relationship_type
+        f"""
+        SELECT {', '.join(select_cols)}
         FROM memory_graph
         WHERE source_hash = ? OR target_hash = ?
         """,
@@ -395,16 +430,18 @@ def _rewrite_graph_hashes(conn: sqlite3.Connection, old_hash: str, new_hash: str
     if not rows:
         return
 
-    for src, tgt, sim, c_types, meta, created_at, rel_type in rows:
-        src2 = new_hash if src == old_hash else src
-        tgt2 = new_hash if tgt == old_hash else tgt
+    for row in rows:
+        values = dict(zip(select_cols, row))
+        values["source_hash"] = new_hash if values["source_hash"] == old_hash else values["source_hash"]
+        values["target_hash"] = new_hash if values["target_hash"] == old_hash else values["target_hash"]
+        placeholders = ", ".join("?" for _ in select_cols)
         conn.execute(
-            """
+            f"""
             INSERT OR IGNORE INTO memory_graph
-            (source_hash, target_hash, similarity, connection_types, metadata, created_at, relationship_type)
-            VALUES (?, ?, ?, ?, ?, ?, ?)
+            ({', '.join(select_cols)})
+            VALUES ({placeholders})
             """,
-            (src2, tgt2, sim, c_types, meta, created_at, rel_type),
+            tuple(values[col] for col in select_cols),
         )
 
     conn.execute("DELETE FROM memory_graph WHERE source_hash = ? OR target_hash = ?", (old_hash, old_hash))
@@ -645,13 +682,49 @@ def merge_or_insert(
 
     _ensure_sqlite_vec_loaded(conn)
 
-    # Exact duplicate guard: avoid UNIQUE(content_hash) errors and redundant inserts.
-    dup = conn.execute(
-        "SELECT id FROM memories WHERE content_hash = ? AND deleted_at IS NULL LIMIT 1",
-        (content_hash,),
-    ).fetchone()
+    # Exact duplicate guard: avoid UNIQUE(content_hash) errors and redundant
+    # inserts. If the same hash only exists as an expired row, revive that row
+    # instead of letting stale valid_until state suppress a fresh write.
+    cols = _get_table_columns(conn, "memories")
+    has_valid_until = "valid_until" in cols
+    dup_sql = (
+        "SELECT id, valid_until FROM memories WHERE content_hash = ? AND deleted_at IS NULL LIMIT 1"
+        if has_valid_until
+        else "SELECT id, NULL AS valid_until FROM memories WHERE content_hash = ? AND deleted_at IS NULL LIMIT 1"
+    )
+    dup = conn.execute(dup_sql, (content_hash,)).fetchone()
     if dup:
-        return MergeResult(action="noop_duplicate", memory_id=int(dup[0]), reason="exact_hash")
+        expired = False
+        if has_valid_until and dup[1]:
+            try:
+                expires = datetime.fromisoformat(str(dup[1]).replace("Z", "+00:00"))
+                if expires.tzinfo is None:
+                    expires = expires.replace(tzinfo=timezone.utc)
+                expired = expires <= datetime.fromtimestamp(now_ts, tz=timezone.utc)
+            except (TypeError, ValueError):
+                expired = False
+        if not expired:
+            return MergeResult(action="noop_duplicate", memory_id=int(dup[0]), reason="exact_hash")
+        conn.execute(
+            """
+            UPDATE memories
+               SET content = ?,
+                   tags = ?,
+                   memory_type = ?,
+                   metadata = ?,
+                   valid_until = NULL,
+                   updated_at = ?,
+                   updated_at_iso = ?
+             WHERE id = ?
+            """,
+            (content, tags_str, memory_type, metadata_str, now_ts, now_iso, int(dup[0])),
+        )
+        _upsert_embedding(conn, int(dup[0]), embedding_blob)
+        return MergeResult(
+            action="merged",
+            memory_id=int(dup[0]),
+            reason="revived_expired_duplicate",
+        )
 
     best = _best_match(conn, memory_type=memory_type, embedding_bytes=embedding_blob)
 

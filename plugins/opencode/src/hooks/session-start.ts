@@ -1,19 +1,28 @@
 import { join } from "path"
 import { existsSync, readFileSync } from "fs"
 import { homedir } from "os"
-import { B12Database, getDbPath } from "../lib/db.js"
+import type { B12Database } from "../lib/db.js"
 import * as daemon from "../lib/daemon.js"
 
 const CHAR_BUDGET = 6000
-const B12_BASE = process.env.B12_DATA_DIR || join(homedir(), ".B12")
+
+function b12Base(): string {
+  return process.env.B12_DATA_DIR || join(homedir(), ".B12")
+}
+
+function b12HookDir(base: string): string {
+  return process.env.B12_HOOK_DIR || join(base, "hooks")
+}
 
 export async function sessionStart(
   project: string,
   cwd: string,
   db: B12Database
 ): Promise<string> {
+  const B12_BASE = b12Base()
+  const B12_HOOK_DIR = b12HookDir(B12_BASE)
   const venvPython = join(homedir(), ".local", "b12-venv", "bin", "python3")
-  const scriptPath = join(B12_BASE, "hooks", "scripts", "embed_daemon.py")
+  const scriptPath = join(B12_HOOK_DIR, "scripts", "embed_daemon.py")
   if (existsSync(venvPython) && existsSync(scriptPath)) {
     await daemon.startDaemon(venvPython, scriptPath)
   }
@@ -36,9 +45,11 @@ export async function sessionStart(
     : null
   if (summaryFile && existsSync(summaryFile)) {
     const summary = readFileSync(summaryFile, "utf-8").trim()
-    if (summary && totalChars + summary.length < CHAR_BUDGET) {
-      sections.push(`## Last Session Summary\n${summary.slice(0, 1500)}`)
-      totalChars += Math.min(summary.length, 1500)
+    const clipped = summary.slice(0, 1500)
+    const section = `## Last Session Summary\n${clipped}`
+    if (clipped && totalChars + section.length < CHAR_BUDGET) {
+      sections.push(section)
+      totalChars += section.length
     }
   }
 

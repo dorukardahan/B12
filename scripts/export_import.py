@@ -21,12 +21,22 @@ from typing import Callable, Optional
 
 try:
     from shared_patterns import content_hash as _content_hash
+    from shared_patterns import exact_tag_param, exact_tag_predicate
+    from b12_pii_scrubber import scrub as _scrub_pii
 except ImportError:
     import hashlib
     def _content_hash(text: str) -> str:
         return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
+    def exact_tag_predicate(column: str = "tags") -> str:
+        normalized = f"replace(replace(COALESCE({column}, ''), ', ', ','), ' ,', ',')"
+        return f"(',' || {normalized} || ',') LIKE ? ESCAPE '\\'"
+    def exact_tag_param(tag: str) -> str:
+        escaped = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        return f"%,{escaped.strip()},%"
+    def _scrub_pii(text: str) -> str:
+        return text
 
-B12_VERSION = "11.4.0"
+B12_VERSION = "11.74.0"
 SCHEMA_VERSION = 1
 EMBEDDING_MODEL = "BAAI/bge-m3"
 
@@ -107,14 +117,14 @@ def export_memories(
     wheres = ["deleted_at IS NULL"]
     params: list = []
     if project:
-        wheres.append("tags LIKE ?")
-        params.append(f"%proj:{project}%")
+        wheres.append(exact_tag_predicate("tags"))
+        params.append(exact_tag_param(f"proj:{project}"))
     if tags:
         for t in tags.split(","):
             t = t.strip()
             if t:
-                wheres.append("tags LIKE ?")
-                params.append(f"%{t}%")
+                wheres.append(exact_tag_predicate("tags"))
+                params.append(exact_tag_param(t))
     if after:
         try:
             ts_val = datetime.fromisoformat(after).timestamp()
@@ -263,6 +273,10 @@ def import_memories(
     if not input_path or not os.path.exists(input_path):
         return ImportResult(errors=[f"File not found: {input_path}"])
 
+    records, parse_errors = _read_archive_records(input_path)
+    if parse_errors:
+        return ImportResult(errors=parse_errors)
+
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=30000")
@@ -271,61 +285,53 @@ def import_memories(
     result = ImportResult()
     manifest = None
     total = 0
+    hash_remap: dict[str, str] = {}
 
     try:
-        with gzip.open(input_path, "rt", encoding="utf-8") as f:
-            for line_num, line in enumerate(f, 1):
-                line = line.strip()
-                if not line:
-                    continue
-                try:
-                    record = json.loads(line)
-                except json.JSONDecodeError as e:
-                    result.errors.append(f"Line {line_num}: JSON parse error: {e}")
-                    continue
+        conn.execute("BEGIN")
+        for record in records:
+            record_type = record.get("_type", "")
 
-                record_type = record.get("_type", "")
+            if record_type == "manifest":
+                manifest = record
+                total = manifest.get("count", 0)
+                schema = manifest.get("schema", 1)
+                if schema > SCHEMA_VERSION:
+                    sys.stderr.write(
+                        f"WARNING: Archive schema {schema} > supported {SCHEMA_VERSION}. "
+                        "Unknown fields will be preserved in metadata.\n"
+                    )
+                if mode == "replace":
+                    conn.execute(
+                        "UPDATE memories SET deleted_at = ? WHERE deleted_at IS NULL",
+                        (time.time(),)
+                    )
 
-                if record_type == "manifest":
-                    manifest = record
-                    total = manifest.get("count", 0)
-                    schema = manifest.get("schema", 1)
-                    if schema > SCHEMA_VERSION:
-                        sys.stderr.write(
-                            f"WARNING: Archive schema {schema} > supported {SCHEMA_VERSION}. "
-                            "Unknown fields will be preserved in metadata.\n"
-                        )
-                    if mode == "replace":
-                        conn.execute(
-                            "UPDATE memories SET deleted_at = ? WHERE deleted_at IS NULL",
-                            (time.time(),)
-                        )
-                        conn.commit()
+            elif record_type == "memory":
+                imported = _import_memory(conn, record, mode, source_name, hash_remap)
+                if imported:
+                    result.memories_imported += 1
+                else:
+                    result.memories_skipped += 1
 
-                elif record_type == "memory":
-                    imported = _import_memory(conn, record, mode, source_name)
-                    if imported:
-                        result.memories_imported += 1
-                    else:
-                        result.memories_skipped += 1
+                if progress_callback:
+                    done = result.memories_imported + result.memories_skipped
+                    if done % 50 == 0:
+                        progress_callback(done, total)
 
-                    if progress_callback:
-                        done = result.memories_imported + result.memories_skipped
-                        if done % 50 == 0:
-                            progress_callback(done, total)
+            elif record_type == "edge":
+                imported = _import_edge(conn, record, hash_remap)
+                if imported:
+                    result.edges_imported += 1
+                else:
+                    result.edges_skipped += 1
 
-                elif record_type == "edge":
-                    imported = _import_edge(conn, record)
-                    if imported:
-                        result.edges_imported += 1
-                    else:
-                        result.edges_skipped += 1
-
-                # Unknown types: skip silently (forward compatibility)
+            # Unknown types: skip silently (forward compatibility)
 
         conn.commit()
 
     except Exception as e:
+        conn.rollback()
         result.errors.append(f"Import error: {e}")
     finally:
         conn.close()
@@ -338,17 +344,47 @@ def import_memories(
     return result
 
 
+def _read_archive_records(input_path: str) -> tuple[list[dict], list[str]]:
+    records: list[dict] = []
+    errors: list[str] = []
+    try:
+        with gzip.open(input_path, "rt", encoding="utf-8") as f:
+            for line_num, line in enumerate(f, 1):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError as e:
+                    errors.append(f"Line {line_num}: JSON parse error: {e}")
+                    continue
+                if not isinstance(record, dict):
+                    errors.append(f"Line {line_num}: expected JSON object")
+                    continue
+                records.append(record)
+    except Exception as e:
+        errors.append(f"Archive read error: {e}")
+    return records, errors
+
+
 def _import_memory(
-    conn: sqlite3.Connection, record: dict, mode: str, source_name: str
+    conn: sqlite3.Connection,
+    record: dict,
+    mode: str,
+    source_name: str,
+    hash_remap: dict[str, str],
 ) -> bool:
     """Import a single memory record. Returns True if imported, False if skipped."""
-    content = record.get("content", "")
+    raw_content = record.get("content", "")
+    content = _scrub_pii(raw_content)
     if not content:
         return False
 
-    content_hash = record.get("content_hash", "")
-    if not content_hash:
-        content_hash = _content_hash(content)
+    old_content_hash = record.get("content_hash", "") or _content_hash(raw_content)
+    content_hash = _content_hash(content)
+    if old_content_hash != content_hash:
+        hash_remap[old_content_hash] = content_hash
+    tags = _scrub_tags(record.get("tags", ""))
 
     # Check if already exists
     existing = conn.execute(
@@ -369,22 +405,29 @@ def _import_memory(
         # Replace mode: already cleared above, but entry might exist from this import
         if existing["deleted_at"] is None:
             return False
+        conn.execute(
+            """UPDATE memories
+               SET content = ?, tags = ?, memory_type = ?, metadata = ?,
+                   strength = ?, updated_at = ?, updated_at_iso = ?,
+                   valid_until = ?, last_accessed_at = ?, deleted_at = NULL
+               WHERE content_hash = ?""",
+            (
+                content,
+                tags,
+                record.get("memory_type", "general"),
+                json.dumps(_metadata_with_import(record, source_name, content_hash), ensure_ascii=False),
+                record.get("strength", 1.0),
+                time.time(),
+                datetime.now(timezone.utc).isoformat(),
+                record.get("valid_until"),
+                record.get("last_accessed_at"),
+                content_hash,
+            ),
+        )
+        return True
 
     # Prepare metadata with provenance
-    metadata = record.get("metadata", {})
-    if isinstance(metadata, str):
-        try:
-            metadata = json.loads(metadata)
-        except json.JSONDecodeError:
-            metadata = {}
-
-    if source_name:
-        metadata["imported_from"] = source_name
-    metadata["import_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    if record.get("_type") == "memory":
-        # Preserve original created_at as original_created_at
-        if "original_created_at" not in metadata and record.get("created_at"):
-            metadata["original_created_at"] = record["created_at"]
+    metadata = _metadata_with_import(record, source_name, content_hash)
 
     now_ts = time.time()
     now_iso = datetime.now(timezone.utc).isoformat()
@@ -398,7 +441,7 @@ def _import_memory(
         (
             content_hash,
             content,
-            record.get("tags", ""),
+            tags,
             record.get("memory_type", "general"),
             json.dumps(metadata, ensure_ascii=False),
             record.get("strength", 1.0),
@@ -413,10 +456,50 @@ def _import_memory(
     return conn.total_changes > 0
 
 
-def _import_edge(conn: sqlite3.Connection, record: dict) -> bool:
+def _scrub_json_value(value):
+    if isinstance(value, str):
+        return _scrub_pii(value)
+    if isinstance(value, list):
+        return [_scrub_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _scrub_json_value(item) for key, item in value.items()}
+    return value
+
+
+def _scrub_tags(tags) -> str:
+    if tags is None:
+        return ""
+    if isinstance(tags, (list, tuple, set)):
+        return ",".join(_scrub_pii(str(tag).strip()) for tag in tags if str(tag).strip())
+    return _scrub_pii(str(tags))
+
+
+def _metadata_with_import(record: dict, source_name: str, content_hash: str | None = None) -> dict:
+    metadata = record.get("metadata", {})
+    if isinstance(metadata, str):
+        try:
+            metadata = json.loads(metadata)
+        except json.JSONDecodeError:
+            metadata = {}
+    if not isinstance(metadata, dict):
+        metadata = {}
+    metadata = _scrub_json_value(metadata)
+    if source_name:
+        metadata["imported_from"] = _scrub_pii(source_name)
+    metadata["import_date"] = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if content_hash:
+        metadata["content_hash"] = content_hash
+    if record.get("_type") == "memory":
+        if "original_created_at" not in metadata and record.get("created_at"):
+            metadata["original_created_at"] = record["created_at"]
+    return metadata
+
+
+def _import_edge(conn: sqlite3.Connection, record: dict, hash_remap: dict[str, str] | None = None) -> bool:
     """Import a single graph edge. Returns True if imported."""
-    source = record.get("source_hash", "")
-    target = record.get("target_hash", "")
+    hash_remap = hash_remap or {}
+    source = hash_remap.get(record.get("source_hash", ""), record.get("source_hash", ""))
+    target = hash_remap.get(record.get("target_hash", ""), record.get("target_hash", ""))
     if not source or not target:
         return False
 
@@ -433,7 +516,9 @@ def _import_edge(conn: sqlite3.Connection, record: dict) -> bool:
                 record.get("connection_types", ""),
                 record.get("relationship_type", "related"),
                 record.get("created_at", time.time()),
-                record.get("metadata", "{}"),
+                _scrub_pii(record.get("metadata", "{}"))
+                if isinstance(record.get("metadata"), str)
+                else json.dumps(_scrub_json_value(record.get("metadata", {})), ensure_ascii=False),
             ),
         )
         return True

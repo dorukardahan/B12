@@ -39,6 +39,11 @@ turns, which would burn the T2 cumulative cap fast.
 from __future__ import annotations
 
 import argparse
+from contextlib import contextmanager
+try:
+    import fcntl
+except ImportError:  # pragma: no cover - Windows fallback keeps single-process behavior.
+    fcntl = None
 import math
 import os
 import sqlite3
@@ -76,7 +81,26 @@ def turn_counter_path(session_id: str) -> str:
     )
 
 
-def read_turn(session_id: str) -> int:
+def turn_counter_lock_path(session_id: str) -> str:
+    return os.path.join(
+        _state_dir(),
+        f'session-turn-counter-{_sid12(session_id)}.lock',
+    )
+
+
+@contextmanager
+def _turn_counter_lock(session_id: str):
+    with open(turn_counter_lock_path(session_id), 'a+') as lock:
+        if fcntl is not None:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock.fileno(), fcntl.LOCK_UN)
+
+
+def _read_turn_unlocked(session_id: str) -> int:
     p = turn_counter_path(session_id)
     try:
         with open(p, 'r') as f:
@@ -85,22 +109,28 @@ def read_turn(session_id: str) -> int:
         return 0
 
 
+def read_turn(session_id: str) -> int:
+    with _turn_counter_lock(session_id):
+        return _read_turn_unlocked(session_id)
+
+
 def bump_turn_counter(session_id: str) -> int:
     """Atomic +1 and return the new turn number."""
-    new_turn = read_turn(session_id) + 1
-    p = turn_counter_path(session_id)
-    fd, tmp = tempfile.mkstemp(prefix='b12turn-', dir=_state_dir())
-    try:
-        with os.fdopen(fd, 'w') as f:
-            f.write(str(new_turn))
-        os.replace(tmp, p)
-    except Exception:
+    with _turn_counter_lock(session_id):
+        new_turn = _read_turn_unlocked(session_id) + 1
+        p = turn_counter_path(session_id)
+        fd, tmp = tempfile.mkstemp(prefix='b12turn-', dir=_state_dir())
         try:
-            os.unlink(tmp)
-        except OSError:
-            pass
-        raise
-    return new_turn
+            with os.fdopen(fd, 'w') as f:
+                f.write(str(new_turn))
+            os.replace(tmp, p)
+        except Exception:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
+            raise
+        return new_turn
 
 
 def should_resurface(
@@ -152,7 +182,7 @@ def pick_resurface_ids(
             FROM memories m
             WHERE m.deleted_at IS NULL
               AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-              AND m.memory_type NOT IN ('session_summary', 'progress')
+              AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
               AND COALESCE(json_extract(m.metadata, '$.source_session'), '') = ?
               AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?
             ORDER BY importance DESC, m.created_at ASC
@@ -184,11 +214,12 @@ def pick_resurface_ids(
 
 def reset_turn_counter(session_id: str) -> None:
     """For self-test / external reset only."""
-    p = turn_counter_path(session_id)
-    try:
-        os.unlink(p)
-    except FileNotFoundError:
-        pass
+    with _turn_counter_lock(session_id):
+        p = turn_counter_path(session_id)
+        try:
+            os.unlink(p)
+        except FileNotFoundError:
+            pass
 
 
 # ── Q2 topic-shift re-surface ────────────────────────────────────
@@ -279,7 +310,7 @@ def pick_topic_shift_ids(
                 FROM memories m
                 WHERE m.deleted_at IS NULL
                   AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-                  AND m.memory_type NOT IN ('session_summary', 'progress')
+                  AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
                   AND COALESCE(json_extract(m.metadata, '$.source_session'), '') = ?
                   AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?
                   AND m.created_at < ?
@@ -301,7 +332,7 @@ def pick_topic_shift_ids(
                 FROM memories m
                 WHERE m.deleted_at IS NULL
                   AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-                  AND m.memory_type NOT IN ('session_summary', 'progress')
+                  AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
                   AND COALESCE(json_extract(m.metadata, '$.source_session'), '') = ?
                   AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?
                 ORDER BY importance DESC, m.created_at ASC
@@ -458,7 +489,7 @@ def pick_cross_session_ids(
             FROM memories m
             WHERE m.deleted_at IS NULL
               AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-              AND m.memory_type NOT IN ('session_summary', 'progress')
+              AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
               AND COALESCE(json_extract(m.metadata, '$.project'), '') = ?
               AND COALESCE(SUBSTR(json_extract(m.metadata, '$.source_session'), 1, 12), '') != ?
               AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?

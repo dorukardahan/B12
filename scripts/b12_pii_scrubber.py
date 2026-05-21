@@ -17,8 +17,10 @@ import re
 
 # Pattern catalog. Order matters for `re.sub` chaining — most specific first.
 _PATTERNS = [
-    # Anthropic API keys (sk-ant-..., sk-proj-...)
-    ("anthropic", re.compile(r"\bsk-(?:ant|proj)-[A-Za-z0-9_\-]{40,}\b")),
+    # Anthropic API keys (sk-ant-...)
+    ("anthropic", re.compile(r"\bsk-ant-[A-Za-z0-9_\-]{40,}\b")),
+    # OpenAI project API keys (sk-proj-...)
+    ("openai_project", re.compile(r"\bsk-proj-[A-Za-z0-9_\-]{40,}\b")),
     # GitHub personal access tokens
     ("github_pat", re.compile(r"\bghp_[A-Za-z0-9]{36,}\b")),
     # GitHub fine-grained PATs

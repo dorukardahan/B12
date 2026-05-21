@@ -13,9 +13,9 @@ Run:
   python3 scripts/migrate_embed_to_bge_m3.py --rollback PATH_TO_BACKUP
 
 Safety:
-  - DB is copied to ``memory.db.before-bge-m3-<timestamp>.bak`` (with the
-    `-wal` / `-shm` sidecars if present) before any schema change. Failure
-    to back up = abort.
+  - DB is snapshotted with SQLite's online backup API to
+    ``memory.db.before-bge-m3-<timestamp>.bak`` before any schema change.
+    Failure to back up or pass integrity_check = abort.
   - vec0 virtual tables hardcode their dim and their aux ``_chunks`` /
     ``_rowids`` / ``_vector_chunks00`` tables cannot be ALTER-renamed, so the
     migration drops the shadow tables, drops the virtual table, and
@@ -73,6 +73,14 @@ def _probe_dim(conn: sqlite3.Connection) -> int | None:
     return len(row[0]) // 4
 
 
+def _embedding_rowids(conn: sqlite3.Connection) -> set[int]:
+    try:
+        rows = conn.execute('SELECT rowid FROM memory_embeddings').fetchall()
+    except sqlite3.Error:
+        return set()
+    return {int(row[0]) for row in rows}
+
+
 def _candidate_memories(conn: sqlite3.Connection) -> list[tuple[int, str]]:
     """Memories that should carry an embedding after the migration.
 
@@ -84,8 +92,8 @@ def _candidate_memories(conn: sqlite3.Connection) -> list[tuple[int, str]]:
         SELECT m.id, m.content
         FROM memories m
         WHERE m.deleted_at IS NULL
-          AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-          AND m.memory_type NOT IN ('session_summary', 'progress')
+          AND (m.valid_until IS NULL OR datetime(m.valid_until) > datetime('now'))
+          AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
           AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
           AND m.content IS NOT NULL
           AND length(m.content) > 0
@@ -96,14 +104,27 @@ def _candidate_memories(conn: sqlite3.Connection) -> list[tuple[int, str]]:
 
 
 def _backup(db_path: str) -> str:
-    ts = time.strftime('%Y%m%dT%H%M%S')
+    ts = time.strftime('%Y%m%dT%H%M%S') + f"-{os.getpid()}-{time.time_ns()}"
     dest = f"{db_path}.before-bge-m3-{ts}.bak"
-    shutil.copy2(db_path, dest)
-    # Sidecar files used by SQLite WAL — copy if present.
-    for suffix in ('-wal', '-shm'):
-        side = db_path + suffix
-        if os.path.exists(side):
-            shutil.copy2(side, dest + suffix)
+    src = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=30)
+    dst = sqlite3.connect(dest, timeout=30)
+    try:
+        src.execute("PRAGMA busy_timeout=30000")
+        dst.execute("PRAGMA busy_timeout=30000")
+        src.backup(dst)
+        dst.commit()
+        ok = dst.execute("PRAGMA integrity_check").fetchone()[0]
+        if ok != "ok":
+            raise sqlite3.DatabaseError(f"backup integrity_check failed: {ok}")
+    except Exception:
+        try:
+            os.unlink(dest)
+        except OSError:
+            pass
+        raise
+    finally:
+        dst.close()
+        src.close()
     return dest
 
 
@@ -184,8 +205,33 @@ def migrate(
         result['new_dim'] = new_dim
 
         if old_dim is not None and old_dim == new_dim:
-            # Idempotent path — same dim means a previous run already migrated.
-            result['skipped'] = 'dim_match'
+            existing_rowids = _embedding_rowids(conn)
+            missing = [row for row in candidates if row[0] not in existing_rowids]
+            if not missing:
+                # Idempotent path — same dim and complete coverage means a previous run already migrated.
+                result['skipped'] = 'dim_match'
+                result['encoded'] = 0
+                result['existing_rows'] = len(existing_rowids)
+                return result
+
+            cur = conn.cursor()
+            inserted = 0
+            for i in range(0, len(missing), batch_size):
+                chunk = missing[i:i + batch_size]
+                ids = [r[0] for r in chunk]
+                contents = [r[1] for r in chunk]
+                embs = _encode(model, contents, backend)
+                for mem_id, vec in zip(ids, embs):
+                    packed = struct.pack(f'{new_dim}f', *vec)
+                    cur.execute(
+                        'INSERT OR REPLACE INTO memory_embeddings(rowid, content_embedding)'
+                        ' VALUES (?, ?)',
+                        (mem_id, packed),
+                    )
+                    inserted += 1
+                conn.commit()
+            result['encoded'] = inserted
+            result['backfilled_missing'] = inserted
             return result
 
         # vec0 virtual tables hardcode their dim in CREATE and cannot be
@@ -240,8 +286,30 @@ def migrate(
 
         result['swapped'] = True
         return result
+    except Exception as e:
+        backup_path = None
+        if 'result' in locals():
+            backup_path = result.get('backup_path')
+        if not backup_path:
+            raise
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        conn = None
+        try:
+            rollback_result = rollback(str(backup_path), db_path)
+            if 'result' in locals():
+                result['restored_after_failure'] = rollback_result
+        except Exception as restore_error:
+            if 'result' in locals():
+                result['restore_error'] = str(restore_error)
+        raise RuntimeError(
+            f'BGE-M3 migration failed after backup; live DB restored from {backup_path}'
+        ) from e
     finally:
-        conn.close()
+        if conn is not None:
+            conn.close()
 
 
 def rollback(backup_path: str, db_path: str | None = None) -> dict:

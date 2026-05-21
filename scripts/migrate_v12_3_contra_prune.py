@@ -48,6 +48,13 @@ def main(argv):
     conn = sqlite3.connect(db_path, timeout=30)
     conn.execute("PRAGMA busy_timeout=10000")
     try:
+        has_graph = conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='memory_graph'"
+        ).fetchone()
+        if not has_graph:
+            print(f"DB: {db_path}")
+            print("No memory_graph table found. Nothing to prune.")
+            return 0
         before = conn.execute(
             "SELECT COUNT(*) FROM memory_graph "
             "WHERE relationship_type='contradicts'"

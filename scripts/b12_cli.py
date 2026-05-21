@@ -26,7 +26,63 @@ from datetime import datetime, timezone
 _script_dir = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, _script_dir)
 
-from shared_patterns import DB_PATH, content_hash, validate_metadata
+from shared_patterns import DB_PATH, content_hash, count_active_embeddings, validate_metadata
+from b12_pii_scrubber import scrub as scrub_pii
+
+DEFAULT_LIMIT = 10
+MAX_LIMIT = 100
+
+
+def _escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def _tag_predicate(column: str = "tags") -> str:
+    normalized = f"replace(replace(COALESCE({column}, ''), ', ', ','), ' ,', ',')"
+    return f"(',' || {normalized} || ',') LIKE ? ESCAPE '\\'"
+
+
+def _tag_param(tag: str) -> str:
+    return f"%,{_escape_like(tag.strip())},%"
+
+
+def _coerce_limit(value) -> int:
+    try:
+        limit = int(value)
+    except (TypeError, ValueError):
+        return DEFAULT_LIMIT
+    if limit <= 0:
+        return DEFAULT_LIMIT
+    return min(limit, MAX_LIMIT)
+
+
+def _scrub_json_value(value):
+    if isinstance(value, str):
+        return scrub_pii(value)
+    if isinstance(value, list):
+        return [_scrub_json_value(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): _scrub_json_value(item) for key, item in value.items()}
+    return value
+
+
+def _safe_import_metadata(raw_metadata, content_hash_value: str) -> str:
+    try:
+        parsed = json.loads(validate_metadata(raw_metadata))
+    except (json.JSONDecodeError, TypeError, ValueError):
+        parsed = {}
+    if not isinstance(parsed, dict):
+        parsed = {}
+    parsed = _scrub_json_value(parsed)
+    parsed["content_hash"] = content_hash_value
+    return validate_metadata(parsed)
+
+
+def _safe_import_tags(raw_tags) -> str:
+    if isinstance(raw_tags, (list, tuple)):
+        tags = [scrub_pii(str(tag).strip()) for tag in raw_tags if str(tag).strip()]
+        return ",".join(tags)
+    return scrub_pii(str(raw_tags or ""))
 
 
 def get_db(readonly=False):
@@ -38,7 +94,8 @@ def get_db(readonly=False):
 
     uri = f"file:{DB_PATH}?mode=ro" if readonly else DB_PATH
     conn = sqlite3.connect(uri if readonly else DB_PATH, timeout=10, uri=readonly)
-    conn.execute("PRAGMA journal_mode=WAL")
+    if not readonly:
+        conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
     conn.row_factory = sqlite3.Row
     return conn
@@ -49,7 +106,7 @@ def cmd_search(args):
     conn = get_db(readonly=True)
 
     query = args.query
-    limit = args.limit or 10
+    limit = _coerce_limit(args.limit)
 
     # Build FTS query (simple tokenization)
     words = query.split()
@@ -60,9 +117,13 @@ def cmd_search(args):
         sys.exit(1)
 
     # Tag filter
-    tag_filter = ""
+    aliased_tag_filter = ""
+    plain_tag_filter = ""
+    tag_params = []
     if args.project:
-        tag_filter = f"AND m.tags LIKE '%proj:{args.project}%'"
+        aliased_tag_filter = f"AND {_tag_predicate('m.tags')}"
+        plain_tag_filter = f"AND {_tag_predicate('tags')}"
+        tag_params.append(_tag_param(f"proj:{args.project}"))
 
     try:
         rows = conn.execute(f"""
@@ -74,10 +135,10 @@ def cmd_search(args):
             JOIN memory_fts f ON m.id = f.rowid
             WHERE f.memory_fts MATCH ?
               AND m.deleted_at IS NULL
-              {tag_filter}
+              {aliased_tag_filter}
             ORDER BY relevance DESC
             LIMIT ?
-        """, (fts_query, limit)).fetchall()
+        """, (fts_query, *tag_params, limit)).fetchall()
     except sqlite3.OperationalError as e:
         # Fallback to LIKE search if FTS fails
         like_pattern = f"%{query}%"
@@ -89,10 +150,10 @@ def cmd_search(args):
             FROM memories
             WHERE content LIKE ?
               AND deleted_at IS NULL
-              {tag_filter}
+              {plain_tag_filter}
             ORDER BY updated_at DESC
             LIMIT ?
-        """, (like_pattern, limit)).fetchall()
+        """, (like_pattern, *tag_params, limit)).fetchall()
 
     conn.close()
 
@@ -120,10 +181,15 @@ def cmd_store(args):
     """Store a new memory."""
     conn = get_db()
 
-    content = args.content
     mem_type = args.type or "note"
     importance = args.importance or 1.0
     project = args.project or os.path.basename(os.getcwd())
+
+    content = args.content
+    if not content.startswith("["):
+        content = f"[{mem_type.title()}] {content}"
+    content = scrub_pii(content)
+    ch = content_hash(content)
 
     # Build tags
     tags = f"proj:{project},type:{mem_type},source:cli"
@@ -136,18 +202,19 @@ def cmd_store(args):
         "importance_score": importance,
         "project": project,
         "source": "cli",
-        "content_hash": content_hash(content),
+        "content_hash": ch,
     })
 
-    # Prefix content with type label
-    if not content.startswith("["):
-        content = f"[{mem_type.title()}] {content}"
-
     try:
+        now_epoch = time.time()
+        now_iso = datetime.now(timezone.utc).isoformat()
         conn.execute(
-            """INSERT INTO memories (content, metadata, tags, memory_type, created_at, updated_at, strength)
-               VALUES (?, ?, ?, ?, datetime('now'), datetime('now'), 1.0)""",
-            (content, meta, tags, mem_type)
+            """INSERT INTO memories
+               (content, metadata, tags, memory_type, content_hash,
+                created_at, updated_at, created_at_iso, updated_at_iso,
+                strength, deleted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1.0, NULL)""",
+            (content, meta, tags, mem_type, ch, now_epoch, now_epoch, now_iso, now_iso)
         )
         conn.commit()
         mem_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
@@ -178,12 +245,7 @@ def cmd_status(args):
     db_size = os.path.getsize(DB_PATH) / (1024 * 1024)
 
     # Embeddings (stored in separate vec table)
-    try:
-        embedded = conn.execute(
-            "SELECT COUNT(*) FROM memory_embeddings"
-        ).fetchone()[0]
-    except sqlite3.OperationalError:
-        embedded = 0
+    embedded, embedding_warning = count_active_embeddings(conn)
 
     # Last stored
     last = conn.execute(
@@ -198,7 +260,11 @@ def cmd_status(args):
 
     conn.close()
 
-    embed_pct = (embedded / total * 100) if total > 0 else 0
+    if embedded is None:
+        embedding_line = f"unknown ({embedding_warning})"
+    else:
+        embed_pct = (embedded / total * 100) if total > 0 else 0
+        embedding_line = f"{embedded}/{total} ({embed_pct:.0f}%)"
 
     print(f"""
   B12 Memory Status
@@ -207,7 +273,7 @@ def cmd_status(args):
   ├─ DB size: {db_size:.1f} MB
   ├─ Avg strength: {avg_strength:.2f}
   ├─ Last stored: {last_stored}
-  ├─ Embeddings: {embedded}/{total} ({embed_pct:.0f}%)
+  ├─ Embeddings: {embedding_line}
   └─ DB path: {DB_PATH}
 """)
 
@@ -219,8 +285,8 @@ def cmd_export(args):
     query = "SELECT * FROM memories WHERE deleted_at IS NULL"
     params = []
     if args.project:
-        query += " AND tags LIKE ?"
-        params.append(f"%proj:{args.project}%")
+        query += f" AND {_tag_predicate('tags')}"
+        params.append(_tag_param(f"proj:{args.project}"))
 
     rows = conn.execute(query, params).fetchall()
     conn.close()
@@ -253,11 +319,13 @@ def cmd_import(args):
     skipped = 0
 
     for mem in memories:
-        content = mem.get("content", "")
+        content = scrub_pii(mem.get("content", ""))
         if not content:
             continue
 
         ch = content_hash(content)
+        safe_metadata = _safe_import_metadata(mem.get("metadata", "{}"), ch)
+        safe_tags = _safe_import_tags(mem.get("tags", ""))
         existing = conn.execute(
             "SELECT id FROM memories WHERE content_hash = ?", (ch,)
         ).fetchone()
@@ -266,13 +334,32 @@ def cmd_import(args):
             skipped += 1
             continue
 
+        now_epoch = time.time()
+        now_iso = datetime.now(timezone.utc).isoformat()
+        created_at = mem.get("created_at")
+        updated_at = mem.get("updated_at")
+        created_at_iso = mem.get("created_at_iso")
+        updated_at_iso = mem.get("updated_at_iso")
+        if not isinstance(created_at, (int, float)):
+            created_at = now_epoch
+        if not isinstance(updated_at, (int, float)):
+            updated_at = now_epoch
+        if not isinstance(created_at_iso, str) or not created_at_iso:
+            created_at_iso = now_iso
+        if not isinstance(updated_at_iso, str) or not updated_at_iso:
+            updated_at_iso = now_iso
+        strength = mem.get("strength", 1.0)
+        if not isinstance(strength, (int, float)):
+            strength = 1.0
         conn.execute(
-            """INSERT INTO memories (content, metadata, tags, memory_type, content_hash,
-               created_at, updated_at, strength)
-               VALUES (?, ?, ?, ?, ?, ?, datetime('now'), 1.0)""",
-            (content, mem.get("metadata", "{}"), mem.get("tags", ""),
+            """INSERT INTO memories
+               (content, metadata, tags, memory_type, content_hash,
+                created_at, updated_at, created_at_iso, updated_at_iso,
+                strength, deleted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)""",
+            (content, safe_metadata, safe_tags,
              mem.get("memory_type", "note"), ch,
-             mem.get("created_at", datetime.now(timezone.utc).isoformat()))
+             created_at, updated_at, created_at_iso, updated_at_iso, float(strength))
         )
         imported += 1
 

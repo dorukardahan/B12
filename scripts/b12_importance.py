@@ -46,8 +46,9 @@ IMPORTANCE_CAP: float = 0.95
 # ── Token lists ─────────────────────────────────────────────────────
 
 # Explicit "remember this" tokens. Each match flips the score to
-# IMPORTANCE_MEMORABLE. English + Turkish. Lowercased; matched as
-# substring (Mahmut WhatsApp phrasings from the audit).
+# IMPORTANCE_MEMORABLE. English + Turkish. Lowercased; matched with
+# token boundaries so short Turkish phrases such as "not al" do not
+# match ordinary English like "not allowed".
 _REMEMBER_TOKENS: tuple[str, ...] = (
     "remember this", "remember that", "don't forget", "do not forget",
     "important note", "note this", "for the record", "keep in mind",
@@ -134,7 +135,7 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
     if lower in _TRIVIAL_EXACTS:
         return ImportanceBreakdown("trivial", IMPORTANCE_TRIVIAL, False, False, 0)
 
-    remember_hit = any(tok in lower for tok in _REMEMBER_TOKENS)
+    remember_hit = any(_phrase_match(lower, tok) for tok in _REMEMBER_TOKENS)
     decision_hit = any(
         _word_match(lower, tok) for tok in _DECISION_TOKENS
     )
@@ -176,6 +177,11 @@ def _word_match(haystack: str, token: str) -> bool:
     if " " in token:
         return token in haystack
     pattern = r"\b" + re.escape(token) + r"\b"
+    return bool(re.search(pattern, haystack))
+
+
+def _phrase_match(haystack: str, token: str) -> bool:
+    pattern = r"(?<!\w)" + re.escape(token) + r"(?!\w)"
     return bool(re.search(pattern, haystack))
 
 

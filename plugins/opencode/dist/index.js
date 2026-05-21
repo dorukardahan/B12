@@ -1,13 +1,34 @@
 // @bun
-var __require = import.meta.require;
+var __defProp = Object.defineProperty;
+var __returnValue = (v) => v;
+function __exportSetter(name, newValue) {
+  this[name] = __returnValue.bind(null, newValue);
+}
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, {
+      get: all[name],
+      enumerable: true,
+      configurable: true,
+      set: __exportSetter.bind(all, name)
+    });
+};
 
 // src/index.ts
-import { join as join9, basename as basename4 } from "path";
+import { join as join10, basename as basename4 } from "path";
+import { randomUUID as randomUUID3 } from "crypto";
 import { existsSync as existsSync7 } from "fs";
-import { homedir as homedir8 } from "os";
+import { homedir as homedir9 } from "os";
 
 // src/lib/db.ts
 import Database from "better-sqlite3";
+
+// src/lib/search-mode.ts
+function effectiveSearchMode(mode) {
+  return mode === "exact" ? "exact" : "hybrid";
+}
+
+// src/lib/db.ts
 import { createHash } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
@@ -33,10 +54,29 @@ function normalizeTags(tags) {
     return tags.filter((t) => t).join(",");
   return String(tags);
 }
+function escapeLike(value) {
+  return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
+}
+function tagPredicate(column) {
+  const normalized = `replace(replace(COALESCE(${column}, ''), ', ', ','), ' ,', ',')`;
+  return `(',' || ${normalized} || ',') LIKE ? ESCAPE '\\'`;
+}
+function tagParam(tag) {
+  return `%,${escapeLike(tag.trim())},%`;
+}
 function nowTs() {
   const ts = Math.floor(Date.now() / 1000);
   const iso = new Date(ts * 1000).toISOString();
   return [ts, iso];
+}
+function isExpiredValidUntil(value) {
+  if (!value)
+    return false;
+  const ts = Date.parse(value);
+  return !Number.isNaN(ts) && ts <= Date.now();
+}
+function activeValidUntilPredicate(column = "valid_until") {
+  return `(${column} IS NULL OR datetime(${column}) > datetime('now'))`;
 }
 function validateMetadata(value) {
   if (value == null)
@@ -108,27 +148,55 @@ class B12Database {
     return this.db;
   }
   store(options) {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const result = this.storeLocked(options);
+      this.db.exec("COMMIT");
+      return result;
+    } catch (err) {
+      try {
+        this.db.exec("ROLLBACK");
+      } catch {}
+      throw err;
+    }
+  }
+  storeLocked(options) {
     const { content, valid_until } = options;
     const tags = normalizeTags(options.tags);
-    const memoryType = options.memory_type || "general";
+    const requestedMemoryType = options.memory_type;
+    const memoryType = requestedMemoryType || "general";
     const contentHash = computeContentHash(content);
     const [ts, iso] = nowTs();
-    const baseMeta = {
+    const defaultMeta = {
       quality_score: 0.5,
       quality_provider: "implicit",
       access_count: 0,
       source_type: "user",
       credibility: 1
     };
-    if (options.metadata)
-      Object.assign(baseMeta, options.metadata);
-    const metaJson = validateMetadata(baseMeta);
-    const existing = this.db.prepare("SELECT id, deleted_at FROM memories WHERE content_hash = ?").get(contentHash);
+    const explicitMeta = options.metadata || {};
+    const metaJson = validateMetadata({ ...defaultMeta, ...explicitMeta });
+    const existing = this.db.prepare("SELECT id, deleted_at, tags, metadata, valid_until FROM memories WHERE content_hash = ?").get(contentHash);
     if (existing && existing.deleted_at !== null) {
       this.db.prepare(`UPDATE memories SET deleted_at = NULL, strength = 1.0,
            tags = ?, memory_type = ?, metadata = ?,
            updated_at = ?, updated_at_iso = ?, valid_until = ?
            WHERE content_hash = ?`).run(tags, memoryType, metaJson, ts, iso, valid_until ?? null, contentHash);
+    } else if (existing) {
+      const mergedTags = normalizeTags(Array.from(new Set([
+        ...normalizeTags(existing.tags).split(","),
+        ...tags.split(",")
+      ])));
+      let existingMeta = {};
+      try {
+        existingMeta = existing.metadata ? JSON.parse(existing.metadata) : {};
+      } catch {}
+      const mergedMeta = validateMetadata({ ...defaultMeta, ...existingMeta, ...explicitMeta });
+      const nextValidUntil = valid_until !== undefined ? valid_until : isExpiredValidUntil(existing.valid_until) ? null : existing.valid_until ?? null;
+      this.db.prepare(`UPDATE memories SET tags = ?, metadata = ?,
+           memory_type = COALESCE(?, memory_type),
+           updated_at = ?, updated_at_iso = ?, valid_until = ?
+           WHERE content_hash = ?`).run(mergedTags, mergedMeta, requestedMemoryType ?? null, ts, iso, nextValidUntil, contentHash);
     } else {
       this.db.prepare(`INSERT OR IGNORE INTO memories
            (content_hash, content, tags, memory_type, metadata,
@@ -137,7 +205,23 @@ class B12Database {
            VALUES (?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?, ?)`).run(contentHash, content, tags, memoryType, metaJson, ts, iso, ts, iso, valid_until ?? null);
     }
     const row = this.db.prepare("SELECT id FROM memories WHERE content_hash = ?").get(contentHash);
+    if (!row) {
+      throw new Error("memory store failed: row was not created");
+    }
+    if (row && options.embedding)
+      this.storeEmbedding(row.id, options.embedding);
     return { hash: contentHash, id: row.id };
+  }
+  storeEmbedding(memoryId, embedding) {
+    const blob = typeof embedding === "string" ? Buffer.from(embedding, "base64") : embedding;
+    try {
+      const exists = this.db.prepare("SELECT 1 FROM memory_embeddings WHERE rowid = ? LIMIT 1").get(memoryId);
+      if (exists) {
+        this.db.prepare("UPDATE memory_embeddings SET content_embedding = ? WHERE rowid = ?").run(blob, memoryId);
+      } else {
+        this.db.prepare("INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)").run(memoryId, blob);
+      }
+    } catch {}
   }
   search(options = {}) {
     const {
@@ -147,15 +231,16 @@ class B12Database {
       stemmed = false,
       maxResponseChars = 40000
     } = options;
+    const boost = options.boost ?? true;
     const tagList = normalizeTags(options.tags).split(",").map((t) => t.trim()).filter(Boolean);
     const wheres = [
       "m.deleted_at IS NULL",
-      "(m.valid_until IS NULL OR m.valid_until > datetime('now'))"
+      activeValidUntilPredicate("m.valid_until")
     ];
     const params = [];
     for (const t of tagList) {
-      wheres.push("m.tags LIKE ?");
-      params.push(`%${t}%`);
+      wheres.push(tagPredicate("m.tags"));
+      params.push(tagParam(t));
     }
     if (options.after) {
       const ts = Math.floor(new Date(options.after).getTime() / 1000);
@@ -173,15 +258,16 @@ class B12Database {
     }
     const whereSql = wheres.join(" AND ");
     const results = new Map;
-    if (mode === "exact" && query) {
+    const searchMode = effectiveSearchMode(mode);
+    if (searchMode === "exact" && query) {
       const rows = this.db.prepare(`SELECT * FROM memories m
-           WHERE m.content LIKE ? AND ${whereSql}
-           ORDER BY m.created_at DESC LIMIT ?`).all(`%${query}%`, ...params, limit);
+           WHERE m.content LIKE ? ESCAPE '\\' AND ${whereSql}
+           ORDER BY m.created_at DESC LIMIT ?`).all(`%${escapeLike(query)}%`, ...params, limit);
       for (const r of rows) {
         results.set(r.content_hash, { row: r, score: unifiedScore(r, 0.9) });
       }
     }
-    if (mode === "hybrid" && query) {
+    if (searchMode === "hybrid" && query) {
       const ftsTable = stemmed ? "memory_fts_stemmed" : "memory_content_fts";
       for (const ftsAttempt of ["phrase", "or"]) {
         try {
@@ -222,7 +308,7 @@ class B12Database {
       }
     }
     const sorted = [...results.values()].sort((a, b) => b.score - a.score).slice(0, limit);
-    if (query && sorted.length > 0) {
+    if (boost && query && sorted.length > 0) {
       this.boostStrength(sorted.map((s) => s.row.id));
     }
     return sorted.map(({ row, score }) => ({
@@ -233,15 +319,16 @@ class B12Database {
   }
   searchFormatted(options = {}) {
     const { limit = 10, maxResponseChars = 40000 } = options;
+    const boost = options.boost ?? true;
     const tagList = normalizeTags(options.tags).split(",").map((t) => t.trim()).filter(Boolean);
     const wheres = [
       "m.deleted_at IS NULL",
-      "(m.valid_until IS NULL OR m.valid_until > datetime('now'))"
+      activeValidUntilPredicate("m.valid_until")
     ];
     const params = [];
     for (const t of tagList) {
-      wheres.push("m.tags LIKE ?");
-      params.push(`%${t}%`);
+      wheres.push(tagPredicate("m.tags"));
+      params.push(tagParam(t));
     }
     if (options.after) {
       const ts = Math.floor(new Date(options.after).getTime() / 1000);
@@ -260,12 +347,12 @@ class B12Database {
     const whereSql = wheres.join(" AND ");
     const results = new Map;
     const query = options.query || "";
-    const mode = options.mode || "hybrid";
+    const mode = effectiveSearchMode(options.mode || "hybrid");
     const stemmed = options.stemmed ?? false;
     if (mode === "exact" && query) {
       const rows = this.db.prepare(`SELECT * FROM memories m
-           WHERE m.content LIKE ? AND ${whereSql}
-           ORDER BY m.created_at DESC LIMIT ?`).all(`%${query}%`, ...params, limit);
+           WHERE m.content LIKE ? ESCAPE '\\' AND ${whereSql}
+           ORDER BY m.created_at DESC LIMIT ?`).all(`%${escapeLike(query)}%`, ...params, limit);
       for (const r of rows) {
         results.set(r.content_hash, { row: r, score: unifiedScore(r, 0.9) });
       }
@@ -311,7 +398,7 @@ class B12Database {
       }
     }
     const sorted = [...results.values()].sort((a, b) => b.score - a.score).slice(0, limit);
-    if (query && sorted.length > 0) {
+    if (boost && query && sorted.length > 0) {
       this.boostStrength(sorted.map((s) => s.row.id));
     }
     if (!sorted.length)
@@ -339,32 +426,58 @@ class B12Database {
       return [];
     const wheres = [
       "deleted_at IS NULL",
-      "(valid_until IS NULL OR valid_until > datetime('now'))"
+      activeValidUntilPredicate("valid_until")
     ];
     const params = [];
     for (const t of tagList) {
-      wheres.push("tags LIKE ?");
-      params.push(`%${t}%`);
+      wheres.push(tagPredicate("tags"));
+      params.push(tagParam(t));
     }
     return this.db.prepare(`SELECT * FROM memories
          WHERE ${wheres.join(" AND ")}
          ORDER BY created_at DESC LIMIT ?`).all(...params, limit);
   }
+  filterSearchResultsByTags(results, tags) {
+    if (!results.length)
+      return [];
+    const tagList = normalizeTags(tags).split(",").map((t) => t.trim()).filter(Boolean);
+    if (!tagList.length)
+      return results;
+    const ids = results.map((r) => r.id);
+    const idPlaceholders = ids.map(() => "?").join(",");
+    const wheres = [
+      `id IN (${idPlaceholders})`,
+      "deleted_at IS NULL",
+      activeValidUntilPredicate("valid_until")
+    ];
+    const params = [...ids];
+    for (const tag of tagList) {
+      wheres.push(tagPredicate("tags"));
+      params.push(tagParam(tag));
+    }
+    const rows = this.db.prepare(`SELECT id FROM memories WHERE ${wheres.join(" AND ")}`).all(...params);
+    const allowed = new Set(rows.map((row) => row.id));
+    return results.filter((result) => allowed.has(result.id));
+  }
   getUniversalKnowledge(limit = 5) {
     return this.db.prepare(`SELECT * FROM memories
-         WHERE deleted_at IS NULL
-           AND (valid_until IS NULL OR valid_until > datetime('now'))
+           WHERE deleted_at IS NULL
+           AND ${activeValidUntilPredicate("valid_until")}
            AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
-           AND memory_type NOT IN ('session_summary', 'progress')
+           AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
          ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                   * COALESCE(strength, 1.0) DESC
          LIMIT ?`).all(limit);
   }
   getByHash(contentHash) {
-    return this.db.prepare("SELECT * FROM memories WHERE content_hash = ? AND deleted_at IS NULL").get(contentHash);
+    return this.db.prepare(`SELECT * FROM memories
+         WHERE content_hash = ? AND deleted_at IS NULL
+           AND ${activeValidUntilPredicate("valid_until")}`).get(contentHash);
   }
   getById(id) {
-    return this.db.prepare("SELECT * FROM memories WHERE id = ? AND deleted_at IS NULL").get(id);
+    return this.db.prepare(`SELECT * FROM memories
+         WHERE id = ? AND deleted_at IS NULL
+           AND ${activeValidUntilPredicate("valid_until")}`).get(id);
   }
   update(contentHash, updates) {
     const row = this.db.prepare("SELECT * FROM memories WHERE content_hash = ? AND deleted_at IS NULL").get(contentHash);
@@ -426,7 +539,8 @@ class B12Database {
       meta = JSON.parse(row.metadata || "{}");
     } catch {}
     const userScore = { "1": 1, "0": 0.5, "-1": 0 };
-    const existing = Number(meta.quality_score) || 0.5;
+    const parsedExisting = Number(meta.quality_score);
+    const existing = Number.isFinite(parsedExisting) ? parsedExisting : 0.5;
     const newScore = Math.round((0.6 * (userScore[rating] ?? 0.5) + 0.4 * existing) * 1e4) / 1e4;
     meta.quality_score = newScore;
     meta.quality_provider = "user";
@@ -501,12 +615,12 @@ class B12Database {
       const projRows = this.db.prepare(`SELECT id, content, memory_type, tags, metadata, strength
            FROM memories
            WHERE deleted_at IS NULL
-             AND (valid_until IS NULL OR valid_until > datetime('now'))
-             AND tags LIKE ?
-             AND memory_type NOT IN ('session_summary', 'progress')
+             AND ${activeValidUntilPredicate("valid_until")}
+             AND ${tagPredicate("tags")}
+             AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
            ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                     * COALESCE(strength, 1.0) DESC
-           LIMIT 3`).all(`%proj:${projectName}%`);
+           LIMIT 3`).all(tagParam(`proj:${projectName}`));
       result.projectMemories = projRows.map((m) => ({
         content: m.content.slice(0, 300),
         memory_type: m.memory_type
@@ -518,9 +632,9 @@ class B12Database {
     }
     const universalRows = this.db.prepare(`SELECT content, memory_type FROM memories
          WHERE deleted_at IS NULL
-           AND (valid_until IS NULL OR valid_until > datetime('now'))
+           AND ${activeValidUntilPredicate("valid_until")}
            AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
-           AND memory_type NOT IN ('session_summary', 'progress')
+           AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
          ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
                   * COALESCE(strength, 1.0) DESC
          LIMIT 2`).all();
@@ -530,10 +644,10 @@ class B12Database {
     }));
     if (projectName) {
       const summaryRow = this.db.prepare(`SELECT content FROM memories
-           WHERE memory_type = 'session_summary'
+             WHERE memory_type = 'session_summary'
              AND deleted_at IS NULL
-             AND tags LIKE ?
-           ORDER BY created_at DESC LIMIT 1`).get(`%proj:${projectName}%`);
+             AND ${tagPredicate("tags")}
+           ORDER BY created_at DESC LIMIT 1`).get(tagParam(`proj:${projectName}`));
       if (summaryRow) {
         result.lastSessionSummary = summaryRow.content.slice(0, 800);
       }
@@ -551,7 +665,7 @@ class B12Database {
   getContentGuardrails() {
     const rows = this.db.prepare(`SELECT content FROM memories
          WHERE deleted_at IS NULL
-           AND (valid_until IS NULL OR valid_until > datetime('now'))
+           AND ${activeValidUntilPredicate("valid_until")}
            AND memory_type = 'guardrail'
          ORDER BY COALESCE(strength, 1.0) DESC`).all();
     return rows.map((r) => r.content);
@@ -637,20 +751,116 @@ class B12Database {
   }
 }
 
+// src/lib/chat-options.ts
+function textOf(value) {
+  if (typeof value === "string")
+    return value;
+  if (value && typeof value === "object")
+    return JSON.stringify(value);
+  return "";
+}
+function shouldEnableThinking(provider, model) {
+  const descriptor = `${textOf(provider)} ${textOf(model)}`.toLowerCase();
+  return descriptor.includes("anthropic") || descriptor.includes("claude");
+}
+function applyThinkingOption(provider, model, options) {
+  if (options.thinking !== undefined)
+    return;
+  if (shouldEnableThinking(provider, model)) {
+    options.thinking = { type: "enabled", clear_thinking: true };
+  }
+}
+
+// src/lib/permission.ts
+var TRUSTED_B12_TOOL_RE = /^(?:mcp__B12__|B12_)memory_(?:store|search|update|quality)$/;
+var B12_TOOL_NAME_RE = /^memory_(?:store|search|update|quality)$/;
+function stringValues(value) {
+  if (typeof value === "string")
+    return [value];
+  if (Array.isArray(value))
+    return value.flatMap(stringValues);
+  return [];
+}
+function isTrustedB12PermissionTool(input) {
+  if (input.type && !["tool", "mcp_tool", "permission"].includes(input.type)) {
+    return false;
+  }
+  const metadata = input.metadata || {};
+  const canonical = [
+    input.id,
+    ...stringValues(input.pattern),
+    metadata.tool,
+    metadata.toolName,
+    metadata.name,
+    metadata.command
+  ].filter((value) => typeof value === "string").map((value) => value.trim());
+  if (canonical.some((value) => TRUSTED_B12_TOOL_RE.test(value)))
+    return true;
+  const server = String(metadata.server || metadata.namespace || "").toLowerCase();
+  if (server !== "b12")
+    return false;
+  return [
+    ...canonical,
+    typeof input.title === "string" ? input.title.trim() : ""
+  ].some((value) => B12_TOOL_NAME_RE.test(value) || TRUSTED_B12_TOOL_RE.test(value));
+}
+
 // src/hooks/session-start.ts
-import { join as join2 } from "path";
-import { existsSync as existsSync2, readFileSync as readFileSync2 } from "fs";
-import { homedir as homedir2 } from "os";
+import { join as join3 } from "path";
+import { existsSync as existsSync3, readFileSync as readFileSync2 } from "fs";
+import { homedir as homedir3 } from "os";
 
 // src/lib/daemon.ts
+var exports_daemon = {};
+__export(exports_daemon, {
+  startDaemon: () => startDaemon,
+  semanticSearch: () => semanticSearch,
+  rerank: () => rerank,
+  health: () => health,
+  encodeBatch: () => encodeBatch,
+  classify: () => classify
+});
 import { connect } from "net";
 var {spawn } = globalThis.Bun;
+import { chmodSync, existsSync as existsSync2, mkdirSync as mkdirSync2, statSync } from "fs";
+import { join as join2 } from "path";
+import { homedir as homedir2 } from "os";
 var _UID = process.getuid?.() ?? process.pid;
-var SOCKET_PATH = `/tmp/b12-embed-${_UID}.sock`;
+var B12_BASE = process.env.B12_DATA_DIR || join2(homedir2(), ".B12");
+var RUNTIME_DIR = process.env.B12_EMBED_RUNTIME_DIR || join2(B12_BASE, "runtime");
+var SOCKET_PATH = join2(RUNTIME_DIR, `b12-embed-${_UID}.sock`);
 var REQUEST_TIMEOUT = 4000;
 var BATCH_TIMEOUT = 15000;
 var BUFFER_SIZE = 1024 * 1024;
+var _startupPromise = null;
+function ensureRuntimeDir() {
+  if (!existsSync2(RUNTIME_DIR)) {
+    mkdirSync2(RUNTIME_DIR, { recursive: true, mode: 448 });
+  }
+  try {
+    chmodSync(RUNTIME_DIR, 448);
+  } catch {}
+}
+function socketLooksSafe() {
+  try {
+    const st = statSync(SOCKET_PATH);
+    const mode = st.mode & 511;
+    if (st.uid !== _UID)
+      return false;
+    if ((mode & 63) !== 0)
+      return false;
+    return typeof st.isSocket === "function" ? st.isSocket() : true;
+  } catch {
+    return false;
+  }
+}
 function socketRequest(payload, timeout) {
+  if (process.env.B12_DISABLE_DAEMON === "1" || process.env.B12_DISABLE_DAEMON === "true") {
+    return Promise.resolve(null);
+  }
+  ensureRuntimeDir();
+  if (!socketLooksSafe())
+    return Promise.resolve(null);
   return new Promise((resolve) => {
     const socket = connect(SOCKET_PATH);
     let buffer = Buffer.alloc(0);
@@ -728,8 +938,23 @@ async function encodeBatch(texts) {
     return [];
   return res.embeddings;
 }
+async function classify(text) {
+  const res = await socketRequest({ op: "classify", text }, REQUEST_TIMEOUT);
+  if (!res?.ok || !res.type)
+    return null;
+  return { type: res.type, confidence: res.confidence ?? 0 };
+}
 var _daemonProcess = null;
 async function startDaemon(venvPython, scriptPath) {
+  if (_startupPromise)
+    return _startupPromise;
+  _startupPromise = startDaemonOnce(venvPython, scriptPath).finally(() => {
+    _startupPromise = null;
+  });
+  return _startupPromise;
+}
+async function startDaemonOnce(venvPython, scriptPath) {
+  ensureRuntimeDir();
   const h = await health();
   if (h.alive)
     return true;
@@ -738,7 +963,11 @@ async function startDaemon(venvPython, scriptPath) {
       cmd: [venvPython, scriptPath],
       stdout: "ignore",
       stderr: "ignore",
-      detached: true
+      detached: true,
+      env: {
+        ...process.env,
+        B12_EMBED_RUNTIME_DIR: RUNTIME_DIR
+      }
     });
     for (let i = 0;i < 20; i++) {
       await new Promise((r) => setTimeout(r, 500));
@@ -754,17 +983,24 @@ async function startDaemon(venvPython, scriptPath) {
 
 // src/hooks/session-start.ts
 var CHAR_BUDGET = 6000;
-var B12_BASE = process.env.B12_DATA_DIR || join2(homedir2(), ".B12");
+function b12Base() {
+  return process.env.B12_DATA_DIR || join3(homedir3(), ".B12");
+}
+function b12HookDir(base) {
+  return process.env.B12_HOOK_DIR || join3(base, "hooks");
+}
 async function sessionStart(project, cwd, db) {
-  const venvPython = join2(homedir2(), ".local", "b12-venv", "bin", "python3");
-  const scriptPath = join2(B12_BASE, "hooks", "scripts", "embed_daemon.py");
-  if (existsSync2(venvPython) && existsSync2(scriptPath)) {
+  const B12_BASE2 = b12Base();
+  const B12_HOOK_DIR = b12HookDir(B12_BASE2);
+  const venvPython = join3(homedir3(), ".local", "b12-venv", "bin", "python3");
+  const scriptPath = join3(B12_HOOK_DIR, "scripts", "embed_daemon.py");
+  if (existsSync3(venvPython) && existsSync3(scriptPath)) {
     await startDaemon(venvPython, scriptPath);
   }
   const sections = [];
   let totalChars = 0;
-  const profilePath = join2(B12_BASE, "user-profile.md");
-  if (existsSync2(profilePath)) {
+  const profilePath = join3(B12_BASE2, "user-profile.md");
+  if (existsSync3(profilePath)) {
     const profile = readFileSync2(profilePath, "utf-8").trim();
     if (profile && totalChars + profile.length < CHAR_BUDGET) {
       sections.push(`## User Profile
@@ -772,14 +1008,16 @@ ${profile}`);
       totalChars += profile.length;
     }
   }
-  const summaryDir = join2(B12_BASE, "memory-summaries");
-  const summaryFile = project ? join2(summaryDir, `${project}-latest.md`) : null;
-  if (summaryFile && existsSync2(summaryFile)) {
+  const summaryDir = join3(B12_BASE2, "memory-summaries");
+  const summaryFile = project ? join3(summaryDir, `${project}-latest.md`) : null;
+  if (summaryFile && existsSync3(summaryFile)) {
     const summary = readFileSync2(summaryFile, "utf-8").trim();
-    if (summary && totalChars + summary.length < CHAR_BUDGET) {
-      sections.push(`## Last Session Summary
-${summary.slice(0, 1500)}`);
-      totalChars += Math.min(summary.length, 1500);
+    const clipped = summary.slice(0, 1500);
+    const section = `## Last Session Summary
+${clipped}`;
+    if (clipped && totalChars + section.length < CHAR_BUDGET) {
+      sections.push(section);
+      totalChars += section.length;
     }
   }
   const context = db.getSessionContext(project);
@@ -811,9 +1049,9 @@ ${text}`);
       totalChars += text.length;
     }
   }
-  const feedbackDir = join2(B12_BASE, "memory-staging");
-  const feedbackFile = join2(feedbackDir, "feedback.jsonl");
-  if (existsSync2(feedbackFile)) {
+  const feedbackDir = join3(B12_BASE2, "memory-staging");
+  const feedbackFile = join3(feedbackDir, "feedback.jsonl");
+  if (existsSync3(feedbackFile)) {
     try {
       const lines = readFileSync2(feedbackFile, "utf-8").split(`
 `).filter((l) => l.trim()).slice(-20);
@@ -845,10 +1083,12 @@ ${text}`);
 }
 
 // src/hooks/message-retrieval.ts
-import { join as join3 } from "path";
-import { existsSync as existsSync3, readFileSync as readFileSync3 } from "fs";
-import { homedir as homedir3 } from "os";
-var B12_BASE2 = process.env.B12_DATA_DIR || join3(homedir3(), ".B12");
+import { join as join4 } from "path";
+import { homedir as homedir4 } from "os";
+import { platform as platform2 } from "process";
+var B12_BASE2 = process.env.B12_DATA_DIR || join4(homedir4(), ".B12");
+var B12_HOOK_DIR = process.env.B12_HOOK_DIR || join4(B12_BASE2, "hooks");
+var SEMANTIC_CANDIDATE_LIMIT = 25;
 var STOPWORDS_EN = new Set([
   "the",
   "a",
@@ -1159,42 +1399,23 @@ var STOPWORDS_TR = new Set([
   "m\xFC"
 ]);
 var ALL_STOPWORDS = new Set([...STOPWORDS_EN, ...STOPWORDS_TR]);
-var _aliases = null;
-function loadAliases() {
-  if (_aliases)
-    return _aliases;
-  const aliasPath = join3(B12_BASE2, "hooks", "scripts", "query_aliases.json");
-  if (existsSync3(aliasPath)) {
-    try {
-      _aliases = JSON.parse(readFileSync3(aliasPath, "utf-8"));
-      return _aliases;
-    } catch {}
+function getDbPath2() {
+  const home = homedir4();
+  if (platform2 === "darwin") {
+    return join4(home, "Library", "Application Support", "mcp-memory", "sqlite_vec.db");
   }
-  _aliases = {};
-  return _aliases;
+  if (platform2 === "win32") {
+    return join4(home, "AppData", "Local", "mcp-memory", "sqlite_vec.db");
+  }
+  return join4(home, ".local", "share", "mcp-memory", "sqlite_vec.db");
 }
 function extractKeywords(text) {
   const words = text.toLowerCase().replace(/[^\w\u00C0-\u024F\u1E00-\u1EFF]/g, " ").split(/\s+/).filter((w) => w.length >= 3 && !ALL_STOPWORDS.has(w));
   return [...new Set(words)];
 }
-function buildFtsQuery(keywords) {
-  if (keywords.length === 0)
-    return "";
-  const aliases = loadAliases();
-  const expanded = [];
-  for (const kw of keywords.slice(0, 8)) {
-    expanded.push(`"${kw.replace(/"/g, '""')}"`);
-    if (aliases[kw]) {
-      for (const alias of aliases[kw].slice(0, 2)) {
-        expanded.push(`"${alias.replace(/"/g, '""')}"`);
-      }
-    }
-  }
-  return expanded.join(" OR ");
-}
 function isGreeting(text) {
   const t = text.toLowerCase().trim();
-  const greetings = [
+  const exactGreetings = new Set([
     "hi",
     "hello",
     "hey",
@@ -1208,35 +1429,57 @@ function isGreeting(text) {
     "g\xFCnayd\u0131n",
     "iyi g\xFCnler",
     "iyi ak\u015Famlar"
-  ];
-  return greetings.some((g) => t === g || t.length < 20 && t.startsWith(g));
+  ]);
+  if (exactGreetings.has(t.replace(/[!.?]+$/g, "")))
+    return true;
+  return /^(hi|hello|hey|merhaba|selam)[!.?]?\s+(there|again|dostum|arkada\u015F\u0131m)[!.?]?$/i.test(t);
 }
 function isSlashCommand(text) {
   return text.trim().startsWith("/");
 }
 function isShortCommand(text) {
-  return text.trim().split(/\s+/).length <= 2 && text.length < 15;
+  const normalized = text.toLowerCase().trim().replace(/[!.?]+$/g, "");
+  return new Set([
+    "ok",
+    "yes",
+    "no",
+    "evet",
+    "hay\u0131r",
+    "tamam",
+    "done",
+    "continue",
+    "devam",
+    "yap"
+  ]).has(normalized);
 }
-async function messageRetrieval(userMessage, project, db) {
+function shouldAttemptMessageRetrieval(text) {
+  const userMessage = text.trim();
+  if (!userMessage)
+    return false;
+  return !isGreeting(userMessage) && !isSlashCommand(userMessage) && !isShortCommand(userMessage);
+}
+async function messageRetrieval(userMessage, project, db, semanticClient = exports_daemon) {
   const startTime = Date.now();
-  if (isGreeting(userMessage) || isSlashCommand(userMessage) || isShortCommand(userMessage)) {
+  if (!shouldAttemptMessageRetrieval(userMessage)) {
     return "";
   }
   const keywords = extractKeywords(userMessage);
   if (keywords.length === 0)
     return "";
-  const ftsQuery = buildFtsQuery(keywords);
+  const rawQuery = keywords.join(" ");
   let ftsResults = db.search({
-    query: ftsQuery,
+    query: rawQuery,
     mode: "hybrid",
     tags: [`proj:${project}`],
-    limit: 10
+    limit: 10,
+    boost: false
   });
   let semanticResults = [];
   try {
-    const daemonAlive = await health();
+    const daemonAlive = await semanticClient.health();
     if (daemonAlive.alive) {
-      semanticResults = await semanticSearch(keywords.join(" "), getDbPath(), 5);
+      const semanticCandidates = await semanticClient.semanticSearch(keywords.join(" "), getDbPath2(), SEMANTIC_CANDIDATE_LIMIT);
+      semanticResults = db.filterSearchResultsByTags(semanticCandidates, [`proj:${project}`]).slice(0, 5);
     }
   } catch {}
   const mergedMap = new Map;
@@ -1260,7 +1503,7 @@ async function messageRetrieval(userMessage, project, db) {
   let reranked = false;
   if (merged.length > 1) {
     try {
-      const rankedIds = await rerank(keywords.join(" "), getDbPath(), merged.map((m) => m.id));
+      const rankedIds = await semanticClient.rerank(keywords.join(" "), getDbPath2(), merged.map((m) => m.id));
       if (rankedIds.length > 0) {
         reranked = true;
         const idOrder = new Map(rankedIds.map((id, i) => [id, i]));
@@ -1274,7 +1517,7 @@ async function messageRetrieval(userMessage, project, db) {
   }
   db.boostStrength(merged.map((m) => m.id));
   const latencyMs = Date.now() - startTime;
-  const stagingDir = join3(B12_BASE2, "memory-staging");
+  const stagingDir = join4(B12_BASE2, "memory-staging");
   try {
     db.logFeedback(stagingDir, {
       query: userMessage.slice(0, 200),
@@ -1295,19 +1538,25 @@ ${lines.join(`
 }
 
 // src/hooks/tag-enforce.ts
-import { join as join4 } from "path";
-import { homedir as homedir4 } from "os";
-var B12_BASE3 = process.env.B12_DATA_DIR || join4(homedir4(), ".B12");
+import { join as join5 } from "path";
+import { homedir as homedir5 } from "os";
+var B12_BASE3 = process.env.B12_DATA_DIR || join5(homedir5(), ".B12");
 function tagEnforce(input, output, project, setupContext) {
   if (input.tool !== "B12_memory_store" && input.tool !== "mcp__B12__memory_store")
     return;
   const args = output.args;
   const metadataRaw = args.metadata;
+  const metadata = metadataRaw && typeof metadataRaw === "object" && !Array.isArray(metadataRaw) ? { ...metadataRaw } : {};
   let tags = [];
-  if (typeof args.tags === "string") {
+  const metadataTags = metadata.tags;
+  if (typeof metadataTags === "string") {
+    tags = metadataTags.split(",").map((t) => t.trim()).filter(Boolean);
+  } else if (Array.isArray(metadataTags)) {
+    tags = metadataTags.map(String).map((t) => t.trim()).filter(Boolean);
+  } else if (typeof args.tags === "string") {
     tags = args.tags.split(",").map((t) => t.trim()).filter(Boolean);
   } else if (Array.isArray(args.tags)) {
-    tags = args.tags;
+    tags = args.tags.map(String).map((t) => t.trim()).filter(Boolean);
   }
   let hasProj = tags.some((t) => t.startsWith("proj:"));
   let hasUser = tags.some((t) => t.startsWith("user:"));
@@ -1323,28 +1572,35 @@ function tagEnforce(input, output, project, setupContext) {
     }
     hasUser = true;
   }
-  output.args = { ...args, tags: tags.join(",") };
+  metadata.tags = tags;
+  const nextArgs = { ...args, metadata };
+  if (input.tool === "mcp__B12__memory_store") {
+    delete nextArgs.tags;
+  } else {
+    nextArgs.tags = tags.join(",");
+  }
+  output.args = nextArgs;
 }
 
 // src/hooks/post-tool.ts
-import { join as join6, basename as basename2 } from "path";
-import { homedir as homedir5 } from "os";
+import { join as join7, basename as basename2, relative, isAbsolute } from "path";
+import { homedir as homedir6 } from "os";
 
 // src/lib/patterns.ts
-var DECISION_RE = /(?i)(?:(?:decided|chose|going with|selected|opted for|switched to|went with)\s+.{5,}|(?:will use|using|let.?s use|we.?ll use)\s+\S+\s+(?:instead of|rather than|for|because)\s+|(?:the (?:approach|solution|decision|plan) is to)\s+|(?:switching from|replacing|migrating from)\s+\S+\s+(?:to|with)\s+|(?:karar verdik?|se\u00E7tik?|tercih ettik?|bununla gid|bunu kullan)\s*.{5,}|(?:yerine|de\u011Fil de|bunun yerine)\s+\S+\s+.{3,}|(?:plan\u0131m\u0131z|yakla\u015F\u0131m\u0131m\u0131z|\u00E7\u00F6z\u00FCm(?:\u00FCm\u00FCz)?)\s+.{5,})/;
-var ERROR_RE = /(?i)(?:(?:fixed|resolved|solved|workaround for)\s+.{5,}|(?:the fix|the solution|root cause)\s*(?:is|was|:)\s+|(?:error|bug|issue)\s+.{0,40}(?:was caused by|because|due to|fixed by)|(?:had to|needed to)\s+.{3,40}(?:because|due to|since)\s+.{3,}(?:error|bug|fail|broke|crash)|(?:d\u00FCzelttik?|\u00E7\u00F6zd\u00FCk?|giderdik?|fix.?ledik?)\s+.{5,}|(?:hata|bug|sorun)\s+.{0,40}(?:sebebi|nedeni|\u00E7\u00F6z\u00FCm\u00FC|d\u00FCzeltmesi)|(?:sorun \u015Fuydu|hata \u015Fuydu|sebebi \u015Fuydu)\s*(?::)?\s+)/;
-var LEARNING_RE = /(?i)(?:(?:turns out|TIL|important to note|gotcha|pitfall|caveat|note:)\s*(?::|that|,)?\s+|(?:learned|discovered|realized|found out)\s+that\s+|(?:the (?:trick|key|insight|important thing) (?:is|was))\s+|(?:remember|important):\s+|(?:pro.?tip|heads.?up|watch out|be careful|don.?t forget)\s*(?::|,)\s+|(?:me\u011Fer|me\u011Ferse|anla\u015F\u0131lan)\s+.{5,}|(?:\u00F6\u011Frendik?|fark ettik?|ke\u015Ffettik?)\s+.{3,}|(?:dikkat|\u00F6nemli|unutma)(?::|\s).{5,})/;
-var PREFERENCE_RE = /(?i)(?:(?:user\s+(?:prefers?|wants?|asked for|(?:does ?\x27?n.?t|never)\s+(?:want|like|use)))|(?:always use|never use|convention is|style preference|workflow:)|\[user\]\s+|(?:kullan\u0131c\u0131\s+(?:tercih|istiyor|istemiyor|istemez))|(?:her zaman|hi\u00E7bir zaman|asla|daima)\s+(?:kullan|yap|kullanma|yapma))/;
-var TOOL_PREF_RE = /(?i)(?:(?:always use|prefer\s+\S+\s+over)\s+.{5,}|(?:works?\s+better\s+than)\s+.{5,}|(?:switched to|switching to)\s+\S+\s+(?:for|because)\s+.{5,}|(?:don.?t use|avoid using|stop using)\s+\S+\s+(?:because|for|since)\s+.{3,}|(?:prefer\s+\S+\s+for)\s+.{5,}|(?:hep\s+\S+\s+kullan)\s*.{5,}|(?:\S+.?[\u0131i]\s+tercih\s+et)\s*.{5,}|(?:daha\s+iyi\s+\u00E7al\u0131\u015F\u0131yor)\s*.{3,}|(?:\S+\s+kullanma\s+\u00E7\u00FCnk\u00FC)\s+.{5,})/;
-var ARCH_RE = /(?i)(?:(?:the\s+architecture\s+is)\s+.{5,}|(?:we\s+structured\s+it\s+as)\s+.{5,}|(?:the\s+pattern\s+we\s+use\s+is)\s+.{5,}|(?:built\s+on\s+top\s+of)\s+.{5,}|(?:the\s+design\s+is)\s+.{5,}|(?:using\s+\S+\s+(?:pattern|approach|architecture))\s+.{3,}|(?:the\s+(?:system|service|module|component)\s+(?:is structured|is designed|follows))\s+.{5,}|(?:mimari(?:si|miz)?\s+(?:\u015F\u00F6yle|b\u00F6yle|olarak))\s*.{5,}|(?:yap\u0131(?:s\u0131|m\u0131z)?\s+(?:\u015F\u00F6yle|b\u00F6yle|olarak))\s*.{5,}|(?:tasar\u0131m(?:\u0131|\u0131m\u0131z)?\s+(?:\u015F\u00F6yle|b\u00F6yle|olarak))\s*.{5,}|(?:bunun\s+\u00FCzerine\s+kurduk)\s*.{5,}|(?:yakla\u015F\u0131m\s+olarak)\s+.{5,})/;
-var WORKFLOW_RE = /(?i)(?:(?:the\s+workflow\s+is)\s*(?::)?\s+.{5,}|(?:the\s+process\s+is)\s*(?::)?\s+.{5,}|(?:first\s+\S+\s+then)\s+.{5,}|(?:deploy\s+with)\s+.{5,}|(?:run\s+\S+\s+before)\s+.{5,}|(?:the\s+pipeline\s+is)\s*(?::)?\s+.{5,}|(?:the\s+(?:build|release|test|ci)\s+(?:process|pipeline|flow)\s+(?:is|goes|works))\s+.{5,}|(?:step\s+\d+\s*(?::|is|,))\s+.{5,}|(?:i\u015F\s*ak\u0131\u015F\u0131(?:m\u0131z)?\s*(?::|\u015F\u00F6yle|b\u00F6yle))\s*.{5,}|(?:s\u00FCre\u00E7\s*(?::|\u015F\u00F6yle|b\u00F6yle))\s*.{5,}|(?:\u00F6nce\s+\S+\s+sonra)\s+.{5,}|(?:deploy\s+i\u00E7in)\s+.{5,}|(?:s\u0131ras\u0131yla)\s+.{5,})/;
-var FILE_CONV_RE = /(?i)(?:(?:files?\s+go\s+in)\s+.{5,}|(?:naming\s+convention\s+(?:is|for))\s+.{5,}|(?:put\s+\S+\s+in\s+(?:the\s+)?\S+\s+directory)\s*.{3,}|(?:file\s+structure\s+(?:is|looks))\s+.{5,}|(?:organized\s+as)\s+.{5,}|(?:(?:directory|folder)\s+(?:structure|layout|convention)\s+(?:is|for))\s+.{5,}|(?:dosyalar\s+\S+.?[ea]\s+konur)\s*.{3,}|(?:isimlendirme\s+kural\u0131)\s*.{5,}|(?:dosya\s+yap\u0131s\u0131)\s*.{5,}|(?:d\u00FCzen\s+olarak)\s+.{5,})/;
-var CORRECTION_RE = /(?i)(?:(?:not\s+.{3,30}(?:,\s*|\s+but\s+)(?:it.?s|actually)\s+.{3,30})|(?:(?:wrong|incorrect)\s+.{0,20}(?:should be|is actually)\s+.{3,30})|(?:changed?\s+(?:from|my)\s+.{3,30}\s+to\s+.{3,30})|(?:(?:yanl\u0131\u015F|hatal\u0131)\s+.{3,30}(?:asl\u0131nda|art\u0131k|olarak)\s+.{3,30})|(?:(?:de\u011Fil)\s+.{3,30}(?:art\u0131k|\u015Fimdi)\s+.{3,30}))/;
-var INFRA_RE = /(?i)(?:(?:(?:server|host|ip|vps|ssh)\s+.{0,30}(?:\d{1,3}\.){3}\d{1,3})|(?:ssh\s+[-\w]+@[\w.-]+)|(?:(?:version|s\u00FCr\u00FCm)\s+.{0,10}v?\d+\.\d+)|(?:port\s+\d{2,5}))/;
-var CONTENT_RE = /(?i)(?:(?:(?:blog|article)\s+.{0,30}(?:published|approved|rejected|haz\u0131r|onayland\u0131))|(?:(?:editorial|content)\s+decision\s*:\s+.{5,})|(?:(?:do not|never|asla)\s+(?:write|post|publish|mention)\s+.{5,})|(?:(?:review|feedback)\s*:\s+.{5,}))/;
-var IMPLICIT_DECISION_RE = /(?i)(?:(?:let.?s\s+(?:go\s+with|use|try|pick|choose|stick with)\s+.{3,80})|(?:going\s+to\s+use\s+.{3,80})|(?:plan\s+is\s+to\s+.{3,80})|(?:(?:I|we).?(?:ll|will)\s+(?:go with|use|try|pick)\s+.{3,80})|(?:(?:better|best)\s+to\s+(?:use|go with|try)\s+.{3,80})|(?:(?:yapaca\u011F\u0131z|kullanal\u0131m|ge\u00E7elim|deneyelim|se\u00E7elim)\s+.{3,80})|(?:(?:bununla|bunu|\u015Funu)\s+(?:gidelim|deneyelim|kullanal\u0131m)\s*.{0,80})|(?:(?:en iyisi|daha iyi)\s+.{3,80}))/;
-var REASON_RE = /(?i)(?:(?:because\s+.{10,200})|(?:since\s+.{10,200})|(?:the\s+reason\s+(?:is|was|being)\s+.{10,200})|(?:due\s+to\s+.{10,200})|(?:this\s+is\s+(?:because|since|due to)\s+.{10,200})|(?:\u00E7\u00FCnk\u00FC\s+.{10,200})|(?:(?:nedeni|sebebi|sebebiyle)\s+.{10,200})|(?:(?:bunun\s+nedeni|bunun\s+sebebi)\s+.{10,200}))/;
-var BLOCKER_RE = /(?i)(?:(?:blocked\s+by\s+.{5,150})|(?:waiting\s+for\s+.{5,150})|(?:can.?t\s+proceed\s+.{5,150})|(?:stuck\s+on\s+.{5,150})|(?:(?:depends|dependent)\s+on\s+.{5,150})|(?:need\s+to\s+(?:wait|resolve|fix)\s+.{5,150})|(?:(?:bekliyor|tak\u0131ld\u0131k|t\u0131kand\u0131k)\s+.{5,150})|(?:(?:buna\s+ba\u011Fl\u0131|bundan\s+\u00F6nce)\s+.{5,150})|(?:(?:\u00E7\u00F6zmemiz|d\u00FCzeltmemiz)\s+(?:laz\u0131m|gerek)\s*.{0,150}))/;
+var DECISION_RE = /(?:(?:decided|chose|going with|selected|opted for|switched to|went with)\s+.{5,}|(?:will use|using|let.?s use|we.?ll use)\s+\S+\s+(?:instead of|rather than|for|because)\s+|(?:the (?:approach|solution|decision|plan) is to)\s+|(?:switching from|replacing|migrating from)\s+\S+\s+(?:to|with)\s+|(?:karar verdik?|se\u00E7tik?|tercih ettik?|bununla gid|bunu kullan)\s*.{5,}|(?:yerine|de\u011Fil de|bunun yerine)\s+\S+\s+.{3,}|(?:plan\u0131m\u0131z|yakla\u015F\u0131m\u0131m\u0131z|\u00E7\u00F6z\u00FCm(?:\u00FCm\u00FCz)?)\s+.{5,})/i;
+var ERROR_RE = /(?:(?:fixed|resolved|solved|workaround for)\s+.{5,}|(?:the fix|the solution|root cause)\s*(?:is|was|:)\s+|(?:error|bug|issue)\s+.{0,40}(?:was caused by|because|due to|fixed by)|(?:had to|needed to)\s+.{3,40}(?:because|due to|since)\s+.{3,}(?:error|bug|fail|broke|crash)|(?:d\u00FCzelttik?|\u00E7\u00F6zd\u00FCk?|giderdik?|fix.?ledik?)\s+.{5,}|(?:hata|bug|sorun)\s+.{0,40}(?:sebebi|nedeni|\u00E7\u00F6z\u00FCm\u00FC|d\u00FCzeltmesi)|(?:sorun \u015Fuydu|hata \u015Fuydu|sebebi \u015Fuydu)\s*(?::)?\s+)/i;
+var LEARNING_RE = /(?:(?:turns out|TIL|important to note|gotcha|pitfall|caveat|note:)\s*(?::|that|,)?\s+|(?:learned|discovered|realized|found out)\s+that\s+|(?:the (?:trick|key|insight|important thing) (?:is|was))\s+|(?:remember|important):\s+|(?:pro.?tip|heads.?up|watch out|be careful|don.?t forget)\s*(?::|,)\s+|(?:me\u011Fer|me\u011Ferse|anla\u015F\u0131lan)\s+.{5,}|(?:\u00F6\u011Frendik?|fark ettik?|ke\u015Ffettik?)\s+.{3,}|(?:dikkat|\u00F6nemli|unutma)(?::|\s).{5,})/i;
+var PREFERENCE_RE = /(?:(?:user\s+(?:prefers?|wants?|asked for|(?:does ?\x27?n.?t|never)\s+(?:want|like|use)))|(?:always use|never use|convention is|style preference|workflow:)|\[user\]\s+|(?:kullan\u0131c\u0131\s+(?:tercih|istiyor|istemiyor|istemez))|(?:her zaman|hi\u00E7bir zaman|asla|daima)\s+(?:kullan|yap|kullanma|yapma))/i;
+var TOOL_PREF_RE = /(?:(?:always use|prefer\s+\S+\s+over)\s+.{5,}|(?:works?\s+better\s+than)\s+.{5,}|(?:switched to|switching to)\s+\S+\s+(?:for|because)\s+.{5,}|(?:don.?t use|avoid using|stop using)\s+\S+\s+(?:because|for|since)\s+.{3,}|(?:prefer\s+\S+\s+for)\s+.{5,}|(?:hep\s+\S+\s+kullan)\s*.{5,}|(?:\S+.?[\u0131i]\s+tercih\s+et)\s*.{5,}|(?:daha\s+iyi\s+\u00E7al\u0131\u015F\u0131yor)\s*.{3,}|(?:\S+\s+kullanma\s+\u00E7\u00FCnk\u00FC)\s+.{5,})/i;
+var ARCH_RE = /(?:(?:the\s+architecture\s+is)\s+.{5,}|(?:we\s+structured\s+it\s+as)\s+.{5,}|(?:the\s+pattern\s+we\s+use\s+is)\s+.{5,}|(?:built\s+on\s+top\s+of)\s+.{5,}|(?:the\s+design\s+is)\s+.{5,}|(?:using\s+\S+\s+(?:pattern|approach|architecture))\s+.{3,}|(?:the\s+(?:system|service|module|component)\s+(?:is structured|is designed|follows))\s+.{5,}|(?:mimari(?:si|miz)?\s+(?:\u015F\u00F6yle|b\u00F6yle|olarak))\s*.{5,}|(?:yap\u0131(?:s\u0131|m\u0131z)?\s+(?:\u015F\u00F6yle|b\u00F6yle|olarak))\s*.{5,}|(?:tasar\u0131m(?:\u0131|\u0131m\u0131z)?\s+(?:\u015F\u00F6yle|b\u00F6yle|olarak))\s*.{5,}|(?:bunun\s+\u00FCzerine\s+kurduk)\s*.{5,}|(?:yakla\u015F\u0131m\s+olarak)\s+.{5,})/i;
+var WORKFLOW_RE = /(?:(?:the\s+workflow\s+is)\s*(?::)?\s+.{5,}|(?:the\s+process\s+is)\s*(?::)?\s+.{5,}|(?:first\s+\S+\s+then)\s+.{5,}|(?:deploy\s+with)\s+.{5,}|(?:run\s+\S+\s+before)\s+.{5,}|(?:the\s+pipeline\s+is)\s*(?::)?\s+.{5,}|(?:the\s+(?:build|release|test|ci)\s+(?:process|pipeline|flow)\s+(?:is|goes|works))\s+.{5,}|(?:step\s+\d+\s*(?::|is|,))\s+.{5,}|(?:i\u015F\s*ak\u0131\u015F\u0131(?:m\u0131z)?\s*(?::|\u015F\u00F6yle|b\u00F6yle))\s*.{5,}|(?:s\u00FCre\u00E7\s*(?::|\u015F\u00F6yle|b\u00F6yle))\s*.{5,}|(?:\u00F6nce\s+\S+\s+sonra)\s+.{5,}|(?:deploy\s+i\u00E7in)\s+.{5,}|(?:s\u0131ras\u0131yla)\s+.{5,})/i;
+var FILE_CONV_RE = /(?:(?:files?\s+go\s+in)\s+.{5,}|(?:naming\s+convention\s+(?:is|for))\s+.{5,}|(?:put\s+\S+\s+in\s+(?:the\s+)?\S+\s+directory)\s*.{3,}|(?:file\s+structure\s+(?:is|looks))\s+.{5,}|(?:organized\s+as)\s+.{5,}|(?:(?:directory|folder)\s+(?:structure|layout|convention)\s+(?:is|for))\s+.{5,}|(?:dosyalar\s+\S+.?[ea]\s+konur)\s*.{3,}|(?:isimlendirme\s+kural\u0131)\s*.{5,}|(?:dosya\s+yap\u0131s\u0131)\s*.{5,}|(?:d\u00FCzen\s+olarak)\s+.{5,})/i;
+var CORRECTION_RE = /(?:(?:not\s+.{3,30}(?:,\s*|\s+but\s+)(?:it.?s|actually)\s+.{3,30})|(?:(?:wrong|incorrect)\s+.{0,20}(?:should be|is actually)\s+.{3,30})|(?:changed?\s+(?:from|my)\s+.{3,30}\s+to\s+.{3,30})|(?:(?:yanl\u0131\u015F|hatal\u0131)\s+.{3,30}(?:asl\u0131nda|art\u0131k|olarak)\s+.{3,30})|(?:(?:de\u011Fil)\s+.{3,30}(?:art\u0131k|\u015Fimdi)\s+.{3,30}))/i;
+var INFRA_RE = /(?:(?:(?:server|host|ip|vps|ssh)\s+.{0,30}(?:\d{1,3}\.){3}\d{1,3})|(?:ssh\s+[-\w]+@[\w.-]+)|(?:(?:version|s\u00FCr\u00FCm)\s+.{0,10}v?\d+\.\d+)|(?:port\s+\d{2,5}))/i;
+var CONTENT_RE = /(?:(?:(?:blog|article)\s+.{0,30}(?:published|approved|rejected|haz\u0131r|onayland\u0131))|(?:(?:editorial|content)\s+decision\s*:\s+.{5,})|(?:(?:do not|never|asla)\s+(?:write|post|publish|mention)\s+.{5,})|(?:(?:review|feedback)\s*:\s+.{5,}))/i;
+var IMPLICIT_DECISION_RE = /(?:(?:let.?s\s+(?:go\s+with|use|try|pick|choose|stick with)\s+.{3,80})|(?:going\s+to\s+use\s+.{3,80})|(?:plan\s+is\s+to\s+.{3,80})|(?:(?:I|we).?(?:ll|will)\s+(?:go with|use|try|pick)\s+.{3,80})|(?:(?:better|best)\s+to\s+(?:use|go with|try)\s+.{3,80})|(?:(?:yapaca\u011F\u0131z|kullanal\u0131m|ge\u00E7elim|deneyelim|se\u00E7elim)\s+.{3,80})|(?:(?:bununla|bunu|\u015Funu)\s+(?:gidelim|deneyelim|kullanal\u0131m)\s*.{0,80})|(?:(?:en iyisi|daha iyi)\s+.{3,80}))/i;
+var REASON_RE = /(?:(?:because\s+.{10,200})|(?:since\s+.{10,200})|(?:the\s+reason\s+(?:is|was|being)\s+.{10,200})|(?:due\s+to\s+.{10,200})|(?:this\s+is\s+(?:because|since|due to)\s+.{10,200})|(?:\u00E7\u00FCnk\u00FC\s+.{10,200})|(?:(?:nedeni|sebebi|sebebiyle)\s+.{10,200})|(?:(?:bunun\s+nedeni|bunun\s+sebebi)\s+.{10,200}))/i;
+var BLOCKER_RE = /(?:(?:blocked\s+by\s+.{5,150})|(?:waiting\s+for\s+.{5,150})|(?:can.?t\s+proceed\s+.{5,150})|(?:stuck\s+on\s+.{5,150})|(?:(?:depends|dependent)\s+on\s+.{5,150})|(?:need\s+to\s+(?:wait|resolve|fix)\s+.{5,150})|(?:(?:bekliyor|tak\u0131ld\u0131k|t\u0131kand\u0131k)\s+.{5,150})|(?:(?:buna\s+ba\u011Fl\u0131|bundan\s+\u00F6nce)\s+.{5,150})|(?:(?:\u00E7\u00F6zmemiz|d\u00FCzeltmemiz)\s+(?:laz\u0131m|gerek)\s*.{0,150}))/i;
 var SUMMARY_MARKERS = [
   "# Session Summary",
   "## Decisions Made",
@@ -1438,6 +1694,7 @@ function scoreExtraction(text, category) {
         score += 1;
       break;
     case "arch":
+    case "architecture":
       if (hasAny(["architecture", "pattern", "design", "structure", "layer", "mimari", "tasar\u0131m", "yap\u0131", "katman"]))
         score += 1;
       if (hasAny(["because", "so that", "enables", "\xE7\xFCnk\xFC", "sa\u011Flar"]))
@@ -1448,6 +1705,7 @@ function scoreExtraction(text, category) {
         score += 2;
       break;
     case "file_conv":
+    case "file_convention":
       if (hasAny(["directory", "folder", "path", "naming", "convention", "dizin", "klas\xF6r", "dosya", "isimlendirme"]))
         score += 2;
       break;
@@ -1458,6 +1716,7 @@ function scoreExtraction(text, category) {
         score += 1;
       break;
     case "infra":
+    case "infrastructure":
       if (/(?:\d{1,3}\.){3}\d{1,3}/.test(text))
         score += 2;
       if (/port\s+\d{2,5}/.test(tl))
@@ -1517,16 +1776,78 @@ function extractPatterns(text, maxLen = 500) {
     let m;
     while ((m = globalRegex.exec(text)) !== null) {
       const matchText = m[0].trim();
-      if (matchText.length < 15 || matchText.length > maxLen)
+      const boundedText = matchText.length > maxLen ? matchText.slice(0, maxLen).trim() : matchText;
+      if (boundedText.length < 15)
         continue;
-      const key = matchText.slice(0, 80);
+      const key = boundedText.slice(0, 80);
       if (seen.has(key))
         continue;
       seen.add(key);
-      matches.push({ content: matchText, category, score: baseScore });
+      matches.push({ content: boundedText, category, score: baseScore });
     }
   }
   return matches;
+}
+var MACRO_VERB_RE = /^[ \t]*\[M#([a-zA-Z_][a-zA-Z0-9_-]{0,31})(?::([123]))?\]\s+([^\n]{4,400})/;
+var MACRO_TYPE_ALIASES = {
+  dec: "decision",
+  err: "gotcha",
+  err_fix: "gotcha",
+  fix: "gotcha",
+  learn: "learning",
+  pref: "preference",
+  arch: "architecture"
+};
+var MACRO_TYPE_ALLOWLIST = new Set([
+  "decision",
+  "learning",
+  "gotcha",
+  "preference",
+  "architecture",
+  "pattern"
+]);
+var MACRO_IMPORTANCE = { "1": 1, "2": 1.5, "3": 2 };
+function extractMacroVerbs(messages, maxCount = 20) {
+  const seen = new Set;
+  const out = [];
+  for (const msg of messages) {
+    if (msg.role !== "user")
+      continue;
+    const text = msg.content || "";
+    if (!text || !text.includes("[M#"))
+      continue;
+    let inFence = false;
+    for (const line of text.split(/\r?\n/)) {
+      if (/^[ \t]*```/.test(line)) {
+        inFence = !inFence;
+        continue;
+      }
+      if (inFence)
+        continue;
+      const m = MACRO_VERB_RE.exec(line);
+      if (!m)
+        continue;
+      let t = (m[1] || "").toLowerCase();
+      t = MACRO_TYPE_ALIASES[t] || t;
+      if (!MACRO_TYPE_ALLOWLIST.has(t))
+        continue;
+      const content = m[3].trim();
+      const key = `${t}::${content.slice(0, 120)}`;
+      if (seen.has(key))
+        continue;
+      seen.add(key);
+      const role = msg.role === "user" || msg.role === "assistant" ? msg.role : "system";
+      out.push({
+        type: t,
+        importance: MACRO_IMPORTANCE[m[2] || "1"] || 1,
+        content,
+        source: role
+      });
+      if (out.length >= maxCount)
+        return out;
+    }
+  }
+  return out;
 }
 function dedup(items, maxCount = 5) {
   const seen = new Set;
@@ -1542,24 +1863,25 @@ function dedup(items, maxCount = 5) {
 }
 
 // src/lib/state.ts
-import { renameSync, existsSync as existsSync4, mkdirSync as mkdirSync2 } from "fs";
-import { join as join5, dirname } from "path";
+import { renameSync, existsSync as existsSync4, mkdirSync as mkdirSync3 } from "fs";
+import { join as join6, dirname } from "path";
+import { randomUUID } from "crypto";
 var MAX_ACTIVE_FILES = 20;
 var MAX_MODIFIED_FILES = 15;
 var MAX_SEARCH_PATTERNS = 10;
 var FEEDBACK_MAX_LINES = 5000;
 var FEEDBACK_TRIM_TO = 2500;
-function atomicWrite(filePath, content) {
+async function atomicWrite(filePath, content) {
   const dir = dirname(filePath);
   if (!existsSync4(dir)) {
-    mkdirSync2(dir, { recursive: true });
+    mkdirSync3(dir, { recursive: true });
   }
-  const tmpPath = filePath + ".tmp";
-  Bun.write(tmpPath, content);
+  const tmpPath = `${filePath}.${process.pid}.${Date.now()}.${randomUUID()}.tmp`;
+  await Bun.write(tmpPath, content);
   renameSync(tmpPath, filePath);
 }
-function atomicWriteJSON(filePath, data) {
-  atomicWrite(filePath, JSON.stringify(data, null, 2) + `
+async function atomicWriteJSON(filePath, data) {
+  await atomicWrite(filePath, JSON.stringify(data, null, 2) + `
 `);
 }
 function createWorkingMemory(sessionId) {
@@ -1609,7 +1931,7 @@ function addSearchPattern(memory, pattern) {
   };
 }
 async function loadWorkingMemory(stagingDir) {
-  const filePath = join5(stagingDir, "working-memory.json");
+  const filePath = join6(stagingDir, "working-memory.json");
   if (!existsSync4(filePath))
     return null;
   try {
@@ -1620,14 +1942,14 @@ async function loadWorkingMemory(stagingDir) {
     return null;
   }
 }
-function saveWorkingMemory(stagingDir, memory) {
-  const filePath = join5(stagingDir, "working-memory.json");
-  atomicWriteJSON(filePath, memory);
+async function saveWorkingMemory(stagingDir, memory) {
+  const filePath = join6(stagingDir, "working-memory.json");
+  await atomicWriteJSON(filePath, memory);
 }
 async function appendFeedback(stagingDir, entry) {
-  const filePath = join5(stagingDir, "feedback.jsonl");
+  const filePath = join6(stagingDir, "feedback.jsonl");
   if (!existsSync4(stagingDir)) {
-    mkdirSync2(stagingDir, { recursive: true });
+    mkdirSync3(stagingDir, { recursive: true });
   }
   const line = JSON.stringify(entry) + `
 `;
@@ -1641,20 +1963,32 @@ async function appendFeedback(stagingDir, entry) {
 `).filter((l) => l.trim().length > 0);
   if (lines.length > FEEDBACK_MAX_LINES) {
     const trimmed = lines.slice(-FEEDBACK_TRIM_TO);
-    atomicWrite(filePath, trimmed.join(`
+    await atomicWrite(filePath, trimmed.join(`
 `) + `
 `);
   } else {
-    Bun.write(filePath, line, { create: true, append: true });
+    await Bun.write(filePath, line, { create: true, append: true });
   }
 }
 
 // src/hooks/post-tool.ts
-var B12_BASE4 = process.env.B12_DATA_DIR || join6(homedir5(), ".B12");
 var CHECKPOINT_CALL_INTERVAL = 15;
 var CHECKPOINT_TIME_INTERVAL = 600000;
+function getB12Base() {
+  return process.env.B12_DATA_DIR || join7(homedir6(), ".B12");
+}
+function projectRelativePath(filePath, cwd) {
+  if (!filePath)
+    return "";
+  if (!isAbsolute(filePath))
+    return filePath;
+  const rel = relative(cwd, filePath);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel))
+    return filePath;
+  return rel;
+}
 async function postTool(input, output, deps) {
-  const { db, project, sessionId, sessionState, workingMemory } = deps;
+  const { db, project, cwd, sessionId, sessionState, workingMemory } = deps;
   const toolName = input.tool;
   const result = { sessionState, workingMemory, surfaced: undefined };
   if (toolName === "B12_memory_store" || toolName === "mcp__B12__memory_store" || toolName === "B12_memory_search" || toolName === "mcp__B12__memory_search" || toolName === "B12_memory_update" || toolName === "mcp__B12__memory_update") {
@@ -1665,7 +1999,7 @@ async function postTool(input, output, deps) {
   if (toolName === "read" || toolName === "edit" || toolName === "write") {
     const fp = input.args.filePath || output.args.filePath || "";
     if (fp) {
-      entity = basename2(fp);
+      entity = projectRelativePath(fp, cwd);
       if (toolName === "edit" || toolName === "write") {
         entityType = "modified";
       }
@@ -1686,8 +2020,8 @@ async function postTool(input, output, deps) {
     } else if (entityType === "search") {
       result.workingMemory = addSearchPattern(result.workingMemory, entity);
     }
-    const stagingDir = join6(B12_BASE4, "memory-staging");
-    saveWorkingMemory(stagingDir, result.workingMemory);
+    const stagingDir = deps.stagingDir || join7(getB12Base(), "memory-staging");
+    await saveWorkingMemory(stagingDir, result.workingMemory);
   }
   if (toolName === "read" || toolName === "edit") {
     const filePath = input.args.filePath || output.args.filePath || "";
@@ -1722,6 +2056,7 @@ async function postTool(input, output, deps) {
       const errorMemories = db.search({
         query: cmdOutput.slice(0, 200),
         mode: "hybrid",
+        tags: [`proj:${project}`],
         limit: 3
       });
       if (errorMemories.length > 0) {
@@ -1748,7 +2083,7 @@ ${surfaceText}`;
     };
   }
   try {
-    const stagingDir = join6(B12_BASE4, "memory-staging");
+    const stagingDir = deps.stagingDir || join7(getB12Base(), "memory-staging");
     await appendFeedback(stagingDir, {
       timestamp: Math.floor(Date.now() / 1000),
       session_id: sessionId,
@@ -1801,27 +2136,43 @@ async function runCheckpoint(input, output, db, project) {
 }
 
 // src/hooks/pre-compact.ts
-import { join as join7 } from "path";
-import { mkdirSync as mkdirSync3, writeFileSync, readdirSync as readdirSync2, statSync, unlinkSync, renameSync as renameSync2 } from "fs";
-import { homedir as homedir6 } from "os";
-var B12_BASE5 = process.env.B12_DATA_DIR || join7(homedir6(), ".B12");
+import { join as join8 } from "path";
+import { mkdirSync as mkdirSync4, writeFileSync, readdirSync as readdirSync2, statSync as statSync2, unlinkSync, renameSync as renameSync2 } from "fs";
+import { homedir as homedir7 } from "os";
 var CHAR_BUDGET2 = 8000;
+function getB12Base2() {
+  return process.env.B12_DATA_DIR || join8(homedir7(), ".B12");
+}
 var PRIORITY_WEIGHTS = {
   decision: 10,
+  preference: 10,
   error_fix: 9,
+  error: 9,
+  correction: 9,
+  blocker: 9,
   learning: 8,
-  preference: 8,
-  file_modified: 7,
-  user_request: 6,
-  progress: 5,
-  general_work: 2
+  tool_pref: 8,
+  implicit_decision: 7,
+  architecture: 7,
+  knowledge: 7,
+  workflow: 6,
+  file_convention: 6,
+  reasoning: 6,
+  content: 6,
+  observation: 5,
+  infrastructure: 5,
+  session_summary: 1
 };
-async function preCompact(messages, sessionId, project, cwd, db) {
-  const stagingDir = join7(B12_BASE5, "memory-staging");
-  mkdirSync3(stagingDir, { recursive: true });
+async function preCompact(messages, sessionId, project, cwd, db, modifiedFiles = []) {
+  const stagingDir = join8(getB12Base2(), "memory-staging");
+  mkdirSync4(stagingDir, { recursive: true });
   const scoredItems = [];
   const userMessages = [];
   const filesModified = new Set;
+  for (const file of modifiedFiles) {
+    if (file && file.trim())
+      filesModified.add(file.trim());
+  }
   for (const msg of messages) {
     if (msg.role === "user") {
       const text = msg.content.trim();
@@ -1836,7 +2187,7 @@ async function preCompact(messages, sessionId, project, cwd, db) {
         continue;
       const extractions = extractPatterns(snippet);
       for (const ext of extractions) {
-        const priority = PRIORITY_WEIGHTS[ext.category] ?? PRIORITY_WEIGHTS["general_work"];
+        const priority = Math.max(ext.score, PRIORITY_WEIGHTS[ext.category] ?? 2);
         scoredItems.push({ priority, category: ext.category, text: ext.content.slice(0, 200) });
       }
     }
@@ -1880,7 +2231,7 @@ async function preCompact(messages, sessionId, project, cwd, db) {
   }
   const summary = lines.join(`
 `);
-  const stageFile = join7(stagingDir, `precompact-${sessionId}.txt`);
+  const stageFile = join8(stagingDir, `precompact-${sessionId}.txt`);
   const tmpFile = stageFile + ".tmp";
   writeFileSync(tmpFile, summary, "utf-8");
   try {
@@ -1908,10 +2259,11 @@ async function storeHighValue(items, project, cwd, db) {
     const item = items[i];
     const prefixed = texts[i];
     try {
-      db.store({
+      const stored = db.store({
         content: prefixed,
         tags: `proj:${project},precompact-save,${item.category},${new Date().toISOString().slice(0, 7)}`,
         memory_type: item.category,
+        embedding: embeddings?.[i] ?? null,
         metadata: {
           project,
           type: item.category,
@@ -1920,12 +2272,14 @@ async function storeHighValue(items, project, cwd, db) {
           extraction_method: "precompact_plugin"
         }
       });
+      if (embeddings?.[i])
+        db.storeEmbedding(stored.id, embeddings[i]);
     } catch {}
   }
 }
 function cleanupOldStaging(stagingDir) {
   try {
-    const files = readdirSync2(stagingDir).filter((f) => f.startsWith("precompact-") && f.endsWith(".txt")).map((f) => ({ name: f, path: join7(stagingDir, f), mtime: statSync(join7(stagingDir, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
+    const files = readdirSync2(stagingDir).filter((f) => f.startsWith("precompact-") && f.endsWith(".txt")).map((f) => ({ name: f, path: join8(stagingDir, f), mtime: statSync2(join8(stagingDir, f)).mtimeMs })).sort((a, b) => b.mtime - a.mtime);
     const twoHoursAgo = Date.now() - 2 * 60 * 60 * 1000;
     for (const file of files) {
       if (file.mtime < twoHoursAgo) {
@@ -1938,13 +2292,33 @@ function cleanupOldStaging(stagingDir) {
 }
 
 // src/hooks/session-end.ts
-import { join as join8 } from "path";
-import { existsSync as existsSync6, mkdirSync as mkdirSync4, writeFileSync as writeFileSync2, unlinkSync as unlinkSync2 } from "fs";
-import { homedir as homedir7 } from "os";
-var B12_BASE6 = process.env.B12_DATA_DIR || join8(homedir7(), ".B12");
+import { join as join9, basename as basename3, dirname as dirname2 } from "path";
+import { randomUUID as randomUUID2 } from "crypto";
+import { existsSync as existsSync6, mkdirSync as mkdirSync5, writeFileSync as writeFileSync2, unlinkSync as unlinkSync2, renameSync as renameSync3 } from "fs";
+import { homedir as homedir8 } from "os";
+function getB12Base3() {
+  return process.env.B12_DATA_DIR || join9(homedir8(), ".B12");
+}
+var FILE_TOKEN_RE = /(?:^|\s)(\.{0,2}\/[\w./-]+\.\w{1,10}|[\w./-]+\/[\w./-]+\.\w{1,10}|[\w.-]+\.(?:py|ts|tsx|js|jsx|json|md|toml|yaml|yml|sql|html|css|scss|sh|zsh|bash|txt))(?:\s|$)/g;
+function extractModifiedFileTokens(text) {
+  const out = [];
+  let match;
+  FILE_TOKEN_RE.lastIndex = 0;
+  while ((match = FILE_TOKEN_RE.exec(text)) !== null) {
+    const token = match[1].trim();
+    if (/^\d+(?:\.\d+)+$/.test(token))
+      continue;
+    if (/^[\w.-]+\.(?:com|org|net|io|ai|dev)$/i.test(token))
+      continue;
+    out.push(token);
+  }
+  return out;
+}
 async function sessionEnd(messages, sessionId, project, cwd, db) {
-  const summaryDir = join8(B12_BASE6, "memory-summaries");
-  mkdirSync4(summaryDir, { recursive: true });
+  if (!messages.some((msg) => msg.content.trim()))
+    return;
+  const summaryDir = join9(getB12Base3(), "memory-summaries");
+  mkdirSync5(summaryDir, { recursive: true });
   const decisions = [];
   const errors = [];
   const learnings = [];
@@ -1955,6 +2329,7 @@ async function sessionEnd(messages, sessionId, project, cwd, db) {
   const corrections = [];
   const infrastructure = [];
   const contentItems = [];
+  const extractedItems = [];
   const userRequests = [];
   const filesModified = [];
   for (const msg of messages) {
@@ -1974,12 +2349,18 @@ async function sessionEnd(messages, sessionId, project, cwd, db) {
       continue;
     const extractions = extractPatterns(text);
     for (const ext of extractions) {
-      const score = scoreExtraction(ext.content, ext.category);
+      const categoryMap = {
+        implicit_decision: "decision",
+        error_fix: "error",
+        tool_pref: "preference"
+      };
+      const category = categoryMap[ext.category] || ext.category;
+      const score = Math.max(ext.score, scoreExtraction(ext.content, category));
       if (score < 2)
         continue;
-      switch (ext.category) {
+      extractedItems.push({ content: ext.content.slice(0, 300), category, score });
+      switch (category) {
         case "decision":
-        case "implicit_decision":
           decisions.push(ext.content.slice(0, 300));
           break;
         case "error":
@@ -2012,15 +2393,7 @@ async function sessionEnd(messages, sessionId, project, cwd, db) {
           break;
       }
     }
-    const fileMatches = text.match(/(?:^|\s)([\w./\-]+\.\w{1,10})(?:\s|$)/g);
-    if (fileMatches) {
-      for (const fm of fileMatches) {
-        const cleaned = fm.trim();
-        if (cleaned.length > 3 && cleaned.includes(".")) {
-          filesModified.push(cleaned);
-        }
-      }
-    }
+    filesModified.push(...extractModifiedFileTokens(text));
   }
   const summaryLines = [];
   summaryLines.push(`# Session Summary (${new Date().toISOString().slice(0, 10)})`);
@@ -2089,11 +2462,11 @@ async function sessionEnd(messages, sessionId, project, cwd, db) {
   }
   const summary = summaryLines.join(`
 `);
-  const projectSummaryFile = join8(summaryDir, `${project}-latest.md`);
+  const projectSummaryFile = join9(summaryDir, `${project}-latest.md`);
   atomicWrite2(projectSummaryFile, summary);
-  const globalSummaryFile = join8(summaryDir, "global-latest.md");
+  const globalSummaryFile = join9(summaryDir, "global-latest.md");
   atomicWrite2(globalSummaryFile, summary.slice(0, 2000));
-  const handoffFile = join8(summaryDir, `${project}-handoff.md`);
+  const handoffFile = join9(summaryDir, `${project}-handoff.md`);
   atomicWrite2(handoffFile, summary);
   const allItems = [
     ...decisions.map((d) => ({ content: d, category: "decision", score: 8 })),
@@ -2105,7 +2478,19 @@ async function sessionEnd(messages, sessionId, project, cwd, db) {
     ...fileConventions.map((f) => ({ content: f, category: "file_convention", score: 6 })),
     ...corrections.map((c) => ({ content: c, category: "correction", score: 8 })),
     ...infrastructure.map((i) => ({ content: i, category: "infrastructure", score: 5 })),
-    ...contentItems.map((c) => ({ content: c, category: "content", score: 6 }))
+    ...contentItems.map((c) => ({ content: c, category: "content", score: 6 })),
+    ...extractedItems.filter((item) => ![
+      "decision",
+      "error",
+      "learning",
+      "preference",
+      "architecture",
+      "workflow",
+      "file_convention",
+      "correction",
+      "infrastructure",
+      "content"
+    ].includes(item.category))
   ];
   allItems.sort((a, b) => b.score - a.score);
   const topItems = allItems.filter((item) => item.score >= 6).slice(0, 20);
@@ -2120,10 +2505,11 @@ async function sessionEnd(messages, sessionId, project, cwd, db) {
     const item = topItems[i];
     const prefixed = `[${item.category}] ${item.content}`;
     try {
-      db.store({
+      const stored = db.store({
         content: prefixed,
         tags: `proj:${project},session-end,${item.category},${new Date().toISOString().slice(0, 7)}`,
         memory_type: item.category,
+        embedding: embeddings?.[i] ?? null,
         metadata: {
           type: item.category,
           source: "session_end",
@@ -2133,68 +2519,149 @@ async function sessionEnd(messages, sessionId, project, cwd, db) {
           extraction_method: "session_end_plugin"
         }
       });
+      if (embeddings?.[i])
+        db.storeEmbedding(stored.id, embeddings[i]);
     } catch {}
   }
+  const macroFlag = (process.env.B12_OPENCODE_MACRO_INGEST || "false").toLowerCase();
+  if (["1", "true", "yes"].includes(macroFlag)) {
+    const macros = extractMacroVerbs(messages);
+    for (const mv of macros) {
+      try {
+        db.store({
+          content: mv.content,
+          tags: `proj:${project},${mv.type},extraction:macro_verbs,${new Date().toISOString().slice(0, 7)}`,
+          memory_type: mv.type,
+          metadata: {
+            type: mv.type,
+            source: "session_end",
+            importance_score: mv.importance,
+            project,
+            session_id: sessionId.slice(0, 12),
+            extraction_method: "macro_verbs",
+            source_role: mv.source
+          }
+        });
+      } catch {}
+    }
+  }
+}
+function buildAtomicTempPath(filePath) {
+  return join9(dirname2(filePath), `.${basename3(filePath)}.${process.pid}.${randomUUID2()}.tmp`);
 }
 function atomicWrite2(filePath, content) {
-  const dir = join8(filePath, "..");
+  const dir = dirname2(filePath);
   if (!existsSync6(dir))
-    mkdirSync4(dir, { recursive: true });
-  const tmpFile = filePath + ".tmp";
+    mkdirSync5(dir, { recursive: true });
+  const tmpFile = buildAtomicTempPath(filePath);
   writeFileSync2(tmpFile, content, "utf-8");
   try {
-    __require("fs").renameSync(tmpFile, filePath);
-  } catch {
-    writeFileSync2(filePath, content, "utf-8");
+    renameSync3(tmpFile, filePath);
+  } catch (err) {
     try {
       unlinkSync2(tmpFile);
     } catch {}
+    throw err;
   }
 }
 
-// src/index.ts
-var B12_BASE7 = process.env.B12_DATA_DIR || join9(homedir8(), ".B12");
+// src/lib/session-messages.ts
+function unwrapMessages(response) {
+  if (Array.isArray(response))
+    return response;
+  if (response && Array.isArray(response.data))
+    return response.data;
+  return [];
+}
 async function fetchSessionMessages(client, sessionId) {
-  const rawMsgs = await client.session.messages({ path: { id: sessionId } });
+  const rawMsgs = unwrapMessages(await client.session.messages({ path: { id: sessionId } }));
   const msgs = [];
   for (const m of rawMsgs) {
+    const role = m.info.role;
+    if (role !== "user" && role !== "assistant" && role !== "system")
+      continue;
     const text = m.parts?.filter((p) => p.type === "text" && p.text).map((p) => p.text).join(`
 `);
     if (text) {
-      msgs.push({ role: m.info.role, content: text });
+      msgs.push({ role, content: text });
     }
   }
   return msgs;
 }
+
+// src/index.ts
+var B12_BASE4 = process.env.B12_DATA_DIR || join10(homedir9(), ".B12");
 var B12Plugin = async (ctx) => {
   const { client, directory } = ctx;
   const dbPath = getDbPath();
   let db = null;
-  try {
-    if (existsSync7(dbPath)) {
-      db = new B12Database(dbPath);
+  function tryOpenDatabase() {
+    if (db)
+      return db;
+    try {
+      if (existsSync7(dbPath)) {
+        db = new B12Database(dbPath);
+      }
+    } catch {
+      db = null;
     }
-  } catch {
-    return {};
+    return db;
   }
+  tryOpenDatabase();
   const projectName = basename4(directory);
-  const sessionId = "oc-" + Date.now().toString(36);
-  const sessionState = createSessionState(projectName, directory, "opencode");
-  const loaded = await loadWorkingMemory(join9(B12_BASE7, "memory-staging"));
-  const workingMemory = loaded ?? createWorkingMemory(sessionId);
-  const state = {
-    db,
-    sessionState,
-    workingMemory,
-    sessionId,
-    isFirstMessage: true,
-    currentSessionId: null
-  };
+  const states = new Map;
+  const postToolQueues = new Map;
+  async function enqueuePostTool(sessionId, task) {
+    const key = sessionId || "default";
+    const previous = postToolQueues.get(key) ?? Promise.resolve();
+    const next = previous.catch(() => {
+      return;
+    }).then(task);
+    postToolQueues.set(key, next);
+    try {
+      await next;
+    } finally {
+      if (postToolQueues.get(key) === next) {
+        postToolQueues.delete(key);
+      }
+    }
+  }
+  async function getPluginState(openCodeSessionId) {
+    const key = openCodeSessionId || "default";
+    const currentDb = tryOpenDatabase();
+    const existing = states.get(key);
+    if (existing) {
+      if (!existing.db && currentDb)
+        existing.db = currentDb;
+      return existing;
+    }
+    const safeKey = key.replace(/[^a-zA-Z0-9_.-]/g, "_").slice(0, 96) || "default";
+    const sessionId = `oc-${safeKey}`;
+    const stagingDir = join10(B12_BASE4, "memory-staging", projectName, safeKey);
+    const loaded = await loadWorkingMemory(stagingDir);
+    const workingMemory = loaded?.session_id === sessionId ? loaded : createWorkingMemory(sessionId);
+    const state = {
+      db: currentDb,
+      sessionState: createSessionState(projectName, directory, "opencode"),
+      workingMemory,
+      sessionId,
+      isFirstMessage: true,
+      currentSessionId: key,
+      stagingDir
+    };
+    states.set(key, state);
+    return state;
+  }
   return {
     "experimental.chat.system.transform": async (_input, output) => {
-      if (!state.isFirstMessage || !state.db)
+      const state = await getPluginState(_input.sessionID);
+      const hasSessionId = Boolean(_input.sessionID);
+      if (hasSessionId && !state.isFirstMessage)
         return;
-      state.isFirstMessage = false;
+      if (!state.db)
+        return;
+      if (hasSessionId)
+        state.isFirstMessage = false;
       try {
         const context = await sessionStart(projectName, directory, state.db);
         if (context) {
@@ -2203,78 +2670,98 @@ var B12Plugin = async (ctx) => {
       } catch {}
     },
     "permission.ask": async (input, output) => {
-      const isMemoryTool = input.title.includes("memory_store") || input.title.includes("memory_search") || input.title.includes("memory_update") || input.title.includes("memory_quality") || input.pattern && (typeof input.pattern === "string" && input.pattern.includes("B12_memory") || Array.isArray(input.pattern) && input.pattern.some((p) => p.includes("B12_memory")));
-      if (isMemoryTool) {
+      if (isTrustedB12PermissionTool(input)) {
         output.status = "allow";
       }
     },
     "chat.params": async (_input, output) => {
-      output.options.thinking = { type: "enabled", clear_thinking: true };
+      applyThinkingOption(_input.provider, _input.model, output.options);
     },
     "chat.message": async (input, output) => {
+      const state = await getPluginState(input.sessionID);
       if (!state.db)
         return;
-      if (input.sessionID && !state.currentSessionId) {
-        state.currentSessionId = input.sessionID;
-      }
       const userText = output.parts?.filter((p) => p.type === "text" && p.text).map((p) => p.text).join(" ").trim();
-      if (!userText || userText.length < 10 || userText.startsWith("/"))
-        return;
-      if (/^(selam|merhaba|naber|hey|hi|hello|good morning)/i.test(userText))
+      if (!shouldAttemptMessageRetrieval(userText))
         return;
       try {
-        await messageRetrieval(userText, projectName, state.db);
+        const memoryContext = await messageRetrieval(userText, projectName, state.db);
+        if (memoryContext) {
+          output.parts.unshift({
+            id: `b12-memory-${randomUUID3()}`,
+            sessionID: input.sessionID,
+            messageID: output.message.id || input.sessionID,
+            type: "text",
+            text: memoryContext
+          });
+        }
       } catch {}
     },
     "tool.execute.before": async (input, output) => {
       tagEnforce(input, output, projectName, "opencode");
     },
     "tool.execute.after": async (input, output) => {
+      await enqueuePostTool(input.sessionID, async () => {
+        const state = await getPluginState(input.sessionID);
+        if (!state.db)
+          return;
+        try {
+          const result = await postTool({
+            tool: input.tool,
+            args: input.args
+          }, {
+            args: output,
+            result: output.output
+          }, {
+            db: state.db,
+            project: projectName,
+            cwd: directory,
+            sessionId: state.sessionId,
+            sessionState: state.sessionState,
+            workingMemory: state.workingMemory,
+            stagingDir: state.stagingDir
+          });
+          state.sessionState = result.sessionState;
+          state.workingMemory = result.workingMemory;
+          if (result.surfaced) {
+            output.output = output.output ? `${output.output}
+
+${result.surfaced}` : result.surfaced;
+            output.metadata = {
+              ...typeof output.metadata === "object" && output.metadata ? output.metadata : {},
+              b12SurfacedMemories: true
+            };
+          }
+        } catch {}
+      });
+    },
+    "experimental.session.compacting": async (input, output) => {
+      const state = await getPluginState(input.sessionID);
       if (!state.db)
         return;
       try {
-        const result = await postTool({
-          tool: input.tool,
-          args: input.args,
-          result: output.output
-        }, {
-          args: output,
-          result: output.output
-        }, {
-          db: state.db,
-          project: projectName,
-          cwd: directory,
-          sessionId: state.sessionId,
-          sessionState: state.sessionState,
-          workingMemory: state.workingMemory
-        });
-        state.sessionState = result.sessionState;
-        state.workingMemory = result.workingMemory;
-      } catch {}
-    },
-    "experimental.session.compacting": async (input, output) => {
-      if (!state.db || !state.currentSessionId)
-        return;
-      try {
-        const msgs = await fetchSessionMessages(client, state.currentSessionId);
-        const summary = await preCompact(msgs, state.sessionId, projectName, directory, state.db);
+        const msgs = await fetchSessionMessages(client, input.sessionID);
+        const summary = await preCompact(msgs, state.sessionId, projectName, directory, state.db, state.workingMemory.modified_files);
         output.context.push(summary);
       } catch {}
     },
     event: async (input) => {
       const evt = input.event;
-      if (evt.type !== "session.idle" && evt.type !== "session.deleted")
+      if (evt.type !== "session.idle")
         return;
+      const sid = evt.properties?.sessionID || "default";
+      const state = await getPluginState(sid);
       if (!state.db)
         return;
-      const sid = evt.properties?.sessionID || state.currentSessionId || state.sessionId;
       try {
         let msgs = [];
-        if (evt.type === "session.idle" && sid) {
+        if (sid) {
           try {
             msgs = await fetchSessionMessages(client, sid);
           } catch {}
         }
+        if (!msgs.some((msg) => msg.content.trim()))
+          return;
         await sessionEnd(msgs, state.sessionId, projectName, directory, state.db);
       } catch {}
     }

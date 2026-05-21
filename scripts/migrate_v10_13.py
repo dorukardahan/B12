@@ -62,6 +62,62 @@ def check_trigger_exists(conn, trigger_name):
     return cursor.fetchone() is not None
 
 
+def trigger_uses_external_content_delete(conn, trigger_name):
+    """Check whether an FTS5 external-content trigger uses delete commands."""
+    row = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = ?",
+        (trigger_name,),
+    ).fetchone()
+    sql = (row[0] if row else "") or ""
+    return (
+        "memory_content_fts, rowid, content" in sql
+        and "'delete'" in sql
+        and "WHERE old.deleted_at IS NULL" in sql
+    )
+
+
+def native_fts_matches_active_memories(conn) -> bool:
+    tokenized_active_ids = {
+        row[0] for row in conn.execute(
+            """
+            SELECT id FROM memories
+            WHERE deleted_at IS NULL
+              AND content IS NOT NULL
+              AND length(content) >= 3
+            """
+        ).fetchall()
+    }
+    return tokenized_active_ids == indexed_native_fts_docs(conn)
+
+
+def indexed_native_fts_docs(conn) -> set[int]:
+    vocab_table = "_b12_v10_13_memory_content_fts_vocab"
+    conn.execute(f"DROP TABLE IF EXISTS {vocab_table}")
+    conn.execute(
+        f"CREATE VIRTUAL TABLE {vocab_table} "
+        "USING fts5vocab(memory_content_fts, 'instance')"
+    )
+    try:
+        return {
+            row[0] for row in conn.execute(
+                f"SELECT DISTINCT doc FROM {vocab_table}"
+            ).fetchall()
+        }
+    finally:
+        conn.execute(f"DROP TABLE IF EXISTS {vocab_table}")
+
+
+def rebuild_native_fts(conn) -> int:
+    conn.execute("INSERT INTO memory_content_fts(memory_content_fts) VALUES('delete-all')")
+    conn.execute('''
+        INSERT INTO memory_content_fts(rowid, content)
+        SELECT id, content FROM memories WHERE deleted_at IS NULL
+    ''')
+    return conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL"
+    ).fetchone()[0]
+
+
 def migrate(db_path, check_only=False):
     """Run the v10.13.0 migration."""
     print(f"Database: {db_path}")
@@ -109,23 +165,22 @@ def migrate(db_path, check_only=False):
         conn.close()
         return True
 
-    if has_native_fts and native_fts_count > 0 and has_ai and has_au and has_ad:
-        print("\nAlready migrated. Nothing to do.")
-        conn.close()
-        return True
-
     if check_only:
         needs = []
         if not has_native_fts:
             needs.append("Create memory_content_fts table")
-        elif native_fts_count == 0 and active_count > 0:
-            needs.append(f"Backfill {active_count} memories into FTS index")
+        elif not native_fts_matches_active_memories(conn):
+            needs.append(f"Reconcile {active_count} active memories into FTS index")
         if not has_ai:
             needs.append("Create INSERT trigger")
         if not has_au:
             needs.append("Create UPDATE trigger")
+        elif not trigger_uses_external_content_delete(conn, "memories_fts_au"):
+            needs.append("Recreate UPDATE trigger with FTS5 external-content delete")
         if not has_ad:
             needs.append("Create DELETE trigger")
+        elif not trigger_uses_external_content_delete(conn, "memories_fts_ad"):
+            needs.append("Recreate DELETE trigger with FTS5 external-content delete")
         if needs:
             print("\nNeeded:")
             for n in needs:
@@ -147,14 +202,23 @@ def migrate(db_path, check_only=False):
             )
         ''')
         print("  [OK] Created memory_content_fts table (trigram tokenizer)")
+        has_native_fts = True
 
-    # 2. Create sync triggers (matches v10.13.0 init code exactly)
+    # 2. Create sync triggers. FTS5 external-content tables require the
+    # special 'delete' command; plain DELETE leaves stale terms searchable.
+    if has_au and not trigger_uses_external_content_delete(conn, "memories_fts_au"):
+        conn.execute("DROP TRIGGER IF EXISTS memories_fts_au")
+        has_au = False
+    if has_ad and not trigger_uses_external_content_delete(conn, "memories_fts_ad"):
+        conn.execute("DROP TRIGGER IF EXISTS memories_fts_ad")
+        has_ad = False
+
     if not has_ai:
         conn.execute('''
             CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories
             BEGIN
                 INSERT INTO memory_content_fts(rowid, content)
-                VALUES (new.id, new.content);
+                SELECT new.id, new.content WHERE new.deleted_at IS NULL;
             END;
         ''')
         print("  [OK] Created INSERT trigger (memories_fts_ai)")
@@ -163,9 +227,10 @@ def migrate(db_path, check_only=False):
         conn.execute('''
             CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories
             BEGIN
-                DELETE FROM memory_content_fts WHERE rowid = old.id;
+                INSERT INTO memory_content_fts(memory_content_fts, rowid, content)
+                SELECT 'delete', old.id, old.content WHERE old.deleted_at IS NULL;
                 INSERT INTO memory_content_fts(rowid, content)
-                VALUES (new.id, new.content);
+                SELECT new.id, new.content WHERE new.deleted_at IS NULL;
             END;
         ''')
         print("  [OK] Created UPDATE trigger (memories_fts_au)")
@@ -174,20 +239,17 @@ def migrate(db_path, check_only=False):
         conn.execute('''
             CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories
             BEGIN
-                DELETE FROM memory_content_fts WHERE rowid = old.id;
+                INSERT INTO memory_content_fts(memory_content_fts, rowid, content)
+                SELECT 'delete', old.id, old.content WHERE old.deleted_at IS NULL;
             END;
         ''')
         print("  [OK] Created DELETE trigger (memories_fts_ad)")
 
-    # 3. Backfill existing memories
-    current_fts_count = conn.execute("SELECT COUNT(*) FROM memory_content_fts").fetchone()[0]
-    if current_fts_count == 0 and active_count > 0:
-        conn.execute('''
-            INSERT INTO memory_content_fts(rowid, content)
-            SELECT id, content FROM memories WHERE deleted_at IS NULL
-        ''')
-        backfilled = conn.execute("SELECT COUNT(*) FROM memory_content_fts").fetchone()[0]
-        print(f"  [OK] Backfilled {backfilled} memories into FTS index")
+    # 3. Backfill existing memories. Rowid parity is not enough to prove
+    # token freshness, so rebuild even when the same rowids are present.
+    if has_native_fts:
+        backfilled = rebuild_native_fts(conn)
+        print(f"  [OK] Rebuilt {backfilled} active memories into FTS index")
 
     conn.commit()
 

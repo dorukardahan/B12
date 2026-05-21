@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "b12-memory"
-version = "11.18.0"
+version = "11.74.0"
 description = "Persistent cross-session memory system for AI coding assistants"
 readme = "README.md"
 license = {text = "MIT"}
@@ -34,23 +34,69 @@ dependencies = [
     "fsrs",
 ]
 
+[project.scripts]
+b12 = "b12_cli:main"
+
 [project.optional-dependencies]
 dev = ["pytest"]
+trainer = ["setfit", "onnx", "onnxruntime", "skl2onnx"]
 # Smaller-footprint embed backend. Install with:
 #   pip install ".[gguf]"
 # then download a BGE-M3 GGUF (e.g. nomic-ai/bge-m3-gguf Q8_0) and set
 # B12_EMBED_BACKEND=gguf + B12_EMBED_GGUF_PATH=/path/to/model.gguf.
 gguf = ["llama-cpp-python>=0.2.20"]
 
-# NOTE: pip install entry point not yet functional — use install.sh for now
-# [project.scripts]
-# b12 = "b12_memory.cli:main"
-
 [project.urls]
 Homepage = "https://github.com/dorukardahan/B12"
 Repository = "https://github.com/dorukardahan/B12"
 Issues = "https://github.com/dorukardahan/B12/issues"
 
-# [tool.setuptools.packages.find]
-# where = ["scripts"]
-# include = ["b12_memory*"]
+[tool.setuptools]
+package-dir = {"" = "scripts"}
+py-modules = [
+    "b12_cli",
+    "b12_cli_provider",
+    "b12_config",
+    "b12_embed_quant_eval",
+    "b12_gc",
+    "b12_health",
+    "b12_health_report",
+    "b12_importance",
+    "b12_ingest_queue",
+    "b12_llm_extractor",
+    "b12_llm_prompts",
+    "b12_llm_providers",
+    "b12_long_session",
+    "b12_mcp_daemon",
+    "b12_mcp_server",
+    "b12_pii_scrubber",
+    "b12_scheduler",
+    "b12_token_budget",
+    "build_classifier_corpus",
+    "codex_session_end",
+    "consolidation_engine",
+    "contradiction_resolver",
+    "cursor_mdc",
+    "dashboard_server",
+    "ebbinghaus",
+    "embed_daemon",
+    "embedding_backfill",
+    "export_import",
+    "file_pagerank",
+    "graph_enrich",
+    "hook_adapter",
+    "memory_refine",
+    "migrate_ebbinghaus",
+    "migrate_embed_to_bge_m3",
+    "migrate_fix_metadata",
+    "migrate_fsrs",
+    "migrate_stemmed_fts",
+    "migrate_v10_13",
+    "migrate_v12_3_contra_prune",
+    "shared_patterns",
+    "surfacing_engine",
+    "train_classifier",
+    "train_classifier_head_pkl",
+    "transcript_adapter",
+    "write_time_merge",
+]

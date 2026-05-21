@@ -17,6 +17,12 @@ import sys
 from collections import Counter, defaultdict
 from datetime import datetime, timedelta, timezone
 
+try:
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__)))
+    from shared_patterns import count_active_embeddings
+except ImportError:  # pragma: no cover
+    count_active_embeddings = None
+
 # ── DB path resolution ──────────────────────────────────────────────
 
 def _get_db_path_fallback() -> str:
@@ -74,6 +80,15 @@ def _parse_ts(ts_value) -> datetime | None:
     return None
 
 
+def _is_past_ts(ts_value, now: datetime | None = None) -> bool:
+    parsed = _parse_ts(ts_value)
+    if parsed is None:
+        return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed <= (now or datetime.now(timezone.utc))
+
+
 def _percentile(sorted_list: list, pct: float):
     """Return the pct-th percentile from a sorted list."""
     if not sorted_list:
@@ -92,14 +107,10 @@ def _section_db_metrics(conn: sqlite3.Connection) -> dict:
     deleted = conn.execute(
         "SELECT COUNT(*) FROM memories WHERE deleted_at IS NOT NULL"
     ).fetchone()[0]
-    # memory_embeddings is a vec0 virtual table — requires sqlite_vec extension.
-    # Fall back to 0 if the extension is not loaded.
-    try:
-        embeddings = conn.execute(
-            "SELECT COUNT(*) FROM memory_embeddings"
-        ).fetchone()[0]
-    except sqlite3.OperationalError:
-        embeddings = 0
+    if count_active_embeddings is not None:
+        embeddings, embedding_warning = count_active_embeddings(conn)
+    else:
+        embeddings, embedding_warning = None, "embedding coverage unavailable"
 
     try:
         edges = conn.execute(
@@ -125,14 +136,19 @@ def _section_db_metrics(conn: sqlite3.Connection) -> dict:
     except sqlite3.OperationalError:
         edge_dist = {}
 
-    embedding_coverage = (embeddings / active * 100) if active > 0 else 0.0
+    embedding_coverage = (
+        (embeddings / active * 100)
+        if embeddings is not None and active > 0
+        else (0.0 if embeddings is not None else None)
+    )
 
     return {
         "active": active,
         "deleted": deleted,
         "embeddings": embeddings,
         "edges": edges,
-        "embedding_coverage_pct": round(embedding_coverage, 1),
+        "embedding_coverage_pct": round(embedding_coverage, 1) if embedding_coverage is not None else None,
+        "embedding_warning": embedding_warning,
         "type_distribution": type_dist,
         "edge_distribution": edge_dist,
     }
@@ -263,9 +279,9 @@ def _section_retrieval_quality(log_dir: str) -> dict:
     }
 
 
-def _section_lifecycle(conn: sqlite3.Connection) -> dict:
+def _section_lifecycle(conn: sqlite3.Connection, now: datetime | None = None) -> dict:
     """Section 6: Memory lifecycle — new/decayed/dormant/deleted this week."""
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     week_ago_ts = (now - timedelta(days=7)).timestamp()
 
     new_count = conn.execute(
@@ -282,12 +298,13 @@ def _section_lifecycle(conn: sqlite3.Connection) -> dict:
         (week_ago_ts,),
     ).fetchone()[0]
 
-    # Dormant: valid_until is set and in the past, not deleted
-    dormant = conn.execute(
-        "SELECT COUNT(*) FROM memories "
-        "WHERE deleted_at IS NULL AND valid_until IS NOT NULL "
-        "AND valid_until <= datetime('now')"
-    ).fetchone()[0]
+    # Dormant: valid_until is set and in the past, not deleted. Parse in
+    # Python so ISO strings with "T" and offsets compare by time, not text.
+    dormant_rows = conn.execute(
+        "SELECT valid_until FROM memories "
+        "WHERE deleted_at IS NULL AND valid_until IS NOT NULL"
+    ).fetchall()
+    dormant = sum(1 for (valid_until,) in dormant_rows if _is_past_ts(valid_until, now))
 
     # Deleted this week
     deleted_this_week = conn.execute(
@@ -437,9 +454,15 @@ def _section_recommendations(
             "Review keyword extraction and embedding quality."
         )
 
-    if db_metrics.get("embedding_coverage_pct", 100) < 90:
+    embedding_coverage = db_metrics.get("embedding_coverage_pct")
+    if embedding_coverage is None:
         recs.append(
-            f"Embedding coverage is {db_metrics['embedding_coverage_pct']}%. "
+            "Embedding coverage is unavailable. Install/load sqlite-vec before "
+            "using coverage diagnostics."
+        )
+    elif embedding_coverage < 90:
+        recs.append(
+            f"Embedding coverage is {embedding_coverage}%. "
             "Run embedding backfill to generate missing embeddings."
         )
 
@@ -467,18 +490,26 @@ def _format_markdown(report: dict) -> str:
     lines.append(f"# B12 Health Report — {ts}")
     lines.append("")
     db = report["db_metrics"]
+    coverage_label = (
+        f"{db['embedding_coverage_pct']}%"
+        if db["embedding_coverage_pct"] is not None
+        else "unknown"
+    )
+    embeddings_label = str(db["embeddings"]) if db["embeddings"] is not None else "unknown"
     lines.append(f"**Health Score: {score}/100** | "
                  f"Active memories: {db['active']} | "
-                 f"Embedding coverage: {db['embedding_coverage_pct']}%")
+                 f"Embedding coverage: {coverage_label}")
     lines.append("")
 
     # Section 2: Database Metrics
     lines.append("## Database Metrics")
     lines.append(f"- Active memories: {db['active']}")
     lines.append(f"- Deleted (tombstones): {db['deleted']}")
-    lines.append(f"- Embeddings: {db['embeddings']}")
+    lines.append(f"- Embeddings: {embeddings_label}")
     lines.append(f"- Graph edges: {db['edges']}")
-    lines.append(f"- Embedding coverage: {db['embedding_coverage_pct']}%")
+    lines.append(f"- Embedding coverage: {coverage_label}")
+    if db.get("embedding_warning"):
+        lines.append(f"- Embedding diagnostic warning: {db['embedding_warning']}")
     if db["type_distribution"]:
         lines.append("- Type distribution:")
         for t, c in sorted(db["type_distribution"].items(), key=lambda x: -x[1]):

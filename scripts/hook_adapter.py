@@ -43,6 +43,20 @@ from shared_patterns import get_db_path, DECISION_RE, ERROR_RE, LEARNING_RE, PRE
 from transcript_adapter import parse, extract_user_messages, extract_assistant_texts, extract_files_modified
 
 
+def _tag_values(tags: str) -> set[str]:
+    return {tag.strip() for tag in (tags or "").split(",") if tag.strip()}
+
+
+def _tag_predicate(column: str = "tags") -> str:
+    normalized = f"replace(replace(COALESCE({column}, ''), ', ', ','), ' ,', ',')"
+    return f"(',' || {normalized} || ',') LIKE ? ESCAPE '\\'"
+
+
+def _tag_param(tag: str) -> str:
+    escaped = tag.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+    return f"%,{escaped},%"
+
+
 class HookAdapter:
     """Platform-agnostic hook handler for B12 memory system."""
 
@@ -58,6 +72,39 @@ class HookAdapter:
         self.cwd = cwd or os.getcwd()
         self.project_name = os.path.basename(self.cwd)
         self.db_path = get_db_path()
+
+    def _project_tag(self) -> str:
+        return f"proj:{self.project_name}"
+
+    def _filter_semantic_hits_for_project(self, hits: list[dict], limit: int = 3) -> list[str]:
+        hit_ids = []
+        for hit in hits:
+            try:
+                hit_ids.append(int(hit.get("id")))
+            except (TypeError, ValueError):
+                continue
+        if not hit_ids:
+            return []
+
+        placeholders = ",".join("?" for _ in hit_ids)
+        conn = sqlite3.connect(self.db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            rows = conn.execute(
+                f"""
+                SELECT id, content
+                FROM memories
+                WHERE id IN ({placeholders})
+                  AND deleted_at IS NULL
+                  AND {_tag_predicate("tags")}
+                """,
+                (*hit_ids, _tag_param(self._project_tag())),
+            ).fetchall()
+        finally:
+            conn.close()
+
+        by_id = {int(row["id"]): row["content"] for row in rows}
+        return [by_id[mem_id] for mem_id in hit_ids if mem_id in by_id][:limit]
 
     @staticmethod
     def _detect_platform() -> str:
@@ -90,9 +137,9 @@ class HookAdapter:
             rows = conn.execute(
                 """SELECT content, tags, created_at_iso
                    FROM memories
-                   WHERE tags LIKE ? AND deleted_at IS NULL
+                   WHERE """ + _tag_predicate("tags") + """ AND deleted_at IS NULL
                    ORDER BY created_at DESC LIMIT 5""",
-                (f"%proj:{self.project_name}%",)
+                (_tag_param(self._project_tag()),)
             ).fetchall()
 
             if not rows:
@@ -127,13 +174,15 @@ class HookAdapter:
             "semantic_search",
             query=prompt[:500],
             db_path=self.db_path,
-            limit=3
+            limit=10
         )
         if resp and resp.get("results"):
-            lines = []
-            for hit in resp["results"]:
-                lines.append(f"- {hit.get('display', '')[:200]}")
-            return "\n".join(lines) if lines else ""
+            lines = [
+                f"- {content[:200]}"
+                for content in self._filter_semantic_hits_for_project(resp["results"])
+            ]
+            if lines:
+                return "\n".join(lines)
 
         # Fallback: FTS search
         conn = sqlite3.connect(self.db_path)
@@ -146,8 +195,9 @@ class HookAdapter:
                 """SELECT m.content FROM memory_content_fts fts
                    JOIN memories m ON m.id = fts.rowid
                    WHERE fts.content MATCH ? AND m.deleted_at IS NULL
+                     AND """ + _tag_predicate("m.tags") + """
                    ORDER BY rank LIMIT 3""",
-                (fts_query,)
+                (fts_query, _tag_param(self._project_tag()))
             ).fetchall()
             return "\n".join(f"- {r[0][:200]}" for r in rows) if rows else ""
         except Exception:
@@ -187,15 +237,28 @@ class HookAdapter:
             metadata = tool_input.get("metadata", {})
             if isinstance(metadata, dict):
                 tags = metadata.get("tags", "")
+                if isinstance(tags, (list, tuple, set)):
+                    tag_values = [str(tag).strip() for tag in tags if str(tag).strip()]
+                    if f"proj:{self.project_name}" not in tag_values:
+                        tag_values.append(f"proj:{self.project_name}")
+                    platform_tag = f"platform:{self.platform}"
+                    if platform_tag not in tag_values:
+                        tag_values.append(platform_tag)
+                    metadata["tags"] = tag_values
+                    tool_input["metadata"] = metadata
+                    return tool_input
+
                 # Ensure project tag exists
-                if f"proj:{self.project_name}" not in tags:
+                tag_set = _tag_values(tags)
+                if f"proj:{self.project_name}" not in tag_set:
                     if tags:
                         tags += f", proj:{self.project_name}"
                     else:
                         tags = f"proj:{self.project_name}"
+                    tag_set.add(f"proj:{self.project_name}")
                 # Ensure platform tag exists
                 platform_tag = f"platform:{self.platform}"
-                if platform_tag not in tags:
+                if platform_tag not in tag_set:
                     tags += f", {platform_tag}"
                 metadata["tags"] = tags
                 tool_input["metadata"] = metadata

@@ -7,6 +7,12 @@ Designed to be called from the MCP server's memory_refine tool.
 import json, os, socket, base64, struct
 from typing import Any
 
+try:
+    from b12_pii_scrubber import scrub as scrub_pii
+except Exception:  # pragma: no cover
+    def scrub_pii(value: str) -> str:
+        return value
+
 # Daemon socket path (same as b12_mcp_server.py)
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
 SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
@@ -44,6 +50,9 @@ def refine_candidates(candidates: list[dict], similarity_threshold: float = 0.85
     Returns refined list with added "quality_score" and "group_id" fields.
     Duplicates (similarity > threshold) are merged into the longest/best candidate.
     """
+    if not candidates:
+        return []
+    candidates = [_sanitize_candidate(c) for c in candidates if c.get("content")]
     if not candidates:
         return []
 
@@ -170,11 +179,26 @@ def _quality_score(text: str, group_size: int) -> float:
     return min(score, 1.0)
 
 
+def _scrub_tags(value) -> str:
+    if isinstance(value, (list, tuple)):
+        return ",".join(scrub_pii(str(tag)) for tag in value)
+    return scrub_pii(str(value or ""))
+
+
+def _sanitize_candidate(candidate: dict) -> dict:
+    safe = dict(candidate)
+    safe["content"] = scrub_pii(str(candidate.get("content", "")))
+    safe["memory_type"] = scrub_pii(str(candidate.get("memory_type", "general")))
+    safe["tags"] = _scrub_tags(candidate.get("tags", ""))
+    return safe
+
+
 def _fallback_dedup(candidates: list[dict]) -> list[dict]:
     """Fallback dedup when daemon is unavailable. Uses simple text similarity."""
     seen_prefixes: set[str] = set()
     refined = []
-    for i, c in enumerate(candidates):
+    for i, raw in enumerate(candidates):
+        c = _sanitize_candidate(raw)
         prefix = c["content"][:80].lower().strip()
         if prefix not in seen_prefixes:
             seen_prefixes.add(prefix)

@@ -48,9 +48,10 @@ export function stabilityAfterRecall(
   difficulty: number,
   retrievabilityValue: number,
   params: FSRSParams = DEFAULT_FSRS_PARAMS,
+  grade: "easy" | "good" | "hard" = "good",
 ): number {
-  const hardPenalty = 1;
-  const easyBonus = 1;
+  const hardPenalty = grade === "hard" ? params.w[15] : 1;
+  const easyBonus = grade === "easy" ? params.w[16] : 1;
   const w = params.w;
   const newStability =
     stability *
@@ -85,6 +86,13 @@ export interface MemoryEntry {
   last_reviewed?: string;
   created_at?: string;
   review_count?: number;
+}
+
+function elapsedDaysSince(timestamp?: string): number | null {
+  if (!timestamp) return null;
+  const parsed = new Date(timestamp).getTime();
+  if (!Number.isFinite(parsed)) return null;
+  return Math.max(0, (Date.now() - parsed) / 86400000);
 }
 
 export function computePriorityScore(
@@ -130,7 +138,7 @@ export function simpleReview(
     Math.min(10, 10 - (entry.importance_score ?? IMPORTANCE_LEVELS.normal) * 3),
   );
   const elapsedDays = entry.last_reviewed
-    ? Math.max(0, (Date.now() - new Date(entry.last_reviewed).getTime()) / 86400000)
+    ? elapsedDaysSince(entry.last_reviewed) ?? 0
     : 0;
   const ret = retrievability(entry.strength, elapsedDays);
 
@@ -138,7 +146,7 @@ export function simpleReview(
   if (grade === "again") {
     newStability = stabilityAfterForget(difficulty, ret, params);
   } else {
-    newStability = stabilityAfterRecall(entry.strength, difficulty, ret, params);
+    newStability = stabilityAfterRecall(entry.strength, difficulty, ret, params, grade);
   }
 
   const strengthScale = Math.min(newStability / 2, MAX_STRENGTH);
@@ -151,8 +159,8 @@ export function shouldReview(
   targetRetention: number = 0.9,
 ): boolean {
   if (!entry.last_reviewed) return true;
-  const elapsedDays =
-    (Date.now() - new Date(entry.last_reviewed).getTime()) / 86400000;
+  const elapsedDays = elapsedDaysSince(entry.last_reviewed);
+  if (elapsedDays === null) return true;
   const ret = retrievability(entry.strength, elapsedDays);
   return ret < targetRetention;
 }

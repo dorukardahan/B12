@@ -17,10 +17,11 @@ def test_anthropic_sk_ant_redacted():
     assert "sk-ant-api03" not in out
 
 
-def test_anthropic_sk_proj_redacted():
+def test_openai_project_key_redacted():
     src = "OPENAI_API_KEY=sk-proj-AbcDefGhi123456jklMnoPQRSTUVwxyz789abcDEFGHIJ"
     out = scrub(src)
-    assert "[REDACTED:anthropic]" in out
+    assert "[REDACTED:openai_project]" in out
+    assert "sk-proj-AbcDefGhi123456jklMnoPQRSTUVwxyz789abcDEFGHIJ" not in out
 
 
 def test_github_pat_redacted():
@@ -34,6 +35,7 @@ def test_slack_bot_token_redacted():
     src = "SLACK_BOT_TOKEN=xoxb-1234567890-9876543210-AbcDefGhiJklMnoPqrSt"
     out = scrub(src)
     assert "[REDACTED:slack_bot]" in out
+    assert "xoxb-1234567890-9876543210-AbcDefGhiJklMnoPqrSt" not in out
 
 
 def test_aws_access_key_redacted():
@@ -47,24 +49,28 @@ def test_aws_secret_key_redacted():
     src = 'aws_secret_access_key = "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"'
     out = scrub(src)
     assert "[REDACTED:aws_secret]" in out
+    assert "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY" not in out
 
 
 def test_bearer_token_redacted():
     src = 'curl -H "Authorization: Bearer abc123def456ghi789jklmnopqr"'
     out = scrub(src)
     assert "[REDACTED:bearer]" in out
+    assert "abc123def456ghi789jklmnopqr" not in out
 
 
 def test_jwt_redacted():
     src = "session token eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c after login"
     out = scrub(src)
     assert "[REDACTED:jwt]" in out
+    assert "eyJhbGciOiJIUzI1NiJ9" not in out
 
 
 def test_generic_api_key_pattern_redacted():
     src = "api_key=plaintext_secret_value_here_long_enough"
     out = scrub(src)
     assert "[REDACTED:generic]" in out
+    assert "plaintext_secret_value_here_long_enough" not in out
 
 
 def test_true_negative_env_var_reference():
@@ -76,12 +82,16 @@ def test_true_negative_env_var_reference():
 
 def test_disable_env_var_skips_scrub():
     src = "OPENAI_API_KEY=sk-proj-AbcDefGhi123456jklMnoPQRSTUVwxyz789abcDEFGHIJ"
+    previous = os.environ.get("B12_DISABLE_PII_SCRUB")
     os.environ["B12_DISABLE_PII_SCRUB"] = "1"
     try:
         out = scrub(src)
         assert out == src
     finally:
-        os.environ.pop("B12_DISABLE_PII_SCRUB", None)
+        if previous is None:
+            os.environ.pop("B12_DISABLE_PII_SCRUB", None)
+        else:
+            os.environ["B12_DISABLE_PII_SCRUB"] = previous
 
 
 if __name__ == "__main__":

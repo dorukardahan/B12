@@ -9,6 +9,7 @@ import hashlib
 import json
 import os
 import re
+import sqlite3
 import sys
 
 
@@ -44,6 +45,72 @@ def content_hash(text: str) -> str:
     ALL code that computes content hashes MUST use this function.
     """
     return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
+
+
+def escape_like(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+
+
+def exact_tag_predicate(column: str = "tags") -> str:
+    normalized = f"replace(replace(COALESCE({column}, ''), ', ', ','), ' ,', ',')"
+    return f"(',' || {normalized} || ',') LIKE ? ESCAPE '\\'"
+
+
+def exact_tag_param(tag: str) -> str:
+    return f"%,{escape_like(tag.strip())},%"
+
+
+def try_load_sqlite_vec(conn) -> tuple[bool, str | None]:
+    """Best-effort sqlite-vec loader for read-only diagnostics."""
+    extension_enabled = False
+    try:
+        import sqlite_vec  # type: ignore
+
+        conn.enable_load_extension(True)
+        extension_enabled = True
+        sqlite_vec.load(conn)
+        return True, None
+    except ImportError:
+        return False, "sqlite_vec is not importable"
+    except sqlite3.Error as exc:
+        return False, f"sqlite_vec could not be loaded: {exc}"
+    finally:
+        if extension_enabled:
+            try:
+                conn.enable_load_extension(False)
+            except sqlite3.Error:
+                pass
+
+
+def count_active_embeddings(conn) -> tuple[int | None, str | None]:
+    """Count active memory embeddings, returning None when vec0 is unavailable."""
+    sql = """
+        SELECT COUNT(*)
+        FROM memories m
+        JOIN memory_embeddings e ON e.rowid = m.id
+        WHERE m.deleted_at IS NULL
+    """
+    try:
+        return int(conn.execute(sql).fetchone()[0]), None
+    except sqlite3.OperationalError as first_error:
+        exists = conn.execute(
+            """
+            SELECT 1 FROM sqlite_master
+            WHERE name = 'memory_embeddings' AND type IN ('table', 'virtual table')
+            LIMIT 1
+            """
+        ).fetchone()
+        if not exists:
+            return 0, None
+
+        loaded, load_error = try_load_sqlite_vec(conn)
+        if loaded:
+            try:
+                return int(conn.execute(sql).fetchone()[0]), None
+            except sqlite3.OperationalError as retry_error:
+                return None, f"embedding coverage unavailable: {retry_error}"
+        return None, f"embedding coverage unavailable: {load_error or first_error}"
+
 
 def validate_metadata(value) -> str:
     """Ensure metadata is a valid JSON string. Never raises.

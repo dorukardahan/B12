@@ -5,9 +5,15 @@ Surfaces relevant memories when the user interacts with files or encounters erro
 Designed to be called from hooks/memory-proactive-surface.sh.
 """
 import json, os, socket, sqlite3, time
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Optional
+
+try:
+    import fcntl
+except ImportError:  # pragma: no cover
+    fcntl = None
 
 
 @dataclass
@@ -50,7 +56,7 @@ def surface(trigger_type: str, context: str, db_path: str = "",
         state_path = os.path.join(b12_base, "surfacing-state.json")
 
     # 2. Check rate limit
-    allowed, reason = check_rate_limit(state_path)
+    allowed, reason = check_rate_limit(state_path, increment=True)
     if not allowed:
         return SurfacingResult(surfaced=False, reason=reason)
 
@@ -67,7 +73,6 @@ def surface(trigger_type: str, context: str, db_path: str = "",
     # 5. Filter results (single DB connection for all lookups)
     state = _load_state(state_path)
     now = time.time()
-    now_iso = datetime.fromtimestamp(now, tz=timezone.utc).isoformat()
     surfaced_set = set(state.get("surfaced_ids", []))
     filtered = []
 
@@ -83,7 +88,6 @@ def surface(trigger_type: str, context: str, db_path: str = "",
         candidates_by_id[mem["id"]] = mem
 
     if not candidate_ids:
-        _increment_tool_calls(state_path, state)
         return SurfacingResult(surfaced=False, reason="No memories passed similarity/surfaced filters")
 
     # Batch fetch from DB with single connection
@@ -95,7 +99,10 @@ def surface(trigger_type: str, context: str, db_path: str = "",
             continue
 
         # Strength filter
-        if (mem_info.get("strength") or 1.0) < STRENGTH_THRESHOLD:
+        strength = mem_info.get("strength")
+        if strength is None:
+            strength = 1.0
+        if float(strength) < STRENGTH_THRESHOLD:
             continue
 
         # Age filter (must be older than 24h)
@@ -109,9 +116,9 @@ def surface(trigger_type: str, context: str, db_path: str = "",
         if mem_info.get("deleted_at"):
             continue
 
-        # Skip expired (valid_until is ISO text, compared with datetime('now'))
+        # Skip expired
         valid_until = mem_info.get("valid_until")
-        if valid_until and valid_until != "" and valid_until < now_iso:
+        if _is_expired(valid_until, now=now):
             continue
 
         mem = candidates_by_id[mid]
@@ -127,8 +134,6 @@ def surface(trigger_type: str, context: str, db_path: str = "",
             break
 
     if not filtered:
-        # Update tool call counter even when not surfacing
-        _increment_tool_calls(state_path, state)
         return SurfacingResult(surfaced=False, reason="No memories passed filters")
 
     # 6. Update state and return
@@ -164,42 +169,66 @@ def format_for_context(result: SurfacingResult) -> str:
     return "\n".join(lines)
 
 
-def check_rate_limit(state_path: str) -> tuple[bool, str]:
+def check_rate_limit(state_path: str, increment: bool = False) -> tuple[bool, str]:
     """Check if surfacing is allowed based on rate limits.
 
     Returns (allowed, reason).
     """
-    state = _load_state(state_path)
-    now = time.time()
+    with _state_lock(state_path):
+        state = _load_state(state_path)
+        now = time.time()
 
-    # Check cooldown
-    last_surfaced = state.get("last_surfaced_at", 0)
-    if now - last_surfaced < RATE_LIMIT_COOLDOWN:
-        remaining = int(RATE_LIMIT_COOLDOWN - (now - last_surfaced))
-        return False, f"Cooldown: {remaining}s remaining"
+        # Check cooldown
+        last_surfaced = state.get("last_surfaced_at", 0)
+        if now - last_surfaced < RATE_LIMIT_COOLDOWN:
+            remaining = int(RATE_LIMIT_COOLDOWN - (now - last_surfaced))
+            return False, f"Cooldown: {remaining}s remaining"
 
-    # Check tool call count
-    tool_calls_since = state.get("tool_calls_since", 0)
-    if tool_calls_since < RATE_LIMIT_TOOL_CALLS:
-        return False, f"Rate limit: {tool_calls_since}/{RATE_LIMIT_TOOL_CALLS} tool calls"
+        # Check tool call count
+        tool_calls_since = state.get("tool_calls_since", 0)
+        if increment:
+            tool_calls_since += 1
+            state["tool_calls_since"] = tool_calls_since
+            _save_state(state_path, state)
+        if tool_calls_since < RATE_LIMIT_TOOL_CALLS:
+            return False, f"Rate limit: {tool_calls_since}/{RATE_LIMIT_TOOL_CALLS} tool calls"
 
-    return True, "Rate limit passed"
+        return True, "Rate limit passed"
+
+
+def _is_expired(valid_until: str | None, now: float | None = None) -> bool:
+    if not valid_until:
+        return False
+    raw = valid_until.strip()
+    if not raw:
+        return False
+    now_ts = time.time() if now is None else now
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        try:
+            parsed = datetime.strptime(raw, "%Y-%m-%d %H:%M:%S")
+        except ValueError:
+            return False
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.timestamp() <= now_ts
 
 
 def update_surfacing_state(state_path: str, surfaced_ids: list[int],
                            state: dict | None = None):
     """Update state file after successful surfacing."""
-    if state is None:
-        state = _load_state(state_path)
-
-    state["last_surfaced_at"] = time.time()
-    state["tool_calls_since"] = 0
-    existing_ids = state.get("surfaced_ids", [])
-    combined = existing_ids + surfaced_ids
-    # Cap to prevent unbounded growth across long sessions
-    state["surfaced_ids"] = combined[-200:] if len(combined) > 200 else combined
-
-    _save_state(state_path, state)
+    with _state_lock(state_path):
+        current = _load_state(state_path)
+        if state:
+            current.update({k: v for k, v in state.items() if k != "surfaced_ids"})
+        current["last_surfaced_at"] = time.time()
+        current["tool_calls_since"] = 0
+        existing_ids = current.get("surfaced_ids", [])
+        combined = existing_ids + surfaced_ids
+        # Cap to prevent unbounded growth across long sessions
+        current["surfaced_ids"] = combined[-200:] if len(combined) > 200 else combined
+        _save_state(state_path, current)
 
 
 # -- Internal helpers ----------------------------------------------------------
@@ -330,10 +359,26 @@ def _load_state(state_path: str) -> dict:
         }
 
 
+@contextmanager
+def _state_lock(state_path: str):
+    """Serialize load-modify-save updates for the surfacing state file."""
+    directory = os.path.dirname(state_path) or "."
+    os.makedirs(directory, exist_ok=True)
+    lock_path = state_path + ".lock"
+    with open(lock_path, "a+") as lock_file:
+        if fcntl is not None:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            if fcntl is not None:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
 def _save_state(state_path: str, state: dict):
     """Save surfacing state atomically (write-to-temp + rename)."""
-    os.makedirs(os.path.dirname(state_path), exist_ok=True)
-    tmp_path = state_path + ".tmp"
+    os.makedirs(os.path.dirname(state_path) or ".", exist_ok=True)
+    tmp_path = f"{state_path}.{os.getpid()}.{time.time_ns()}.tmp"
     try:
         with open(tmp_path, 'w') as f:
             json.dump(state, f)
@@ -343,11 +388,3 @@ def _save_state(state_path: str, state: dict):
             os.unlink(tmp_path)
         except OSError:
             pass
-
-
-def _increment_tool_calls(state_path: str, state: dict | None = None):
-    """Increment the tool call counter without surfacing."""
-    if state is None:
-        state = _load_state(state_path)
-    state["tool_calls_since"] = state.get("tool_calls_since", 0) + 1
-    _save_state(state_path, state)

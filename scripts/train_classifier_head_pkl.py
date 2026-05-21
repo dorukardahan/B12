@@ -14,7 +14,6 @@ SetFit pipeline (with few-shot oversampling + ONNX export) lands as a
 follow-up — the silver-label corpus is large enough (1797 items) that
 a vanilla LogReg already outperforms few-shot.
 """
-import json
 import os
 import pickle
 import sys
@@ -22,27 +21,68 @@ import time
 from collections import Counter
 from pathlib import Path
 
-# PR #70 round 6 P2: portable temp path (matches build_classifier_corpus).
 import tempfile as _tempfile
-DATA_PATH = Path(os.environ.get(
-    "B12_CORPUS_PATH",
-    str(Path(_tempfile.gettempdir()) / "b12-setfit-candidates.json"),
-))
+
+
+def get_data_path() -> Path:
+    corpus_path = os.environ.get("B12_CORPUS_PATH")
+    if corpus_path:
+        return Path(corpus_path)
+    return Path(_tempfile.gettempdir()) / "b12-setfit-candidates.json"
+
+
+DATA_PATH = get_data_path()
 # Codex review PR #70 round 1 P1: honor B12_DATA_DIR so custom-data-dir
 # installs land the new pickle where embed_daemon actually loads from
 # (embed_daemon._CLASSIFIER_PATH reads the same env var).
 _DATA_DIR = Path(os.environ.get("B12_DATA_DIR", str(Path.home() / ".B12")))
 OUT_PKL = _DATA_DIR / "models" / "classifier-head.pkl"
-BASE_MODEL = os.environ.get("B12_TRAIN_MODEL", "BAAI/bge-m3")
+DAEMON_MODEL = os.environ.get("MCP_EMBEDDING_MODEL", "BAAI/bge-m3")
+BASE_MODEL = os.environ.get("B12_TRAIN_MODEL", DAEMON_MODEL)
+ALLOW_MODEL_MISMATCH = os.environ.get("B12_TRAIN_ALLOW_MODEL_MISMATCH", "").lower() in {
+    "1",
+    "true",
+    "yes",
+}
 
 LABELS = ["decision", "error_fix", "learning", "preference",
           "observation", "knowledge", "session_summary"]
 
 
+def _write_pickle_atomic(path: Path, payload) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = None
+    try:
+        with _tempfile.NamedTemporaryFile("wb", dir=path.parent, delete=False) as f:
+            tmp = Path(f.name)
+            pickle.dump(payload, f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    except Exception:
+        if tmp is not None:
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
+        raise
+
+
+def _assert_model_matches_daemon() -> None:
+    if BASE_MODEL == DAEMON_MODEL or ALLOW_MODEL_MISMATCH:
+        return
+    raise SystemExit(
+        "Refusing to publish classifier head: "
+        f"B12_TRAIN_MODEL={BASE_MODEL!r} differs from "
+        f"MCP_EMBEDDING_MODEL={DAEMON_MODEL!r}. Set "
+        "B12_TRAIN_ALLOW_MODEL_MISMATCH=1 only for an explicit offline artifact."
+    )
+
+
 def main():
-    items = json.loads(DATA_PATH.read_text())
-    train = [it for it in items if it["split"] == "train"]
-    test = [it for it in items if it["split"] == "test"]
+    from train_classifier import load_data
+    train, test = load_data(DATA_PATH)
+    _assert_model_matches_daemon()
     print(f"Train: {len(train)}, Test: {len(test)}")
     print(f"Train per label: {dict(Counter(it['proposed_label'] for it in train))}")
 
@@ -100,9 +140,7 @@ def main():
         "n_train": len(train),
         "n_test": len(test),
     }
-    OUT_PKL.parent.mkdir(parents=True, exist_ok=True)
-    with open(OUT_PKL, "wb") as f:
-        pickle.dump(payload, f)
+    _write_pickle_atomic(OUT_PKL, payload)
     print(f"Wrote {OUT_PKL} ({OUT_PKL.stat().st_size} bytes)")
 
 

@@ -348,11 +348,17 @@ def _parse_codex(path: str, tail_lines: int = 0) -> tuple:
             # Track file modifications from apply_patch
             if name == 'apply_patch' and isinstance(input_data, str):
                 # Extract file paths from patch headers
-                for match in re.finditer(r'\*\*\* (?:Update|Add) File: (.+)', input_data):
-                    filepath = match.group(1).strip()
-                    # Attach to a message
+                patch_path_re = re.compile(
+                    r'^\*\*\* (?:Update|Add|Delete) File: (.+)$'
+                    r'|^\*\*\* Move to: (.+)$',
+                    re.MULTILINE,
+                )
+                for match in patch_path_re.finditer(input_data):
+                    filepath = (match.group(1) or match.group(2)).strip()
                     if messages and messages[-1].role == 'assistant':
                         messages[-1].files_modified.append(filepath)
+                    else:
+                        messages.append(Message(role="assistant", files_modified=[filepath]))
 
         elif item_type == 'custom_tool_call_output':
             call_id = payload.get('call_id', '')
@@ -404,7 +410,7 @@ def _parse_continue(path: str) -> tuple:
         if not isinstance(entry, dict):
             continue
         role = entry.get("role") or entry.get("message", {}).get("role") or ""
-        if role not in ("user", "assistant", "system"):
+        if role not in ("user", "assistant"):
             continue
         raw_msg = entry.get("message") or entry
         content = ""
@@ -424,7 +430,7 @@ def _parse_continue(path: str) -> tuple:
         if not content.strip():
             continue
         msg = Message(
-            role=role if role != "system" else "user",
+            role=role,
             timestamp=str(entry.get("timestamp") or ""),
             content=content,
         )
