@@ -62,7 +62,9 @@ The CI workflow at `.github/workflows/ci.yml` runs the same checks on every PR.
 ## PR conventions
 
 - **Title format**: `feat(scope): short summary` / `fix(scope): ...` / `docs(scope): ...` / `chore(scope): ...`.
-  Semantic-release reads the prefix.
+  Conventional-commit prefixes are kept for readability + future tooling
+  (semantic-release was removed on 2026-05-24 in favor of hand-curated
+  release notes; the prefix discipline still helps PR triage).
 - **Net diff cap**: 300 lines per PR. Larger changes should be split.
 - **No co-authored-by trailers for AI assistants** — Claude, Anthropic, etc.
   Only humans + explicit upstream porters get trailers.

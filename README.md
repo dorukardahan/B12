@@ -434,7 +434,7 @@ B12/
 ├── install.sh                      #   One-command installer
 ├── check.sh                        #   Pre-commit validation script
 ├── CHANGELOG.md                    #   Version history
-├── package.json                    #   semantic-release config (CI versioning)
+├── package.json                    #   project metadata (private, not published)
 └── package-lock.json               #   npm lockfile
 ```
 

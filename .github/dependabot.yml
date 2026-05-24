@@ -14,18 +14,6 @@ updates:
     # manual review + supply-chain check before landing on main.
     rebase-strategy: "auto"
 
-  # Node deps (semantic-release toolchain)
-  - package-ecosystem: "npm"
-    directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
-    labels:
-      - "dependencies"
-      - "npm"
-    rebase-strategy: "auto"
-
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
