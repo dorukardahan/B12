@@ -511,3 +511,101 @@ hooks for the rest of that session, even with valid file content.
 `install.sh --codex` and `--all` now run `pgrep -f codex` and warn you
 if a session is open — restart any open Codex windows after re-running
 the installer so the new hook config actually loads.
+
+## Cross-Platform Setup (Other Platforms)
+
+B12 ships an `install.sh --<platform>` flag for each supported host. All
+platforms share the same MCP server, SQLite database, and embedding daemon
+— so memories stored from one client surface in searches from any other.
+Pick the flag matching your editor / CLI, run it once, restart the host.
+
+| Platform | Install flag | Config template | Verify |
+|----------|--------------|-----------------|--------|
+| Gemini CLI | `./install.sh --gemini` | `config/gemini-config-template.json` + `config/gemini-instructions-template.md` | `gemini /mcp` |
+| VS Code (GitHub Copilot Chat) | `./install.sh --vscode` | `config/mcp-b12-template.json` + `config/vscode-instructions-template.md` | Copilot Chat → "Show MCP servers" |
+| Cursor | `./install.sh --cursor` | `config/cursor-mcp-template.json` + `config/cursor-rules-template.md` | Cursor Settings → MCP → B12 row |
+| Kimi Code | `./install.sh --kimi` | `config/kimi-mcp-template.json` + `config/kimi-agents-template.md` | `kimi /mcp` |
+| Windsurf | `./install.sh --windsurf` | `config/mcp-b12-template.json` (Cascade format) | Windsurf MCP panel |
+| Cline (VS Code ext) | `./install.sh --cline` | `config/cline-mcp-template.json` + `config/cline-rules-template.md` + `config/cline-hooks/` | Cline panel → MCP Servers |
+| OpenCode | `./install.sh --opencode` | `config/opencode-config-template.json` + `config/opencode-instructions-template.md` | `opencode /mcp` |
+| Zed | `./install.sh --zed` | `config/mcp-b12-template.json` | Zed Settings → Context Servers |
+| Amp | `./install.sh --amp` | `config/amp-settings-template.json` | Amp Settings → MCP |
+| Grok CLI (xAI) | `./install.sh --grok` | `config/grok-config-template.toml` + `config/grok-instructions-template.md` | `grok /mcp` |
+| Continue.dev (VS Code / JetBrains) | `./install.sh --continue` | `config/continue-mcp-template.yaml` + `config/continue-instructions-template.md` | Continue panel → MCP |
+| JetBrains AI Assistant | (manual) | `config/jetbrains-ai-mcp-template.json` | JetBrains → AI Assistant → MCP |
+
+### What each flag does
+
+Each platform-specific flag performs the same minimal contract:
+
+1. **Inject the B12 MCP server entry** into that platform's config file
+   (`~/.gemini/settings.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`,
+   `~/.vscode/settings.json`, `~/.windsurf/...`, etc.) using absolute paths
+   (no `~` — Claude Code is not the only host that refuses tilde expansion).
+
+2. **Append memory instructions** to that platform's system-prompt file
+   (`AGENTS.md`, `instructions.md`, `.cursorrules`, etc.) wrapped between
+   `<!-- B12-MEMORY-START -->` and `<!-- B12-MEMORY-END -->` markers so
+   re-runs are idempotent and uninstall is a clean sed delete.
+
+3. **Wire up host-specific hooks** if the platform exposes a hook surface
+   (Cline `hooks/`, Codex `[hooks.events.*]` blocks). Hooks are
+   intentionally minimal on non-Claude-Code platforms — most retrieval
+   happens via MCP tool calls rather than implicit hooks.
+
+### What gets automated vs. manual per platform
+
+| Surface | Claude Code | Codex (≥0.130) | Cline | Other platforms |
+|---------|-------------|----------------|-------|-----------------|
+| Memory store (MCP tool) | Automatic | Automatic | Automatic | Automatic |
+| Memory search (MCP tool) | Automatic | Automatic | Automatic | Automatic |
+| Pre-prompt retrieval (hook) | ✓ silent | ✓ via `UserPromptSubmit` hook | ✓ via `userPromptSubmit` hook | Model follows instructions |
+| Session-end summary extraction | ✓ silent | ✓ via `Stop` hook | ✗ | ✗ |
+| Tag auto-injection on store | ✓ silent | ✓ via `PreToolUse` hook | ✓ | Model follows instructions |
+| Working-context tracking on tool use | ✓ silent | ✓ via `PostToolUse` hook | ✗ | ✗ |
+| `/mcp` verification | ✓ | ✓ | Cline panel | Host-specific UI |
+
+Claude Code remains the most automated surface because it ships the
+richest hook event taxonomy (13 events). Codex caught up in 0.130 with
+formal hooks. Other platforms rely on the model reading the
+B12-MEMORY-START instructions block to invoke MCP tools at the right
+moments.
+
+### Shared database, shared state
+
+All platforms point at the same SQLite database at the path resolved by
+`B12_DATA_DIR` (default `~/.B12/sqlite_vec.db`). A memory stored from
+Cursor surfaces in a Gemini search 30 seconds later; a session summary
+written by Claude Code's SessionEnd hook shows up in Codex's SessionStart
+context. The MCP server is single-instance — the first host that
+launches it owns the process; subsequent hosts connect via the same
+Unix socket (`B12_MCP_DAEMON_SOCK`, default `/tmp/b12-mcp-$UID.sock`).
+
+### Manual installation (if `install.sh` doesn't cover your host)
+
+If your host isn't in the flag list above but supports MCP over stdio,
+the minimum viable wiring is:
+
+1. Copy `config/mcp-b12-template.json` and replace `__VENV_PYTHON__` with
+   the output of `which python3` from your B12 venv, and replace
+   `__B12_SCRIPT__` with the absolute path to
+   `~/.B12/hooks/scripts/b12_mcp_server.py`.
+
+2. Inject the resulting JSON object into your host's MCP server config
+   (path varies — check your host's docs).
+
+3. Restart the host, run its `/mcp` equivalent, confirm B12 shows up
+   with 13 tools.
+
+The MCP protocol is stable across hosts — the same server process works
+identically whether the caller is Claude Code, Codex, Cursor, or a
+custom client.
+
+### Troubleshooting non-Claude-Code platforms
+
+| Symptom | Likely cause | Fix |
+|---------|--------------|-----|
+| MCP server shows disconnected on a non-Claude-Code host | Host expanded `~` in path | Replace `~` with absolute path in that host's config |
+| Memories store but never retrieve | Host doesn't auto-call `memory_search` | Add the memory-instructions template to your host's system prompt |
+| Embed daemon not starting on Linux | `/tmp/b12-embed-$UID.sock` permission | Check `umask`; daemon writes with mode `0o600` |
+| Multiple hosts can't connect simultaneously | First host crashed leaving stale socket | `rm /tmp/b12-mcp-$UID.sock && rm /tmp/b12-embed-$UID.sock` and let next host re-spawn |
