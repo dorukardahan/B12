@@ -32,7 +32,21 @@ venv/
 
 # Environment files (may contain secrets)
 .env
-.env.local
+.env.*
+!.env.example
+
+# Private keys / certificates / credentials
+*.key
+*.pem
+*.p12
+*.pfx
+id_rsa
+id_rsa.*
+id_ed25519
+id_ed25519.*
+*.crt
+credentials.json
+service-account*.json
 
 # Backup files
 backups/

@@ -88,7 +88,9 @@ Claude Code Session (full hook automation)
                                   ▼
 B12 MCP Server (b12_mcp_server.py)
     │
-    ├── 5 tools: memory_store / memory_search / memory_update / memory_quality / memory_session_context
+    ├── 13 tools: memory_store / memory_search / memory_update / memory_delete / memory_forget
+    │             / memory_quality / memory_session_context / memory_consolidate / memory_refine
+    │             / memory_surface / memory_export / memory_import / memory_dashboard
     ├── 4 resources: b12://context/project/{name} / b12://stats / b12://profile / b12://health
     ├── SQLite + sqlite-vec (local database, no cloud)
     ├── Embed daemon (sentence-transformers, Unix socket IPC)
@@ -169,7 +171,7 @@ git clone https://github.com/dorukardahan/B12.git
 cd B12 && chmod +x install.sh && ./install.sh --full
 
 # 2. Restart Claude Code and verify
-# Run /mcp in Claude Code — should show: B12 · connected (5 tools)
+# Run /mcp in Claude Code — should show: B12 · connected (13 tools)
 ```
 
 That's it. The `--full` flag creates the Python venv, installs all dependencies, deploys hooks, and configures the MCP server in `~/.claude.json` with correct absolute paths. The database and tables are created automatically on first use.
@@ -253,12 +255,20 @@ This single command:
 
 ### 2. Restart your AI assistant
 
-Start a new Claude Code session. Run `/mcp` — you should see `B12 · connected` with 5 tools:
+Start a new Claude Code session. Run `/mcp` — you should see `B12 · connected` with 13 tools:
 - `memory_store` — store a memory with metadata and tags
 - `memory_search` — hybrid semantic + full-text search
 - `memory_update` — update metadata, tags, or strength
+- `memory_delete` — soft-delete (or hard-delete with `hard=True`) a memory by content hash
+- `memory_forget` — privacy-focused forget (privatize / forget_session / hard_delete)
 - `memory_quality` — rate, get, or analyze memory quality
 - `memory_session_context` — get session start context (project memories, last summary, instructions)
+- `memory_consolidate` — merge near-duplicate memories via semantic similarity
+- `memory_refine` — surface refine candidates (low-quality or stale)
+- `memory_surface` — pull related memories from the graph
+- `memory_export` — export memories to JSONL/Markdown
+- `memory_import` — import memories from JSONL
+- `memory_dashboard` — aggregate stats + health snapshot
 
 **First run note:** The default embedding model (BGE-M3, ~2.2GB FP32 weights) downloads automatically on the first session. This is a one-time download — subsequent sessions start instantly. Set `B12_EMBED_BACKEND=gguf` + `B12_EMBED_GGUF_PATH=...` to use a Q8_0 / Q4_K_M GGUF (~250-500MB) via `llama-cpp-python` instead.
 
@@ -367,7 +377,7 @@ B12/
 │       ├── b12-gemini-session-end.sh    # SessionEnd adapter (transcript conversion)
 │       └── b12-gemini-tool-call.sh      # AfterTool adapter (memory retrieval)
 ├── scripts/                        # Support modules
-│   ├── b12_mcp_server.py           #   Custom FastMCP server (5 tools + 4 resources)
+│   ├── b12_mcp_server.py           #   Custom FastMCP server (13 tools + 4 resources)
 │   ├── start-mcp.sh                #   MCP bootstrap (venv detection, used by plugin)
 │   ├── embed_daemon.py             #   Background embedding daemon (Unix socket)
 │   ├── write_time_merge.py         #   Semantic dedup at write time
