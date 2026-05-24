@@ -11,7 +11,7 @@ jobs:
     name: bash + python syntax
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v6
         # Codex review PR #66 round 6 P1: anti-Claude trailer audit
         # needs full history, not just the shallow PR clone, so
         # `git log base..head` has access to all PR commits.
