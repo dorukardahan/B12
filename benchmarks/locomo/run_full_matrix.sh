@@ -35,6 +35,28 @@ TOP_K="${B12_BENCH_TOP_K:-1,3,5}"
 PY="${B12_BENCH_PYTHON:-${HOME}/.local/b12-venv/bin/python3}"
 if [ ! -x "$PY" ]; then PY="$(command -v python3)"; fi
 
+# Graceful skip when the LoCoMo dataset isn't available. The dataset
+# (~50 MB) is gitignored — it's downloaded manually for local runs and
+# from a release artifact for the monthly scheduled bench. PR-triggered
+# regression runs that hit a worker without the dataset write a
+# zero-cell results file and exit 0 so the gate doesn't block merges
+# on missing fixtures rather than on real regressions.
+DATASET="${ROOT}/benchmarks/locomo/locomo10.json"
+if [ ! -f "$DATASET" ]; then
+  echo "WARN: locomo10.json not found at $DATASET — skipping bench" >&2
+  echo "  (typical in PR runners; the monthly scheduled run downloads it)" >&2
+  cat > "$OUT" <<'NODATA_EOF'
+{
+  "version": "skipped",
+  "dataset": "locomo10",
+  "skipped": true,
+  "reason": "locomo10.json fixture not available on this runner",
+  "results": {}
+}
+NODATA_EOF
+  exit 0
+fi
+
 TMP="$(mktemp -d "${TMPDIR:-/tmp}/b12-bench.XXXXXX")"
 trap 'rm -rf "$TMP"' EXIT
 
