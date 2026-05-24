@@ -95,6 +95,20 @@ jobs:
           fi
           echo "OK: no personal paths"
 
+      - name: Install pytest + minimal hook deps
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pytest
+
+      - name: Hook smoke tests (tests/hooks/)
+        run: |
+          # Smoke suite: feed minimal JSON to each critical hook in an
+          # isolated $HOME with an empty ~/.B12/ skeleton; assert exit 0
+          # + valid JSON output + no crash signatures. Catches the
+          # common class of bugs that bash -n can't (runtime expansion,
+          # unguarded missing env vars, blocking on missing DB / socket).
+          python3 -m pytest tests/hooks/ -v --tb=short
+
       - name: Anti-Claude trailer audit
         run: |
           # Block any commits with claude/anthropic Co-Authored-By trailers

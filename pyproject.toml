@@ -100,3 +100,17 @@ py-modules = [
     "transcript_adapter",
     "write_time_merge",
 ]
+
+[tool.pytest.ini_options]
+# Default test discovery covers both:
+#   scripts/tests/  — Python module tests (b12_pii_scrubber, dashboard_server, etc.)
+#   tests/hooks/    — Bash hook smoke tests (JSON in → exit 0, graceful degradation)
+testpaths = ["scripts/tests", "tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = [
+    "-ra",                    # short summary of all non-pass outcomes
+    "--strict-markers",       # typo'd marker = error, not silent skip
+    "--strict-config",        # invalid config = error
+]
