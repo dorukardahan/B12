@@ -6,19 +6,36 @@ on:
   # Monthly automated run (1st of each month, 00:00 UTC).
   schedule:
     - cron: "0 0 1 * *"
-  # Opt-in per-PR run — attach the `bench` label to the PR and the
-  # matrix runs against the PR head, posting the 9-cell table as a comment.
+  # Automatic regression gate — runs on every PR that touches a
+  # retrieval-critical file. The `bench` label is still honored as an
+  # opt-in escape hatch for PRs that don't touch these paths (e.g.,
+  # benchmark/runtime tuning PRs whose effects only show up at the
+  # matrix level).
   pull_request:
-    types: [labeled, synchronize]
+    types: [labeled, synchronize, opened]
+    paths:
+      - 'scripts/b12_mcp_server.py'
+      - 'scripts/embed_daemon.py'
+      - 'scripts/write_time_merge.py'
+      - 'scripts/ebbinghaus.py'
+      - 'scripts/memory_refine.py'
+      - 'scripts/b12_scheduler.py'
+      - 'hooks/memory-retrieval.sh'
+      - 'hooks/memory-session-start.sh'
+      - 'benchmarks/locomo/**'
+      - '.github/workflows/benchmark.yml'
 
 jobs:
   matrix:
     name: locomo 9-cell matrix
     runs-on: ubuntu-latest
-    # Skip PR runs unless the PR carries the `bench` label.
+    # Auto-trigger on critical-path file changes (covered by the
+    # `paths:` filter above) OR explicit `bench` label.
     if: |
       github.event_name != 'pull_request' ||
-      contains(github.event.pull_request.labels.*.name, 'bench')
+      contains(github.event.pull_request.labels.*.name, 'bench') ||
+      github.event.action == 'synchronize' ||
+      github.event.action == 'opened'
     # ~50-70 min runtime on M-series local; ubuntu-latest is slower for the
     # bge-m3 encode pass. Keep generous headroom past the documented range.
     timeout-minutes: 120

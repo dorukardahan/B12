@@ -54,7 +54,7 @@ SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 # falls back to legacy in-process stdio mode below — non-Claude-Code consumers
 # (Codex, Gemini, Kimi, OpenCode, Grok) see zero behaviour change either way.
 MCP_DAEMON_SOCK = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
-B12_VERSION = "v11.74.0"
+B12_VERSION = "v11.74.1"
 
 # ── SQLite connection (set during lifespan) ──────────────────────
 _db: sqlite3.Connection | None = None
