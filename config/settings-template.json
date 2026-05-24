@@ -115,7 +115,7 @@
           {
             "type": "command",
             "command": "~/.B12/hooks/memory-subagent-start.sh",
-            "timeout": 8
+            "timeout": 10
           }
         ]
       }
@@ -138,7 +138,7 @@
           {
             "type": "command",
             "command": "~/.B12/hooks/memory-tag-enforce.sh",
-            "timeout": 8
+            "timeout": 10
           }
         ]
       },
@@ -160,7 +160,7 @@
           {
             "type": "command",
             "command": "~/.B12/hooks/memory-team-create.sh",
-            "timeout": 6
+            "timeout": 8
           }
         ]
       },
@@ -170,7 +170,7 @@
           {
             "type": "command",
             "command": "~/.B12/hooks/memory-feedback.sh",
-            "timeout": 8
+            "timeout": 10
           }
         ]
       },
@@ -180,7 +180,7 @@
           {
             "type": "command",
             "command": "~/.B12/hooks/memory-working-context.sh",
-            "timeout": 8
+            "timeout": 10
           }
         ]
       },
@@ -199,7 +199,7 @@
           {
             "type": "command",
             "command": "~/.B12/hooks/memory-checkpoint.sh",
-            "timeout": 5
+            "timeout": 8
           }
         ]
       }
