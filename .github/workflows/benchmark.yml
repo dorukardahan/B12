@@ -86,6 +86,18 @@ jobs:
           script: |
             const fs = require('fs');
             const data = JSON.parse(fs.readFileSync('benchmarks/locomo/results-ci.json', 'utf8'));
+            // Short-circuit: graceful-skip path emits `{"skipped": true, ...}`
+            // when the locomo10.json fixture isn't seeded on the runner.
+            // Post a single-line note instead of a 9-cell table of dashes.
+            if (data.skipped === true) {
+              await github.rest.issues.createComment({
+                issue_number: context.issue.number,
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                body: `### LoCoMo bench — skipped\n\n_${data.reason || 'fixture not available on this runner'}_\n\nThe regression gate runs against the monthly scheduled bench and explicit \`bench\` label opt-in.`,
+              });
+              return;
+            }
             const cells = data.results;
             const search = ['keyword', 'hybrid', 'vector'];
             const storage = ['observations', 'summaries', 'dialogues'];
