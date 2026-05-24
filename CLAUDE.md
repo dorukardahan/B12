@@ -129,3 +129,21 @@ When adding new patterns, always add both English and Turkish variants.
 - NO API keys or secrets
 - Use generic examples and placeholders
 - User profile template should be empty/generic — users fill in their own info
+
+## Release model
+
+B12 ships **manual hand-curated releases** — there is no semantic-release
+or any other auto-publish toolchain. (Semantic-release was removed on
+2026-05-24; see commit c497c82 for the rationale: not published to npm,
+auto-CHANGELOG was bot-noise, dep tree was the source of most npm
+vulnerabilities.)
+
+**Do not re-introduce automated release tooling without explicit owner
+approval.** That includes: `semantic-release`, `release-please`,
+`changesets`, `release-it`, `auto`, or any other tool that bumps
+`package.json` / writes CHANGELOG / creates tags from commit messages.
+The release ritual lives in `docs/releasing.md` and is intentional.
+
+When asked to "set up releases" or "automate versioning," **stop and
+ask** — the manual ritual is the answer for this repo. Suggesting
+automation re-adds the exact dep tree we just removed.
