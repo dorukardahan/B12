@@ -799,6 +799,9 @@ startup_timeout_sec = 30
 [mcp_servers.B12.env]
 MCP_EMBEDDING_MODEL = "BAAI/bge-m3"
 MCP_MAX_RESPONSE_CHARS = "40000"
+
+[mcp_servers.B12.tools.memory_store]
+approval_mode = "auto"
 '''
 
 with open(config_path, 'w') as f:
@@ -3655,6 +3658,22 @@ if $INSTALL_GROK; then
 fi
 
 set -e
+
+# ─────────────────────────────────────────────
+# Embedding-model drift self-heal (runs every install, idempotent).
+# Reads the live DB's vec0 FLOAT[N] dimension, derives the canonical
+# model, and reaffirms MCP_EMBEDDING_MODEL across all deployed B12
+# configs (Claude .claude.json files + Codex config.toml). Also ensures
+# the Codex memory_store approval_mode="auto" block. This repairs drift
+# left by partial migrations (e.g. bge-m3 v11.34 only rewrote ONE Claude
+# config, so other setups silently kept 384-dim MiniLM → FTS-only recall).
+# See scripts/heal_embedding_model.py.
+# ─────────────────────────────────────────────
+if [ -f "$SCRIPT_DIR/scripts/heal_embedding_model.py" ]; then
+  echo ""
+  echo "── Embedding-Model Drift Check ──"
+  python3 "$SCRIPT_DIR/scripts/heal_embedding_model.py" || true
+fi
 
 echo ""
 echo "─────────────────────────────────"

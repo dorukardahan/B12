@@ -463,6 +463,11 @@ startup_timeout_sec = 30
 [mcp_servers.B12.env]
 MCP_EMBEDDING_MODEL = "BAAI/bge-m3"
 MCP_MAX_RESPONSE_CHARS = "40000"
+
+# Skip the per-call approval prompt for memory_store (B12's silent
+# batch-write tool). install.sh --codex writes this automatically.
+[mcp_servers.B12.tools.memory_store]
+approval_mode = "auto"
 ```
 
 Replace `/Users/yourname` with your actual home directory.

@@ -1064,7 +1064,18 @@ def main():
             log(f"Model loaded (gguf): {os.environ.get('B12_EMBED_GGUF_PATH', '<auto>')}")
         else:
             from sentence_transformers import SentenceTransformer
-            model = SentenceTransformer(MODEL_NAME, device='cpu')
+            # Load from the local HF cache only. transformers 5.x makes a
+            # network model_info() round-trip during tokenizer init for
+            # repo-id loads (BGE-M3's mistral-regex patch path); skipping it
+            # cuts cold load ~9.4s → ~4.7s (model_load 5.5s → 1.3s, measured
+            # on Apple Silicon) and removes the HF network dependency from
+            # startup. Fall back to a normal downloading load only when the
+            # model isn't cached yet (fresh install, first run).
+            try:
+                model = SentenceTransformer(MODEL_NAME, device='cpu', local_files_only=True)
+            except Exception:
+                log(f"Model not in local cache — downloading {MODEL_NAME} (first run)")
+                model = SentenceTransformer(MODEL_NAME, device='cpu')
             log(f"Model loaded: {MODEL_NAME}")
         # Probe dim once so subsequent ops can validate against drift.
         probe = model.encode(["dim_probe"], normalize_embeddings=True)

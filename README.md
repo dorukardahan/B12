@@ -400,6 +400,7 @@ B12/
 │   ├── codex_session_end.py        #   Codex session-end memory extraction
 │   ├── hook_adapter.py             #   Codex CLI hook adapter (translates Codex events to B12)
 │   ├── embedding_backfill.py       #   Backfills embeddings for memories without vectors
+│   ├── heal_embedding_model.py     #   Self-heals MCP_EMBEDDING_MODEL drift across deployed configs (DB-dim driven)
 │   ├── query_aliases.json          #   Search query alias mappings
 │   ├── migrate_ebbinghaus.py       #   Migration: add strength fields
 │   ├── migrate_stemmed_fts.py      #   Migration: backfill porter-stemmed FTS5 table

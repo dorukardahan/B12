@@ -1,5 +1,29 @@
 # Changelog
 
+## Unreleased
+
+### Bug Fixes
+
+* **install:** self-heal `MCP_EMBEDDING_MODEL` drift on every run. `install.sh`
+  now reads the live DB's vec0 `FLOAT[N]` dimension, derives the canonical
+  model (1024 → `BAAI/bge-m3`), and reaffirms it across all deployed configs
+  (3 Claude `.claude.json` + Codex `config.toml`) via
+  `scripts/heal_embedding_model.py` — idempotent, repairs partial migrations
+  (the bge-m3 v11.34 migration only rewrote one Claude config, so other setups
+  silently kept 384-dim MiniLM and degraded to FTS-only recall).
+* **install:** `inject_codex_mcp_config` no longer strips the
+  `[mcp_servers.B12.tools.memory_store] approval_mode = "auto"` block on
+  `--codex` re-runs; the block is now part of the regenerated config and is
+  reaffirmed by the drift self-heal.
+
+### Performance
+
+* **embed_daemon:** load the embedding model with `local_files_only=True`
+  (download fallback on first run). Skips a network `model_info()` round-trip
+  `transformers` makes for repo-id loads, cutting cold model-load ~9.4s → ~4.7s
+  (model_load 5.5s → 1.3s on Apple Silicon) and removing the Hugging Face
+  network dependency from session startup.
+
 ## [11.74.1](https://github.com/dorukardahan/B12/compare/v11.74.0...v11.74.1) (2026-05-21)
 
 
