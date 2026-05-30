@@ -39,12 +39,23 @@ from shared_patterns import (
 )
 
 
+# Resolve the PII scrubber ONCE, logging if it is missing rather than silently
+# no-op'ing (a misconfigured PYTHONPATH would otherwise let raw rollout content
+# reach SQLite with no warning).
+try:
+    from b12_pii_scrubber import scrub as _CODEX_SCRUB
+except ImportError:
+    _CODEX_SCRUB = None
+    sys.stderr.write(
+        "[codex_session_end] b12_pii_scrubber unavailable — PII scrub disabled; "
+        "raw rollout content may be stored. Check PYTHONPATH / B12 install.\n"
+    )
+
+
 def _scrub_text(text):
-    try:
-        from b12_pii_scrubber import scrub as _pii_scrub
-        return _pii_scrub(str(text))
-    except ImportError:
+    if _CODEX_SCRUB is None:
         return str(text)
+    return _CODEX_SCRUB(str(text))
 
 
 def get_db_path():
@@ -167,15 +178,12 @@ def store_memory(db_path, content, metadata_str, tags, embedding=None, memory_ty
     produces two distinct rows instead of one being silently dropped by the
     existing SHA-256 dedup precedent (Feb 26 fix on this file).
     """
-    try:
-        from b12_pii_scrubber import scrub as _pii_scrub
-        scrubbed = _pii_scrub(content)
+    if _CODEX_SCRUB is not None:
+        scrubbed = _CODEX_SCRUB(content)
         if scrubbed != content:
             content = scrubbed
             if embedding is not None:
                 embedding = get_embedding(content)
-    except ImportError:
-        pass
 
     # Validate metadata is valid JSON before INSERT
     try:

@@ -495,6 +495,7 @@ The LLM extraction subagent runs at SessionEnd in a detached background process 
 | `B12_LLM_TIMEOUT_S` | Background per-call timeout. Hook is already done; this only protects the detached worker. | `60` | `90` |
 | `B12_LLM_MAX_MEMORIES` | Hard cap on memories returned per call. | `10` | `5` |
 | `B12_LLM_TRANSCRIPT_CAP_CHARS` | Transcript chunk sent to the LLM. Ollama auto-caps at 25K when this is unset. | `50000` (Anthropic) / `25000` (Ollama) | `30000` |
+| `B12_LLM_MAX_TOKENS` | Output-token cap for the extraction call (floor 256). The default comfortably covers `B12_LLM_MAX_MEMORIES` × ~700 chars; raise it if the error log shows truncated JSONL (`stop_reason=max_tokens`). | `4096` | `8192` |
 
 Failure modes are silent: API outage, rate limit, missing key, or malformed output all log to `~/.B12/memory-logs/llm-extraction-errors.log` and the hook still exits 0. LLM-written memories carry `tag:llm-extracted` and `metadata.extraction_method=llm-<provider>` for downstream filtering. See `docs/B12_llm_extraction_design.md` for full architecture, cost estimate, and dedup logic.
 

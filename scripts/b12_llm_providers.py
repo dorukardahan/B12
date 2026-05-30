@@ -46,6 +46,17 @@ _ANTHROPIC_VERSION = "2023-06-01"
 _ANTHROPIC_URL = "https://api.anthropic.com/v1/messages"
 
 
+def _max_tokens() -> int:
+    """Output-token cap for the extraction call. Default 4096 comfortably
+    covers the documented ceiling (B12_LLM_MAX_MEMORIES × ~700 chars), avoiding
+    the silent truncation the old hardcoded 1024 caused on memory-dense
+    sessions. Override with B12_LLM_MAX_TOKENS."""
+    try:
+        return max(256, int(os.environ.get("B12_LLM_MAX_TOKENS", "4096") or "4096"))
+    except ValueError:
+        return 4096
+
+
 # ── Protocol ────────────────────────────────────────────────────────
 
 
@@ -144,7 +155,7 @@ class AnthropicProvider:
         }
         payload = {
             "model": mdl,
-            "max_tokens": 1024,
+            "max_tokens": _max_tokens(),
             "system": prompt,
             "messages": [
                 {"role": "user", "content": transcript_text},
@@ -171,8 +182,8 @@ class AnthropicProvider:
         # Always log truncation — even when text was returned the cut
         # point can land mid-JSON and `_split_jsonl` silently drops the
         # partial line. The user benefits from seeing this in the log
-        # because the fix is to bump `max_tokens` (currently hardcoded
-        # at 1024 for the JSONL output shape).
+        # because the fix is to raise `B12_LLM_MAX_TOKENS` (env-driven via
+        # _max_tokens(), default 4096) for the JSONL output shape.
         if body.get("stop_reason") == "max_tokens":
             on_error(
                 f"anthropic: response truncated (stop_reason=max_tokens) "

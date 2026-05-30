@@ -58,12 +58,22 @@ _OLLAMA_TRANSCRIPT_CAP = 25000
 _TAG_LLM = "llm-extracted"
 
 
+# Resolve the PII scrubber ONCE at import. If it is unavailable,
+# SCRUBBER_AVAILABLE stays False and extract_and_store() refuses to send the
+# transcript to a remote provider — skipping extraction beats egressing
+# unredacted secrets. (Previously this silently returned the raw transcript.)
+try:
+    from b12_pii_scrubber import scrub as _scrub_pii  # type: ignore[import-not-found]
+    SCRUBBER_AVAILABLE = True
+except ImportError:
+    _scrub_pii = None
+    SCRUBBER_AVAILABLE = False
+
+
 def _scrub_text(text: str) -> str:
-    try:
-        from b12_pii_scrubber import scrub as scrub_pii  # type: ignore[import-not-found]
-    except ImportError:
+    if _scrub_pii is None:
         return text
-    return scrub_pii(text)
+    return _scrub_pii(text)
 
 
 def _scrub_candidate(candidate: dict) -> dict | None:
@@ -281,6 +291,12 @@ def extract_and_store(
         env_model = os.environ.get("B12_LLM_MODEL")
         if env_model:
             model = env_model
+
+    # Fail safe: never egress an unredacted transcript. If the PII scrubber
+    # could not be imported, abort BEFORE sending anything to a remote provider.
+    if not SCRUBBER_AVAILABLE:
+        _log_error("b12_pii_scrubber unavailable — refusing to send transcript to remote LLM provider")
+        return 0
 
     cap_chars = _resolve_caps(prov.name)
     transcript_text = normalize_transcript(transcript_path, cap_chars=cap_chars)
@@ -529,6 +545,13 @@ class _MockProvider:
 
 def _self_test() -> int:  # noqa: PLR0915 - many small assertions inline
     failures: list[str] = []
+
+    # The SEC-2a egress guard aborts extract_and_store when b12_pii_scrubber is
+    # unavailable. The self-test uses a mock provider (no real network egress),
+    # so force the scrubber "available" for hermeticity — otherwise tests 12/15
+    # would falsely fail in any env without the optional scrubber installed.
+    global SCRUBBER_AVAILABLE
+    SCRUBBER_AVAILABLE = True
 
     def expect(cond: bool, label: str) -> None:
         marker = "OK  " if cond else "FAIL"
