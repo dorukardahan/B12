@@ -59,6 +59,11 @@ B12_VERSION = "v11.74.1"
 # ── SQLite connection (set during lifespan) ──────────────────────
 _db: sqlite3.Connection | None = None
 _db_lock = asyncio.Lock()
+# Serializes embed-daemon socket round-trips. The daemon accepts ONE connection
+# at a time (embed_daemon.py main loop), so without this, concurrent sessions
+# would each open a socket at once and a fast op could hit its 5s client timeout
+# waiting in the listen backlog behind a slow >10s encode_batch. See R&D SPD-1.
+_daemon_lock = asyncio.Lock()
 
 # ── Session tracker (MCP-only platform support) ─────────────────
 # Tracks tool calls during a session so we can generate a summary
@@ -448,6 +453,35 @@ def daemon_request(op: str, **kwargs) -> dict | None:
         s.close()
 
 
+async def daemon_request_async(op: str, **kwargs) -> dict | None:
+    """Async wrapper for daemon_request: runs the blocking Unix-socket round-trip
+    in a worker thread so the shared asyncio event loop is never stalled on
+    daemon I/O. In daemon mode a single FastMCP loop serves every connected
+    session, so a synchronous socket call here would freeze ALL sessions for the
+    duration of the call. See R&D plan SPD-1 (b12_mcp_server.py).
+
+    Guarded by _daemon_lock so only one round-trip is in flight at a time: the
+    embed daemon is single-connection-serial, so concurrent offloaded calls would
+    otherwise race the listen backlog and a fast op could time out (5s) behind a
+    slow encode_batch (>10s). The lock keeps the loop non-blocking AND serial.
+
+    The worker is shielded so that if the caller is cancelled (e.g. the client
+    disconnects mid-`encode_batch`), we still wait for the in-flight socket
+    round-trip to finish before releasing _daemon_lock — a worker thread can't
+    be cancelled, and releasing early would let the next request race the
+    single-connection daemon. Cancellation then propagates as normal."""
+    async with _daemon_lock:
+        worker = asyncio.ensure_future(asyncio.to_thread(daemon_request, op, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        finally:
+            if not worker.done():
+                try:
+                    await worker
+                except BaseException:
+                    pass
+
+
 def compute_content_hash(content: str) -> str:
     """Content-only hash — matches upstream mcp-memory-service for backward compat."""
     return hashlib.sha256(content.strip().lower().encode()).hexdigest()
@@ -657,7 +691,7 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
             pass
 
     if memory_type in ("general", "note", ""):
-        resp = daemon_request("classify", text=content)
+        resp = await daemon_request_async("classify", text=content)
         if resp and resp.get("type"):
             memory_type = resp["type"]
 
@@ -708,7 +742,7 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         mem_id = row["id"]
 
     # Embed via daemon (graceful degradation) — outside lock, daemon call is slow
-    resp = daemon_request("encode_batch", texts=[content])
+    resp = await daemon_request_async("encode_batch", texts=[content])
     if resp and resp.get("embeddings"):
         emb_bytes = base64.b64decode(resp["embeddings"][0])
         async with _db_lock:
@@ -837,7 +871,7 @@ async def memory_search(
 
     # ── Semantic search via daemon (outside lock — daemon call is slow) ──
     if mode in ("semantic", "hybrid") and query:
-        resp = daemon_request(
+        resp = await daemon_request_async(
             "semantic_search", query=query, db_path=DB_PATH, limit=limit * 2
         )
         if resp and resp.get("results"):
