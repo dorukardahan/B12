@@ -612,6 +612,19 @@ if files_modified:
 
 handoff_text = '\n'.join(handoff_lines)
 
+# Scrub secrets from the on-disk summary artifacts before writing them. These
+# .md files (latest / global / exec / handoff / rolling history) live under
+# ~/.B12 and may be backed up or synced, so a pasted secret must be redacted
+# here too — the DB write is scrubbed separately in the embed step.
+# (scripts/ is already on sys.path above for the shared_patterns import.)
+try:
+    from b12_pii_scrubber import scrub as _pii_scrub
+    summary_text = _pii_scrub(summary_text)
+    executive_summary = _pii_scrub(executive_summary)
+    handoff_text = _pii_scrub(handoff_text)
+except ImportError:
+    pass
+
 # ═══════════════════════════════════════════════════════════════
 # WRITE OUTPUT FILES
 # ═══════════════════════════════════════════════════════════════
@@ -700,6 +713,16 @@ session_id = sys.argv[4]
 
 with open(summary_file, 'r') as f:
     content = f.read().strip()
+
+# PII / secret scrub before hash+embed+insert (parity with write_time_merge & codex).
+# Honors B12_DISABLE_PII_SCRUB=1 (handled inside scrub()).
+_hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
+sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
+try:
+    from b12_pii_scrubber import scrub as _pii_scrub
+    content = _pii_scrub(content)
+except ImportError:
+    pass
 
 # Skip trivial sessions (too short or no insights)
 if len(content) < 100:

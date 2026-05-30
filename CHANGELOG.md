@@ -2,6 +2,21 @@
 
 ## Unreleased
 
+### Security
+
+* **pii-scrub:** close the write-path gap — the secret scrubber now runs on
+  **every** write path, not just write-time merge + Codex. Added scrub calls to
+  the MCP `memory_store` tool (`b12_mcp_server.py`), the SessionEnd summary store
+  (`memory-session-end.sh`), the PreCompact priority store (`memory-precompact.sh`),
+  and the checkpoint flush (`memory-checkpoint.sh`). Previously a secret pasted
+  into chat could land raw in SQLite via any of these paths despite the docs'
+  "scrub on every write" claim. Honors `B12_DISABLE_PII_SCRUB=1` everywhere.
+* **pii-scrub:** expand the pattern catalog — added Google API keys (`AIza…`),
+  Stripe keys (`sk_live_`/`sk_test_`/`rk_…`), PEM private-key blocks, and
+  credential-bearing DB connection URIs; extended the generic credential pattern
+  with Turkish keywords (`parola`, `şifre`/`sifre`, `gizli anahtar`). Added 7 unit
+  tests (`scripts/tests/test_b12_pii_scrubber.py`).
+
 ### Bug Fixes
 
 * **install:** self-heal `MCP_EMBEDDING_MODEL` drift on every run. `install.sh`

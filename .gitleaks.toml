@@ -1,0 +1,18 @@
+# gitleaks config for B12.
+#
+# Extends the default ruleset (every standard secret rule still runs on real
+# source) and allowlists ONLY the secret-scrubber TEST fixtures. Those files
+# deliberately contain fake secret patterns (sk-ant-, AKIA, AIza, Stripe keys,
+# PEM private-key blocks, DB URIs, ...) — they are the inputs the scrubber unit
+# tests assert get redacted, so gitleaks must not treat them as real leaks.
+title = "B12 gitleaks config"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "B12 secret-scrubber test fixtures (intentional fake secrets)"
+paths = [
+  '''scripts/tests/test_b12_pii_scrubber\.py''',
+  '''scripts/tests/test_sanitization_hooks\.py''',
+]

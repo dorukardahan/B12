@@ -42,11 +42,16 @@ itself is trusted, but acknowledges three realistic risks:
 
 1. **Secret-honeypot risk.** If a user pastes
    `OPENAI_API_KEY=sk-...` into Claude Code, B12 captures it and surfaces
-   it on every future search. The Phase 3 PII scrubber
+   it on every future search. The PII scrubber
    (`scripts/b12_pii_scrubber.py`) detects common secret patterns
-   (`sk-ant-`, `sk-proj-`, `ghp_`, `xoxb-`, AWS access keys, Bearer
-   tokens, JWT, generic `api_key=` / `password=` / `secret=`) and rewrites
-   matches to `[REDACTED:<type>]` before INSERT. The scrubber can be
+   (`sk-ant-`, `sk-proj-`, `ghp_`, `xoxb-`, AWS access/secret keys, Bearer
+   tokens, JWT, Google `AIza…`, Stripe `sk_live_…`/`sk_test_…`, PEM
+   private-key blocks, credential-bearing DB connection URIs, and generic
+   `api_key=` / `password=` / `secret=` — including Turkish
+   `parola=` / `şifre=` / `gizli anahtar=`) and rewrites matches to
+   `[REDACTED:<type>]` **before INSERT on every write path** — the MCP
+   `memory_store` tool, the SessionEnd / PreCompact / checkpoint hooks, the
+   write-time merge path, and Codex session-end. The scrubber can be
    disabled with `B12_DISABLE_PII_SCRUB=1` (not recommended).
 2. **Supply-chain attack on Python deps.** B12 honors the
    "Mini Shai-Hulud" rule from the user's global Claude Code config:

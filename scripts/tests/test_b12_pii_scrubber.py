@@ -80,6 +80,93 @@ def test_true_negative_env_var_reference():
     assert out == src, f"unchanged content was modified: {out!r}"
 
 
+def test_google_api_key_redacted():
+    # Real Google API keys are "AIza" + 35 chars = 39 total.
+    src = "GOOGLE_API_KEY=AIza" + "SyD0123456789abcdefghijklmnopqrstuv" + " end"
+    out = scrub(src)
+    assert "[REDACTED:google_api]" in out
+    assert "AIzaSyD0123456789" not in out
+
+
+def test_stripe_secret_key_redacted():
+    # Build the fixture by concatenation so no contiguous key literal lands in
+    # source (avoids tripping GitHub secret-scanning push protection); the
+    # regex still matches the runtime-joined value.
+    key = "sk_" + "live_" + "51AbcDefGhiJklMnoPqrStUv0123"
+    src = f"STRIPE_KEY={key} done"
+    out = scrub(src)
+    assert "[REDACTED:stripe]" in out
+    assert key not in out
+
+
+def test_pem_private_key_block_redacted():
+    src = (
+        "before\n-----BEGIN RSA PRIVATE KEY-----\n"
+        "MIIEowIBAAKCAQEA1234567890abcdef\nlinetwo\n"
+        "-----END RSA PRIVATE KEY-----\nafter"
+    )
+    out = scrub(src)
+    assert "[REDACTED:pem_private_key]" in out
+    assert "MIIEowIBAAKCAQEA" not in out
+    # surrounding non-secret text preserved
+    assert "before" in out and "after" in out
+
+
+def test_pem_encrypted_pkcs8_block_redacted():
+    # PKCS#8 encrypted keys (ssh-keygen -m PKCS8 / OpenSSL) use "ENCRYPTED".
+    src = (
+        "x\n-----BEGIN ENCRYPTED PRIVATE KEY-----\n"
+        "MIIFHzBJBgkq1234567890abcdef\nbody\n"
+        "-----END ENCRYPTED PRIVATE KEY-----\ny"
+    )
+    out = scrub(src)
+    assert "[REDACTED:pem_private_key]" in out
+    assert "MIIFHzBJBgkq" not in out
+
+
+def test_pem_pgp_private_key_block_redacted():
+    # GPG armored secret-key export: "PGP PRIVATE KEY BLOCK".
+    src = (
+        "x\n-----BEGIN PGP PRIVATE KEY BLOCK-----\n"
+        "lQVYBGabcdef1234567890\nbody\n"
+        "-----END PGP PRIVATE KEY BLOCK-----\ny"
+    )
+    out = scrub(src)
+    assert "[REDACTED:pem_private_key]" in out
+    assert "lQVYBGabcdef" not in out
+
+
+def test_db_uri_with_credentials_redacted():
+    src = "DATABASE_URL=postgres://admin:s3cretPassw0rd@db.internal:5432/app"
+    out = scrub(src)
+    assert "[REDACTED:db_uri]" in out
+    assert "s3cretPassw0rd" not in out
+
+
+def test_db_uri_without_credentials_not_redacted():
+    # No user:pass@ segment → must NOT be redacted.
+    src = "connect to postgres://localhost:5432/app for local dev"
+    out = scrub(src)
+    assert out == src, f"credential-free URI was modified: {out!r}"
+
+
+def test_turkish_credential_keywords_redacted():
+    for src in (
+        "parola=cokGizliParola123",
+        "şifre: superSecretValue99",
+        "gizli anahtar = abcdef1234567890",
+    ):
+        out = scrub(src)
+        assert "[REDACTED:generic]" in out, f"not redacted: {src!r} -> {out!r}"
+
+
+def test_version_string_not_redacted():
+    # A dotted version number must not trip the generic/secret patterns.
+    src = "upgraded to version=1.2.3 and host localhost:5432/app"
+    out = scrub(src)
+    assert out == src, f"benign string was modified: {out!r}"
+
+
 def test_disable_env_var_skips_scrub():
     src = "OPENAI_API_KEY=sk-proj-AbcDefGhi123456jklMnoPQRSTUVwxyz789abcDEFGHIJ"
     previous = os.environ.get("B12_DISABLE_PII_SCRUB")

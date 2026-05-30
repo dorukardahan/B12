@@ -39,10 +39,29 @@ _PATTERNS = [
     ("bearer", re.compile(r"(?i)\bBearer\s+[A-Za-z0-9_\-.]{20,}\b")),
     # JWT (three base64url segments)
     ("jwt", re.compile(r"\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b")),
+    # Google API keys (AIza…)
+    ("google_api", re.compile(r"\bAIza[A-Za-z0-9_\-]{35}\b")),
+    # Stripe secret / restricted keys (sk_live_/sk_test_/rk_live_/rk_test_)
+    ("stripe", re.compile(r"\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b")),
+    # PEM private-key blocks (RSA/EC/OpenSSH/DSA/PKCS#8-ENCRYPTED/PGP) — multi-line,
+    # redact whole block. `ENCRYPTED` covers PKCS#8 (ssh-keygen -m PKCS8 / OpenSSL
+    # encrypted keys); optional ` BLOCK` covers GPG armored `PGP PRIVATE KEY BLOCK`.
+    ("pem_private_key", re.compile(
+        r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----"
+        r"[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----"
+    )),
+    # DB connection strings carrying inline credentials (scheme://user:pass@host).
+    # Requires the `user:pass@` segment so credential-free URIs are left alone.
+    ("db_uri", re.compile(
+        r"\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?)://"
+        r"[^:\s/@]+:[^@\s/]+@[^\s'\"]+"
+    )),
     # Generic `api_key=...`, `password=...`, `secret=...` — fallback catch.
+    # Bilingual (EN + TR) credential keywords per the B12 language rule.
     # Limit length so we don't redact short config keys without secret payload.
     ("generic", re.compile(
-        r"(?i)\b(api[_\-]?key|password|passwd|secret|token)\s*[=:]\s*['\"]?([A-Za-z0-9_\-+=/.]{12,})['\"]?"
+        r"(?i)\b(api[_\-]?key|password|passwd|secret|token"
+        r"|parola|şifre|sifre|gizli[_\- ]?anahtar)\s*[=:]\s*['\"]?([A-Za-z0-9_\-+=/.]{12,})['\"]?"
     )),
 ]
 

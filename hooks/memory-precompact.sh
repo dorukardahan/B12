@@ -173,6 +173,15 @@ if files_modified:
 
 summary = '\n'.join(lines)
 
+# Scrub secrets BEFORE the staging file persists them — precompact-*.txt is
+# re-injected on the next SessionStart(compact), so a raw pasted secret here
+# would otherwise resurface in context. (scripts/ already on sys.path above.)
+try:
+    from b12_pii_scrubber import scrub as _pii_scrub
+    summary = _pii_scrub(summary)
+except ImportError:
+    pass
+
 # Write staging file
 stage_file = os.path.join(staging_dir, f"precompact-{session_id}.txt")
 with open(stage_file, 'w') as f:
@@ -271,7 +280,17 @@ def daemon_encode(texts):
 
 from datetime import datetime, timezone
 now = datetime.now(timezone.utc)
-texts = [f"[{cat}] {text}" for cat, text in high_value]
+
+# PII / secret scrub before hash+embed+store (parity with write_time_merge & session-end).
+# Honors B12_DISABLE_PII_SCRUB=1 (handled inside scrub()).
+_hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
+sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
+try:
+    from b12_pii_scrubber import scrub as _pii_scrub
+except ImportError:
+    def _pii_scrub(_s):
+        return _s
+texts = [f"[{cat}] {_pii_scrub(text)}" for cat, text in high_value]
 
 # Get embeddings (skip entirely if daemon unavailable)
 embeddings = daemon_encode(texts)

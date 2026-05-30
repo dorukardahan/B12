@@ -221,6 +221,15 @@ except ImportError:
     _q5_final_phase = "import_fail"
     sys.exit(0)
 
+# Scrub secrets BEFORE buffering: items are appended to .buffer-*.jsonl under
+# memory-staging and can sit there across invocations (until >=3 accumulate or
+# the flush fires), so redact at capture, not just at the DB flush.
+try:
+    from b12_pii_scrubber import scrub as _pii_scrub
+except ImportError:
+    def _pii_scrub(_s):
+        return _s
+
 # ── Layer 0: Skip session summary recitations ───────────────
 if summary_filter(scan_text):
     sys.exit(0)
@@ -232,7 +241,7 @@ if prefix_result:
     h = content_hash(scan_text[:200])
     with open(buffer_file, "a") as f:
         f.write(json.dumps({
-            "content": scan_text[:300],
+            "content": _pii_scrub(scan_text[:300]),
             "category": prefix_result["type"],
             "score": 9,
             "hash": h,
@@ -315,6 +324,7 @@ if not prefix_classified:
     # ── Append regex matches to buffer ───────────────────────────
     with open(buffer_file, "a") as f:
         for m in matches:
+            m["content"] = _pii_scrub(m.get("content", ""))
             f.write(json.dumps(m, ensure_ascii=False) + "\n")
 
 # ── Check buffer size — flush if ≥ 3 items ──────────────────
@@ -342,6 +352,14 @@ try:
     conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=5000")
+
+    # PII / secret scrub before store (parity with write_time_merge & session-end).
+    # scripts_dir is already on sys.path (see above); honors B12_DISABLE_PII_SCRUB=1.
+    try:
+        from b12_pii_scrubber import scrub as _pii_scrub
+    except ImportError:
+        def _pii_scrub(_s):
+            return _s
 
     # Deduplicate against existing memories (by content_hash)
     existing_hashes = set()
@@ -373,7 +391,7 @@ try:
             conn.execute(
                 """INSERT INTO memories (content, metadata, tags, created_at, updated_at)
                    VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
-                (item["content"], metadata, tags)
+                (_pii_scrub(item["content"]), metadata, tags)
             )
             inserted += 1
             existing_hashes.add(item["hash"])

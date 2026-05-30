@@ -612,8 +612,28 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
             pass
     tracker["stored_count"] += 1
 
-    # Detect project from tags
     metadata = metadata or {}
+
+    # PII / secret scrub — single chokepoint so EVERY MCP write is redacted
+    # (mirrors write_time_merge.py:644 & codex_session_end.py:171). All MCP
+    # clients — Claude Code, Cursor, Codex, Gemini, Kimi, OpenCode, Grok —
+    # share this path. Honors B12_DISABLE_PII_SCRUB=1 for explicit raw capture.
+    # Scrubs the content AND user-supplied metadata values + tags: a client can
+    # smuggle secrets via metadata={"token":"sk-ant-..."} or tags="password=...".
+    # Runs after the fragment gate (gate sees the original) and before
+    # classify/hash/insert/embed so the redacted text is what gets stored.
+    try:
+        from b12_pii_scrubber import scrub as _pii_scrub
+    except ImportError:
+        _pii_scrub = None
+    if _pii_scrub is not None:
+        content = _pii_scrub(content)
+        metadata = {
+            k: (_pii_scrub(v) if isinstance(v, str) else v)
+            for k, v in metadata.items()
+        }
+
+    # Detect project from tags
     if not tracker["project"]:
         t = metadata.get("tags", "") or ""
         for part in (t if isinstance(t, list) else t.split(",")):
