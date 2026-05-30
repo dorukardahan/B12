@@ -25,10 +25,13 @@ Follow semver against the previous tag (`git describe --tags --abbrev=0`):
 
 When in doubt, prefer MINOR — B12 isn't on a strict semver contract yet.
 
-### 2. Update the three version touchpoints
+### 2. Update the six version touchpoints
 
 Keep these in sync. The audit's "stale version constant" finding came
-from forgetting one of them:
+from forgetting one of them (it caught `scripts/b12_health.py` lagging at
+`11.74.0` while the others were at `11.74.1`). `pyproject.toml [project].version`
+counts too — skip it and `pip install .` / the package metadata keeps reporting
+the previous release; and `install.sh` prints a user-visible version banner:
 
 ```bash
 NEW=11.75.0  # without the 'v' prefix
@@ -38,6 +41,15 @@ python3 -c "import json; d=json.load(open('package.json')); d['version']='$NEW';
 
 # scripts/b12_mcp_server.py — B12_VERSION constant (note the 'v' prefix)
 sed -i '' "s/^B12_VERSION = \".*\"/B12_VERSION = \"v$NEW\"/" scripts/b12_mcp_server.py
+
+# scripts/b12_health.py — VERSION constant (no 'v' prefix)
+sed -i '' "s/^VERSION = \".*\"/VERSION = \"$NEW\"/" scripts/b12_health.py
+
+# pyproject.toml — [project].version (installable package version, no 'v' prefix)
+sed -i '' "s/^version = \".*\"/version = \"$NEW\"/" pyproject.toml
+
+# install.sh — user-visible installer banner (note the 'v' prefix)
+sed -i '' "s/B12 Memory System Installer (v[0-9.]*/B12 Memory System Installer (v$NEW/" install.sh
 
 # .claude-plugin/plugin.json
 python3 -c "import json; d=json.load(open('.claude-plugin/plugin.json')); d['version']='$NEW'; json.dump(d, open('.claude-plugin/plugin.json','w'), indent=2); print(open('.claude-plugin/plugin.json').read())"
@@ -71,7 +83,7 @@ unless it's user-facing.
 ### 4. Commit + tag + push
 
 ```bash
-git add CHANGELOG.md package.json scripts/b12_mcp_server.py .claude-plugin/plugin.json
+git add CHANGELOG.md package.json scripts/b12_mcp_server.py scripts/b12_health.py pyproject.toml install.sh .claude-plugin/plugin.json
 git commit -m "chore(release): v$NEW"
 git tag -a "v$NEW" -m "v$NEW: <one-line summary matching CHANGELOG section title>"
 git push origin main --tags
@@ -112,9 +124,12 @@ Before tagging, a quick check that the things that should be in sync
 actually are:
 
 ```bash
-# All three version touchpoints match?
+# All six version touchpoints match?
 grep -E '"version"' package.json .claude-plugin/plugin.json
+grep -E '^version = ' pyproject.toml
 grep -E '^B12_VERSION' scripts/b12_mcp_server.py
+grep -E '^VERSION' scripts/b12_health.py
+grep -E 'Installer \(v' install.sh
 # CHANGELOG top entry matches?
 head -3 CHANGELOG.md
 # CI is green on current main?
