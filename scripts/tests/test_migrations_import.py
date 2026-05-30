@@ -800,34 +800,59 @@ def test_archive_import_scrubs_content_and_remaps_graph_edges(tmp_path, monkeypa
     assert edge == (memory[1], memory[1])
 
 
-def test_contradiction_merge_clears_stale_embedding_for_merged_content():
-    conn = sqlite3.connect(":memory:")
-    conn.executescript(
-        """
-        CREATE TABLE memories (
-            id INTEGER PRIMARY KEY,
-            content TEXT,
-            content_hash TEXT,
-            updated_at REAL,
-            updated_at_iso TEXT,
-            deleted_at REAL,
-            metadata TEXT
-        );
-        CREATE TABLE memory_embeddings (rowid INTEGER PRIMARY KEY, content_embedding BLOB);
-        CREATE TABLE memory_graph (
-            source_hash TEXT,
-            target_hash TEXT,
-            similarity REAL,
-            connection_types TEXT,
-            metadata TEXT,
-            created_at REAL,
-            relationship_type TEXT
-        );
-        """
-    )
+_MERGE_SCHEMA = """
+    CREATE TABLE memories (
+        id INTEGER PRIMARY KEY,
+        content TEXT,
+        content_hash TEXT,
+        updated_at REAL,
+        updated_at_iso TEXT,
+        deleted_at REAL,
+        metadata TEXT
+    );
+    CREATE TABLE memory_embeddings (rowid INTEGER PRIMARY KEY, content_embedding BLOB);
+    CREATE TABLE memory_graph (
+        source_hash TEXT,
+        target_hash TEXT,
+        similarity REAL,
+        connection_types TEXT,
+        metadata TEXT,
+        created_at REAL,
+        relationship_type TEXT
+    );
+"""
+
+
+def _seed_merge_pair(conn):
     conn.execute("INSERT INTO memories VALUES (1, 'one', 'h1', 0, '', NULL, '{}')")
     conn.execute("INSERT INTO memories VALUES (2, 'two', 'h2', 0, '', NULL, '{}')")
     conn.execute("INSERT INTO memory_embeddings VALUES (1, X'0001')")
+
+
+def test_contradiction_merge_reembeds_merged_content(monkeypatch):
+    # RET-1: merge_memories now RE-EMBEDS the merged text (it used to delete the
+    # embedding without re-inserting, making the survivor invisible to semantic
+    # search). With the daemon available it must replace the stale vector.
+    monkeypatch.setattr(contradiction_resolver, "_encode_via_daemon", lambda text: b"\x09\x09\x09")
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(_MERGE_SCHEMA)
+    _seed_merge_pair(conn)
+
+    contradiction_resolver.merge_memories(conn, 1, "one", "h1", 2, "two", "h2")
+
+    row = conn.execute("SELECT content_embedding FROM memory_embeddings WHERE rowid = 1").fetchone()
+    assert row is not None, "survivor lost its embedding (RET-1 regression)"
+    assert row[0] == b"\x09\x09\x09", "embedding was not re-encoded from the merged text"
+
+
+def test_contradiction_merge_drops_embedding_when_daemon_unavailable(monkeypatch):
+    # When the daemon is down, re-embed yields nothing → the stale vector is
+    # dropped (FTS-only; embedding_backfill.py restores it later). Deterministic
+    # regardless of whether a real embed daemon happens to be running locally.
+    monkeypatch.setattr(contradiction_resolver, "_encode_via_daemon", lambda text: None)
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(_MERGE_SCHEMA)
+    _seed_merge_pair(conn)
 
     contradiction_resolver.merge_memories(conn, 1, "one", "h1", 2, "two", "h2")
 
