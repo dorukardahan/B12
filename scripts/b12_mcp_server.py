@@ -752,8 +752,23 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
                     (mem_id, emb_bytes),
                 )
                 db.commit()
-            except Exception:
-                pass  # embedding table may not exist in test DBs
+            except sqlite3.OperationalError as e:
+                # Only the schema-missing case is expected (minimal/test DBs).
+                # Other OperationalErrors (database is locked, readonly db,
+                # sqlite-vec insert errors) are REAL failures that degrade vector
+                # recall — log them instead of swallowing the whole class.
+                _m = str(e).lower()
+                if "no such table" not in _m and "no such column" not in _m:
+                    _sys.stderr.write(
+                        f"[b12_mcp_server] embedding write failed (id={mem_id}): {e}\n"
+                    )
+            except Exception as e:
+                # Real embedding-write failure → memory stored but not searchable
+                # by vector. Don't fail the store, but surface it (was silently
+                # swallowed, masking retrieval-quality regressions).
+                _sys.stderr.write(
+                    f"[b12_mcp_server] embedding write failed (id={mem_id}): {e}\n"
+                )
 
     return f"Stored memory (hash: {content_hash[:16]}, id: {mem_id})"
 
@@ -926,8 +941,23 @@ async def memory_search(
                            WHERE content_hash = ?""",
                         (int(time.time()), row["content_hash"]),
                     )
-                except Exception:
-                    pass  # non-critical; don't fail the search
+                except sqlite3.OperationalError as e:
+                    # Only schema-missing is expected (minimal/test DBs); log
+                    # other OperationalErrors (locked/readonly) rather than
+                    # swallowing the whole class.
+                    _m = str(e).lower()
+                    if "no such table" not in _m and "no such column" not in _m:
+                        _sys.stderr.write(
+                            f"[b12_mcp_server] strength boost failed "
+                            f"({str(row['content_hash'])[:16]}): {e}\n"
+                        )
+                except Exception as e:
+                    # Spaced-repetition boost failed — non-critical (don't fail
+                    # the search) but log instead of swallowing silently.
+                    _sys.stderr.write(
+                        f"[b12_mcp_server] strength boost failed "
+                        f"({str(row['content_hash'])[:16]}): {e}\n"
+                    )
             db.commit()
 
     output_parts = [f"Found {len(sorted_results)} memories:\n"]

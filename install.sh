@@ -627,7 +627,12 @@ with open(config_path, 'w') as f:
 
 PYEOF
   then
-    error "Failed to update $CLAUDE_JSON (is it valid JSON?)"
+    # Return non-zero instead of `error` (which is `exit 1`): the FULL_SETUP
+    # caller guards this with `inject_mcp_config || warn ...`, so the installer
+    # degrades to a warning (hooks already deployed) instead of aborting on a
+    # pre-existing malformed ~/.claude.json. See R&D PR-98 / Codex review.
+    warn "Failed to update $CLAUDE_JSON (is it valid JSON?) — skipping MCP config"
+    return 1
   fi
 
   info "B12 MCP server added to $CLAUDE_JSON"
@@ -3383,9 +3388,12 @@ fi
 
 echo ""
 
-# Full setup: inject Claude Code MCP config
+# Full setup: inject Claude Code MCP config.
+# Runs while `set -e` is still active (set +e is below), so guard it: a
+# malformed pre-existing ~/.claude.json must NOT abort the installer AFTER
+# hooks were already deployed — degrade to a warning instead.
 if $FULL_SETUP; then
-  inject_mcp_config
+  inject_mcp_config || warn "MCP config step failed — hooks are deployed; fix ~/.claude.json and re-run './install.sh --full'"
   echo ""
 fi
 
