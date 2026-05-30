@@ -109,6 +109,16 @@ jobs:
           # unguarded missing env vars, blocking on missing DB / socket).
           python3 -m pytest tests/hooks/ -v --tb=short
 
+      - name: Python unit suite (scripts/tests/)
+        run: |
+          # The ~100-test scripts/tests/ suite imports the real B12 modules
+          # (MCP server, embed daemon, write-time merge, PII scrubber, CLI,
+          # migrations, the Grok hooks), so install B12 + its runtime deps.
+          # flask is dashboard-only — the dashboard test importorskips it, but
+          # install it here so that test runs rather than skips.
+          python3 -m pip install -e . flask
+          python3 -m pytest scripts/tests/ -v --tb=short
+
       - name: Anti-Claude trailer audit
         run: |
           # Block any commits with claude/anthropic Co-Authored-By trailers

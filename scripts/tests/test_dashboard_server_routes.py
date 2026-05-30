@@ -8,6 +8,11 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+# Flask is a dashboard-only dependency, not a core B12 requirement. Skip this
+# module cleanly when it's absent so the rest of the suite still collects/runs
+# (e.g. a CI/dev env that didn't install the optional dashboard deps).
+pytest.importorskip("flask", reason="flask not installed (dashboard is optional)")
+
 import dashboard_server
 
 
