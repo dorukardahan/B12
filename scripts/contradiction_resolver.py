@@ -144,6 +144,42 @@ def mark_reviewed(conn, memory_hash):
     )
 
 
+def _encode_via_daemon(text):
+    """Encode `text` via the embed daemon Unix socket. Returns float32 bytes,
+    or None if the daemon is unavailable (caller then leaves the vector absent
+    and embedding_backfill.py restores it on its next run)."""
+    import socket as _sock
+    import base64 as _b64
+    uid = os.getuid() if hasattr(os, "getuid") else os.getpid()
+    sock_path = f"/tmp/b12-embed-{uid}.sock"
+    if not os.path.exists(sock_path):
+        return None
+    s = None
+    try:
+        s = _sock.socket(_sock.AF_UNIX, _sock.SOCK_STREAM)
+        s.settimeout(15)
+        s.connect(sock_path)
+        s.sendall((json.dumps({"op": "encode_batch", "texts": [text]}) + "\n").encode())
+        data = b""
+        while b"\n" not in data:
+            chunk = s.recv(1048576)
+            if not chunk:
+                break
+            data += chunk
+        resp = json.loads(data.decode().strip())
+        if resp.get("ok") and resp.get("embeddings"):
+            return _b64.b64decode(resp["embeddings"][0])
+    except Exception:
+        return None
+    finally:
+        if s is not None:
+            try:
+                s.close()
+            except Exception:
+                pass
+    return None
+
+
 def merge_memories(conn, id1, content1, hash1, id2, content2, hash2):
     """Merge two memories: combine content into memory A, soft-delete B."""
     merged = f"{content1.rstrip()}\n• [Merged from #{id2}] {content2.strip()}"
@@ -155,8 +191,22 @@ def merge_memories(conn, id1, content1, hash1, id2, content2, hash2):
         "UPDATE memories SET content = ?, content_hash = ?, updated_at = ?, updated_at_iso = ? WHERE id = ?",
         (merged, new_hash, now.timestamp(), now.isoformat(), id1)
     )
+    # Re-embed the merged text so the surviving memory stays searchable.
+    # Previously the embedding was DELETEd without re-inserting, silently
+    # dropping the merged memory out of semantic search and neighbor discovery.
     try:
         conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (id1,))
+        _merged_emb = _encode_via_daemon(merged)
+        if _merged_emb is not None:
+            conn.execute(
+                "INSERT OR REPLACE INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
+                (id1, _merged_emb),
+            )
+        else:
+            sys.stderr.write(
+                f"[contradiction_resolver] merged #{id1}: embed daemon unavailable — "
+                "run embedding_backfill.py to restore its vector\n"
+            )
     except sqlite3.Error:
         pass
 

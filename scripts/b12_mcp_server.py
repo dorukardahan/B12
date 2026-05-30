@@ -726,6 +726,17 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
 
 # ── Tool: memory_search ─────────────────────────────────────────
 
+def _iso_to_utc_epoch(s: str) -> float:
+    """Parse an ISO-8601 string to a UTC epoch. Naive inputs are assumed UTC
+    because created_at is stored as a UTC epoch — without this, a naive
+    after/before bound was interpreted in the server's LOCAL timezone, skewing
+    date-range filters by the local UTC offset."""
+    dt = datetime.fromisoformat(s)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.timestamp()
+
+
 @server.tool()
 async def memory_search(
     query: str = "",
@@ -758,14 +769,14 @@ async def memory_search(
         params.append(f"%{t}%")
     if after:
         try:
-            ts = datetime.fromisoformat(after).timestamp()
+            ts = _iso_to_utc_epoch(after)
             wheres.append("m.created_at >= ?")
             params.append(ts)
         except ValueError:
             pass
     if before:
         try:
-            ts = datetime.fromisoformat(before).timestamp()
+            ts = _iso_to_utc_epoch(before)
             wheres.append("m.created_at <= ?")
             params.append(ts)
         except ValueError:

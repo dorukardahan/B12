@@ -204,6 +204,7 @@ def _semantic_search(model, data):
           AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
           AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
           AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
+        ORDER BY m.id DESC
         LIMIT 500
     """).fetchall()
 
@@ -302,7 +303,7 @@ def _recall(model, data):
             if rows is not None and len(rows) < limit:
                 rows = None  # too few survived → fall through to full-scan
     if rows is None:
-        rows = conn.execute(base_sql + " LIMIT 500", params).fetchall()
+        rows = conn.execute(base_sql + " ORDER BY m.id DESC LIMIT 500", params).fetchall()
     conn.close()
 
     # C14 microopt (P-BURNIN-F): vectorise the cosine loop with numpy.
@@ -702,6 +703,7 @@ def _find_neighbors(model, data):
         FROM memories m
         JOIN memory_embeddings e ON m.id = e.rowid
         WHERE m.deleted_at IS NULL AND m.id != ?
+        ORDER BY m.id DESC
         LIMIT 500
     """, (int(memory_id),)).fetchall()
 
@@ -867,7 +869,7 @@ def _find_cluster(model, data):
     if project:
         sql += " AND m.tags LIKE ?"
         params.append(f"%proj:{project}%")
-    sql += " LIMIT 500"
+    sql += " ORDER BY m.id DESC LIMIT 500"
 
     rows = conn.execute(sql, params).fetchall()
     conn.close()
