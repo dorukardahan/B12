@@ -30,6 +30,16 @@
   `[mcp_servers.B12.tools.memory_store] approval_mode = "auto"` block on
   `--codex` re-runs; the block is now part of the regenerated config and is
   reaffirmed by the drift self-heal.
+* **grok:** repair the Grok lifecycle hooks, which were dead-on-arrival. They
+  resolved the shared core via fragile `__file__` path depth (broke once
+  deployed to `~/.grok/plugins/b12/`), imported `extract_*` helpers that never
+  existed, and called `merge_or_insert` with the wrong signature; `hooks.json`
+  also hardcoded the Claude-only `${CLAUDE_PLUGIN_ROOT}`. Now a shared
+  `_b12_grok_core.py` resolves the core via `$B12_HOOK_DIR`, real `extract_*`
+  helpers live in `shared_patterns.py`, the canonical write path is used
+  (daemon-encode → `merge_or_insert`, with an FTS-only fallback when the daemon
+  is down), and `install.sh` substitutes a `__B12_PLUGIN_ROOT__` marker. Adds an
+  end-to-end Grok hook test (`scripts/tests/test_grok_hooks.py`).
 
 ### Performance
 

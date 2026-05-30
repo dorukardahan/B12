@@ -7,7 +7,7 @@ This plugin gives Grok first-class, declarative memory capabilities that are **s
 ## Kurulum (Önerilen Yöntem)
 
 ```bash
-cd ~/Desktop/B12
+cd /path/to/B12
 ./install.sh --grok
 ```
 
@@ -26,6 +26,11 @@ Eğer `install.sh` kullanmak istemiyorsan:
 ```bash
 # Plugin'i user scope'a kopyala (önerilen)
 cp -r .grok/plugins-available/b12 ~/.grok/plugins/b12
+
+# hooks.json'daki yol işaretçisini gerçek konuma çevir. install.sh bunu otomatik
+# yapar; manuel kurulumda bu adımı atlama, yoksa Grok hook komutunu literal
+# __B12_PLUGIN_ROOT__ yoluyla çalıştırmaya çalışır ve hook çalışmaz:
+python3 -c "import pathlib; p=pathlib.Path.home()/'.grok/plugins/b12/hooks/hooks.json'; p.write_text(p.read_text().replace('__B12_PLUGIN_ROOT__', str(pathlib.Path.home()/'.grok/plugins/b12')))"
 
 # Skill'i kopyala
 mkdir -p ~/.grok/skills/b12-memory

@@ -7,7 +7,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/b12-precompact.py",
+            "command": "python3 __B12_PLUGIN_ROOT__/hooks/scripts/b12-precompact.py",
             "timeout": 35
           }
         ]
@@ -19,7 +19,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/scripts/b12-session-end.py",
+            "command": "python3 __B12_PLUGIN_ROOT__/hooks/scripts/b12-session-end.py",
             "timeout": 40
           }
         ]

@@ -3052,6 +3052,17 @@ deploy_grok_plugin() {
     rm -f "$PLUGIN_DEST/.mcp.json.bak"
   fi
 
+  # Substitute the plugin-root marker in hooks.json so the lifecycle hook
+  # commands resolve to absolute paths in the deployed location — Grok does not
+  # set ${CLAUDE_PLUGIN_ROOT}. The hook scripts then resolve the shared B12 core
+  # via $B12_HOOK_DIR (default ~/.B12/hooks), independent of plugin layout.
+  if [ -f "$PLUGIN_DEST/hooks/hooks.json" ]; then
+    sed -i.bak \
+      -e "s|__B12_PLUGIN_ROOT__|$PLUGIN_DEST|g" \
+      "$PLUGIN_DEST/hooks/hooks.json"
+    rm -f "$PLUGIN_DEST/hooks/hooks.json.bak"
+  fi
+
   info "B12 Grok plugin deployed to $PLUGIN_DEST (from plugins-available/)"
   return 0
 }

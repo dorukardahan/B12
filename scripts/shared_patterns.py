@@ -354,6 +354,52 @@ def summary_filter(text: str) -> bool:
     return sum(1 for m in _SUMMARY_MARKERS if m in text) >= 2
 
 
+# ── Signal extraction helpers (used by lightweight platform hooks) ──
+# Mirror the SessionEnd extraction semantics (hooks/memory-session-end.sh):
+# a 250-char context window starting 50 chars before each match, after the
+# session-summary recitation filter. Returns deduped windows. Kept here so
+# every platform's hooks share ONE extraction definition rather than copying
+# the regex-application logic.
+
+def _extract_windows(pattern, text, *, window=250, lookback=50, limit=20):
+    """Return up to `limit` deduped context windows around `pattern` matches in
+    `text`. Empty list when `text` is a session-summary recitation."""
+    if not text or summary_filter(text):
+        return []
+    out = []
+    seen = set()
+    for m in pattern.finditer(text):
+        start = max(0, m.start() - lookback)
+        frag = text[start:start + window].strip()
+        key = frag.lower()
+        if frag and key not in seen:
+            seen.add(key)
+            out.append(frag)
+            if len(out) >= limit:
+                break
+    return out
+
+
+def extract_decisions(text):
+    """Decision-shaped statements (EN + TR) — `decided`, `chose`, `karar verdik`…"""
+    return _extract_windows(DECISION_RE, text)
+
+
+def extract_gotchas(text):
+    """Error/fix/gotcha statements (EN + TR) — `fixed`, `root cause`, `düzelttik`…"""
+    return _extract_windows(ERROR_RE, text)
+
+
+def extract_learnings(text):
+    """Learnings/insights (EN + TR) — `TIL`, `turns out`, `meğer`, `öğrendik`…"""
+    return _extract_windows(LEARNING_RE, text)
+
+
+def extract_preferences(text):
+    """User preferences (EN + TR) — `user prefers`, `always use`, `kullanıcı tercih`…"""
+    return _extract_windows(PREFERENCE_RE, text)
+
+
 # ── Layer 1: [Label] prefix auto-classification ─────────────
 _PREFIX_RE = re.compile(r'^\[([^\]]{2,30})\]')
 
