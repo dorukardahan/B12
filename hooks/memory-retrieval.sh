@@ -343,7 +343,12 @@ RESULTS=$(sqlite3 "$DB_PATH" "
            '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') as display,
            (
              0.3 * max(1.0 / (1.0 + (julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch'))) / (9.0 * COALESCE(m.strength, 1.0))), 0.01)
-             + 0.3 * min(COALESCE(CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.importance_score') END, 1.0) / 2.0, 1.0)
+             + 0.3 * max(min(CASE
+                 WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real')
+                 THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0
+                            THEN json_extract(m.metadata, '$.importance_score') / 2.0
+                            ELSE json_extract(m.metadata, '$.importance_score') END)
+                 ELSE 0.50 END, 1.0), 0.0)
              + 0.4 * (1.0 / (1.0 + abs(f.rank)))
            ) as score
     FROM memories m

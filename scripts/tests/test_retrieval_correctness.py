@@ -91,6 +91,126 @@ def test_ret4_candidate_cap_is_newest_first():
     assert 1 not in ids and 100 not in ids, "oldest memories should be dropped, not the newest"
 
 
+# ── RET-3: importance dual-scale normalization ─────────────────────────────
+# Two write-side importance_score scales coexist: fractional [0, 0.95]
+# (b12_importance.py: TRIVIAL 0.30 / BASELINE 0.50 / CAP 0.95) and level
+# multipliers [0.7, 2.0] (critical 2.0 / important 1.5 / normal 1.0 / temporary
+# 0.7; memory-session-end.sh caps at 2.0). The read path normalizes a level value
+# (>= 1.0) by /2.0 (2.0->1.0, 1.5->0.75, 1.0->0.5) and passes fractional values
+# (< 1.0) through unchanged; missing/null/bool/string default to the 0.50
+# baseline; the result is clamped to [0, 1]. A blanket /2.0 wrongly halved the
+# fractional band; a blanket clamp wrongly collapsed the levels. Identical in
+# every read path (MCP _unified_score here, hook SQL below, OpenCode in
+# plugins/opencode/tests/scoring.test.ts).
+
+_ROW_BASE = {"last_accessed_at": 1_700_000_000.0, "created_at": 1_700_000_000.0, "strength": 1.0}
+
+
+def _row(importance_json):
+    return dict(_ROW_BASE, metadata=importance_json)
+
+
+def test_ret3_fractional_band_not_halved():
+    """A fractional 0.95 (< 1.0) passes through un-halved; it outranks baseline by
+    exactly W_importance*(0.95-0.50). The original blanket /2.0 halved it to 0.475."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_ret3_fractional_band_not_halved ({e})")
+        return
+    w_imp = M._DEFAULT_WEIGHTS["importance"]
+    s_hi = M._unified_score(_row('{"importance_score": 0.95}'), 0.0)
+    s_base = M._unified_score(_row('{"importance_score": 0.50}'), 0.0)
+    assert abs((s_hi - s_base) - w_imp * (0.95 - 0.50)) < 1e-9, (s_hi, s_base)
+    assert s_hi > s_base, "fractional max must outscore baseline (pre-fix inverted this)"
+
+
+def test_ret3_level_scale_normalized():
+    """Level multipliers (>= 1.0) normalize by /2.0: 2.0->1.0, 1.5->0.75, 1.0->0.5.
+    The rejected blanket-clamp fix would have collapsed all three to 1.0."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_ret3_level_scale_normalized ({e})")
+        return
+    w = M._DEFAULT_WEIGHTS["importance"]
+    s_crit = M._unified_score(_row('{"importance_score": 2.0}'), 0.0)   # -> 1.0
+    s_imp = M._unified_score(_row('{"importance_score": 1.5}'), 0.0)    # -> 0.75
+    s_norm = M._unified_score(_row('{"importance_score": 1.0}'), 0.0)   # -> 0.5
+    assert abs((s_crit - s_norm) - w * (1.0 - 0.5)) < 1e-9, "critical 2.0 must map to 1.0"
+    assert abs((s_imp - s_norm) - w * (0.75 - 0.5)) < 1e-9, "important 1.5 must map to 0.75"
+    # level normal (1.0 -> 0.5) and fractional baseline (0.50) land on the same value
+    s_fbase = M._unified_score(_row('{"importance_score": 0.50}'), 0.0)
+    assert abs(s_norm - s_fbase) < 1e-9
+
+
+def test_ret3_missing_importance_defaults_to_baseline():
+    """Missing / wrong-key / non-numeric / null / bool importance -> baseline 0.50."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_ret3_missing_importance_defaults_to_baseline ({e})")
+        return
+    explicit = M._unified_score(_row('{"importance_score": 0.50}'), 0.0)
+    # bool is a Python int subclass — float(True)==1.0 — so it must be rejected
+    # explicitly (parity with the SQL json_type guard and the TS typeof guard).
+    for md in ('{}', '{"other": 1}', '{"importance_score": "high"}',
+               '{"importance_score": true}', '{"importance_score": false}',
+               '{"importance_score": null}'):
+        assert abs(M._unified_score(_row(md), 0.0) - explicit) < 1e-9, f"{md} should score as baseline 0.50"
+
+
+def test_ret3_importance_clamped_to_unit_interval():
+    """After normalization, clamp to [0, 1]: 3.0 (-> 1.5) clamps to 1.0 like 2.0;
+    a negative value floors at 0.0."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_ret3_importance_clamped_to_unit_interval ({e})")
+        return
+    capped = M._unified_score(_row('{"importance_score": 2.0}'), 0.0)   # -> 1.0
+    assert abs(M._unified_score(_row('{"importance_score": 3.0}'), 0.0) - capped) < 1e-9, "3.0 (->1.5) must clamp to 1.0"
+    floored = M._unified_score(_row('{"importance_score": 0.0}'), 0.0)
+    assert abs(M._unified_score(_row('{"importance_score": -1.0}'), 0.0) - floored) < 1e-9, "-1.0 must floor at 0.0"
+
+
+def test_ret3_hook_sql_importance_expr():
+    """The hook's SQL importance term (memory-retrieval.sh) matches the read-path
+    dual-scale normalization across every input class."""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE m(metadata TEXT)")
+    cases = [
+        ('{"importance_score":0.95}', 0.95),   # fractional cap — un-halved
+        ('{"importance_score":0.50}', 0.50),
+        ('{"importance_score":1.0}', 0.50),    # level normal     -> /2
+        ('{"importance_score":1.5}', 0.75),    # level important  -> /2
+        ('{"importance_score":2.0}', 1.0),     # level critical   -> /2
+        ('{"importance_score":3.0}', 1.0),     # >2.0 -> /2 -> clamp 1.0
+        ('{"importance_score":-1.0}', 0.0),    # clamp floor
+        (None, 0.50),
+        ('{"other":1}', 0.50),
+        ('not json', 0.50),
+        ('{"importance_score":"high"}', 0.50), # valid JSON, non-numeric
+        ('{"importance_score":null}', 0.50),
+        ('{"importance_score":true}', 0.50),   # JSON bool
+        ('{"importance_score":false}', 0.50),
+    ]
+    for md, _ in cases:
+        conn.execute("INSERT INTO m(metadata) VALUES (?)", (md,))
+    expr = (
+        "max(min(CASE "
+        "WHEN json_valid(m.metadata) AND json_type(m.metadata,'$.importance_score') IN ('integer','real') "
+        "THEN (CASE WHEN json_extract(m.metadata,'$.importance_score') >= 1.0 "
+        "THEN json_extract(m.metadata,'$.importance_score') / 2.0 "
+        "ELSE json_extract(m.metadata,'$.importance_score') END) "
+        "ELSE 0.50 END, 1.0), 0.0)"
+    )
+    got = [r[0] for r in conn.execute(f"SELECT {expr} FROM m AS m").fetchall()]
+    conn.close()
+    for (md, want), val in zip(cases, got):
+        assert abs(val - want) < 1e-9, f"{md!r}: expected {want}, got {val}"
+
+
 if __name__ == "__main__":
     rc = 0
     fns = [v for k, v in dict(globals()).items() if k.startswith("test_")]

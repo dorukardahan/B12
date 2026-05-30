@@ -599,7 +599,30 @@ def _unified_score(row, relevance: float) -> float:
         meta = json.loads(row["metadata"] or "{}")
     except (json.JSONDecodeError, TypeError):
         pass
-    importance = min(float(meta.get("importance_score", 1.0)) / 2.0, 1.0)
+    # RET-3: two write-side importance_score scales coexist —
+    #   - fractional [0, 0.95]  (b12_importance.py: TRIVIAL .30 / BASELINE .50 / CAP .95)
+    #   - level multipliers [0.7, 2.0]  (critical 2.0 / important 1.5 / normal 1.0 /
+    #     temporary 0.7; memory-session-end.sh caps at 2.0, precompact writes 1.5)
+    # Fractional values are always < 1.0, so a value >= 1.0 is a level multiplier:
+    # normalize it by /2.0 (2.0->1.0, 1.5->0.75, 1.0->0.5) while passing fractional
+    # values through unchanged. A blanket /2.0 wrongly halved the fractional band
+    # (0.95->0.475); a blanket clamp wrongly collapsed the levels (2.0/1.5/1.0->1.0).
+    # KNOWN LIMIT: the overlap zone [0.7, 0.95] is ambiguous — `temporary` (level
+    # 0.7) is indistinguishable from a fractional 0.7, so it passes through as 0.7
+    # rather than 0.35 and can out-rank a `normal` (1.0 -> 0.5) on the importance
+    # axis. This deliberately protects the high-value fractional 0.95 (the original
+    # bug) over the low-value temporary 0.7; a complete fix needs write-side scale
+    # unification + a data migration (deferred — see RET-3 follow-up).
+    # Accept ONLY a genuine number (a JSON bool is a Python `bool`/`int` subclass, so
+    # `float(True)` would score 1.0); missing/null/boolean/string fall back to the
+    # baseline 0.50 — parity with the hook-SQL `json_type` guard and the OpenCode
+    # `typeof === "number"` guard. Then clamp to [0, 1].
+    raw_importance = meta.get("importance_score", 0.50)
+    if isinstance(raw_importance, bool) or not isinstance(raw_importance, (int, float)):
+        raw_importance = 0.50
+    raw_importance = float(raw_importance)
+    norm = raw_importance / 2.0 if raw_importance >= 1.0 else raw_importance
+    importance = max(0.0, min(norm, 1.0))
 
     w = _DEFAULT_WEIGHTS
     return (

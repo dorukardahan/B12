@@ -144,7 +144,7 @@ function validateMetadata(value: unknown): string {
   }
 }
 
-function unifiedScore(row: MemoryRow, relevance: number): number {
+export function unifiedScore(row: MemoryRow, relevance: number): number {
   const nowMs = Date.now();
   const nowTs = Math.floor(nowMs / 1000);
   const accessed = row.last_accessed_at ?? row.created_at ?? nowTs;
@@ -159,10 +159,21 @@ function unifiedScore(row: MemoryRow, relevance: number): number {
   } catch {
     // leave empty
   }
-  const importance = Math.min(
-    (Number(meta.importance_score) || 1.0) / 2.0,
-    1.0,
-  );
+  // RET-3: two write-side importance_score scales coexist — fractional [0, 0.95]
+  // (b12_importance.py) and level multipliers [0.7, 2.0] (critical 2.0 / important
+  // 1.5 / normal 1.0 / temporary 0.7; see scoring.ts IMPORTANCE_LEVELS). Fractional
+  // values are always < 1.0, so a value >= 1.0 is a level multiplier: normalize it
+  // by /2.0 (2.0->1.0, 1.5->0.75, 1.0->0.5) and pass fractional values through.
+  // Only a genuine finite number counts — `typeof` (not `Number(...)`, which makes
+  // null/""/false === 0) — so missing/null/non-numeric fall back to the baseline
+  // 0.50 (parity with the Python and hook-SQL paths) and a stored 0 is preserved.
+  // Clamp to [0, 1].
+  const rawImportance = meta.importance_score;
+  const raw =
+    typeof rawImportance === "number" && Number.isFinite(rawImportance)
+      ? rawImportance
+      : 0.5;
+  const importance = Math.max(0.0, Math.min(raw >= 1.0 ? raw / 2.0 : raw, 1.0));
 
   return 0.3 * decay + 0.3 * importance + 0.4 * relevance;
 }

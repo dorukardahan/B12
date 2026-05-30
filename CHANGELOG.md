@@ -19,6 +19,26 @@
 
 ### Bug Fixes
 
+* **retrieval:** normalize importance across both write-side scales in ranking
+  (RET-3). `importance_score` is written on two coexisting scales — fractional
+  `[0, 0.95]` (`b12_importance.py`) and level multipliers `[0.7, 2.0]` (critical
+  2.0 / important 1.5 / normal 1.0 / temporary 0.7; `memory-session-end.sh` caps at
+  2.0). The read path applied a blanket `/2.0`, which correctly normalized the
+  level scale but silently **halved the fractional band** (a `0.95` memory
+  contributed only `0.475`). The read paths now normalize per scale: a value
+  `≥ 1.0` (a level multiplier) is divided by 2 (2.0→1.0, 1.5→0.75, 1.0→0.5) while a
+  fractional value `< 1.0` passes through; missing / null / non-numeric / boolean
+  default to the `0.50` baseline; the result is clamped to `[0, 1]`. Applied
+  identically in MCP `_unified_score` (`b12_mcp_server.py`), the retrieval-hook SQL
+  (`memory-retrieval.sh`), and the OpenCode plugin (`plugins/opencode/src/lib/db.ts`
+  + `dist`, which also stops coercing a stored `0`/`null` via `|| 1.0`). Added
+  regression tests across all three paths (`scripts/tests/test_retrieval_correctness.py`
+  + `plugins/opencode/tests/scoring.test.ts`). Scale references:
+  `scripts/b12_importance.py`, `plugins/opencode/src/lib/scoring.ts`. Known limit:
+  the overlap zone `[0.7, 0.95]` is ambiguous (level `temporary` 0.7 vs a fractional
+  0.7), so `temporary` passes through at 0.7 and can out-rank a `normal` (→0.5) on
+  the importance axis; the complete fix is write-side scale unification + migration
+  (deferred).
 * **install:** self-heal `MCP_EMBEDDING_MODEL` drift on every run. `install.sh`
   now reads the live DB's vec0 `FLOAT[N]` dimension, derives the canonical
   model (1024 → `BAAI/bge-m3`), and reaffirms it across all deployed configs

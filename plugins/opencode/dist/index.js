@@ -113,7 +113,9 @@ function unifiedScore(row, relevance) {
   try {
     meta = JSON.parse(row.metadata || "{}");
   } catch {}
-  const importance = Math.min((Number(meta.importance_score) || 1) / 2, 1);
+  const rawImportance = meta.importance_score;
+  const raw = typeof rawImportance === "number" && Number.isFinite(rawImportance) ? rawImportance : 0.5;
+  const importance = Math.max(0, Math.min(raw >= 1 ? raw / 2 : raw, 1));
   return 0.3 * decay + 0.3 * importance + 0.4 * relevance;
 }
 function formatMemory(row, score) {

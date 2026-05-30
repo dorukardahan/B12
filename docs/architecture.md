@@ -217,7 +217,7 @@ Every memory has a `strength` field (0.3–5.0, default 1.0):
 
 - **Retrieval boost**: +0.2 per access (capped at 5.0)
 - **Weekly decay**: -0.05 for memories not accessed in 7 days (floor at 0.3)
-- **Combined scoring**: `0.3 × exp(-age/strength) + 0.3 × importance/2 + 0.4 × FTS5_rank`
+- **Combined scoring**: `0.3 × exp(-age/strength) + 0.3 × importance + 0.4 × FTS5_rank`, where `importance` normalizes `importance_score` across the **two write-side scales** that coexist in the data — fractional `[0, 0.95]` (`b12_importance.py`) and level multipliers `[0.7, 2.0]` (critical 2.0 / important 1.5 / normal 1.0 / temporary 0.7). A value `≥ 1.0` is a level multiplier and is divided by 2 (2.0→1.0, 1.5→0.75, 1.0→0.5); a fractional value `< 1.0` passes through unchanged; missing / null / non-numeric defaults to the `0.50` baseline; the result is clamped to `[0, 1]` (see RET-3)
 
 This creates natural selection: memories that are frequently useful survive and get easier to find. Memories that were stored but never retrieved gradually fade but never fully disappear (minimum 0.3).
 
