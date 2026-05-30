@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/dorukardahan/B12?sort=semver)](https://github.com/dorukardahan/B12/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/dorukardahan/B12/ci.yml?branch=main&label=ci)](https://github.com/dorukardahan/B12/actions)
-[![Platforms](https://img.shields.io/badge/platforms-13-green)](#supported-platforms)
+[![Platforms](https://img.shields.io/badge/platforms-14-green)](#supported-platforms)
 
 ![B12 demo](assets/demo.gif)
 
@@ -13,7 +13,7 @@
 > integration in 12 other tools. Memory you stored in one session shows up in
 > every other tool you open — same project, same DB.
 
-- **Cross-tool memory** — the same DB powers Claude Code, Codex CLI, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI
+- **Cross-tool memory** — the same DB powers Claude Code, Codex CLI, Grok CLI, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI
 - **Truly local** — SQLite + sqlite-vec on disk, no cloud calls, no API keys, no telemetry
 - **Hybrid retrieval** — FTS5 BM25 + 1024-dim BGE-M3 vector + Ebbinghaus strength decay (frequently used memories rise, stale ones fade)
 - **Write-time merge + NLI contradiction detection** — duplicates collapse at storage time; conflicting memories flag for review
@@ -128,20 +128,24 @@ the runner that produced it is [`benchmarks/locomo/run_full_matrix.sh`](benchmar
 
 B12's MCP server works with any tool that supports MCP stdio. The installer handles config for all of these:
 
-| Platform | Flag | MCP Config Location | Instructions File |
-|----------|------|--------------------|--------------------|
-| Claude Code | (default) | ~/.claude.json | Built-in |
-| Codex CLI | `--codex` | ~/.codex/config.toml | ~/.codex/AGENTS.md |
-| Gemini CLI | `--gemini` | ~/.gemini/settings.json | ~/.gemini/GEMINI.md |
-| VS Code / Copilot | `--vscode` | ~/Library/.../Code/User/mcp.json | .github/copilot-instructions.md * |
-| Cursor | `--cursor` | ~/.cursor/mcp.json | ~/.cursor/rules/b12-memory.mdc |
-| Kimi Code | `--kimi` | ~/.kimi/mcp.json | ~/.kimi/AGENTS.md |
-| Windsurf | `--windsurf` | ~/.codeium/windsurf/mcp_config.json | ~/.codeium/.../global_rules.md |
-| Cline | `--cline` | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ (TaskStart, UserPromptSubmit, PreCompact with active staging, TaskComplete) |
-| Continue.dev | `--continue` | ~/.continue/mcpServers/b12.yaml | ~/.continue/rules/b12-memory.md |
-| OpenCode | `--opencode` | ~/.config/opencode/opencode.json | ~/.config/opencode/AGENTS.md + TypeScript plugin (auto-deployed) |
-| JetBrains AI (PyCharm/IDEA/etc.) | *paste-only* | Settings → Tools → AI Assistant → MCP | `config/jetbrains-ai-mcp-template.json` (manual paste) |
-| Amp | `--amp` | `${XDG_CONFIG_HOME:-~/.config}/amp/settings.json` | Built-in |
+**Capture** = how memories are captured: **Automatic** platforms run B12 lifecycle hooks (session-end extraction, pre-compact staging, working-memory tracking — no model action needed); **MCP-only** platforms capture memory just when the model proactively calls `memory_store` (the host has no lifecycle-hook API). All platforms share the same DB, so memories captured anywhere are searchable everywhere.
+
+| Platform | Flag | Capture | MCP Config Location | Instructions File |
+|----------|------|---------|--------------------|--------------------|
+| Claude Code | (default) | **Automatic** (full hooks) | ~/.claude.json | Built-in |
+| Codex CLI | `--codex` | **Automatic** (notify/Stop) | ~/.codex/config.toml | ~/.codex/AGENTS.md |
+| Gemini CLI | `--gemini` | **Automatic** (hook adapters) | ~/.gemini/settings.json | ~/.gemini/GEMINI.md |
+| Cline | `--cline` | **Automatic** (TaskStart/UserPromptSubmit/PreCompact) | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ |
+| Continue.dev | `--continue` | **Automatic** (hooks) | ~/.continue/mcpServers/b12.yaml | ~/.continue/rules/b12-memory.md |
+| OpenCode | `--opencode` | **Automatic** (TS plugin) | ~/.config/opencode/opencode.json | ~/.config/opencode/AGENTS.md + TypeScript plugin (auto-deployed) |
+| Grok CLI | `--grok` | **Automatic** (PreCompact/SessionEnd plugin) | ~/.grok/config.toml + `.grok/plugins/b12/` | plugin + skill (see [docs/grok-integration.md](docs/grok-integration.md)) |
+| VS Code / Copilot | `--vscode` | MCP-only | ~/Library/.../Code/User/mcp.json | .github/copilot-instructions.md * |
+| Cursor | `--cursor` | MCP-only | ~/.cursor/mcp.json | ~/.cursor/rules/b12-memory.mdc |
+| Kimi Code | `--kimi` | MCP-only | ~/.kimi/mcp.json | ~/.kimi/AGENTS.md |
+| Windsurf | `--windsurf` | MCP-only | ~/.codeium/windsurf/mcp_config.json | ~/.codeium/.../global_rules.md |
+| Zed | `--zed` | MCP-only | ~/.config/zed/settings.json (`context_servers`) | Built-in |
+| JetBrains AI (PyCharm/IDEA/etc.) | *paste-only* | MCP-only | Settings → Tools → AI Assistant → MCP | `config/jetbrains-ai-mcp-template.json` (manual paste) |
+| Amp | `--amp` | MCP-only | `${XDG_CONFIG_HOME:-~/.config}/amp/settings.json` | Built-in |
 
 \* VS Code/Copilot instructions are per-project (`.github/copilot-instructions.md`). The installer creates a template in the B12 repo — copy it to each project where you want B12 active.
 
