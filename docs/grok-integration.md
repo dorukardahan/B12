@@ -19,7 +19,7 @@ It was designed from the ground up in May 2026 as a clean, declarative, low-main
 
 1. Make sure you are inside the B12 repo:
    ```bash
-   cd ~/Desktop/B12
+   cd /path/to/B12
    ```
 
 2. Install the plugin:
@@ -31,7 +31,7 @@ It was designed from the ground up in May 2026 as a clean, declarative, low-main
    ```bash
    grok mcp add B12 \
      --command python3 \
-     --args "~/Desktop/B12/scripts/b12_mcp_server.py"
+     --args "/path/to/B12/scripts/b12_mcp_server.py"
    ```
 
 4. Open a new Grok session in this directory and run:

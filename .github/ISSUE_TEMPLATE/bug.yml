@@ -33,7 +33,7 @@ body:
       description: Paste output of these commands.
       render: shell
       placeholder: |
-        $ git -C ~/Desktop/B12 describe --tags --always
+        $ git -C /path/to/B12 describe --tags --always
         $ python3 --version
         $ uname -a
         $ ls ~/.B12/hooks/ | head -5
