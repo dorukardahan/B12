@@ -10,7 +10,7 @@
 # Why: subagents return long summaries that the parent context window
 # absorbs but doesn't always preserve. The summary text is exactly the
 # kind of cross-session-useful signal B12 wants. With
-# CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 enabled (Doruk's env), this
+# CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS=1 enabled, this
 # fires frequently — every Explore / Plan / general-purpose call.
 #
 # Implementation: reuses shared_patterns.py + the existing checkpoint

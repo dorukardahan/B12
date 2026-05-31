@@ -439,7 +439,7 @@ the per-call error while you regenerate.
 
 ### Current limitations
 
-1. **Embedding-quality vs disk**: BGE-M3 (1024-dim, 100+ languages) is the default since v11.34. FP32 weights are ~2.2GB on disk; users on tight disk budgets can switch to a Q8_0 or Q4_K_M GGUF via `B12_EMBED_BACKEND=gguf` after installing `llama-cpp-python`. `docs/B12_embed_quant_eval_2026-05.md` (P-EVAL) tracks the quality/speed/disk trade-off.
+1. **Embedding-quality vs disk**: BGE-M3 (1024-dim, 100+ languages) is the default since v11.34. FP32 weights are ~2.2GB on disk; users on tight disk budgets can switch to a Q8_0 or Q4_K_M GGUF via `B12_EMBED_BACKEND=gguf` after installing `llama-cpp-python`.
 
 2. **Contradiction detection coverage**: `contradiction_resolver.py` provides ONNX NLI-based contradiction detection, but it runs as a scheduled task (graph enrichment), not inline at write time. Contradicting memories may coexist until the next enrichment cycle.
 

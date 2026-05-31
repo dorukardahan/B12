@@ -8,7 +8,7 @@ deduplicates against same-session DB rows, and writes through
 write_time_merge.merge_or_insert so semantic dedup catches paraphrase
 overlap with the regex pipeline.
 
-Architecture summary (see docs/B12_llm_extraction_design.md):
+Architecture summary (see the LLM-extraction design notes):
 
     SessionEnd hook ─┐
                      │

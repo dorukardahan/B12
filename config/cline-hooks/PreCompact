@@ -10,7 +10,7 @@
 # it up on the next cron / session-start sweep.
 #
 # Earlier passive-placeholder logic (PR #47) is replaced; see
-# docs/B12_v1_public_release_plan_2026-05-20.md Phase 2 PR6.
+# the release-plan notes Phase 2 PR6.
 
 set -o pipefail 2>/dev/null || true
 

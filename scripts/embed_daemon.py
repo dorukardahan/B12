@@ -260,7 +260,7 @@ def _recall(model, data):
 
     # source_session (from metadata.source_session, written by
     # memory-session-end.sh:907 regex pipeline) is surfaced as a tracing
-    # anchor — Q4 of docs/B12_proactive_recall_plan_2026-05-18.md.
+    # anchor — Q4 of the proactive-recall design notes.
     base_sql = """
         SELECT m.id,
                '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') AS display,

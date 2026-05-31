@@ -8,11 +8,13 @@ responsible-disclosure process below.
 
 ## Reporting a vulnerability
 
-**Do not open a public GitHub issue for security bugs.** Use one of the
-following private channels:
+**Do not open a public GitHub issue for security bugs.** Report privately via
+GitHub's security advisory channel:
 
-- Email: `security-advisory@users.noreply.github.com`
-- GitHub security advisory: <https://github.com/dorukardahan/B12/security/advisories/new>
+- <https://github.com/dorukardahan/B12/security/advisories/new>
+
+(Click "Report a vulnerability" — this opens a private thread visible only to
+the maintainers.)
 
 Please include:
 

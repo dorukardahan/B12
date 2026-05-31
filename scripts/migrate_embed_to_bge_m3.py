@@ -26,7 +26,7 @@ Safety:
     and the caller restores from the backup.
 
 Lineage:
-  R10 of docs/B12_proactive_recall_plan_2026-05-18.md:
+  R10 of the proactive-recall design notes:
   "Embed dimension migration (Q1 critical): 384-dim → 1024-dim FULL reindex.
    Halfway-state NOT supported. Migration script must complete or roll back
    atomically. Snapshot DB before running."

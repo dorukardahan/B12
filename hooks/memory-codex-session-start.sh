@@ -67,7 +67,7 @@ ${GOAL_BODY}
   fi
 
   # Cross-platform DB resolution via shared helper (closes the real
-  # bug noted in B12_polyglot_audit_2026-05-19.md §C3: this hook
+  # bug noted in the polyglot design notes §C3: this hook
   # previously only looked at macOS + Linux, missing the Windows /
   # WSL `~/AppData/Local/mcp-memory/sqlite_vec.db` branch.
   # shellcheck source=./_b12_common.sh disable=SC1091

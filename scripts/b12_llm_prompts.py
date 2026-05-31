@@ -23,7 +23,7 @@ Two surfaces:
       stream. Last-N window after filtering, capped at `cap_chars`.
       Tool-result content is truncated to the first 200 chars per call.
 
-The design doc (docs/B12_llm_extraction_design.md) refers to this
+The design doc (the LLM-extraction design notes) refers to this
 module as the place that "delegates to existing
 scripts/b12_event_canonicalize.py" — that file does not exist in the
 repo; the actual canonicalizer is transcript_adapter.parse(). The

@@ -33,8 +33,8 @@ drive_hook() {
 SESSION_PAYLOAD='{"session_id":"smoke-test-synth","source":"startup","cwd":"'"$HOME"'"}'
 RETRIEVAL_PAYLOAD='{"session_id":"smoke-test-synth","prompt":"smoke probe — memory recall sanity check","cwd":"'"$HOME"'"}'
 
-# Dedupe by inode — macOS HFS+/APFS is case-insensitive by default, so
-# ~/.claude-Compute and ~/.claude-compute resolve to the same directory.
+# Dedupe by inode — macOS HFS+/APFS is case-insensitive by default, so two
+# setup dirs differing only in case resolve to the same directory.
 # Codex review PR #43 round 2 P2: if hooks are missing across ALL detected
 # setups, that's a damaged-install signal — fail the smoke. Per-setup
 # missing is non-fatal because a user may install B12 only in ~/.claude.
@@ -42,7 +42,7 @@ OVERALL=0
 SEEN_INODES=""
 SUCCESS_COUNT=0
 MISSING_COUNT=0
-for setup_raw in "$HOME"/.claude "$HOME"/.claude-x "$HOME"/.claude-Compute "$HOME"/.claude-compute; do
+for setup_raw in "$HOME"/.claude "$HOME"/.claude-*; do
   [ -d "$setup_raw" ] || continue
   inode=$(stat -f %i "$setup_raw" 2>/dev/null || stat -c %i "$setup_raw" 2>/dev/null)
   [ -z "$inode" ] && inode="$setup_raw"

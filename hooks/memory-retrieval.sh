@@ -136,7 +136,7 @@ fi
 # output additionalContext gets a directive prefix so the model
 # knows the user explicitly asked for memory recall.
 # Closes the 83% Claude Code underutilization gap from the audit
-# at docs/B12_session_audit_2026-03-16_2026-05-17.md section 6.
+# at internal design notes section 6.
 RECALL_VERB_HIT=false
 if echo "$PROMPT_LOWER" | grep -qE '\b(remember|recall|last time|previously|earlier|prior|before|said|told|mentioned|stored|saved)\b'; then
   RECALL_VERB_HIT=true

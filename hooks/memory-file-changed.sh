@@ -37,7 +37,7 @@
 # via a single matcher entry. Per-rule watching requires the user to
 # add each rule filename explicitly in their own settings.json;
 # tracked as a P3 follow-up in
-# docs/B12_claude_code_integration_audit_2026-05-18.md.
+# the integration design notes.
 
 _B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
 # shellcheck disable=SC1091

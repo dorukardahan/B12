@@ -25,7 +25,7 @@
 # cloud-task tool calls are silently discarded. Recommended Phase E
 # follow-up: wire codex_session_end.py to ingest info._all_tools and
 # emit a `[cloud_task:<id>]`-tagged memory per cloud_exec/cloud_apply
-# pair (~80 LOC). See docs/B12_codex_implementation_plan_2026-05-18.md
+# pair (~80 LOC). See the Codex integration design notes
 # §CX-Followup §A — Synthetic Validation Result 2026-05-19.
 #
 # Wire input shape: codex-rs/hooks/src/schema.rs:279 PostToolUseCommandInput

@@ -1160,7 +1160,7 @@ fi
 # Default-off: gated on B12_LLM_PROVIDER != "none". When opted in,
 # extractor runs detached with its own timeout — the hook is already
 # exit-0 by the time the LLM call returns. See
-# docs/B12_llm_extraction_design.md "Why SessionEnd only".
+# the LLM-extraction design notes "Why SessionEnd only".
 if [ "${B12_LLM_PROVIDER:-none}" != "none" ] && [ -f "$TRANSCRIPT_PATH" ]; then
   _B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
   LLM_EXTRACTOR="$_B12_HOOK_DIR/scripts/b12_llm_extractor.py"

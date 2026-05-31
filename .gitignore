@@ -78,6 +78,5 @@ docs/B12_*.pdf
 # (e.g., stray full clones of dorukardahan/B12 itself, or local fork
 # checkouts named like the parent dir) — prevents accidental nested commits
 B12/
-internal-prior-art/
 B12-sanitized/
 B12-backup-pre-filter/

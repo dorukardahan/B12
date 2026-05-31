@@ -18,7 +18,7 @@ Backends auto-detected:
 When a backend is unavailable the row reports `unavailable` and the
 script still emits a markdown table for the backends that DID run.
 
-Output: writes the markdown table to docs/B12_embed_quant_eval_2026-05.md
+Output: writes the markdown table to embed_quant_eval_results.md
 (or path overridden via --out). Stdout shows the same table.
 """
 from __future__ import annotations
@@ -39,11 +39,11 @@ QUERIES = [
     "BGE-M3 multilingual embedding migration",
     "what did we decide about checkpoint trigger threshold",
     "error TS2300 duplicate identifier in routes",
-    "RedactedProject RedactedProject benchmark methodology",
-    "0G content marketing approved topics",
+    "vector retrieval benchmark methodology",
+    "approved content marketing topics",
     # Turkish / mixed
     "B12 hatırlatıcı sistem nasıl çalışıyor",
-    "AytuncYildizli/B12 PR-19 mahobrain port",
+    "durable ingest queue PR port",
     "kimi cli mcp config drift",
     "Hermes session split context drift",
     "OpenCode GLM-5 optimization config",
@@ -297,7 +297,7 @@ def _format_markdown(rows: list[dict], db_size: int, header: dict) -> str:
     lines.append(f'- **DB embedded rows scored:** {db_size}')
     lines.append(f'- **Queries:** {len(QUERIES)} (5 EN + 5 TR/mixed)')
     lines.append(f'- **Host:** {header["host"]}')
-    lines.append(f'- **Plan reference:** docs/B12_proactive_recall_plan_2026-05-18.md (S5)')
+    lines.append(f'- **Plan reference:** the proactive-recall design notes (S5)')
     lines.append('')
     lines.append('| Backend | Load (s) | Disk (MB) | Encode p50 (ms) | Encode p95 (ms) | MRR vs gold | MRR coverage |')
     lines.append('|---------|---------:|----------:|---------------:|---------------:|------------:|--------------|')
@@ -343,7 +343,7 @@ def _format_markdown(rows: list[dict], db_size: int, header: dict) -> str:
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument('--db', default=_default_db_path())
-    p.add_argument('--out', default='docs/B12_embed_quant_eval_2026-05.md')
+    p.add_argument('--out', default='embed_quant_eval_results.md')
     p.add_argument('--limit', type=int, default=1000,
                    help='Max rows from DB to score against (default 1000).')
     p.add_argument('--self-test', action='store_true')

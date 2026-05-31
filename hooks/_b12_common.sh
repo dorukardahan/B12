@@ -40,7 +40,7 @@ _B12_DATA_DIR="${B12_DATA_DIR:-$HOME/.B12}"
 # slow paths have their own internal caps; the watchdog catches
 # pathological cases where everything completes but the script tail
 # itself is slow. (Codex PR #24 review flagged the signal-deferral
-# limitation — see also docs/B12_proactive_recall_plan_2026-05-18.md S3.)
+# limitation — see also the proactive-recall design notes S3.)
 b12_sync_watchdog() {
   local _t="${1:-0.2}"
   local _label="${2:-sync_cap}"
