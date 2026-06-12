@@ -1519,14 +1519,14 @@ async def memory_session_context(
     RENDER_CONTENT_CAP_CHARS (600) with a "…(truncated)" breadcrumb so
     operators can see when a memory was clipped. Timestamps are
     rendered as `(2026-05-17 14:08)` next to each row. Pattern ported
-    from AytuncYildizli/B12 PR 11 (787a6b8 belleque_session_surface)
+    from AytuncYildizli/B12 PR 11 (787a6b8 session_context renderer)
     rendering style.
     """
     db = _require_db()
     now_ts = time.time()
     sections: list[str] = []
 
-    # Per-row content cap. Mirrors AytuncYildizli/B12 belleque_session_surface
+    # Per-row content cap. Mirrors the AytuncYildizli/B12 session_context renderer
     # RENDER_CONTENT_CAP_CHARS — keeps the MCP response under a reasonable
     # token budget when a session has 10x 4KB tool outputs.
     RENDER_CONTENT_CAP_CHARS = 600
