@@ -123,12 +123,62 @@ Hooks support both English and Turkish:
 
 When adding new patterns, always add both English and Turkish variants.
 
-## Shareability rules
-- This repo is designed to be shared publicly
-- NO personal information (names, usernames, specific paths like /Users/yourname/)
-- NO API keys or secrets
-- Use generic examples and placeholders
-- User profile template should be empty/generic — users fill in their own info
+## Privacy & shareability (CRITICAL — applies to EVERY git surface)
+
+This repo is public. NOTHING personal or private — yours or a collaborator's —
+may ever land in it. This is **not** limited to tracked file contents. It
+applies EQUALLY to: commit messages, branch names, tag names, PR/issue titles,
+PR/issue bodies, review comments, release notes, and CI logs/artifacts.
+
+Never introduce, in ANY of those surfaces:
+- Absolute home paths or OS usernames (`/Users/<name>`, `~/Desktop/<project>`).
+  Use placeholders instead: `/path/to/B12`, `$HOME`, `~`.
+- Email addresses — point security reports at the channel in `SECURITY.md`, not
+  a personal address.
+- Private or internal project names / codenames — yours OR a collaborator's. A
+  bare attribution to a *public* repo name is fine; internal codenames and the
+  architecture detail of a *private* project are not.
+- Session / conversation identifiers (UUIDs), machine names, LAN IPs,
+  smart-home / third-party service / financial-service / account names.
+- Internal working, audit, session, or planning documents — they carry
+  intrinsic personal data even when the surrounding code is clean.
+- API keys or secrets (covered globally, restated here).
+
+Keep generic examples and placeholders everywhere; the user-profile template
+must stay empty/generic so users fill in their own info.
+
+**Why this is non-negotiable:** once pushed to a public (or fork-networked)
+repo, a leak in history or PR metadata CANNOT be removed by yourself.
+`refs/pull/*` tracking refs are owner-immutable, merge-commit SHAs stay
+server-fetchable, and a single reference anywhere in the fork network blocks
+garbage collection for the whole network. Cleaning a past exposure took weeks
+of GitHub Support escalation plus multiple history rewrites. Prevention at
+commit time is the only cheap fix.
+
+**Self-check before EVERY commit — scan the diff AND the message/branch name:**
+```bash
+git diff --cached | grep -nE '/Users/|/home/[a-z]|@[a-z0-9._-]+\.(com|ai|io|org|net)|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}' \
+  && echo "POSSIBLE LEAK — review before commit" || echo "diff clean"
+# Also eyeball the commit message, the branch name, and any PR title/body for the same patterns.
+```
+
+## Git history & rewrite hygiene
+
+A leaked commit/PR is enormously expensive to undo (see above), so the bar for
+any history surgery is high and the sequencing matters:
+
+- If you must rewrite history (e.g. `git filter-repo` to purge a file or scrub a
+  message), do it as ONE atomic operation. Do **NOT** merge a separate
+  content-fix PR first and then rewrite — merging creates `refs/pull/<n>/*`
+  tracking refs, and a later rewrite orphans them onto the pre-rewrite commits,
+  recreating a GC-blocking reference and forcing an extra GitHub Support round.
+- Instead: bundle the fix INTO the rewrite working tree (one force-push, no PR),
+  OR do the fix AFTER the rewrite so its refs point to clean commits.
+- For a trivial fix (a comment, a typo) when a rewrite is imminent, prefer a
+  direct commit over a ceremony PR — fewer refs to orphan.
+- Force-push to a protected branch requires explicit owner approval and the
+  branch-protection disable → push → restore dance. Take a fresh `git bundle`
+  backup of all refs first.
 
 ## Release model
 

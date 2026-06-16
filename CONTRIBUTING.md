@@ -28,6 +28,40 @@ Skim it before opening a PR — it covers:
 - Mini Shai-Hulud 4-step protocol for any new pip/npm dependency
 - Documentation sync rule (code changes → README/architecture/CHANGELOG updates)
 
+## Never commit personal or private data
+
+B12 is public. Do not put personal or private data — yours or anyone else's —
+into the repo, and remember this covers **more than file contents**: it applies
+equally to commit messages, branch and tag names, PR/issue titles, descriptions,
+and comments, and release notes.
+
+Specifically, never include:
+
+- Absolute home paths or usernames — use `/path/to/B12`, `$HOME`, or `~`
+- Email addresses — for security reports use the channel in [SECURITY.md](SECURITY.md)
+- Private/internal project names or codenames — a bare reference to a *public*
+  repo is fine; internal codenames and private-project detail are not
+- Session IDs / UUIDs, machine names, LAN IPs, or third-party account names
+- Internal working / audit / session notes
+
+**Why we are strict:** once it is pushed, a leak in git history or PR metadata
+cannot be cleanly removed. Pull-request refs are immutable to the author and old
+commit SHAs stay fetchable, so purging one takes a history rewrite plus a GitHub
+Support request. Catching it before you push is the only easy fix.
+
+Quick self-check before pushing (scan the diff, then eyeball your commit
+messages and PR title/body for the same patterns):
+
+```bash
+git diff origin/main... | grep -nE '/Users/|/home/[a-z]|@[a-z0-9._-]+\.(com|ai|io|org)' \
+  && echo "review these before pushing" || echo "diff clean"
+```
+
+**Maintainers:** if a history rewrite is ever needed to purge something, do it
+as one atomic `git filter-repo` + force-push. Never merge a fix PR and *then*
+rewrite — the merged PR's tracking refs get orphaned onto the old commits,
+recreating the very reference you were trying to remove.
+
 ## Validation (run before every commit)
 
 ```bash
