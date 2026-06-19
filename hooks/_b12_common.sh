@@ -171,8 +171,14 @@ b12_get_db_path() {
   if [ -f "$_cache" ]; then
     local _now _mtime _age
     _now=$(date +%s 2>/dev/null)
-    # stat: BSD (-f %m) on macOS, GNU (-c %Y) on Linux.
-    _mtime=$(stat -f %m "$_cache" 2>/dev/null || stat -c %Y "$_cache" 2>/dev/null)
+    # stat mtime: try GNU (-c %Y) FIRST, then BSD/macOS (-f %m). Ordering matters:
+    # GNU `stat -f` means --file-system and on Linux writes an FS report to stdout
+    # (NOT a clean non-zero failure), so a BSD-first probe would poison _mtime on
+    # Linux and break the arithmetic below. The case guard is belt-and-suspenders:
+    # force _mtime empty unless it is all-digits, so no stray report can reach the
+    # arithmetic regardless of stat flavour. (PR #108 review r3441627762.)
+    _mtime=$(stat -c %Y "$_cache" 2>/dev/null || stat -f %m "$_cache" 2>/dev/null)
+    case "$_mtime" in ''|*[!0-9]*) _mtime="" ;; esac
     if [ -n "$_now" ] && [ -n "$_mtime" ]; then
       _age=$((_now - _mtime))
       if [ "$_age" -ge 0 ] && [ "$_age" -lt "$_ttl" ]; then

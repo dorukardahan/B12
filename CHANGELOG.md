@@ -9,8 +9,11 @@
   `B12_MCP_IDLE_TIMEOUT` (default 1800s), plus a `B12_MCP_MAX_CONN` cap (default
   64) that evicts the most-idle connection under pressure. Bounds the FD /
   coroutine growth that accumulated 1:1 with open CLI tabs (observed 13 live
-  proxies + 14 never-reaped daemon socket FDs). Reaping is client-invisible — the
-  host proxy reconnects on next use. `scripts/b12_mcp_daemon.py`.
+  proxies + 14 never-reaped daemon socket FDs). On reap the stdio proxy now exits
+  promptly on socket-EOF (`_run_as_proxy` waits FIRST_COMPLETED, so it no longer
+  blocks on stdin and lose the host's next request) and the host respawns it on
+  the next call, reconnecting to a fresh daemon session.
+  `scripts/b12_mcp_daemon.py`, `scripts/b12_mcp_server.py`.
 * **mcp-daemon:** periodic WAL checkpoint (P7). A 5-min `PRAGMA
   wal_checkpoint(TRUNCATE)` timer (`B12_MCP_WAL_CHECKPOINT_INTERVAL`) keeps an
   idle daemon or long-lived reader from letting the WAL grow unbounded
