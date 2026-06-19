@@ -4,6 +4,19 @@
 
 ### Performance
 
+* **mcp-server:** per-connection SQLite — concurrent reads + a single serialized
+  writer (BB1). Replaces the global `async with _db_lock: <sync _db.execute>`
+  pattern that serialized every CLI tab on one asyncio lock **and** blocked the
+  shared event loop on synchronous sqlite (a contended write could stall every
+  tab up to `busy_timeout=30s`). Reads now run off the loop on a thread pool of
+  thread-owned connections (WAL → concurrent readers; size via
+  `B12_MCP_READ_POOL`); all writes + SELECT-then-write transactional ops go
+  through one serialized writer thread (`BEGIN IMMEDIATE` per op), each atomic on
+  one connection / one thread. No connection is shared across threads (avoids
+  `check_same_thread` crashes). Preserves the stdio-proxy contract, legacy
+  in-process mode, the per-session tracker, the atexit flush, and all pragmas.
+  `scripts/b12_mcp_server.py`, `scripts/b12_mcp_daemon.py`,
+  `scripts/tests/test_daemon_concurrency.py`.
 * **mcp-daemon:** idle-connection reaping + connection cap (P2). The shared MCP
   daemon now tracks per-connection activity and cancels connections idle beyond
   `B12_MCP_IDLE_TIMEOUT` (default 1800s), plus a `B12_MCP_MAX_CONN` cap (default

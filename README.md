@@ -484,6 +484,7 @@ If you run multiple Claude Code setups (e.g., personal + work):
 | `B12_MCP_IDLE_TIMEOUT` | MCP daemon: cancel a client connection idle longer than this (seconds). The host proxy reconnects on next use, so reaping is invisible. Bounds FD/coroutine growth across many open tabs. `0` disables. | `1800` (30min) | `900` / `0` |
 | `B12_MCP_MAX_CONN` | MCP daemon: max concurrent client connections; evicts the most-idle one when exceeded. `0` disables the cap. | `64` | `128` |
 | `B12_MCP_WAL_CHECKPOINT_INTERVAL` | MCP daemon: seconds between `PRAGMA wal_checkpoint(TRUNCATE)` runs (keeps the WAL from growing unbounded on an idle daemon). `0` disables. | `300` (5min) | `600` |
+| `B12_MCP_READ_POOL` | MCP server: number of worker threads (and thread-owned SQLite read connections) that serve reads off the event loop, so a slow query on one tab never blocks the others (WAL → concurrent readers). Writes always go through a single serialized writer thread (no knob). `0`/unset auto-sizes to `max(4, min(8, cpu_count))`. | `0` (auto) | `4` / `16` |
 
 #### LLM extraction (opt-in, default off)
 

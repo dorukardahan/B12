@@ -223,10 +223,12 @@ async def _reap_idle_connections() -> None:
 
 def _checkpoint_wal_blocking() -> tuple:
     """Run a TRUNCATE checkpoint on a SHORT-LIVED dedicated connection. Runs in a
-    worker thread (see _wal_checkpoint_timer), so it must NOT touch srv._db
-    (created with check_same_thread=True) or the event loop. A short busy_timeout
-    bounds the wait if a reader/writer is contending; on contention the PRAGMA
-    returns busy=1 (logged) and we retry next interval. Returns the
+    worker thread (see _wal_checkpoint_timer), so it owns its own connection and
+    must NOT touch the server's read/writer connections (each pinned to another
+    thread) or the event loop — the same per-connection ownership model the
+    server's read pool / single-writer thread use. A short busy_timeout bounds the
+    wait if a reader/writer is contending; on contention the PRAGMA returns busy=1
+    (logged) and we retry next interval. Returns the
     (busy, log_frames, checkpointed_frames) row, or () on no-extension path."""
     cx = sqlite3.connect(srv.DB_PATH, timeout=5)
     try:
@@ -243,8 +245,8 @@ async def _wal_checkpoint_timer() -> None:
     reader) can't let it grow unbounded (wal_autocheckpoint=100 only fires on
     writes). Runs the checkpoint OFF the event loop on its own connection: a
     TRUNCATE checkpoint can wait on a concurrent reader up to busy_timeout, so
-    doing it synchronously on the loop under srv._db_lock (as the first cut did)
-    would freeze every MCP client for that whole window. The worker thread keeps
+    doing it synchronously on the event loop (as the first cut did) would freeze
+    every MCP client for that whole window. The worker thread keeps
     the daemon responsive; a contended cycle just bails and retries.
     (Addresses PR #108 review r3441309261.)"""
     if WAL_CHECKPOINT_INTERVAL <= 0:
@@ -339,9 +341,10 @@ async def _serve() -> None:
 
     log(f"Starting B12 MCP daemon (PID {os.getpid()}, socket {SOCK_PATH})")
 
-    # Tell b12_mcp_server.lifespan to keep the DB connection warm across
-    # client disconnects — without this flag, the per-connection lifespan's
-    # exit would close `_db`, breaking the next client.
+    # Tell b12_mcp_server.lifespan to keep the DB pools (read pool + single
+    # writer) warm across client disconnects — without this flag, each
+    # per-connection lifespan exit would tear the pools down, breaking the next
+    # client.
     srv._DAEMON_MODE = True
 
     # Initialize DB + FastMCP lifespan ONCE — this is the cold-start cost we're amortizing.
