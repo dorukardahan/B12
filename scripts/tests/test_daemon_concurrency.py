@@ -37,12 +37,17 @@ except Exception:  # pragma: no cover - pytest always present in CI
 
 
 def _load():
-    """Import the server module, or signal skip if mcp isn't installed."""
+    """Import the server module. ONLY a genuinely-missing optional `mcp` dep is
+    converted to a skip; any OTHER import-time error (e.g. a regression introduced
+    by the DB refactor) is re-raised so CI FAILS instead of silently skipping the
+    concurrency coverage."""
     try:
         import b12_mcp_server as M
         return M
-    except Exception as e:  # mcp not installed in this env
-        return e
+    except ModuleNotFoundError as e:
+        if (e.name or "").split(".")[0] == "mcp":
+            return e  # expected when mcp isn't installed → caller skips
+        raise
 
 
 def _make_populated_db(M, path, n):
