@@ -46,11 +46,11 @@ The installer seeds `~/.B12/config.toml` from `config/b12-config-template.toml` 
 
 ```toml
 [recall.ann]
-enabled = false           # Set true to activate the sqlite-vec MATCH pre-filter
-threshold_count = 10000   # ANN only activates once memory_embeddings hits this many rows
+enabled = true            # exact-KNN (sqlite-vec MATCH) recall — default-on since 2026-06-19
+threshold_count = 500     # ANN activates once memory_embeddings reaches this many rows
 ```
 
-When `B12_DATA_DIR` is set, the template is seeded under `$B12_DATA_DIR/config.toml` so a custom-data-dir setup gets a template at the path `scripts/b12_config.py` actually reads. ANN errors at any stage fall through to the existing full-scan path, so flipping `enabled = true` is safe.
+**Default-on since 2026-06-19** (A/B harness: `benchmarks/ann_ab_test.py`). sqlite-vec's `MATCH` is exact brute-force KNN over normalized vectors, so it reproduces the full-table cosine ranking exactly (overlap@5 = 1.00) while removing the `ORDER BY m.id DESC LIMIT 500` blind spot; `threshold_count = 500` matches that cap boundary (at/below it the full-scan already sees everything). Set `enabled = false` to force the legacy full-scan path. When `B12_DATA_DIR` is set, the template is seeded under `$B12_DATA_DIR/config.toml` so a custom-data-dir setup gets a template at the path `scripts/b12_config.py` actually reads. ANN errors at any stage fall through to the full-scan path.
 
 ### Environment variables (multi-setup)
 
