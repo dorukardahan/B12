@@ -12,10 +12,12 @@
   proxies + 14 never-reaped daemon socket FDs). Reaping is client-invisible — the
   host proxy reconnects on next use. `scripts/b12_mcp_daemon.py`.
 * **mcp-daemon:** periodic WAL checkpoint (P7). A 5-min `PRAGMA
-  wal_checkpoint(TRUNCATE)` timer (`B12_MCP_WAL_CHECKPOINT_INTERVAL`) runs under
-  the shared DB lock so an idle daemon or a long-lived reader can't let the WAL
-  grow unbounded (`wal_autocheckpoint=100` only fires on writes). Addresses the
-  WAL-bloat / blocked-checkpoint incident class. `scripts/b12_mcp_daemon.py`.
+  wal_checkpoint(TRUNCATE)` timer (`B12_MCP_WAL_CHECKPOINT_INTERVAL`) keeps an
+  idle daemon or long-lived reader from letting the WAL grow unbounded
+  (`wal_autocheckpoint=100` only fires on writes). Runs **off the event loop** on
+  a dedicated short-lived connection with a short `busy_timeout` — a TRUNCATE
+  checkpoint can wait on a contending reader, so running it on the loop under the
+  server lock would freeze every client for that window. `scripts/b12_mcp_daemon.py`.
 * **mcp-server:** `PRAGMA synchronous=NORMAL` + `temp_store=MEMORY` (P10). NORMAL
   is the recommended WAL durability mode — corruption-safe; committed
   transactions survive any app/process crash (daemon restart, kill, terminal

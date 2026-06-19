@@ -31,6 +31,7 @@ Concurrency:
 import asyncio
 import os
 import signal
+import sqlite3
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -220,20 +221,41 @@ async def _reap_idle_connections() -> None:
             log(f"reaper error: {e}")
 
 
+def _checkpoint_wal_blocking() -> tuple:
+    """Run a TRUNCATE checkpoint on a SHORT-LIVED dedicated connection. Runs in a
+    worker thread (see _wal_checkpoint_timer), so it must NOT touch srv._db
+    (created with check_same_thread=True) or the event loop. A short busy_timeout
+    bounds the wait if a reader/writer is contending; on contention the PRAGMA
+    returns busy=1 (logged) and we retry next interval. Returns the
+    (busy, log_frames, checkpointed_frames) row, or () on no-extension path."""
+    cx = sqlite3.connect(srv.DB_PATH, timeout=5)
+    try:
+        cx.execute("PRAGMA busy_timeout=2000")  # bounded — off the event loop
+        row = cx.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        cx.commit()
+        return tuple(row) if row is not None else ()
+    finally:
+        cx.close()
+
+
 async def _wal_checkpoint_timer() -> None:
-    """P7: periodically TRUNCATE-checkpoint the WAL under the shared DB lock so
-    an idle daemon (or a long-lived reader) can't let the WAL grow unbounded.
-    wal_autocheckpoint=100 only fires on writes; this covers the idle case."""
+    """P7: periodically checkpoint the WAL so an idle daemon (or a long-lived
+    reader) can't let it grow unbounded (wal_autocheckpoint=100 only fires on
+    writes). Runs the checkpoint OFF the event loop on its own connection: a
+    TRUNCATE checkpoint can wait on a concurrent reader up to busy_timeout, so
+    doing it synchronously on the loop under srv._db_lock (as the first cut did)
+    would freeze every MCP client for that whole window. The worker thread keeps
+    the daemon responsive; a contended cycle just bails and retries.
+    (Addresses PR #108 review r3441309261.)"""
     if WAL_CHECKPOINT_INTERVAL <= 0:
         return
     while True:
         try:
             await asyncio.sleep(WAL_CHECKPOINT_INTERVAL)
-            async with srv._db_lock:
-                if srv._db is not None:
-                    srv._db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-                    srv._db.commit()
-            log("WAL checkpoint (TRUNCATE) done")
+            row = await asyncio.to_thread(_checkpoint_wal_blocking)
+            # row == (busy, log, checkpointed); busy != 0 means a reader/writer
+            # blocked a full truncate — harmless, the WAL is reused regardless.
+            log(f"WAL checkpoint (TRUNCATE, off-loop) done {row}")
         except asyncio.CancelledError:
             raise
         except Exception as e:
