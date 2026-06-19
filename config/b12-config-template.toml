@@ -2,8 +2,17 @@
 # Reference: docs/architecture.md (Recall / ANN sections).
 
 [recall.ann]
-# Approximate kNN via sqlite-vec MATCH operator. Active when BOTH:
+# Exact kNN via sqlite-vec's vec0 MATCH operator. Active when BOTH:
 #   enabled = true  AND  COUNT(*) FROM memory_embeddings >= threshold_count
-# Below threshold the LIMIT-500 + numpy full-scan always runs.
-enabled = false
-threshold_count = 10000
+# Below threshold the LIMIT-500 + numpy full-scan runs (complete at <=500 rows).
+#
+# Enabled by default since the 2026-06-19 A/B (benchmarks/ann_ab_test.py): MATCH
+# is EXACT brute-force KNN over normalized vectors, so it reproduces the
+# full-table cosine ranking exactly (overlap@5 = 1.00 over 300 real-vector
+# probes) while removing the LIMIT-500 blind spot — which on a ~3.6k-vector DB
+# matched the true ranking only ~15% of the time (87% of queries had their true
+# nearest neighbour beyond the 500 newest rows). threshold_count is the cap
+# boundary (500): at/below it the full-scan already sees everything, so ANN adds
+# nothing; above it ANN is the only path that doesn't drop older memories.
+enabled = true
+threshold_count = 500

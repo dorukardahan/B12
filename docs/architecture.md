@@ -364,16 +364,27 @@ SessionStart now surfaces two project-derived context blocks:
 
 Both blocks are token-budgeted within the SessionStart 6000-char cap and trim before older tier-1b/1c sections.
 
-## ANN index over memory_embeddings (v11.49+)
+## Exact-KNN recall over memory_embeddings (v11.49+; default-on since 2026-06-19)
 
-When `~/.B12/config.toml` enables `[recall.ann]` and the embeddings table grows past `threshold_count` (default 10000), `_semantic_search` and `_recall` in `embed_daemon.py` switch to sqlite-vec's KNN MATCH:
+When `[recall.ann]` is enabled and the embeddings table is at least `threshold_count` rows, `_semantic_search` and `_recall` in `embed_daemon.py` use sqlite-vec's KNN MATCH:
 
 ```sql
 SELECT rowid FROM memory_embeddings
 WHERE content_embedding MATCH ? AND k = ?
 ```
 
-This bypasses the LIMIT-500 full-scan cap that silently hides ~85% of memories at production scale. The candidate set is oversampled 30× (capped at 150) so the three downstream attrition layers — active-memory filter, skip_ids ledger, similarity threshold — have headroom before triggering a fall-through to the existing full-scan path. ANN errors at any stage fall through transparently.
+This bypasses the `ORDER BY m.id DESC LIMIT 500` full-scan cap that silently hides older memories at production scale. The candidate set is oversampled 30× (capped at 150) so the three downstream attrition layers — active-memory filter, skip_ids ledger, similarity threshold — have headroom before triggering a fall-through to the existing full-scan path. ANN errors at any stage fall through transparently; an empty `MATCH` result is logged (likely sqlite-vec failure or empty vec table) and `threshold_count` is clamped to `[100, 1e6]`.
+
+**Default-on (`enabled = true`, `threshold_count = 500`).** `MATCH` is *exact* brute-force KNN over normalized vectors, not an approximate index, so it reproduces the full-table cosine ranking exactly. The 2026-06-19 A/B (`benchmarks/ann_ab_test.py`, 300 real-vector probes) measured `overlap@5(MATCH, exact) = 1.00`, while the legacy LIMIT-500 path matched the true ranking only ~15% of the time (87% of queries had their true nearest neighbour beyond the 500 newest rows). `threshold_count` is set to the cap boundary (500): at/below it the full-scan already sees every row, so MATCH adds nothing; above it MATCH is the only path that doesn't drop older memories. The flag/threshold are read once per process (`b12_config._load` is `@lru_cache`), so changing them requires an embed-daemon restart.
+
+## MCP daemon maintenance: connection reaping + WAL checkpoint (P2/P7)
+
+`scripts/b12_mcp_daemon.py` runs two background asyncio tasks for the lifetime of the shared daemon:
+
+- **Idle-connection reaper.** Each accepted connection is tracked with a last-activity timestamp (bumped on every inbound JSON-RPC line). A reaper cancels connections idle beyond `B12_MCP_IDLE_TIMEOUT` (default 1800s), and a `B12_MCP_MAX_CONN` cap (default 64) evicts the most-idle connection under pressure. Without this, FDs and `handle_client` coroutines accumulated 1:1 with open CLI tabs and were never reaped (one persistent socket FD per tab). Reaping is client-invisible: the host proxy sees the socket close and the host respawns it on next use (the same path used on a daemon crash — see `b12_mcp_server.py:_run_as_proxy`).
+- **WAL checkpoint timer.** Every `B12_MCP_WAL_CHECKPOINT_INTERVAL` (default 300s) the daemon runs `PRAGMA wal_checkpoint(TRUNCATE)` under the shared `_db_lock`. `PRAGMA wal_autocheckpoint=100` only fires on writes, so an idle daemon or a long-lived legacy reader could otherwise let the WAL grow unbounded and block checkpoint.
+
+The shared connection also runs `PRAGMA synchronous=NORMAL` + `temp_store=MEMORY` (`b12_mcp_server.py` lifespan): NORMAL is the corruption-safe WAL durability mode — committed transactions survive any app/process crash; only an OS crash or power loss can roll back the most-recent commit(s).
 
 ## Codex cloud_exec / cloud_apply ingestion (v11.52+)
 

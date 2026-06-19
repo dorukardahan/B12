@@ -61,7 +61,12 @@
   # Extract a one-line telemetry record. For apply_patch we want the
   # file paths touched; for shell/unified_exec we want the command's
   # first 200 chars (full transcripts live in the rollout file).
-  python3 - "$INPUT" "$TELE_LOG" "$SID" "$TOOL_NAME" << 'PYEOF' 2>/dev/null
+  # P11: background the telemetry write so the Codex PostToolUse hook returns
+  # immediately. This is fire-and-forget (no additionalContext is produced by
+  # this hook), so backgrounding loses nothing. Mirrors the disown pattern used
+  # by memory-checkpoint.sh / b12_async_fork. The heredoc supplies the Python
+  # source on stdin; the group is backgrounded after that stdin is set up.
+  { python3 - "$INPUT" "$TELE_LOG" "$SID" "$TOOL_NAME" << 'PYEOF'
 import json, sys, time
 raw, tele_log, sid, tool_name = sys.argv[1], sys.argv[2], sys.argv[3], sys.argv[4]
 try:
@@ -102,6 +107,7 @@ try:
 except OSError:
     pass
 PYEOF
+  } >/dev/null 2>&1 & disown
 
 } 2>>"${ERR_LOG:-/dev/null}" || true
 exit 0

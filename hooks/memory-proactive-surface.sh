@@ -175,7 +175,7 @@ if [ -z "$QUERY" ] || [ "${#QUERY}" -lt 4 ]; then
 fi
 
 # ── DB path ────────────────────────────────────────────────
-DB_PATH="$(b12_resolve_db_path)"
+DB_PATH="$(b12_get_db_path)"   # P3: cached resolver (avoids a python3 spawn every Read/Edit/Write/Bash)
 # Helper: reset the rate-limit counter when an expensive attempt finishes
 # (hit or miss) so we don't pay the daemon round-trip on every subsequent fire
 # until something actually hits. last_surfaced_at is NOT bumped on a miss —

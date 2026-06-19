@@ -148,7 +148,7 @@ if [ "$RECALL_VERB_HIT" = false ]; then
   fi
 fi
 
-DB_PATH="$(b12_resolve_db_path)"
+DB_PATH="$(b12_get_db_path)"   # P3: cached resolver (avoids a python3 spawn every prompt)
 if [ ! -f "$DB_PATH" ]; then
   exit 0
 fi

@@ -350,6 +350,16 @@ async def lifespan(server: FastMCP):
         _db.execute("PRAGMA journal_mode=WAL")
         _db.execute("PRAGMA busy_timeout=30000")
         _db.execute("PRAGMA wal_autocheckpoint=100")
+        # P10 (owner-approved 2026-06-19): NORMAL is the recommended durability
+        # mode for WAL — corruption-safe, and committed transactions survive any
+        # app/process crash (daemon restart, kill, terminal close). The only
+        # loss window is an OS-level crash or power loss, which can roll back the
+        # most-recent commit(s); the database is NOT corrupted. Accepted as a
+        # deliberate write-latency trade for the shared memory DB across all
+        # 9+ CLI runtimes. temp_store=MEMORY keeps temp b-trees / sort scratch in
+        # RAM (pure speed, no durability cost).
+        _db.execute("PRAGMA synchronous=NORMAL")
+        _db.execute("PRAGMA temp_store=MEMORY")
         _db.row_factory = sqlite3.Row
         if _HAS_VEC:
             _db.enable_load_extension(True)

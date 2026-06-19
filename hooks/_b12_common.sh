@@ -157,6 +157,44 @@ else:
   esac
 }
 
+# ── b12_get_db_path ─────────────────────────────────────────
+# P3 hook-latency: cache the resolved DB path so high-frequency hooks don't
+# spawn python3 (via b12_resolve_db_path) on every single fire. The path only
+# changes when the OS / home dir changes, so a short TTL is safe. Honors
+# B12_DATA_DIR for the cache location (per the B12_DATA_DIR/B12_HOOK_DIR
+# separation contract). Falls back to b12_resolve_db_path on miss/expiry, and
+# degrades gracefully to it if the cache cannot be written. TTL kept short
+# (60s) so a setup reconfiguration can't serve a stale path for long.
+b12_get_db_path() {
+  local _cache="$_B12_DATA_DIR/state/db-path.cache"
+  local _ttl=60
+  if [ -f "$_cache" ]; then
+    local _now _mtime _age
+    _now=$(date +%s 2>/dev/null)
+    # stat: BSD (-f %m) on macOS, GNU (-c %Y) on Linux.
+    _mtime=$(stat -f %m "$_cache" 2>/dev/null || stat -c %Y "$_cache" 2>/dev/null)
+    if [ -n "$_now" ] && [ -n "$_mtime" ]; then
+      _age=$((_now - _mtime))
+      if [ "$_age" -ge 0 ] && [ "$_age" -lt "$_ttl" ]; then
+        local _cached
+        _cached=$(cat "$_cache" 2>/dev/null)
+        if [ -n "$_cached" ]; then
+          printf '%s\n' "$_cached"
+          return 0
+        fi
+      fi
+    fi
+  fi
+  # Miss / expiry: resolve fresh (python3), populate cache best-effort, return.
+  local _path
+  _path=$(b12_resolve_db_path)
+  if [ -n "$_path" ]; then
+    [ -d "$_B12_DATA_DIR/state" ] || mkdir -p "$_B12_DATA_DIR/state" 2>/dev/null
+    printf '%s\n' "$_path" > "$_cache" 2>/dev/null
+    printf '%s\n' "$_path"
+  fi
+}
+
 # supplies the JSON-encoded tool_input so we don't re-shell-out to jq.
 b12_should_skip_trivial() {
   local _tool="$1"
