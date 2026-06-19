@@ -350,6 +350,16 @@ async def lifespan(server: FastMCP):
         _db.execute("PRAGMA journal_mode=WAL")
         _db.execute("PRAGMA busy_timeout=30000")
         _db.execute("PRAGMA wal_autocheckpoint=100")
+        # P10 (owner-approved 2026-06-19): NORMAL is the recommended durability
+        # mode for WAL — corruption-safe, and committed transactions survive any
+        # app/process crash (daemon restart, kill, terminal close). The only
+        # loss window is an OS-level crash or power loss, which can roll back the
+        # most-recent commit(s); the database is NOT corrupted. Accepted as a
+        # deliberate write-latency trade for the shared memory DB across all
+        # 9+ CLI runtimes. temp_store=MEMORY keeps temp b-trees / sort scratch in
+        # RAM (pure speed, no durability cost).
+        _db.execute("PRAGMA synchronous=NORMAL")
+        _db.execute("PRAGMA temp_store=MEMORY")
         _db.row_factory = sqlite3.Row
         if _HAS_VEC:
             _db.enable_load_extension(True)
@@ -2363,19 +2373,37 @@ async def _run_as_proxy(sock_path: str) -> None:
     stdin_task = asyncio.create_task(stdin_to_socket())
     socket_task = asyncio.create_task(socket_to_stdout())
 
-    # Wait until stdin closes (normal shutdown) OR socket closes (daemon died).
-    # When stdin closes first, give the socket up to 2s to drain in-flight
-    # responses before we tear down.
-    await stdin_task
-    if not socket_task.done():
-        try:
-            await asyncio.wait_for(socket_task, timeout=2.0)
-        except asyncio.TimeoutError:
-            socket_task.cancel()
+    # Wait for whichever side closes first:
+    #   - stdin EOF (host CLI exited): normal shutdown — drain the socket briefly.
+    #   - socket EOF (daemon shut down OR idle-reaped this connection): exit
+    #     IMMEDIATELY rather than staying blocked on `await stdin_task` until the
+    #     next host request — that request would be written to the now-dead socket
+    #     and lost. Exiting promptly lets the host observe the proxy exit and
+    #     respawn it, so the next tool call reconnects to a fresh daemon session
+    #     with no lost request. (PR #108 review r3441627771.)
+    done, _pending = await asyncio.wait(
+        {stdin_task, socket_task}, return_when=asyncio.FIRST_COMPLETED
+    )
+    if stdin_task in done:
+        # Host closed stdin first — give the socket up to 2s to drain in-flight
+        # responses before tearing down.
+        if not socket_task.done():
             try:
-                await socket_task
-            except (asyncio.CancelledError, Exception):
-                pass
+                await asyncio.wait_for(socket_task, timeout=2.0)
+            except asyncio.TimeoutError:
+                socket_task.cancel()
+                try:
+                    await socket_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+    else:
+        # Socket closed first (daemon shutdown / idle-reap): stop reading stdin
+        # and exit now instead of forwarding a doomed request to the dead socket.
+        stdin_task.cancel()
+        try:
+            await stdin_task
+        except (asyncio.CancelledError, Exception):
+            pass
 
     try:
         sock_writer.close()

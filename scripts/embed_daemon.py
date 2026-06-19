@@ -124,6 +124,9 @@ def _ann_supported(conn):
     enabled = bool(_b12_cfg_get("recall", "ann", "enabled", default=False))
     raw_threshold = _b12_cfg_get("recall", "ann", "threshold_count", default=10000)
     threshold = int(raw_threshold) if isinstance(raw_threshold, (int, float)) else 10000
+    # P5: clamp to a sane range so a config typo (0, negative, or absurd) can't
+    # either force ANN on for a near-empty table or wedge it off forever.
+    threshold = max(100, min(threshold, 1_000_000))
     count = 0
     try:
         row = conn.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()
@@ -174,6 +177,11 @@ def _semantic_search(model, data):
         # _recall). Oversample 30× so all three layers of attrition still
         # leave enough candidates; if too few survive, take the full-scan.
         topk = _ann_topk_rowids(conn, q_emb, max(limit * 30, 150))
+        if not topk:
+            # P5: ANN gated on but MATCH returned nothing — a likely sqlite-vec
+            # extension failure or empty vec0 table. Silent fall-through would
+            # mask it, so surface it. (Full-scan below still serves the query.)
+            log("ann(semantic): MATCH returned 0 rows (sqlite-vec failure or empty vec table); using full-scan")
         if topk:
             id_to_sim = {rid: sim for rid, sim in topk}
             ph = ",".join("?" for _ in id_to_sim)
@@ -295,6 +303,11 @@ def _recall(model, data):
     rows = None
     if use_ann:
         topk = _ann_topk_rowids(conn, q_emb, max(limit * 30, 150))
+        if not topk:
+            # P5: ANN gated on but MATCH returned nothing — likely sqlite-vec
+            # failure or empty vec0 table. Surface it instead of silently
+            # falling through. (Full-scan below still serves the recall.)
+            log("ann(recall): MATCH returned 0 rows (sqlite-vec failure or empty vec table); using full-scan")
         if topk:
             rowid_set = {r for r, _ in topk}
             ph = ",".join("?" for _ in rowid_set)

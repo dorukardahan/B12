@@ -2,6 +2,55 @@
 
 ## Unreleased
 
+### Performance
+
+* **mcp-daemon:** idle-connection reaping + connection cap (P2). The shared MCP
+  daemon now tracks per-connection activity and cancels connections idle beyond
+  `B12_MCP_IDLE_TIMEOUT` (default 1800s), plus a `B12_MCP_MAX_CONN` cap (default
+  64) that evicts the most-idle connection under pressure. Bounds the FD /
+  coroutine growth that accumulated 1:1 with open CLI tabs (observed 13 live
+  proxies + 14 never-reaped daemon socket FDs). On reap the stdio proxy now exits
+  promptly on socket-EOF (`_run_as_proxy` waits FIRST_COMPLETED, so it no longer
+  blocks on stdin and lose the host's next request) and the host respawns it on
+  the next call, reconnecting to a fresh daemon session.
+  `scripts/b12_mcp_daemon.py`, `scripts/b12_mcp_server.py`.
+* **mcp-daemon:** periodic WAL checkpoint (P7). A 5-min `PRAGMA
+  wal_checkpoint(TRUNCATE)` timer (`B12_MCP_WAL_CHECKPOINT_INTERVAL`) keeps an
+  idle daemon or long-lived reader from letting the WAL grow unbounded
+  (`wal_autocheckpoint=100` only fires on writes). Runs **off the event loop** on
+  a dedicated short-lived connection with a short `busy_timeout` — a TRUNCATE
+  checkpoint can wait on a contending reader, so running it on the loop under the
+  server lock would freeze every client for that window. `scripts/b12_mcp_daemon.py`.
+* **mcp-server:** `PRAGMA synchronous=NORMAL` + `temp_store=MEMORY` (P10). NORMAL
+  is the recommended WAL durability mode — corruption-safe; committed
+  transactions survive any app/process crash (daemon restart, kill, terminal
+  close). Only an OS crash / power loss can roll back the most-recent commit(s);
+  the DB is never corrupted. Lower write latency on the shared memory DB.
+  `scripts/b12_mcp_server.py`.
+* **hooks:** cache the resolved DB path (P3). High-frequency hooks
+  (`memory-retrieval.sh` per prompt, `memory-proactive-surface.sh` per
+  Read/Edit/Write/Bash) read the DB path from a 60s-TTL cache
+  (`$B12_DATA_DIR/state/db-path.cache`) via a new `b12_get_db_path` in
+  `_b12_common.sh` instead of spawning `python3` on every fire.
+* **hooks (codex):** background the Codex PostToolUse telemetry write (P11) so
+  the hook returns immediately (`hooks/memory-codex-post-tool.sh`).
+* **launcher:** bounded (~2s) daemon-up probe in `start-mcp.sh` (P8) so tabs
+  opened during the login window don't race into the slow legacy in-process
+  path; falls through to legacy fast when the daemon is genuinely down.
+
+### Changed
+
+* **recall:** ANN exact-KNN recall is now **enabled by default** with
+  `threshold_count = 500` (P5). sqlite-vec's `vec0 MATCH` is exact brute-force
+  KNN over normalized vectors, so it reproduces the full-table cosine ranking
+  exactly (A/B `benchmarks/ann_ab_test.py`: overlap@5 = 1.00 over 300 real-vector
+  probes) while removing the `ORDER BY m.id DESC LIMIT 500` blind spot — which on
+  a ~3.6k-vector DB matched the true ranking only ~15% of the time (87% of
+  queries had their true nearest neighbour beyond the 500 newest rows). The
+  install-template default flips to `enabled = true`. Hardening: threshold clamp
+  to `[100, 1e6]` + empty-`topk` health logging in `embed_daemon.py`, the A/B
+  harness, and `scripts/tests/test_ann_recall_path.py`.
+
 ### Security
 
 * **pii-scrub:** close the write-path gap — the secret scrubber now runs on

@@ -31,6 +31,7 @@ Concurrency:
 import asyncio
 import os
 import signal
+import sqlite3
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -59,6 +60,24 @@ _B12_DATA_DIR = os.environ.get("B12_DATA_DIR", os.path.expanduser("~/.B12"))
 LOG_DIR = os.path.join(_B12_DATA_DIR, "memory-logs")
 LOG_PATH = os.path.join(LOG_DIR, "mcp-daemon.log")
 
+# ── P2: idle-connection reaping + connection cap ─────────────────
+# Bounds FD/coroutine growth from long-lived idle proxy connections (one per
+# open CLI tab — they otherwise accumulate 1:1 with tabs and are never reaped).
+# A reaped connection is client-invisible: the host proxy sees the socket close
+# and the host respawns it on next use (Claude Code does so — see
+# b12_mcp_server.py:_run_as_proxy shutdown semantics), reconnecting fresh. The
+# idle timeout is generous by default so only clearly-abandoned connections are
+# reaped; the cap is a defensive backstop against runaway accumulation. Both
+# knobs are env-overridable; set IDLE_TIMEOUT/MAX_CONNECTIONS to 0 to disable.
+IDLE_TIMEOUT = float(os.environ.get("B12_MCP_IDLE_TIMEOUT", "1800"))      # 30 min
+MAX_CONNECTIONS = int(os.environ.get("B12_MCP_MAX_CONN", "64"))
+REAP_INTERVAL = float(os.environ.get("B12_MCP_REAP_INTERVAL", "60"))      # 1 min
+# ── P7: periodic WAL checkpoint ──────────────────────────────────
+# wal_autocheckpoint=100 only fires on writes, so an idle daemon (or a
+# long-lived legacy reader) can let the WAL grow unbounded and block checkpoint.
+# A periodic TRUNCATE checkpoint under the shared DB lock covers the idle case.
+WAL_CHECKPOINT_INTERVAL = float(os.environ.get("B12_MCP_WAL_CHECKPOINT_INTERVAL", "300"))  # 5 min
+
 
 def log(msg: str) -> None:
     """Append a timestamped line to the daemon log (best-effort, never raises)."""
@@ -80,7 +99,7 @@ def cleanup_socket_files() -> None:
 
 
 @asynccontextmanager
-async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWriter):
+async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, on_activity=None):
     """Bridge an asyncio (reader, writer) pair to anyio memory streams that
     speak `SessionMessage`. Mirrors `mcp.server.stdio.stdio_server` but over a
     Unix socket instead of stdin/stdout.
@@ -103,6 +122,13 @@ async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWr
                     line = await reader.readline()
                     if not line:
                         return  # peer closed
+                    # P2: mark inbound activity so the idle reaper doesn't cancel
+                    # a connection that is still actively serving requests.
+                    if on_activity is not None:
+                        try:
+                            on_activity()
+                        except Exception:
+                            pass
                     try:
                         msg = types.JSONRPCMessage.model_validate_json(
                             line.decode("utf-8").rstrip()
@@ -142,28 +168,129 @@ async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWr
 
 
 _active_connections = 0
+_conn_seq = 0
+# conn_id -> {"task": asyncio.Task, "last_activity": float, "writer": StreamWriter}
+_connections: dict[int, dict] = {}
+
+
+def _enforce_conn_cap(current_id: int) -> None:
+    """P2: if over MAX_CONNECTIONS, cancel the most-idle connection(s) — never
+    the one being accepted right now. A defensive bound against runaway
+    accumulation; the reaped client's host respawns its proxy on next use."""
+    if MAX_CONNECTIONS <= 0:
+        return
+    while len(_connections) > MAX_CONNECTIONS:
+        now = time.time()
+        victim_id = None
+        victim_idle = -1.0
+        for cid, rec in _connections.items():
+            if cid == current_id:
+                continue
+            idle = now - rec.get("last_activity", now)
+            if idle > victim_idle:
+                victim_idle = idle
+                victim_id = cid
+        if victim_id is None:
+            break
+        rec = _connections.pop(victim_id, None)  # remove now so the loop terminates
+        task = rec.get("task") if rec else None
+        log(f"Connection #{victim_id} evicted (over cap {MAX_CONNECTIONS}, idle {victim_idle:.0f}s)")
+        if task is not None and not task.done():
+            task.cancel()
+
+
+async def _reap_idle_connections() -> None:
+    """P2: periodically cancel connections idle longer than IDLE_TIMEOUT. The
+    host proxy reconnects on next use, so reaping is client-invisible."""
+    if IDLE_TIMEOUT <= 0:
+        return
+    while True:
+        try:
+            await asyncio.sleep(REAP_INTERVAL)
+            now = time.time()
+            for cid, rec in list(_connections.items()):
+                idle = now - rec.get("last_activity", now)
+                if idle > IDLE_TIMEOUT:
+                    task = rec.get("task")
+                    if task is not None and not task.done():
+                        log(f"Connection #{cid} idle {idle:.0f}s > {IDLE_TIMEOUT:.0f}s — reaping")
+                        task.cancel()
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log(f"reaper error: {e}")
+
+
+def _checkpoint_wal_blocking() -> tuple:
+    """Run a TRUNCATE checkpoint on a SHORT-LIVED dedicated connection. Runs in a
+    worker thread (see _wal_checkpoint_timer), so it must NOT touch srv._db
+    (created with check_same_thread=True) or the event loop. A short busy_timeout
+    bounds the wait if a reader/writer is contending; on contention the PRAGMA
+    returns busy=1 (logged) and we retry next interval. Returns the
+    (busy, log_frames, checkpointed_frames) row, or () on no-extension path."""
+    cx = sqlite3.connect(srv.DB_PATH, timeout=5)
+    try:
+        cx.execute("PRAGMA busy_timeout=2000")  # bounded — off the event loop
+        row = cx.execute("PRAGMA wal_checkpoint(TRUNCATE)").fetchone()
+        cx.commit()
+        return tuple(row) if row is not None else ()
+    finally:
+        cx.close()
+
+
+async def _wal_checkpoint_timer() -> None:
+    """P7: periodically checkpoint the WAL so an idle daemon (or a long-lived
+    reader) can't let it grow unbounded (wal_autocheckpoint=100 only fires on
+    writes). Runs the checkpoint OFF the event loop on its own connection: a
+    TRUNCATE checkpoint can wait on a concurrent reader up to busy_timeout, so
+    doing it synchronously on the loop under srv._db_lock (as the first cut did)
+    would freeze every MCP client for that whole window. The worker thread keeps
+    the daemon responsive; a contended cycle just bails and retries.
+    (Addresses PR #108 review r3441309261.)"""
+    if WAL_CHECKPOINT_INTERVAL <= 0:
+        return
+    while True:
+        try:
+            await asyncio.sleep(WAL_CHECKPOINT_INTERVAL)
+            row = await asyncio.to_thread(_checkpoint_wal_blocking)
+            # row == (busy, log, checkpointed); busy != 0 means a reader/writer
+            # blocked a full truncate — harmless, the WAL is reused regardless.
+            log(f"WAL checkpoint (TRUNCATE, off-loop) done {row}")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log(f"WAL checkpoint error: {e}")
 
 
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """Serve one MCP session for one connected client (one Claude Code session)."""
-    global _active_connections
+    global _active_connections, _conn_seq
+    _conn_seq += 1
+    conn_id = _conn_seq
     _active_connections += 1
-    conn_id = _active_connections
+    record = {"task": asyncio.current_task(), "last_activity": time.time(), "writer": writer}
+    _connections[conn_id] = record
     log(f"Connection #{conn_id} accepted (active={_active_connections})")
+    _enforce_conn_cap(conn_id)
+
+    def _bump_activity() -> None:
+        record["last_activity"] = time.time()
+
     try:
-        async with _socket_streams(reader, writer) as (rs, ws):
+        async with _socket_streams(reader, writer, on_activity=_bump_activity) as (rs, ws):
             init_opts = srv.server._mcp_server.create_initialization_options()
             await srv.server._mcp_server.run(rs, ws, init_opts)
         log(f"Connection #{conn_id} completed normally")
     except (ConnectionResetError, BrokenPipeError):
         log(f"Connection #{conn_id} reset by peer")
     except asyncio.CancelledError:
-        log(f"Connection #{conn_id} cancelled (daemon shutdown)")
+        log(f"Connection #{conn_id} cancelled (idle-reap or daemon shutdown)")
         raise
     except Exception as e:
         log(f"Connection #{conn_id} error: {type(e).__name__}: {e}")
     finally:
         _active_connections -= 1
+        _connections.pop(conn_id, None)
         try:
             writer.close()
             await writer.wait_closed()
@@ -227,6 +354,13 @@ async def _serve() -> None:
         except OSError:
             pass
 
+        # P2 + P7: background maintenance — idle-connection reaper + WAL
+        # checkpoint timer. Cancelled cleanly on daemon shutdown below.
+        _maint_tasks = [
+            asyncio.create_task(_reap_idle_connections()),
+            asyncio.create_task(_wal_checkpoint_timer()),
+        ]
+
         log(f"Listening on {SOCK_PATH}")
         try:
             async with server:
@@ -234,6 +368,14 @@ async def _serve() -> None:
         except asyncio.CancelledError:
             log("serve_forever cancelled, exiting")
             raise
+        finally:
+            for _t in _maint_tasks:
+                _t.cancel()
+            for _t in _maint_tasks:
+                try:
+                    await _t
+                except (asyncio.CancelledError, Exception):
+                    pass
 
 
 async def main() -> None:
