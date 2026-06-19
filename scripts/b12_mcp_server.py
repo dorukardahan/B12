@@ -6,7 +6,8 @@ Replaces the 804MB mcp-memory-service with 4 tools, zero ML deps.
 All embedding/search ops delegated to embed_daemon via Unix socket.
 """
 
-import asyncio, base64, hashlib, json, os, socket, sqlite3, time
+import asyncio, base64, hashlib, json, os, socket, sqlite3, threading, time
+from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 try:
     import sqlite_vec
@@ -56,9 +57,30 @@ SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 MCP_DAEMON_SOCK = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
 B12_VERSION = "v11.74.1"
 
-# ── SQLite connection (set during lifespan) ──────────────────────
-_db: sqlite3.Connection | None = None
-_db_lock = asyncio.Lock()
+# ── SQLite access (BB1: per-connection, off the event loop) ──────
+# Reads run concurrently on a thread pool — WAL allows many concurrent readers —
+# each on a connection OWNED by its worker thread. ALL writes + SELECT→write
+# transactional ops run through a SINGLE serialized writer thread (one connection
+# pinned to it, BEGIN IMMEDIATE per op). This replaces the former
+# `async with _db_lock: <sync _db.execute>` pattern, which serialized every CLI
+# tab on one asyncio lock AND blocked the shared event loop on synchronous sqlite
+# (a contended write could stall every tab up to busy_timeout=30s).
+#
+# Invariants (the BB1 landmines):
+#   • No connection is EVER shared across threads (no check_same_thread crash).
+#   • The unit of offload is a WHOLE transactional op on ONE conn / ONE thread
+#     (SELECT→conditional INSERT/UPDATE→commit stays atomic — never split).
+#   • Exactly one writer thread ⇒ writes are serialized with no asyncio lock.
+# Mirrors the ownership model of b12_mcp_daemon.py:_checkpoint_wal_blocking.
+_DB_READY = False
+_db_init_lock = asyncio.Lock()           # guards one-time pool/schema init
+_read_pool: "ThreadPoolExecutor | None" = None
+_writer_pool: "ThreadPoolExecutor | None" = None
+_tls = threading.local()                 # per-thread sqlite connection cache
+# Floor of 4 read workers so "a slow read never blocks other reads" holds even on
+# small (1-2 core) CI boxes; env-overridable. WAL readers are cheap.
+READ_POOL_SIZE = (int(os.environ.get("B12_MCP_READ_POOL", "0"))
+                  or max(4, min(8, (os.cpu_count() or 4))))
 # Serializes embed-daemon socket round-trips. The daemon accepts ONE connection
 # at a time (embed_daemon.py main loop), so without this, concurrent sessions
 # would each open a socket at once and a fast op could hit its 5s client timeout
@@ -341,43 +363,240 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
 _DAEMON_MODE = False
 
 
+def _configure_connection(conn: sqlite3.Connection) -> None:
+    """Apply the shared B12 pragmas + extensions to a fresh connection. Mirrors
+    the former single-`_db` setup and the daemon's checkpoint connection.
+
+    P10 (owner-approved 2026-06-19): synchronous=NORMAL is the recommended
+    durability mode for WAL — corruption-safe, and committed transactions survive
+    any app/process crash (daemon restart, kill, terminal close). The only loss
+    window is an OS-level crash or power loss, which can roll back the most-recent
+    commit(s); the database is NOT corrupted. Accepted as a deliberate
+    write-latency trade for the shared memory DB across all 9+ CLI runtimes.
+    temp_store=MEMORY keeps temp b-trees / sort scratch in RAM (pure speed, no
+    durability cost)."""
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=30000")
+    conn.execute("PRAGMA wal_autocheckpoint=100")
+    conn.execute("PRAGMA synchronous=NORMAL")
+    conn.execute("PRAGMA temp_store=MEMORY")
+    conn.row_factory = sqlite3.Row
+    if _HAS_VEC:
+        conn.enable_load_extension(True)
+        sqlite_vec.load(conn)
+
+
+def _get_read_conn() -> sqlite3.Connection:
+    """Thread-local read connection (autocommit; _run_read wraps each op in an
+    explicit BEGIN for a consistent snapshot). One per read-pool worker thread."""
+    conn = getattr(_tls, "read_conn", None)
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+        _configure_connection(conn)
+        _tls.read_conn = conn
+    return conn
+
+
+def _get_writer_conn() -> sqlite3.Connection:
+    """The single writer connection — created on, and only ever touched by, the
+    lone writer thread. isolation_level=None: _run_write[_raw] control txns."""
+    conn = getattr(_tls, "writer_conn", None)
+    if conn is None:
+        conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
+        _configure_connection(conn)
+        _tls.writer_conn = conn
+    return conn
+
+
+def _run_read(fn):
+    """Run a read op inside one deferred read transaction (consistent snapshot)."""
+    conn = _get_read_conn()
+    conn.execute("BEGIN")
+    try:
+        result = fn(conn)
+        conn.execute("COMMIT")
+        return result
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+
+
+def _run_write(fn):
+    """Run a write op inside one BEGIN IMMEDIATE transaction (atomic; the op must
+    NOT commit itself and must NOT call external-connection writers — see
+    _run_write_raw)."""
+    conn = _get_writer_conn()
+    conn.execute("BEGIN IMMEDIATE")
+    try:
+        result = fn(conn)
+        conn.execute("COMMIT")
+        return result
+    except BaseException:
+        try:
+            conn.execute("ROLLBACK")
+        except sqlite3.Error:
+            pass
+        raise
+
+
+def _run_write_raw(fn):
+    """Run a write op WITHOUT an outer transaction: fn manages its own statements
+    in autocommit. For ops that embed an external-connection writer mid-op
+    (memory_delete hard → b12_gc.collect_one opens its OWN connection) — holding
+    BEGIN IMMEDIATE on the writer conn here would self-deadlock against that conn.
+    Still globally serialized: runs on the single writer thread."""
+    return fn(_get_writer_conn())
+
+
+async def _read(fn):
+    """Dispatch a read op to the read pool (concurrent; off the event loop)."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_read_pool, _run_read, fn)
+
+
+async def _write(fn):
+    """Dispatch a write op to the single serialized writer (BEGIN IMMEDIATE)."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_writer_pool, _run_write, fn)
+
+
+async def _write_raw(fn):
+    """Dispatch an autocommit write op to the single serialized writer."""
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(_writer_pool, _run_write_raw, fn)
+
+
+def _writer_init() -> None:
+    """Runs on the writer thread: create the writer conn + ensure the schema."""
+    _ensure_schema(_get_writer_conn())
+
+
+def _close_writer_conn() -> None:
+    """Runs on the writer thread: close + drop the pinned writer connection."""
+    conn = getattr(_tls, "writer_conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        _tls.writer_conn = None
+
+
+def _close_read_conn(barrier=None) -> None:
+    """Runs on a read-pool thread: close + drop THIS thread's read connection.
+    A barrier (sized to the pool) is submitted once per worker so every distinct
+    read thread runs this exactly once — closing each conn on its OWNER thread
+    avoids a cross-thread GC close (which leaks FDs until gc + emits
+    ResourceWarning). No-op on threads that never opened a read conn."""
+    if barrier is not None:
+        try:
+            barrier.wait(timeout=10)
+        except (threading.BrokenBarrierError, Exception):
+            pass
+    conn = getattr(_tls, "read_conn", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except sqlite3.Error:
+            pass
+        _tls.read_conn = None
+
+
+def _atexit_flush() -> None:
+    """Process-exit flush of the GLOBAL session tracker on a SHORT-LIVED own
+    connection — no event loop / pool reliance during interpreter shutdown.
+    Best-effort; never raises."""
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=5, isolation_level="IMMEDIATE")
+        try:
+            _flush_session_tracker(conn, _session_tracker)
+        finally:
+            conn.close()
+    except Exception:
+        pass
+
+
+async def _init_db() -> None:
+    """Idempotent one-time init: create the read pool + single-writer pool, build
+    the writer connection and run _ensure_schema ONCE (on the writer thread), and
+    register the atexit flush. Called by lifespan; reusable by tests."""
+    global _DB_READY, _read_pool, _writer_pool
+    async with _db_init_lock:
+        if _DB_READY:
+            return
+        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+        _read_pool = ThreadPoolExecutor(
+            max_workers=READ_POOL_SIZE, thread_name_prefix="b12-read"
+        )
+        _writer_pool = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="b12-write"
+        )
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(_writer_pool, _writer_init)
+        import atexit
+        atexit.register(_atexit_flush)
+        _DB_READY = True
+
+
+async def _shutdown_db() -> None:
+    """Legacy-mode (non-daemon) teardown: close every pinned connection on its
+    OWNER thread, then shut both pools. The daemon never calls this — it keeps the
+    pools warm across client connections (OS reclaims at process exit). Closing on
+    the owner thread (vs. dropping the refs) avoids leaking FDs / ResourceWarnings
+    when a long-lived process tears the DB layer down more than once."""
+    global _DB_READY, _read_pool, _writer_pool
+    if not _DB_READY:
+        return
+    wp, rp = _writer_pool, _read_pool
+    _DB_READY = False
+    _writer_pool = None
+    _read_pool = None
+    loop = asyncio.get_running_loop()
+    if wp is not None:
+        try:
+            await loop.run_in_executor(wp, _close_writer_conn)
+        except Exception:
+            pass
+        wp.shutdown(wait=True)
+    if rp is not None:
+        # Close each worker's thread-local read conn on its own thread. A barrier
+        # sized to the pool forces all workers live simultaneously so each
+        # distinct thread runs _close_read_conn exactly once.
+        try:
+            n = READ_POOL_SIZE
+            barrier = threading.Barrier(n)
+            await asyncio.gather(*[
+                loop.run_in_executor(rp, _close_read_conn, barrier)
+                for _ in range(n)
+            ])
+        except Exception:
+            pass
+        rp.shutdown(wait=True)
+
+
 @asynccontextmanager
 async def lifespan(server: FastMCP):
-    global _db
-    if _db is None:
-        os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
-        _db = sqlite3.connect(DB_PATH, timeout=30)
-        _db.execute("PRAGMA journal_mode=WAL")
-        _db.execute("PRAGMA busy_timeout=30000")
-        _db.execute("PRAGMA wal_autocheckpoint=100")
-        # P10 (owner-approved 2026-06-19): NORMAL is the recommended durability
-        # mode for WAL — corruption-safe, and committed transactions survive any
-        # app/process crash (daemon restart, kill, terminal close). The only
-        # loss window is an OS-level crash or power loss, which can roll back the
-        # most-recent commit(s); the database is NOT corrupted. Accepted as a
-        # deliberate write-latency trade for the shared memory DB across all
-        # 9+ CLI runtimes. temp_store=MEMORY keeps temp b-trees / sort scratch in
-        # RAM (pure speed, no durability cost).
-        _db.execute("PRAGMA synchronous=NORMAL")
-        _db.execute("PRAGMA temp_store=MEMORY")
-        _db.row_factory = sqlite3.Row
-        if _HAS_VEC:
-            _db.enable_load_extension(True)
-            sqlite_vec.load(_db)
-        _ensure_schema(_db)
-        import atexit
-        atexit.register(lambda: _flush_session_tracker(_db))
+    await _init_db()
     tracker = _new_session_tracker()
     token = _session_tracker_var.set(tracker)
-    yield
-    # Session flush always runs on disconnect (per-session MCP summary).
-    # DB close only runs in legacy mode — the daemon keeps the DB warm
-    # across connections and lets the OS clean it up at process exit.
-    _flush_session_tracker(_db, tracker)
-    _session_tracker_var.reset(token)
-    if not _DAEMON_MODE and _db:
-        _db.close()
-        _db = None
+    try:
+        yield
+    finally:
+        # Per-session MCP summary flush, on the writer thread (correct connection
+        # affinity). _flush_session_tracker commits internally, so route it
+        # through _write_raw (autocommit), NOT _write (which owns the txn).
+        try:
+            await _write_raw(lambda db: _flush_session_tracker(db, tracker))
+        except Exception:
+            pass
+        _session_tracker_var.reset(token)
+        # Teardown only in legacy mode — the daemon keeps the pools warm across
+        # connections and lets the OS clean up at process exit.
+        if not _DAEMON_MODE:
+            await _shutdown_db()
 
 
 def _flush_session_tracker(db: sqlite3.Connection | None, tracker: dict | None = None) -> None:
@@ -508,11 +727,12 @@ def _now():
     return ts, datetime.fromtimestamp(ts, tz=timezone.utc).isoformat()
 
 
-def _require_db() -> sqlite3.Connection:
-    """Raise if DB not initialized (pre-lifespan or post-shutdown)."""
-    if _db is None:
+def _require_db() -> None:
+    """Raise if the DB layer isn't initialized (pre-lifespan or post-shutdown).
+    Connections are obtained per-op via _read/_write; handlers call this only as
+    a readiness guard."""
+    if not _DB_READY:
         raise RuntimeError("Database not initialized")
-    return _db
 
 
 def _validate_metadata(value) -> str:
@@ -656,7 +876,7 @@ def _fmt_memory(row, score=None) -> str:
 @server.tool()
 async def memory_store(content: str, metadata: dict | None = None) -> str:
     """Store a new memory with optional metadata, tags, and type."""
-    db = _require_db()
+    _require_db()
     tracker = _current_session_tracker()
     tracker["tool_calls"] += 1
 
@@ -739,8 +959,9 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
     base_meta.update(metadata)
     meta_json = _validate_metadata(base_meta)
 
-    async with _db_lock:
-        # Check if a soft-deleted row with same hash exists — undelete it
+    # One atomic writer op: dedup-check → undelete OR INSERT OR IGNORE → read id.
+    # The id is read back within the same BEGIN IMMEDIATE txn (sees its own write).
+    def _store_op(db):
         existing = db.execute(
             "SELECT id, deleted_at FROM memories WHERE content_hash = ?",
             (content_hash,),
@@ -764,27 +985,26 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
                 (content_hash, content, tags, memory_type, meta_json,
                  now_ts, now_iso, now_ts, now_iso, valid_until),
             )
-        db.commit()
-
-        # Get the row id for embedding insertion
         row = db.execute(
             "SELECT id FROM memories WHERE content_hash = ?", (content_hash,)
         ).fetchone()
-        if not row:
-            return f"Stored (hash: {content_hash[:16]}) but could not retrieve ID"
-        mem_id = row["id"]
+        return row["id"] if row else None
+
+    mem_id = await _write(_store_op)
+    if mem_id is None:
+        return f"Stored (hash: {content_hash[:16]}) but could not retrieve ID"
 
     # Embed via daemon (graceful degradation) — outside lock, daemon call is slow
     resp = await daemon_request_async("encode_batch", texts=[content])
     if resp and resp.get("embeddings"):
         emb_bytes = base64.b64decode(resp["embeddings"][0])
-        async with _db_lock:
+
+        def _embed_op(db):
             try:
                 db.execute(
                     "INSERT OR REPLACE INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
                     (mem_id, emb_bytes),
                 )
-                db.commit()
             except sqlite3.OperationalError as e:
                 # Only the schema-missing case is expected (minimal/test DBs).
                 # Other OperationalErrors (database is locked, readonly db,
@@ -802,6 +1022,14 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
                 _sys.stderr.write(
                     f"[b12_mcp_server] embedding write failed (id={mem_id}): {e}\n"
                 )
+
+        # Embedding write never fails the store (it's already committed above).
+        try:
+            await _write(_embed_op)
+        except Exception as e:
+            _sys.stderr.write(
+                f"[b12_mcp_server] embedding write failed (id={mem_id}): {e}\n"
+            )
 
     return f"Stored memory (hash: {content_hash[:16]}, id: {mem_id})"
 
@@ -832,7 +1060,7 @@ async def memory_search(
 ) -> str:
     """Search memories by semantic similarity, full-text, or hybrid.
     Set stemmed=True to use porter-stemmed FTS (matches morphological variants: run/running/ran)."""
-    db = _require_db()
+    _require_db()
     tracker = _current_session_tracker()
     tracker["tool_calls"] += 1
     if query:
@@ -866,7 +1094,10 @@ async def memory_search(
 
     where_sql = " AND ".join(wheres)
 
-    async with _db_lock:
+    # Exact + FTS reads run off the loop on a read-pool connection. The closure
+    # mutates `results` (loop-local) on the read thread; the `await` is a
+    # happens-before barrier and nothing else touches `results` until it returns.
+    def _exact_fts_reads(db):
         # ── Exact substring search ─────────────────────────────
         if mode == "exact" and query:
             exact_rows = db.execute(
@@ -917,13 +1148,15 @@ async def memory_search(
                 except Exception:
                     continue  # FTS match syntax error, try next
 
-    # ── Semantic search via daemon (outside lock — daemon call is slow) ──
+    await _read(_exact_fts_reads)
+
+    # ── Semantic search via daemon (off the writer — daemon call is slow) ──
     if mode in ("semantic", "hybrid") and query:
         resp = await daemon_request_async(
             "semantic_search", query=query, db_path=DB_PATH, limit=limit * 2
         )
         if resp and resp.get("results"):
-            async with _db_lock:
+            def _semantic_merge(db):
                 for hit in resp["results"]:
                     row = db.execute(
                         f"SELECT * FROM memories m WHERE m.id = ? AND {where_sql}",
@@ -940,8 +1173,9 @@ async def memory_search(
                         if ch in results:
                             combined = min(1.0, max(old_score, new_score) + min(old_score, new_score) * 0.3)
                         results[ch] = (row, combined)
+            await _read(_semantic_merge)
 
-    async with _db_lock:
+    def _fallback_reads(db):
         # ── Fallback: recent memories if no query ────────────────
         if not query:
             rows = db.execute(
@@ -953,6 +1187,8 @@ async def memory_search(
             for r in rows:
                 results[r["content_hash"]] = (r, 0.5)
 
+    await _read(_fallback_reads)
+
     # ── Sort and format ──────────────────────────────────────
     sorted_results = sorted(results.values(), key=lambda x: x[1], reverse=True)[:limit]
 
@@ -961,7 +1197,7 @@ async def memory_search(
 
     # ── Spaced repetition: boost strength + access_count for returned memories ──
     if query and sorted_results:
-        async with _db_lock:
+        def _boost_op(db):
             for row, _sc in sorted_results:
                 try:
                     db.execute(
@@ -991,7 +1227,7 @@ async def memory_search(
                         f"[b12_mcp_server] strength boost failed "
                         f"({str(row['content_hash'])[:16]}): {e}\n"
                     )
-            db.commit()
+        await _write(_boost_op)
 
     output_parts = [f"Found {len(sorted_results)} memories:\n"]
     total_chars = 0
@@ -1014,10 +1250,10 @@ async def memory_update(
     updates: dict,
 ) -> str:
     """Update metadata, tags, or type of an existing memory. Content and hash are immutable."""
-    db = _require_db()
+    _require_db()
     _current_session_tracker()["tool_calls"] += 1
 
-    async with _db_lock:
+    def _update_op(db):
         # Codex review PR #58 P1: when caller is restoring a soft-deleted
         # row via deleted_at=None, the lookup must match rows whose
         # deleted_at is non-null. Otherwise every soft delete is
@@ -1088,8 +1324,9 @@ async def memory_update(
         db.execute(
             f"UPDATE memories SET {', '.join(sets)} WHERE content_hash = ?", vals
         )
-        db.commit()
-    return f"Updated memory {content_hash[:16]}"
+        return f"Updated memory {content_hash[:16]}"
+
+    return await _write(_update_op)
 
 
 # ── Tool: memory_delete ─────────────────────────────────────────
@@ -1125,7 +1362,7 @@ async def memory_delete(
     modes which don't fit the delete shape). For new code, prefer
     `memory_delete`.
     """
-    db = _require_db()
+    _require_db()
     _current_session_tracker()["tool_calls"] += 1
 
     now_ts, now_iso = _now()
@@ -1136,7 +1373,7 @@ async def memory_delete(
         "ts_iso": now_iso,
     }
 
-    async with _db_lock:
+    def _delete_op(db):
         row = db.execute(
             "SELECT id FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
             (content_hash,),
@@ -1247,7 +1484,15 @@ async def memory_delete(
         except sqlite3.Error:
             pass  # never block the delete on audit failure
 
-    return summary
+        return summary
+
+    # Hard delete embeds b12_gc.collect_one, which opens its OWN connection;
+    # _write_raw runs this on the single writer thread in autocommit so we never
+    # hold a BEGIN IMMEDIATE write lock across that external-connection write
+    # (doing so would self-deadlock the writer against collect_one's conn). The
+    # in-op db.commit() calls become no-ops in autocommit — the original
+    # per-statement transaction boundaries are preserved exactly.
+    return await _write_raw(_delete_op)
 
 
 # ── Tool: memory_forget ─────────────────────────────────────────
@@ -1288,7 +1533,7 @@ async def memory_forget(
       mode:   "privatize" | "hard_delete" | "forget_session"
       reason: free-text reason recorded in the audit row metadata
     """
-    db = _require_db()
+    _require_db()
     _current_session_tracker()["tool_calls"] += 1
 
     valid_modes = {"privatize", "hard_delete", "forget_session"}
@@ -1303,7 +1548,7 @@ async def memory_forget(
         "ts_iso": now_iso,
     }
 
-    async with _db_lock:
+    def _forget_op(db):
         affected_ids: list[int] = []
 
         if mode == "hard_delete":
@@ -1414,12 +1659,12 @@ async def memory_forget(
             # forget op.
             pass
 
-        db.commit()
+        return (
+            f"Forget complete: mode={mode}, affected={len(affected_ids)} row(s), "
+            f"audit recorded as memory_type=system tag=forget-audit"
+        )
 
-    return (
-        f"Forget complete: mode={mode}, affected={len(affected_ids)} row(s), "
-        f"audit recorded as memory_type=system tag=forget-audit"
-    )
+    return await _write(_forget_op)
 
 
 # ── Tool: memory_quality ─────────────────────────────────────────
@@ -1432,12 +1677,12 @@ async def memory_quality(
     feedback: str | None = None,
 ) -> str:
     """Rate, get, or analyze memory quality scores."""
-    db = _require_db()
+    _require_db()
 
     if action == "rate":
         if not content_hash or rating is None:
             return "Need content_hash and rating (-1, 0, or 1)"
-        async with _db_lock:
+        def _rate_op(db):
             row = db.execute(
                 "SELECT metadata FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
                 (content_hash,),
@@ -1463,13 +1708,13 @@ async def memory_quality(
                 "UPDATE memories SET metadata = ?, updated_at = ?, updated_at_iso = ? WHERE content_hash = ?",
                 (json.dumps(meta, ensure_ascii=False), now_ts, now_iso, content_hash),
             )
-            db.commit()
-        return f"Quality updated to {new_score} for {content_hash[:16]}"
+            return f"Quality updated to {new_score} for {content_hash[:16]}"
+        return await _write(_rate_op)
 
     elif action == "get":
         if not content_hash:
             return "Need content_hash"
-        async with _db_lock:
+        def _get_op(db):
             row = db.execute(
                 "SELECT content, metadata, tags FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
                 (content_hash,),
@@ -1480,13 +1725,14 @@ async def memory_quality(
                 meta = json.loads(row["metadata"] or "{}")
             except (json.JSONDecodeError, TypeError):
                 meta = {}
-        return (f"Quality: {meta.get('quality_score', 'N/A')}\n"
-                f"Provider: {meta.get('quality_provider', 'N/A')}\n"
-                f"Content: {row['content'][:200]}\n"
-                f"Tags: {row['tags'] or 'none'}")
+            return (f"Quality: {meta.get('quality_score', 'N/A')}\n"
+                    f"Provider: {meta.get('quality_provider', 'N/A')}\n"
+                    f"Content: {row['content'][:200]}\n"
+                    f"Tags: {row['tags'] or 'none'}")
+        return await _read(_get_op)
 
     elif action == "analyze":
-        async with _db_lock:
+        def _analyze_op(db):
             stats = db.execute("""
                 SELECT COUNT(*) as total,
                        AVG(json_extract(metadata, '$.quality_score')) as avg_q,
@@ -1497,6 +1743,8 @@ async def memory_quality(
             type_counts = db.execute(
                 "SELECT memory_type, COUNT(*) as cnt FROM memories WHERE deleted_at IS NULL GROUP BY memory_type"
             ).fetchall()
+            return stats, type_counts
+        stats, type_counts = await _read(_analyze_op)
         total = stats["total"] or 0
         if total == 0:
             return "No memories in database."
@@ -1532,7 +1780,7 @@ async def memory_session_context(
     from AytuncYildizli/B12 PR 11 (787a6b8 session_context renderer)
     rendering style.
     """
-    db = _require_db()
+    _require_db()
     now_ts = time.time()
     sections: list[str] = []
 
@@ -1585,7 +1833,12 @@ async def memory_session_context(
             if parent and parent not in candidates and parent not in ("/", "T", "tmp", "private"):
                 candidates.append(parent)
 
-    async with _db_lock:
+    # Reads + the once-per-session strength boost run as one writer op (BEGIN
+    # IMMEDIATE). The closure mutates sections/project_name (loop-local) on the
+    # writer thread; the await below is a happens-before barrier with no
+    # concurrent access. nonlocal lets the op rebind the resolved project_name.
+    def _ctx_op(db):
+        nonlocal project_name
         # 1. Pre-fetched project memories (top 3 by importance x strength)
         # Try each candidate in order, stop on first hit.
         proj_memories = []
@@ -1670,9 +1923,9 @@ async def memory_session_context(
                 sections.append(f"## Last Session Summary{ts_suffix}")
                 sections.append(_trim(last_summary['content'], cap=800))
 
-        db.commit()
+    await _write(_ctx_op)
 
-    # 4. User profile (from templates directory) — no DB, outside lock
+    # 4. User profile (from templates directory) — no DB, off the writer
     profile_path = os.path.join(
         os.environ.get("B12_DATA_DIR", os.path.expanduser("~/.B12")),
         "user-profile.md"
@@ -2130,10 +2383,10 @@ async def memory_dashboard(
 @server.resource("b12://context/project/{name}")
 async def resource_project_context(name: str) -> str:
     """Pre-fetched project context: top memories, last session summary, instructions."""
-    db = _require_db()
+    _require_db()
     sections: list[str] = []
 
-    async with _db_lock:
+    def _ctx_reads(db):
         # Top 3 project memories by importance x strength
         proj_memories = db.execute("""
             SELECT content, memory_type, tags FROM memories
@@ -2162,6 +2415,8 @@ async def resource_project_context(name: str) -> str:
             sections.append("## Last Session Summary")
             sections.append(last_summary['content'][:800])
 
+    await _read(_ctx_reads)
+
     # Behavioral instructions (no DB needed)
     sections.append("## Instructions")
     sections.append(
@@ -2177,9 +2432,9 @@ async def resource_project_context(name: str) -> str:
 @server.resource("b12://stats")
 async def resource_stats() -> str:
     """Memory statistics: counts by status, type, and graph edges."""
-    db = _require_db()
+    _require_db()
 
-    async with _db_lock:
+    def _stats_reads(db):
         active = db.execute(
             "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL"
         ).fetchone()[0]
@@ -2207,6 +2462,9 @@ async def resource_stats() -> str:
                 ).fetchone()[0]
             except Exception:
                 pass
+        return active, deleted, type_rows, edge_count, edge_types, emb_count
+
+    active, deleted, type_rows, edge_count, edge_types, emb_count = await _read(_stats_reads)
 
     lines = [
         "# B12 Memory Statistics",
@@ -2247,9 +2505,9 @@ async def resource_profile() -> str:
 @server.resource("b12://health")
 async def resource_health() -> str:
     """Quick health check: embedding coverage, stale count, recent growth."""
-    db = _require_db()
+    _require_db()
 
-    async with _db_lock:
+    def _health_reads(db):
         active = db.execute(
             "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL"
         ).fetchone()[0]
@@ -2279,6 +2537,9 @@ async def resource_health() -> str:
         """, (week_ago,)).fetchone()[0]
         # Graph edges
         edges = db.execute("SELECT COUNT(*) FROM memory_graph").fetchone()[0]
+        return active, emb_count, emb_pct, stale, stale_pct, new_7d, edges
+
+    active, emb_count, emb_pct, stale, stale_pct, new_7d, edges = await _read(_health_reads)
 
     lines = [
         "# B12 Health Check",
