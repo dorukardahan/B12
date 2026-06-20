@@ -220,6 +220,47 @@ def test_ret3_hook_sql_importance_expr():
         assert abs(val - want) < 1e-9, f"{md!r}: expected {want}, got {val}"
 
 
+def test_aging_hook_sql_matches_unified_score():
+    """The hook's new 4-term score (effective-stability decay) matches MCP _unified_score."""
+    import time
+    import json
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP ({e})"); return
+    now = time.time()
+    cases = [  # (age_days, importance_score_json_value, strength)
+        (365, 0.90, 1.0), (365, 0.50, 1.0), (30, 0.50, 1.0), (365, 0.50, 5.0),
+        (1, 0.30, 1.0), (180, 0.95, 2.0),
+    ]
+    rank = 3.0
+    relevance = 1.0 / (1.0 + abs(rank))
+    conn = sqlite3.connect(":memory:")
+    conn.execute("CREATE TABLE m(created_at REAL, strength REAL, metadata TEXT)")
+    for age, imp, st in cases:
+        conn.execute("INSERT INTO m VALUES (?,?,?)", (now - age*86400.0, st, json.dumps({"importance_score": imp})))
+    # SQL: same imp_norm + eff_stability decay + 4-term weights, last_accessed_at absent -> created_at
+    sql = '''
+      SELECT (
+        0.25 * max(1.0/(1.0 + ((julianday('now') - julianday(datetime(created_at,'unixepoch'))))/(9.0*COALESCE(strength,1.0)*(1.0+4.0*imp_norm))),0.01)
+        + 0.25 * imp_norm
+        + 0.40 * (1.0/(1.0+abs(%f)))
+        + 0.10 * min(COALESCE(strength,1.0)/5.0,1.0)
+      ) FROM (SELECT created_at, strength,
+              max(min(CASE WHEN json_valid(metadata) AND json_type(metadata,'$.importance_score') IN ('integer','real')
+                  THEN (CASE WHEN json_extract(metadata,'$.importance_score')>=1.0 THEN json_extract(metadata,'$.importance_score')/2.0
+                             ELSE json_extract(metadata,'$.importance_score') END) ELSE 0.50 END,1.0),0.0) AS imp_norm
+              FROM m)
+    ''' % rank
+    sql_scores = [r[0] for r in conn.execute(sql).fetchall()]
+    conn.close()
+    for (age, imp, st), sql_s in zip(cases, sql_scores):
+        row = {"last_accessed_at": None, "created_at": now - age*86400.0, "strength": st,
+               "metadata": json.dumps({"importance_score": imp})}
+        py_s = M._unified_score(row, relevance)
+        assert abs(py_s - sql_s) < 1e-4, (age, imp, st, py_s, sql_s)
+
+
 if __name__ == "__main__":
     rc = 0
     fns = [v for k, v in dict(globals()).items() if k.startswith("test_")]
