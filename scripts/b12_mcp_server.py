@@ -810,7 +810,6 @@ def _unified_score(row, relevance: float) -> float:
     strength 0.10 / importance 0.08`) was tuned empirically without enforced
     normalization. A future PR may add an explicit normalizer flag.
     """
-    import math
     now_ts = time.time()
     # Explicit None checks — 0.0 is a valid value for both fields
     accessed = row["last_accessed_at"] if row["last_accessed_at"] is not None else row["created_at"]
