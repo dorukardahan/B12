@@ -31,7 +31,7 @@ Custom FastMCP server providing 13 memory tools and 4 MCP resources. Replaces th
 - **Embeddings**: BGE-M3 (BAAI/bge-m3, 1024-dim, multilingual, cls pooling) via `embed_daemon.py` (runs locally, no API). Override via `MCP_EMBEDDING_MODEL`. Opt-in Q8_0 / Q4_K_M GGUF: set `B12_EMBED_BACKEND=gguf` + `B12_EMBED_GGUF_PATH=...`.
 - **Search**: FTS5 hybrid — BM25 keyword + vector cosine + optional porter stemming
 - **FTS5 tables**: `memory_fts` (unicode61, exact match), `memory_fts_stemmed` (porter unicode61, morphological), `memory_content_fts` (trigram, legacy)
-- **Scoring**: Ebbinghaus decay-aware — combines retention, importance, and relevance
+- **Scoring**: Effective-stability decay-aware — combines retention, importance, relevance, and strength; importance and reinforcement flatten the aging curve
 - **Dedup**: Write-time semantic merge (cosine > 0.85 = merge, not INSERT)
 - **Graph**: Association-based memory connections
 - **Backup**: Daily WAL-safe backups with 7-day rotation
@@ -54,7 +54,7 @@ Session lifecycle:
        v
 [UserPromptSubmit] ─── every prompt ──> Extract keywords
        |                                 FTS5 hybrid retrieval
-       |                                 Ebbinghaus combined scoring
+       |                                 Effective-stability combined scoring
        |                                 Strength boost top results
        v
 [PreToolUse] ─── memory_store ────────> Auto-inject scope tags
@@ -141,7 +141,8 @@ Process:
 1. Skip slash commands (pattern: `/word`)
 2. Extract keywords from user prompt (stop-word removal, 12-word limit)
 3. Build FTS5 query with OR operators
-4. Run hybrid scoring: `0.3×decay + 0.3×importance + 0.4×FTS5_relevance`
+4. Run hybrid scoring: `0.25×decay + 0.25×importance + 0.40×relevance + 0.10×strength_score`
+   where `decay = max(1/(1 + age_days/(9·eff_stability)), 0.01)`, `eff_stability = strength × (1 + 4×importance)`, and `strength_score = min(strength/5, 1)`
 5. Boost strength of top 3 results (+0.2, max 5.0) via CTE-aligned UPDATE
 6. **Q2 long-session re-surface** (every Nth turn, default 20): asks
    `scripts/b12_long_session.py` for a small batch of THIS session's
@@ -211,15 +212,19 @@ Process:
 
 **Working Context hook** (v1): Fires on Read/Edit/Write/Glob/Grep. Extracts the file path or search pattern. Persists to `working-memory.json` with atomic writes (tmp + rename). Tracks session ID to reset on session change.
 
-## Ebbinghaus decay model
+## Decay model (FSRS effective stability)
 
 Every memory has a `strength` field (0.3–5.0, default 1.0):
 
 - **Retrieval boost**: +0.2 per access (capped at 5.0)
-- **Weekly decay**: -0.05 for memories not accessed in 7 days (floor at 0.3)
-- **Combined scoring**: `0.3 × exp(-age/strength) + 0.3 × importance + 0.4 × FTS5_rank`, where `importance` normalizes `importance_score` across the **two write-side scales** that coexist in the data — fractional `[0, 0.95]` (`b12_importance.py`) and level multipliers `[0.7, 2.0]` (critical 2.0 / important 1.5 / normal 1.0 / temporary 0.7). A value `≥ 1.0` is a level multiplier and is divided by 2 (2.0→1.0, 1.5→0.75, 1.0→0.5); a fractional value `< 1.0` passes through unchanged; missing / null / non-numeric defaults to the `0.50` baseline; the result is clamped to `[0, 1]` (see RET-3)
+- **Weekly decay**: -0.05 for memories not accessed in 7 days (floor at 0.3) _(legacy background process; superseded by the FSRS curve below for retrieval scoring)_
+- **Combined scoring**: `0.25 × decay + 0.25 × importance + 0.40 × relevance + 0.10 × strength_score`, where:
+  - `decay = max(1 / (1 + age_days / (9 · eff_stability)), 0.01)` — FSRS power-forgetting curve (floor at 0.01)
+  - `eff_stability = strength × (1 + 4 × importance)` — both explicit importance and reinforcement (strength) flatten the aging curve; old-but-valuable memories fade slowly, trivial untouched ones decay quickly
+  - `strength_score = min(strength / 5, 1)` — normalized access count
+  - `importance` normalizes `importance_score` across the **two write-side scales** that coexist in the data — fractional `[0, 0.95]` (`b12_importance.py`) and level multipliers `[0.7, 2.0]` (critical 2.0 / important 1.5 / normal 1.0 / temporary 0.7). A value `≥ 1.0` is a level multiplier and is divided by 2 (2.0→1.0, 1.5→0.75, 1.0→0.5); a fractional value `< 1.0` passes through unchanged; missing / null / non-numeric defaults to the `0.50` baseline; the result is clamped to `[0, 1]` (see RET-3)
 
-This creates natural selection: memories that are frequently useful survive and get easier to find. Memories that were stored but never retrieved gradually fade but never fully disappear (minimum 0.3).
+This creates natural selection: memories that are frequently useful or explicitly marked important survive and get easier to find. Memories that were stored but never retrieved gradually fade but never fully disappear (decay floor at 0.01).
 
 ## FTS5 hybrid search
 
@@ -233,7 +238,7 @@ B12 hook search combines:
 
 - **BM25 keyword score** (FTS5 rank via `memory_fts`): Fast exact-match and phrase search
 - **Vector cosine similarity** (sqlite-vec): Semantic meaning match
-- **Combined scoring**: `0.3 * decay + 0.3 * importance + 0.4 * relevance`
+- **Combined scoring**: `0.25 * decay + 0.25 * importance + 0.40 * relevance + 0.10 * strength_score`
 - **Relevance source**: FTS5 BM25 keyword score, with parallel semantic search (cosine similarity) when the embed daemon is available
 
 The hybrid approach handles both precise technical queries ("FTS5 trigger") and semantic queries ("how to search memories").

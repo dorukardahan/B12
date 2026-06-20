@@ -359,6 +359,13 @@ try:
         def _pii_scrub(_s):
             return _s
 
+    try:
+        import b12_importance as _b12imp
+        _imp_score = _b12imp.score
+    except ImportError:
+        def _imp_score(_content):
+            return 0.5   # baseline fallback if the scorer is unavailable
+
     # Deduplicate against existing memories (by content_hash)
     existing_hashes = set()
     try:
@@ -377,10 +384,19 @@ try:
             continue
 
         tags = f"proj:{project_name},checkpoint,{item['category']}"
+        # Floor at 0.7 (the prior checkpoint constant): checkpoint only buffers
+        # content already flagged high-signal by the regex categories (decision /
+        # error / learning / preference / tool_pref / correction / blocker, base
+        # score >= 6) or a [Label] prefix, so a category-flagged capture stays at
+        # >= 0.7 even when b12_importance's content tokens don't fire (e.g.
+        # "user prefers tabs over spaces"). Content heuristics can only RAISE it
+        # (a date/decision/"remember" -> up to 0.95). Without the floor, importance
+        # now also shortens the aging half-life, so these would age faster than before.
+        importance_score = max(_imp_score(item["content"]), 0.7)
         metadata = validate_metadata({
             "type": item["category"],
             "source": "checkpoint",
-            "importance_score": 0.7,
+            "importance_score": importance_score,
             "project": project_name,
             "content_hash": item["hash"],
         })

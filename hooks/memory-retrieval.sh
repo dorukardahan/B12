@@ -336,21 +336,28 @@ else
 fi
 
 # ── FTS5 search with FSRS power-law retention ──────────────────
-# v7: FSRS-6 power forgetting curve R = 1/(1 + t/(9*S)) replaces Ebbinghaus e^(-t/S)
+# v8: importance+strength both feed effective stability (eff_stab = S*(1+4*imp));
+#     4-term weights 0.25/0.25/0.40/0.10 match MCP _unified_score on its DEFAULTS.
+# NOTE: alpha (4.0) and the weights are compiled-in literals here. The MCP scorer's
+# B12_AGING_ALPHA / B12_WEIGHT_* env overrides are NOT honored by this hook (it has
+# never read B12_WEIGHT_* — weights were always hardcoded). So those env knobs tune
+# `memory_search` only; this UserPromptSubmit ranking always uses the defaults. Parity
+# with _unified_score holds on the default config (the common case); a deployment that
+# overrides them deliberately accepts that the two surfaces diverge.
 RESULTS=$(sqlite3 "$DB_PATH" "
-  WITH scored AS (
-    SELECT m.id,
-           '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') as display,
-           (
-             0.3 * max(1.0 / (1.0 + (julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch'))) / (9.0 * COALESCE(m.strength, 1.0))), 0.01)
-             + 0.3 * max(min(CASE
-                 WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real')
-                 THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0
-                            THEN json_extract(m.metadata, '$.importance_score') / 2.0
-                            ELSE json_extract(m.metadata, '$.importance_score') END)
-                 ELSE 0.50 END, 1.0), 0.0)
-             + 0.4 * (1.0 / (1.0 + abs(f.rank)))
-           ) as score
+  WITH base AS (
+    SELECT m.id AS id,
+           m.memory_type AS memory_type,
+           m.content AS content,
+           m.strength AS strength,
+           f.rank AS rank,
+           (julianday('now') - julianday(datetime(COALESCE(m.last_accessed_at, m.created_at), 'unixepoch'))) AS age_days,
+           max(min(CASE
+               WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real')
+               THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0
+                          THEN json_extract(m.metadata, '$.importance_score') / 2.0
+                          ELSE json_extract(m.metadata, '$.importance_score') END)
+               ELSE 0.50 END, 1.0), 0.0) AS imp_norm
     FROM memories m
     JOIN memory_fts f ON m.id = f.rowid
     WHERE f.memory_fts MATCH '${FTS_PARTS}'
@@ -358,6 +365,17 @@ RESULTS=$(sqlite3 "$DB_PATH" "
       AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
       AND m.memory_type NOT IN ('session_summary', 'progress')
       AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
+  ),
+  scored AS (
+    SELECT id,
+           '[' || memory_type || '] ' || replace(substr(content, 1, 300), char(10), ' ') as display,
+           (
+             0.25 * max(1.0 / (1.0 + age_days / (9.0 * COALESCE(strength, 1.0) * (1.0 + 4.0 * imp_norm))), 0.01)
+             + 0.25 * imp_norm
+             + 0.40 * (1.0 / (1.0 + abs(rank)))
+             + 0.10 * min(COALESCE(strength, 1.0) / 5.0, 1.0)
+           ) as score
+    FROM base
     ORDER BY score DESC
     LIMIT 10
   )

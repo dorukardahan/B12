@@ -15,7 +15,7 @@
 
 - **Cross-tool memory** — the same DB powers Claude Code, Codex CLI, Grok CLI, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI
 - **Truly local** — SQLite + sqlite-vec on disk, no cloud calls, no API keys, no telemetry
-- **Hybrid retrieval** — FTS5 BM25 + 1024-dim BGE-M3 vector + Ebbinghaus strength decay (frequently used memories rise, stale ones fade)
+- **Hybrid retrieval** — FTS5 BM25 + 1024-dim BGE-M3 vector + importance- and reinforcement-weighted FSRS decay (important & frequently re-accessed memories rise, stale trivia fades)
 - **Write-time merge + NLI contradiction detection** — duplicates collapse at storage time; conflicting memories flag for review
 - **Hook automation** — session-end micro-extraction, sprint handoffs, working-memory restore through compaction, classifier-driven tagging
 - **Comparison vs alternatives** — full matrix vs Mem0 / Letta / Cursor memory / Claude Projects / ChatGPT memory ships in PR #68 (`docs/comparison.md`).
@@ -61,8 +61,9 @@ Claude Code Session (full hook automation)
     │                             + content guardrails + version compat
     │                             + setup routing warnings
     │
-    ├── UserPromptSubmit ──────> Ebbinghaus decay-aware memory retrieval
-    │                             (FTS5 hybrid: 0.3×decay + 0.3×importance + 0.4×BM25)
+    ├── UserPromptSubmit ──────> Effective-stability decay-aware memory retrieval
+    │                             (FTS5 hybrid: 0.25×decay + 0.25×importance + 0.40×relevance + 0.10×strength;
+    │                              importance & reuse slow aging via eff_stability)
     │
     ├── PreToolUse ────────────> Auto-inject scope tags on memory_store
     │                             (proj:<name>, user:<setup>)
@@ -95,7 +96,7 @@ B12 MCP Server (b12_mcp_server.py)
     ├── SQLite + sqlite-vec (local database, no cloud)
     ├── Embed daemon (sentence-transformers, Unix socket IPC)
     ├── FTS5 hybrid search (BM25 keyword + vector cosine + porter stemming)
-    ├── Ebbinghaus strength decay (spaced repetition)
+    ├── Effective-stability decay (importance + reinforcement slow aging)
     ├── Write-time semantic merge (cosine > 0.85 = merge, not duplicate)
     └── Auto-backup (daily, 7-day rotation)
 ```
@@ -189,7 +190,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 
 - **Cross-session memory** — automatically captures decisions, errors, learnings, preferences at session end
 - **Semantic + full-text search** — hybrid FTS5/vector retrieval finds memories by meaning or keywords
-- **Ebbinghaus decay** — frequently accessed memories strengthen, unused ones fade (but never disappear)
+- **Effective-stability decay** — important and frequently accessed memories strengthen and age slowly; unused trivia fades (floor at 0.01, never disappear)
 - **Write-time merge** — deduplicates at storage time (cosine > 0.85 triggers merge, not insert)
 - **Contradiction detection** — ONNX NLI model flags conflicting memories
 - **PII / secret scrubber** — regex sweep on **every write path** (MCP `memory_store`, SessionEnd, PreCompact, checkpoint, write-time merge, Codex) redacts `sk-ant-`, `sk-proj-`, `ghp_`, `xoxb-`, AWS keys, Bearer/JWT, Google `AIza…`, Stripe `sk_live_…`, PEM private-key blocks, credential-bearing DB URIs, and `api_key=…` / `parola=…` (EN + TR) before content hits SQLite or the embedding daemon. Escape hatch: `B12_DISABLE_PII_SCRUB=1`. See [SECURITY.md](SECURITY.md).
@@ -519,7 +520,7 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 
 **Session start** — the SessionStart hook loads your user profile, last session's summary, cross-project hints, and pre-fetches relevant memories from the database using FTS5 + tag queries. All of this is injected as `additionalContext`.
 
-**During conversation** — every user message triggers the retrieval hook, which extracts keywords, runs hybrid FTS5/vector search with Ebbinghaus decay scoring, and injects the top results. The PreToolUse hook ensures every `memory_store` call has proper scope tags.
+**During conversation** — every user message triggers the retrieval hook, which extracts keywords, runs hybrid FTS5/vector search with effective-stability decay scoring, and injects the top results. The PreToolUse hook ensures every `memory_store` call has proper scope tags.
 
 **Session end** — the SessionEnd hook parses the full transcript, extracts decisions/errors/learnings/preferences using regex patterns (English + Turkish), generates embeddings in the background, and stores micro-memories with write-time dedup.
 

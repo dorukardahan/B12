@@ -779,6 +779,7 @@ _DEFAULT_WEIGHTS = {
     "relevance": float(os.environ.get("B12_WEIGHT_RELEVANCE", "0.40")),
     "strength": float(os.environ.get("B12_WEIGHT_STRENGTH", "0.10")),
 }
+_AGING_ALPHA = float(os.environ.get("B12_AGING_ALPHA", "4.0"))
 
 
 def _unified_score(row, relevance: float) -> float:
@@ -788,7 +789,8 @@ def _unified_score(row, relevance: float) -> float:
           + strength*W_strength
 
     Defaults (overridable via B12_WEIGHT_* env vars):
-      decay      0.25  — Ebbinghaus retention curve, exp(-age_days/strength)
+      decay      0.25  — FSRS retention curve, 1/(1+age_days/(9*eff_stability))
+                         where eff_stability = strength*(1+_AGING_ALPHA*importance)
       importance 0.25  — user/system-tagged importance from metadata
       relevance  0.40  — BM25 (FTS path) or cosine (semantic path); single
                          slot because each candidate is found via exactly one
@@ -808,7 +810,6 @@ def _unified_score(row, relevance: float) -> float:
     strength 0.10 / importance 0.08`) was tuned empirically without enforced
     normalization. A future PR may add an explicit normalizer flag.
     """
-    import math
     now_ts = time.time()
     # Explicit None checks — 0.0 is a valid value for both fields
     accessed = row["last_accessed_at"] if row["last_accessed_at"] is not None else row["created_at"]
@@ -819,11 +820,9 @@ def _unified_score(row, relevance: float) -> float:
     # Guard against zero strength (would cause ZeroDivisionError)
     if strength <= 0:
         strength = 0.01
-    decay = max(math.exp(-age_days / strength), 0.01)
     # Strength as an independent dimension, normalized to 0..1 against the
     # spaced-repetition boost cap of 5.0 (`strength` is FSRS stability, reinforced
-    # on access and capped at 5.0; the decay term inlined just above uses that same
-    # `strength` value as its time constant).
+    # on access and capped at 5.0).
     strength_score = min(strength / 5.0, 1.0)
 
     meta = {}
@@ -855,6 +854,13 @@ def _unified_score(row, relevance: float) -> float:
     raw_importance = float(raw_importance)
     norm = raw_importance / 2.0 if raw_importance >= 1.0 else raw_importance
     importance = max(0.0, min(norm, 1.0))
+    # Effective stability: both reinforcement (strength, bumped on access) AND
+    # importance flatten the FSRS aging curve, so a valuable old memory (important
+    # and/or reused) fades slowly while a trivial untouched one decays. This is the
+    # cheap, intentional cure for "exp floored everything old to 0.01" — see the
+    # Phase 1 design. importance ∈ [0,1] computed just above.
+    eff_stability = strength * (1.0 + _AGING_ALPHA * importance)
+    decay = max(1.0 / (1.0 + age_days / (9.0 * eff_stability)), 0.01)
 
     w = _DEFAULT_WEIGHTS
     return (
