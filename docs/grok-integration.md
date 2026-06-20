@@ -52,7 +52,7 @@ You should see the B12 MCP tools (`B12__memory_*`) and the `b12-memory` skill.
 
 ## Architecture Overview
 
-All heavy logic lives in the single shared Python core (`scripts/b12_mcp_server.py` + `consolidation_engine.py`, `write_time_merge.py`, `ebbinghaus.py`, `shared_patterns.py`, etc.).
+All heavy logic lives in the single shared Python core (`scripts/b12_mcp_server.py` + `consolidation_engine.py`, `write_time_merge.py`, `shared_patterns.py`, etc.).
 
 The Grok integration only adds:
 - `.grok/skills/b12-memory/SKILL.md` (declarative orchestrator)

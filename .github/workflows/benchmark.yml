@@ -17,7 +17,6 @@ on:
       - 'scripts/b12_mcp_server.py'
       - 'scripts/embed_daemon.py'
       - 'scripts/write_time_merge.py'
-      - 'scripts/ebbinghaus.py'
       - 'scripts/memory_refine.py'
       - 'scripts/b12_scheduler.py'
       - 'hooks/memory-retrieval.sh'

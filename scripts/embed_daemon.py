@@ -253,6 +253,12 @@ def _recall(model, data):
       limit     : int, max hits to return (default 5)
       project   : str, optional tag filter (e.g. 'B12' → tags LIKE '%proj:B12%')
     """
+    # INTENT: ranking here is pure cosine BY DESIGN — not the 4-dim _unified_score
+    # (decay/importance/relevance/strength) used by the MCP memory_search tool.
+    # This is the cheap, automatic hot-path recall shared by 3 daemon consumers
+    # (proactive-surface, working-context, session-start); rich multi-factor
+    # ranking belongs to the explicit memory_search. The divergence is deliberate
+    # — do not "reconcile" it.
     query = data.get('query', '')
     db_path = data.get('db_path', '')
     limit = int(data.get('limit', 5))

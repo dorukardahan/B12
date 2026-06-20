@@ -27,9 +27,15 @@ _B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
 b12_sync_watchdog "${B12_PROACTIVE_CAP_S:-1.0}" memory-proactive-surface
 
 INPUT=$(cat)
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')
-HOOK_EVENT=$(echo "$INPUT" | jq -r '.hook_event_name // ""')
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
+# Single-pass scalar extraction: ONE jq fork instead of one per field on this
+# PostToolUse hot path. Fields are joined by U+001F (unit separator) rather than
+# @tsv because TAB is an IFS-whitespace char, so `IFS=$'\t' read` collapses runs
+# of tabs and DROPS empty fields (an absent hook_event_name would shift
+# session_id into the wrong variable). U+001F is non-whitespace, so read
+# preserves every (possibly empty) field. SCALARS ONLY — the tool_input OBJECT
+# (below) and any multi-line tool_result keep their own jq.
+IFS=$'\x1f' read -r TOOL_NAME HOOK_EVENT SESSION_ID FILE_PATH \
+  < <(printf '%s' "$INPUT" | jq -r '[.tool_name // "", .hook_event_name // "", .session_id // "", (.tool_input.file_path // "")] | join("\u001f")' 2>/dev/null)
 SESSION_ID12="${SESSION_ID:0:12}"
 TOOL_INPUT_JSON=$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null)
 
@@ -97,7 +103,7 @@ if [ "$HOOK_EVENT" = "PreToolUse" ]; then
   case "$TOOL_NAME" in
     Read|Edit|Write)
       TRIGGER_TYPE="file"
-      TRIGGER_CONTEXT=$(echo "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null)
+      TRIGGER_CONTEXT="$FILE_PATH"  # from the single-pass read above
       ;;
   esac
 elif [ "$HOOK_EVENT" = "PostToolUse" ]; then

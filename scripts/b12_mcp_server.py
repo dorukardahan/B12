@@ -821,7 +821,9 @@ def _unified_score(row, relevance: float) -> float:
         strength = 0.01
     decay = max(math.exp(-age_days / strength), 0.01)
     # Strength as an independent dimension, normalized to 0..1 against the
-    # boost cap of 5.0 (see ebbinghaus.py:64-68 `boost_strength +0.2 cap 5.0`).
+    # spaced-repetition boost cap of 5.0 (`strength` is FSRS stability, reinforced
+    # on access and capped at 5.0; the decay term inlined just above uses that same
+    # `strength` value as its time constant).
     strength_score = min(strength / 5.0, 1.0)
 
     meta = {}

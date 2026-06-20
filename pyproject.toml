@@ -81,7 +81,6 @@ py-modules = [
     "contradiction_resolver",
     "cursor_mdc",
     "dashboard_server",
-    "ebbinghaus",
     "embed_daemon",
     "embedding_backfill",
     "export_import",
