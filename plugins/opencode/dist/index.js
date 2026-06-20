@@ -100,15 +100,24 @@ function validateMetadata(value) {
     return "{}";
   }
 }
+function numEnv(name, dflt) {
+  const v = Number(process.env[name] ?? dflt);
+  return Number.isFinite(v) ? v : dflt;
+}
+var AGING_ALPHA = numEnv("B12_AGING_ALPHA", 4);
+var WEIGHTS = {
+  decay: numEnv("B12_WEIGHT_DECAY", 0.25),
+  importance: numEnv("B12_WEIGHT_IMPORTANCE", 0.25),
+  relevance: numEnv("B12_WEIGHT_RELEVANCE", 0.4),
+  strength: numEnv("B12_WEIGHT_STRENGTH", 0.1)
+};
 function unifiedScore(row, relevance) {
-  const nowMs = Date.now();
-  const nowTs2 = Math.floor(nowMs / 1000);
+  const nowTs2 = Math.floor(Date.now() / 1000);
   const accessed = row.last_accessed_at ?? row.created_at ?? nowTs2;
   const ageDays = Math.max((nowTs2 - accessed) / 86400, 0.001);
   let strength = row.strength ?? 1;
   if (strength <= 0)
     strength = 0.01;
-  const decay = Math.max(1 / (1 + ageDays / (9 * strength)), 0.01);
   let meta = {};
   try {
     meta = JSON.parse(row.metadata || "{}");
@@ -116,7 +125,10 @@ function unifiedScore(row, relevance) {
   const rawImportance = meta.importance_score;
   const raw = typeof rawImportance === "number" && Number.isFinite(rawImportance) ? rawImportance : 0.5;
   const importance = Math.max(0, Math.min(raw >= 1 ? raw / 2 : raw, 1));
-  return 0.3 * decay + 0.3 * importance + 0.4 * relevance;
+  const effStability = strength * (1 + AGING_ALPHA * importance);
+  const decay = Math.max(1 / (1 + ageDays / (9 * effStability)), 0.01);
+  const strengthScore = Math.min(strength / 5, 1);
+  return WEIGHTS.decay * decay + WEIGHTS.importance * importance + WEIGHTS.relevance * relevance + WEIGHTS.strength * strengthScore;
 }
 function formatMemory(row, score) {
   const parts = [
