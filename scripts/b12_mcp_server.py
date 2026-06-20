@@ -1973,12 +1973,46 @@ async def memory_consolidate(
         return "Error: consolidation_engine not available. Check scripts/ directory."
 
     try:
-        result = _consolidate(
-            db_path=DB_PATH,
-            project=project or None,
-            dry_run=dry_run,
-            min_cluster_size=min_cluster_size,
-        )
+        if dry_run:
+            # Dry-run is read-only (clustering + report, no writes), so offload the
+            # CPU-heavy HDBSCAN pass to a worker thread — in daemon mode one FastMCP
+            # loop serves every session, so it must never block on this rare admin
+            # op. Precedent: daemon_request_async.
+            #
+            # Scoped-out caveat (same engine _daemon_request bypass noted in the
+            # apply branch below): if the dry-run reaches merge candidates, the
+            # engine's NLI check opens its OWN embed-daemon socket
+            # (consolidation_engine.py ~:171) that does NOT go through
+            # daemon_request_async / _daemon_lock. Off-loop, that socket call can
+            # now overlap a concurrent session's classify/encode on the
+            # single-connection-serial daemon — worst case a 5s client times out
+            # and degrades (the hook paths already produce this contention), NOT
+            # data loss. Routing the engine through daemon_request_async is the
+            # deferred fix; offloading is still a net win (loop stays responsive
+            # instead of frozen for the whole pass).
+            result = await asyncio.to_thread(
+                _consolidate,
+                db_path=DB_PATH,
+                project=project or None,
+                dry_run=True,
+                min_cluster_size=min_cluster_size,
+            )
+        else:
+            # Apply path kept synchronous DELIBERATELY (scoped-out follow-ups, do NOT
+            # "fix" by offloading here):
+            #   1. the engine opens its OWN connection and writes outside the BB1
+            #      single-writer, so a concurrent worker would race the serialized
+            #      writer on SQLite's reserved lock; and
+            #   2. consolidation_engine._daemon_request (~:150) is a synchronous
+            #      socket call that bypasses this loop's daemon_request_async
+            #      serialization.
+            # Both must be addressed before the apply path can move off-loop safely.
+            result = _consolidate(
+                db_path=DB_PATH,
+                project=project or None,
+                dry_run=False,
+                min_cluster_size=min_cluster_size,
+            )
     except FileNotFoundError as e:
         return f"Error: {e}"
     except Exception as e:
@@ -2223,7 +2257,17 @@ async def memory_import(
     if mode not in ("merge", "replace"):
         return "Error: mode must be 'merge' or 'replace'"
 
-    result = _import_memories(
+    # PLAIN to_thread — do NOT route through the BB1 single writer (_write/_write_raw).
+    # import_memories opens its OWN connection (export_import.py:280) with its own
+    # BEGIN/commit/rollback (~:291) and an embedded ~5s blocking embedding-backfill
+    # socket call (~:341, _request_embedding_backfill). Nesting that inside the
+    # writer's BEGIN IMMEDIATE would throw "cannot start a transaction within a
+    # transaction", and holding the single writer across the socket wait would stall
+    # every connected tab. The standalone CLI path (export_import.py __main__) also
+    # calls import_memories directly with no daemon. So we only move the blocking
+    # call off the shared event loop and leave its transaction handling untouched.
+    result = await asyncio.to_thread(
+        _import_memories,
         db_path=DB_PATH,
         input_path=input_path,
         mode=mode,
@@ -2311,8 +2355,7 @@ async def memory_dashboard(
             for _ in range(10):
                 try:
                     os.kill(pid, 0)
-                    import time as _time
-                    _time.sleep(0.2)
+                    time.sleep(0.2)
                 except ProcessLookupError:
                     break
         except (ProcessLookupError, ValueError, OSError):
@@ -2327,7 +2370,10 @@ async def memory_dashboard(
 
     if action == "stop":
         if _is_running():
-            _stop()
+            # _stop() blocks up to ~2s (SIGTERM + os.kill poll loop with sleeps);
+            # offload it so the shared FastMCP loop is not stalled. Precedent:
+            # daemon_request_async.
+            await asyncio.to_thread(_stop)
             return "Dashboard stopped."
         return "Dashboard is not running."
 
@@ -2342,7 +2388,8 @@ async def memory_dashboard(
         return "Dashboard is not running."
 
     if action == "restart":
-        _stop()
+        # Offloaded for the same reason as the "stop" branch above.
+        await asyncio.to_thread(_stop)
         # Fall through to start
 
     # ── Start ──
