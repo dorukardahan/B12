@@ -111,37 +111,46 @@ def _row(importance_json):
 
 
 def test_ret3_fractional_band_not_halved():
-    """A fractional 0.95 (< 1.0) passes through un-halved; it outranks baseline by
-    exactly W_importance*(0.95-0.50). The original blanket /2.0 halved it to 0.475."""
+    """A fractional 0.95 (< 1.0) passes through un-halved; it must outscore baseline
+    and must outscore what a blanket /2.0 halving (0.95->0.475) would produce.
+    The exact W_importance*(0.95-0.50) delta is no longer asserted because decay now
+    also depends on importance (effective-stability formula), so the total delta is
+    larger than the importance-weight term alone — the right invariant is ordering."""
     try:
         import b12_mcp_server as M
     except Exception as e:
         print(f"SKIP test_ret3_fractional_band_not_halved ({e})")
         return
-    w_imp = M._DEFAULT_WEIGHTS["importance"]
     s_hi = M._unified_score(_row('{"importance_score": 0.95}'), 0.0)
     s_base = M._unified_score(_row('{"importance_score": 0.50}'), 0.0)
-    assert abs((s_hi - s_base) - w_imp * (0.95 - 0.50)) < 1e-9, (s_hi, s_base)
+    # What the (buggy) blanket /2.0 would have produced: 0.95 -> 0.475
+    s_halved = M._unified_score(_row('{"importance_score": 0.475}'), 0.0)
     assert s_hi > s_base, "fractional max must outscore baseline (pre-fix inverted this)"
+    assert s_hi > s_halved, "0.95 un-halved must beat the halved-to-0.475 score (guards the original bug)"
 
 
 def test_ret3_level_scale_normalized():
     """Level multipliers (>= 1.0) normalize by /2.0: 2.0->1.0, 1.5->0.75, 1.0->0.5.
-    The rejected blanket-clamp fix would have collapsed all three to 1.0."""
+    The rejected blanket-clamp fix would have collapsed all three to the same score.
+    Exact importance-weight deltas are no longer asserted because decay now also varies
+    with importance (effective-stability); the invariant is strict ordering and that
+    level normal (1.0->0.5) equals fractional baseline (0.50) exactly."""
     try:
         import b12_mcp_server as M
     except Exception as e:
         print(f"SKIP test_ret3_level_scale_normalized ({e})")
         return
-    w = M._DEFAULT_WEIGHTS["importance"]
     s_crit = M._unified_score(_row('{"importance_score": 2.0}'), 0.0)   # -> 1.0
     s_imp = M._unified_score(_row('{"importance_score": 1.5}'), 0.0)    # -> 0.75
     s_norm = M._unified_score(_row('{"importance_score": 1.0}'), 0.0)   # -> 0.5
-    assert abs((s_crit - s_norm) - w * (1.0 - 0.5)) < 1e-9, "critical 2.0 must map to 1.0"
-    assert abs((s_imp - s_norm) - w * (0.75 - 0.5)) < 1e-9, "important 1.5 must map to 0.75"
-    # level normal (1.0 -> 0.5) and fractional baseline (0.50) land on the same value
+    assert s_crit > s_imp > s_norm, (
+        "critical(2.0->1.0) > important(1.5->0.75) > normal(1.0->0.5) ordering must hold; "
+        "blanket-clamp bug would have collapsed all three to equal"
+    )
+    # level normal (1.0 -> 0.5) and fractional baseline (0.50) produce identical
+    # normalized importance AND identical eff_stability, so scores are exactly equal
     s_fbase = M._unified_score(_row('{"importance_score": 0.50}'), 0.0)
-    assert abs(s_norm - s_fbase) < 1e-9
+    assert abs(s_norm - s_fbase) < 1e-9, "level normal (1.0->0.5) must equal fractional baseline 0.50"
 
 
 def test_ret3_missing_importance_defaults_to_baseline():
