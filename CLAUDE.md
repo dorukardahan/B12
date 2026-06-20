@@ -194,6 +194,20 @@ approval.** That includes: `semantic-release`, `release-please`,
 `package.json` / writes CHANGELOG / creates tags from commit messages.
 The release ritual lives in `docs/releasing.md` and is intentional.
 
+**Proactive release trigger (agent's standing job — NOT auto-tooling).**
+The owner should never have to say "configure the release/changelog." When you
+finish a batch of release-worthy work here (merged user-facing PR(s) to `main`,
+or a version-affecting change), at the end of the task — unprompted — run
+`scripts/release.sh --check`; if a release is warranted, tell the owner (e.g.
+*"N commits since vX.Y.Z (suggested vNEXT) — cut a release?"*) and on approval
+hand-curate the CHANGELOG section (maintainer quality, grouped Added/Changed/
+Fixed/Internal, PII-clean) and run `scripts/release.sh <X.Y.Z> <notes-file>`
+(syncs the 6 version touchpoints, prepends CHANGELOG, commits, tags, creates the
+GitHub release; `--dry-run` to preview). This is the manual ritual made
+proactive — the owner still gates tag timing; it does NOT add an auto-publish
+toolchain. Same rule is in `AGENTS.md` so any agent (Codex/Gemini/OpenCode/
+Hermes/…) does it too. Full mechanics: `docs/releasing.md`.
+
 When asked to "set up releases" or "automate versioning," **stop and
 ask** — the manual ritual is the answer for this repo. Suggesting
 automation re-adds the exact dep tree we just removed.

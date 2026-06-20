@@ -11,7 +11,35 @@ notes. See commit `c497c82` for the rationale.
 - Roughly cadence: monthly, or when a noteworthy feature/fix ships
 - **Not** on every commit. Stack 5-15 commits per release.
 
-## The ritual (5 minutes)
+## The fast path — `scripts/release.sh` (what the agent runs)
+
+`scripts/release.sh` codifies the manual ritual below into one command (zero new
+dependencies — `git` + `python3` stdlib + `gh`). The AI agent working in the repo
+supplies the version and a hand-curated notes file; the script does the mechanical,
+error-prone parts (the six touchpoints, the CHANGELOG splice, commit/tag/release).
+
+```bash
+# Is a release due? (commits since last tag, user-facing subset, suggested bump)
+scripts/release.sh --check
+
+# Cut it: sync the 6 touchpoints, prepend the CHANGELOG section, commit,
+# annotated-tag, create the GitHub release. <notes-file> is the agent's
+# hand-curated section body (### Added / ### Changed / ### Fixed / ### Internal).
+scripts/release.sh <X.Y.Z> path/to/notes.md
+scripts/release.sh --dry-run <X.Y.Z> path/to/notes.md   # preview, no commit/tag/push
+```
+
+**Proactive trigger.** Any AI agent working in this repo should run
+`scripts/release.sh --check` at the end of release-worthy work and, if a release is
+warranted, prompt the owner ("N commits since vX.Y.Z (suggested vNEXT) — cut a
+release?"). On approval it curates the notes and runs the script. The owner never has
+to remember to ask; tag timing is still owner-gated. This rule lives in `AGENTS.md`
+and `CLAUDE.md` so it applies regardless of which assistant is in use.
+
+The sections below are the canonical ritual the script implements — read them to
+understand each step, to do a release by hand, or if the script is unavailable.
+
+## The ritual (manual reference — `scripts/release.sh` automates this)
 
 ### 1. Decide the next version
 

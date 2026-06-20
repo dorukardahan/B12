@@ -114,6 +114,34 @@ python3 -c "import sys; sys.path.insert(0, 'scripts'); from write_time_merge imp
 Python cannot import modules with hyphens (`-`) in filenames. Always use
 underscores (`_`). Example: `write_time_merge.py`, NOT `write-time-merge.py`.
 
+## Release trigger — proactive (applies to ANY AI agent working in this repo)
+
+B12 uses **manual hand-curated releases** (no CI auto-publish — see `docs/releasing.md`),
+but the owner should NOT have to remember to ask. Whatever assistant you are — Claude
+Code, Codex, Gemini, OpenCode, Hermes, OpenClaw, Cursor, etc. — when you finish a batch
+of release-worthy work in this repo (e.g. you merged one or more user-facing PRs to
+`main`, or made a version-affecting change), do this **at the end of the task, unprompted**:
+
+1. **Detect** — run `scripts/release.sh --check`. It prints the unreleased commit count
+   since the last tag, the user-facing subset (dep-bumps excluded), and a suggested
+   semver bump.
+2. **Prompt** — if a release is warranted, tell the owner explicitly, e.g.
+   *"N commits since vX.Y.Z (suggested vNEXT) — cut a release?"* Do NOT cut it silently;
+   the owner gates tag timing.
+3. **On approval** — hand-curate the CHANGELOG section yourself (grouped
+   `### Added / ### Changed / ### Fixed / ### Internal`, user-facing wording, ignore
+   dep-bump noise, PII/secret-clean — maintainer quality, NOT raw commit subjects),
+   write it to a notes file, then run:
+   `scripts/release.sh <X.Y.Z> <notes-file>` — it syncs all 6 version touchpoints,
+   prepends the CHANGELOG, commits, annotated-tags, and creates the GitHub release.
+   Use `scripts/release.sh --dry-run <X.Y.Z> <notes-file>` first if unsure.
+
+This preserves the manual-release model (owner approves; the agent supplies maintainer-
+quality notes) while removing the toil — the owner never has to say "configure the
+release/changelog." NOTE: this is the agent's standing job, NOT a re-introduction of an
+auto-publish toolchain (semantic-release/release-please/changesets remain out — see the
+Release model rule in `CLAUDE.md` and `docs/releasing.md`).
+
 ## Language support
 
 Hooks support both English and Turkish:
