@@ -539,6 +539,13 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 
 ## Changelog (recent)
 
+### v11.75.0 (2026-06-20) — Public-release hardening + concurrency + smarter aging
+
+- **Importance/reinforcement-modulated aging** — valuable old memories stay discoverable (importance + reuse slow the FSRS decay curve), consistently across MCP, the retrieval hook, and the OpenCode plugin (#113, #114).
+- **BB1 per-connection SQLite** — concurrent reads + a single serialized writer thread; multi-tab contention and event-loop blocking eliminated (#108, #109).
+- **Going-public hardening** — PII/secret scrub on every write path, internal-doc removal + privacy rules across all git surfaces, dependency-bound pinning, manual hand-curated releases (semantic-release removed) (#93, #97, #100, #105).
+- See [CHANGELOG.md](CHANGELOG.md#v11750--2026-06-20) for the full v11.75.0 notes.
+
 ### v11.47–v11.52 (2026-05-19) — Polyglot Cleanup + Self-Improve
 
 - **C13 — 24h smoke harness** (`scripts/b12_smoke.sh` + `install.sh --smoke-cron`): opt-in cron job drives `memory-session-start.sh` + `memory-retrieval.sh` against every detected `~/.claude*` setup, flagging damaged installs (all-setups-missing → exit 1). Crontab-only, fully reversible via `--smoke-cron-uninstall`.

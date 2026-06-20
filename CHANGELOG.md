@@ -1,135 +1,49 @@
 # Changelog
 
-## Unreleased
+## [v11.75.0] — 2026-06-20
 
-### Performance
+First release since the repository went public (2026-05-24). Headlines: the
+going-public privacy/security hardening, the BB1 per-connection SQLite
+concurrency model, and a new importance/reinforcement-modulated memory-aging
+model applied consistently across all three ranking surfaces.
 
-* **mcp-server:** per-connection SQLite — concurrent reads + a single serialized
-  writer (BB1). Replaces the global `async with _db_lock: <sync _db.execute>`
-  pattern that serialized every CLI tab on one asyncio lock **and** blocked the
-  shared event loop on synchronous sqlite (a contended write could stall every
-  tab up to `busy_timeout=30s`). Reads now run off the loop on a thread pool of
-  thread-owned connections (WAL → concurrent readers; size via
-  `B12_MCP_READ_POOL`); all writes + SELECT-then-write transactional ops go
-  through one serialized writer thread (`BEGIN IMMEDIATE` per op), each atomic on
-  one connection / one thread. No connection is shared across threads (avoids
-  `check_same_thread` crashes). Preserves the stdio-proxy contract, legacy
-  in-process mode, the per-session tracker, the atexit flush, and all pragmas.
-  `scripts/b12_mcp_server.py`, `scripts/b12_mcp_daemon.py`,
-  `scripts/tests/test_daemon_concurrency.py`.
-* **mcp-daemon:** idle-connection reaping + connection cap (P2). The shared MCP
-  daemon now tracks per-connection activity and cancels connections idle beyond
-  `B12_MCP_IDLE_TIMEOUT` (default 1800s), plus a `B12_MCP_MAX_CONN` cap (default
-  64) that evicts the most-idle connection under pressure. Bounds the FD /
-  coroutine growth that accumulated 1:1 with open CLI tabs (observed 13 live
-  proxies + 14 never-reaped daemon socket FDs). On reap the stdio proxy now exits
-  promptly on socket-EOF (`_run_as_proxy` waits FIRST_COMPLETED, so it no longer
-  blocks on stdin and lose the host's next request) and the host respawns it on
-  the next call, reconnecting to a fresh daemon session.
-  `scripts/b12_mcp_daemon.py`, `scripts/b12_mcp_server.py`.
-* **mcp-daemon:** periodic WAL checkpoint (P7). A 5-min `PRAGMA
-  wal_checkpoint(TRUNCATE)` timer (`B12_MCP_WAL_CHECKPOINT_INTERVAL`) keeps an
-  idle daemon or long-lived reader from letting the WAL grow unbounded
-  (`wal_autocheckpoint=100` only fires on writes). Runs **off the event loop** on
-  a dedicated short-lived connection with a short `busy_timeout` — a TRUNCATE
-  checkpoint can wait on a contending reader, so running it on the loop under the
-  server lock would freeze every client for that window. `scripts/b12_mcp_daemon.py`.
-* **mcp-server:** `PRAGMA synchronous=NORMAL` + `temp_store=MEMORY` (P10). NORMAL
-  is the recommended WAL durability mode — corruption-safe; committed
-  transactions survive any app/process crash (daemon restart, kill, terminal
-  close). Only an OS crash / power loss can roll back the most-recent commit(s);
-  the DB is never corrupted. Lower write latency on the shared memory DB.
-  `scripts/b12_mcp_server.py`.
-* **hooks:** cache the resolved DB path (P3). High-frequency hooks
-  (`memory-retrieval.sh` per prompt, `memory-proactive-surface.sh` per
-  Read/Edit/Write/Bash) read the DB path from a 60s-TTL cache
-  (`$B12_DATA_DIR/state/db-path.cache`) via a new `b12_get_db_path` in
-  `_b12_common.sh` instead of spawning `python3` on every fire.
-* **hooks (codex):** background the Codex PostToolUse telemetry write (P11) so
-  the hook returns immediately (`hooks/memory-codex-post-tool.sh`).
-* **launcher:** bounded (~2s) daemon-up probe in `start-mcp.sh` (P8) so tabs
-  opened during the login window don't race into the slow legacy in-process
-  path; falls through to legacy fast when the daemon is genuinely down.
+### Added
+- OpenCode plugin ranking now has full 3-surface parity with MCP and the hook: same 4-term effective-stability model and the same env tuning (`B12_AGING_ALPHA`, `B12_WEIGHT_*`). (#114)
+- `docs/releasing.md` — the manual-release ritual, version-touchpoint sync checklist, and semver rules.
 
 ### Changed
+- **Memory aging is now importance/reinforcement-aware:** importance and reuse modulate the FSRS decay curve (effective stability), so valuable old memories stay discoverable instead of fading on a fixed schedule — across MCP, the retrieval hook, and OpenCode. (#113, #114)
+- **Multi-tab contention eliminated (BB1):** per-connection SQLite — concurrent reads, all writes serialized through one writer thread (`BEGIN IMMEDIATE`), no event-loop blocking across sessions. (#109)
+- Daemon no longer blocks concurrent sessions on retrieval/classification (offloaded to worker threads); rare admin ops (consolidate / import / dashboard) are offloaded off the event loop too. (#95, #110)
+- Checkpoint capture auto-scores memory importance on save — no manual tagging needed. (#113)
+- Daemon cold-load ~50% faster (≈9.4s → 4.7s) via cached embedding-model downloads. (#92)
+- Daemon reaps idle tab connections and truncates the WAL to prevent unbounded file growth on long-lived sessions. (#108)
+- Switched to manual hand-curated releases; removed the semantic-release toolchain and auto-publish machinery. (#97)
+- Pinned runtime/trainer dependency bounds (mcp, sentence-transformers, sqlite-vec, fsrs, setfit, onnx) to prevent silent major-version upgrades on fresh installs. (#97)
+- Removed 38 internal working docs containing personal data; scrubbed maintainer email, private quotes, and collaborator references from the files kept. (#105)
+- Expanded privacy rules to cover all git surfaces (commit messages, branch/tag names, PR/issue titles, release notes, CI artifacts) with history-rewrite hygiene guidance. (dac7f54)
+- Migrated hardcoded personal paths to portable `/path/to/B12` placeholders for shareability. (#104)
+- README capture-mode table clarifies automatic (7 platforms) vs MCP-only (6 platforms) capture, adds the Grok row, and corrects the MCP server doc (13 tools / 2295 lines). (#99)
 
-* **recall:** ANN exact-KNN recall is now **enabled by default** with
-  `threshold_count = 500` (P5). sqlite-vec's `vec0 MATCH` is exact brute-force
-  KNN over normalized vectors, so it reproduces the full-table cosine ranking
-  exactly (A/B `benchmarks/ann_ab_test.py`: overlap@5 = 1.00 over 300 real-vector
-  probes) while removing the `ORDER BY m.id DESC LIMIT 500` blind spot — which on
-  a ~3.6k-vector DB matched the true ranking only ~15% of the time (87% of
-  queries had their true nearest neighbour beyond the 500 newest rows). The
-  install-template default flips to `enabled = true`. Hardening: threshold clamp
-  to `[100, 1e6]` + empty-`topk` health logging in `embed_daemon.py`, the A/B
-  harness, and `scripts/tests/test_ann_recall_path.py`.
+### Fixed
+- PII and secrets (API keys, private keys, credentials, passwords) are now scrubbed on **every** memory write path — MCP store, summaries, and buffer files — not just specific flows. (#93)
+- LLM extraction (when enabled) aborts before sending to remote providers if the PII scrubber is unavailable (no unredacted egress), treats transcript content as data via an anti-injection clause, and no longer truncates output (max-tokens cap defaults to 4096). (#100)
+- Exact-KNN recall is enabled by default — memory search returns true nearest neighbors (100% fidelity vs ~15% on the legacy LIMIT-500 path). (#108)
+- Importance scores apply correctly across all read paths (MCP, hook, OpenCode) without being halved — the 0.95 maximum is preserved. (#103)
+- Merged memories re-embed after content updates (no silent semantic-search loss); recall sorts newest-first when vector search is disabled; date filters respect UTC instead of local time. (#94)
+- Grok lifecycle hooks now store memories reliably — four independent breakages (path resolution, imports, function signatures, env vars) repaired with end-to-end test coverage. (#96)
+- Self-healing embedding-model configuration auto-corrects misaligned Claude/Codex setups during install, fixing hidden memory-retrieval degradation. (#92)
+- Embedding and spaced-repetition failures are logged instead of silently swallowed; the installer degrades gracefully (with a warning) on malformed config instead of aborting after deploying hooks. (#98)
+- Codex turn-end no longer hangs — detached the background sleeper's stdio from the Codex pipe (>10s → ~77ms). (`21f5bb9`)
+- Checkpoint hook latency cut by collapsing four file-scan passes into one and removing unused Perl timing forks. (#111)
+- CI now gates the comprehensive `scripts/tests/` Python suite (~140 tests: PII scrubber, MCP, CLI, health, retrieval, async, Grok) instead of hook-smoke checks only. (#101)
 
-### Security
-
-* **pii-scrub:** close the write-path gap — the secret scrubber now runs on
-  **every** write path, not just write-time merge + Codex. Added scrub calls to
-  the MCP `memory_store` tool (`b12_mcp_server.py`), the SessionEnd summary store
-  (`memory-session-end.sh`), the PreCompact priority store (`memory-precompact.sh`),
-  and the checkpoint flush (`memory-checkpoint.sh`). Previously a secret pasted
-  into chat could land raw in SQLite via any of these paths despite the docs'
-  "scrub on every write" claim. Honors `B12_DISABLE_PII_SCRUB=1` everywhere.
-* **pii-scrub:** expand the pattern catalog — added Google API keys (`AIza…`),
-  Stripe keys (`sk_live_`/`sk_test_`/`rk_…`), PEM private-key blocks, and
-  credential-bearing DB connection URIs; extended the generic credential pattern
-  with Turkish keywords (`parola`, `şifre`/`sifre`, `gizli anahtar`). Added 7 unit
-  tests (`scripts/tests/test_b12_pii_scrubber.py`).
-
-### Bug Fixes
-
-* **retrieval:** normalize importance across both write-side scales in ranking
-  (RET-3). `importance_score` is written on two coexisting scales — fractional
-  `[0, 0.95]` (`b12_importance.py`) and level multipliers `[0.7, 2.0]` (critical
-  2.0 / important 1.5 / normal 1.0 / temporary 0.7; `memory-session-end.sh` caps at
-  2.0). The read path applied a blanket `/2.0`, which correctly normalized the
-  level scale but silently **halved the fractional band** (a `0.95` memory
-  contributed only `0.475`). The read paths now normalize per scale: a value
-  `≥ 1.0` (a level multiplier) is divided by 2 (2.0→1.0, 1.5→0.75, 1.0→0.5) while a
-  fractional value `< 1.0` passes through; missing / null / non-numeric / boolean
-  default to the `0.50` baseline; the result is clamped to `[0, 1]`. Applied
-  identically in MCP `_unified_score` (`b12_mcp_server.py`), the retrieval-hook SQL
-  (`memory-retrieval.sh`), and the OpenCode plugin (`plugins/opencode/src/lib/db.ts`
-  + `dist`, which also stops coercing a stored `0`/`null` via `|| 1.0`). Added
-  regression tests across all three paths (`scripts/tests/test_retrieval_correctness.py`
-  + `plugins/opencode/tests/scoring.test.ts`). Scale references:
-  `scripts/b12_importance.py`, `plugins/opencode/src/lib/scoring.ts`. Known limit:
-  the overlap zone `[0.7, 0.95]` is ambiguous (level `temporary` 0.7 vs a fractional
-  0.7), so `temporary` passes through at 0.7 and can out-rank a `normal` (→0.5) on
-  the importance axis; the complete fix is write-side scale unification + migration
-  (deferred).
-* **install:** self-heal `MCP_EMBEDDING_MODEL` drift on every run. `install.sh`
-  now reads the live DB's vec0 `FLOAT[N]` dimension, derives the canonical
-  model (1024 → `BAAI/bge-m3`), and reaffirms it across all deployed configs
-  (3 Claude `.claude.json` + Codex `config.toml`) via
-  `scripts/heal_embedding_model.py` — idempotent, repairs partial migrations
-  (the bge-m3 v11.34 migration only rewrote one Claude config, so other setups
-  silently kept 384-dim MiniLM and degraded to FTS-only recall).
-* **install:** `inject_codex_mcp_config` no longer strips the
-  `[mcp_servers.B12.tools.memory_store] approval_mode = "auto"` block on
-  `--codex` re-runs; the block is now part of the regenerated config and is
-  reaffirmed by the drift self-heal.
-* **grok:** repair the Grok lifecycle hooks, which were dead-on-arrival. They
-  resolved the shared core via fragile `__file__` path depth (broke once
-  deployed to `~/.grok/plugins/b12/`), imported `extract_*` helpers that never
-  existed, and called `merge_or_insert` with the wrong signature; `hooks.json`
-  also hardcoded the Claude-only `${CLAUDE_PLUGIN_ROOT}`. Now a shared
-  `_b12_grok_core.py` resolves the core via `$B12_HOOK_DIR`, real `extract_*`
-  helpers live in `shared_patterns.py`, the canonical write path is used
-  (daemon-encode → `merge_or_insert`, with an FTS-only fallback when the daemon
-  is down), and `install.sh` substitutes a `__B12_PLUGIN_ROOT__` marker. Adds an
-  end-to-end Grok hook test (`scripts/tests/test_grok_hooks.py`).
-
-### Performance
-
-* **embed_daemon:** load the embedding model with `local_files_only=True`
-  (download fallback on first run). Skips a network `model_info()` round-trip
-  `transformers` makes for repo-id loads, cutting cold model-load ~9.4s → ~4.7s
-  (model_load 5.5s → 1.3s on Apple Silicon) and removing the Hugging Face
-  network dependency from session startup.
+### Internal
+- Redesigned the DB access layer for thread safety: reads via a thread pool of thread-owned connections, writes via a single serialized writer thread (SQLite WAL + per-connection model). (#109)
+- Optimized hook stdin parsing from per-field `jq` forks to a single-pass parse with a U+001F field separator. (#112)
+- Removed dead code: `scripts/ebbinghaus.py` (import-dead; the live FSRS decay is inlined in `_unified_score`); added `*.egg-info/` to `.gitignore`. (#112)
+- Updated retrieval tests to verify re-embed behavior and the importance-modulated aging across all ranking surfaces. (#102)
+- Genericized internal fork-name attribution in `session_context` code comments. (#107)
 
 ## [11.74.1](https://github.com/dorukardahan/B12/compare/v11.74.0...v11.74.1) (2026-05-21)
 
