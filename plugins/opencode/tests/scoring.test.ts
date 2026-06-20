@@ -105,11 +105,12 @@ test("importance slows decay beyond additive term", () => {
 test("reinforcement slows decay beyond additive term", () => {
   // strength=5 vs strength=1 (same importance=0.5): gap must exceed the pure
   // additive contribution of w_strength*Δ(strengthScore).
+  // Threshold 0.115: old `1/(1+age/(9*strength))` decay (no effStability) produces a
+  // gap of ~0.101 at age 365; the new eff-stability model produces ~0.130.
+  // 0.101 < 0.115 < 0.130 → FAILS on old model, PASSES on eff-stability model only.
   const hi = unifiedScore(rowAS(365, 0.5, 5), 0.5);
   const lo = unifiedScore(rowAS(365, 0.5, 1), 0.5);
-  expect(hi - lo).toBeGreaterThan(
-    0.10 * (Math.min(5 / 5, 1) - Math.min(1 / 5, 1)) + 1e-6,
-  );
+  expect(hi - lo).toBeGreaterThan(0.115);
 });
 
 test("high relevance dominates over freshness", () => {
