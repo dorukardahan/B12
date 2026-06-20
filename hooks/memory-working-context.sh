@@ -15,8 +15,13 @@ _WATCHDOG=$!
 trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
 
 INPUT=$(cat)
-TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')
-SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
+# Single-pass scalar extraction: ONE jq fork instead of one per field. Fields
+# are joined by U+001F (unit separator), not @tsv: TAB is IFS-whitespace so
+# `IFS=$'\t' read` collapses runs and DROPS empty fields; U+001F is
+# non-whitespace so read preserves every (possibly empty) field. Scalars only
+# (tool_name/session_id + the two tool_input scalars used below).
+IFS=$'\x1f' read -r TOOL_NAME SESSION_ID FILE_PATH PATTERN \
+  < <(printf '%s' "$INPUT" | jq -r '[.tool_name // "", .session_id // "", (.tool_input.file_path // ""), (.tool_input.pattern // "")] | join("\u001f")' 2>/dev/null)
 
 B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 STAGING_DIR="$B12_BASE/memory-staging"
@@ -31,15 +36,15 @@ ENTITY_TYPE="file"
 
 case "$TOOL_NAME" in
   Read|Edit|Write)
-    ENTITY=$(echo "$INPUT" | jq -r '.tool_input.file_path // ""' 2>/dev/null)
+    ENTITY="$FILE_PATH"  # from the single-pass read above
     [ "$TOOL_NAME" = "Edit" ] || [ "$TOOL_NAME" = "Write" ] && ENTITY_TYPE="modified"
     ;;
   Glob)
-    ENTITY=$(echo "$INPUT" | jq -r '.tool_input.pattern // ""' 2>/dev/null)
+    ENTITY="$PATTERN"
     ENTITY_TYPE="search"
     ;;
   Grep)
-    ENTITY=$(echo "$INPUT" | jq -r '.tool_input.pattern // ""' 2>/dev/null)
+    ENTITY="$PATTERN"
     ENTITY_TYPE="search"
     ;;
 esac

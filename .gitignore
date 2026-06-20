@@ -80,3 +80,6 @@ docs/B12_*.pdf
 B12/
 B12-sanitized/
 B12-backup-pre-filter/
+
+# Python build artifacts (editable install)
+*.egg-info/

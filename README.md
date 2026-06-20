@@ -385,7 +385,6 @@ B12/
 │   ├── start-mcp.sh                #   MCP bootstrap (venv detection, used by plugin)
 │   ├── embed_daemon.py             #   Background embedding daemon (Unix socket)
 │   ├── write_time_merge.py         #   Semantic dedup at write time
-│   ├── ebbinghaus.py               #   Decay scoring utilities
 │   ├── contradiction_resolver.py   #   ONNX NLI contradiction detection
 │   ├── graph_enrich.py             #   Memory graph enrichment
 │   ├── consolidation_engine.py     #   Smart consolidation (dedup, merge, contradictions)
