@@ -11,7 +11,35 @@ notes. See commit `c497c82` for the rationale.
 - Roughly cadence: monthly, or when a noteworthy feature/fix ships
 - **Not** on every commit. Stack 5-15 commits per release.
 
-## The ritual (5 minutes)
+## The fast path — `scripts/release.sh` (what the agent runs)
+
+`scripts/release.sh` codifies the manual ritual below into one command (zero new
+dependencies — `git` + `python3` stdlib + `gh`). The AI agent working in the repo
+supplies the version and a hand-curated notes file; the script does the mechanical,
+error-prone parts (the six touchpoints, the CHANGELOG splice, commit/tag/release).
+
+```bash
+# Is a release due? (commits since last tag, user-facing subset, suggested bump)
+scripts/release.sh --check
+
+# Cut it: sync the 6 touchpoints, prepend the CHANGELOG section, commit,
+# annotated-tag, create the GitHub release. <notes-file> is the agent's
+# hand-curated section body (### Added / ### Changed / ### Fixed / ### Internal).
+scripts/release.sh <X.Y.Z> path/to/notes.md
+scripts/release.sh --dry-run <X.Y.Z> path/to/notes.md   # preview, no commit/tag/push
+```
+
+**Proactive trigger.** Any AI agent working in this repo should run
+`scripts/release.sh --check` at the end of release-worthy work and, if a release is
+warranted, prompt the owner ("N commits since vX.Y.Z (suggested vNEXT) — cut a
+release?"). On approval it curates the notes and runs the script. The owner never has
+to remember to ask; tag timing is still owner-gated. This rule lives in `AGENTS.md`
+and `CLAUDE.md` so it applies regardless of which assistant is in use.
+
+The sections below are the canonical ritual the script implements — read them to
+understand each step, to do a release by hand, or if the script is unavailable.
+
+## The ritual (manual reference — `scripts/release.sh` automates this)
 
 ### 1. Decide the next version
 
@@ -25,7 +53,7 @@ Follow semver against the previous tag (`git describe --tags --abbrev=0`):
 
 When in doubt, prefer MINOR — B12 isn't on a strict semver contract yet.
 
-### 2. Update the six version touchpoints
+### 2. Update every version touchpoint
 
 Keep these in sync. The audit's "stale version constant" finding came
 from forgetting one of them (it caught `scripts/b12_health.py` lagging at
@@ -53,6 +81,9 @@ sed -i '' "s/B12 Memory System Installer (v[0-9.]*/B12 Memory System Installer (
 
 # .claude-plugin/plugin.json
 python3 -c "import json; d=json.load(open('.claude-plugin/plugin.json')); d['version']='$NEW'; json.dump(d, open('.claude-plugin/plugin.json','w'), indent=2); print(open('.claude-plugin/plugin.json').read())"
+
+# package-lock.json — version appears twice (top-level + the root package entry)
+python3 -c "import json; d=json.load(open('package-lock.json')); d['version']='$NEW'; d.get('packages',{}).get('',{}).__setitem__('version','$NEW') if '' in d.get('packages',{}) else None; json.dump(d, open('package-lock.json','w'), indent=2); open('package-lock.json','a').write(chr(10))"
 ```
 
 ### 3. Hand-curate CHANGELOG.md
@@ -124,8 +155,8 @@ Before tagging, a quick check that the things that should be in sync
 actually are:
 
 ```bash
-# All six version touchpoints match?
-grep -E '"version"' package.json .claude-plugin/plugin.json
+# All version touchpoints match? (scripts/release.sh does + verifies these for you)
+grep -E '"version"' package.json .claude-plugin/plugin.json package-lock.json
 grep -E '^version = ' pyproject.toml
 grep -E '^B12_VERSION' scripts/b12_mcp_server.py
 grep -E '^VERSION' scripts/b12_health.py

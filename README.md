@@ -398,6 +398,7 @@ B12/
 │   ├── export_import.py            #   Memory export/import (.b12 format)
 │   ├── b12_health_report.py        #   Comprehensive health report generator
 │   ├── b12_health.py               #   CLI health check diagnostics (v12)
+│   ├── release.sh                  #   Release helper (--check + cut: sync version touchpoints, CHANGELOG, tag, GitHub release)
 │   ├── compat.json                 #   Host version compatibility database (v12)
 │   ├── shared_patterns.py          #   Shared regex patterns + content hash (EN + TR)
 │   ├── transcript_adapter.py       #   Unified transcript parser (Claude + Codex)
