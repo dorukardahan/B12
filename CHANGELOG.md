@@ -1,5 +1,14 @@
 # Changelog
 
+## [v11.76.0] — 2026-06-20
+
+### Added
+- **`scripts/release.sh`** — one-command release helper. `--check` reports whether a release is due (commits since the last tag, user-facing subset, suggested semver bump; handles shallow/tagless clones). `<X.Y.Z> <notes-file>` cuts the release: syncs every version touchpoint, prepends the CHANGELOG section + a README "Changelog (recent)" entry, commits, annotated-tags, and creates the GitHub release. Downgrade-guarded; `--dry-run` previews without committing.
+- **Proactive release trigger** (`AGENTS.md` + `CLAUDE.md`) — whichever AI assistant is working in the repo (Claude Code, Codex, Gemini, OpenCode, Hermes, …) detects release-worthy work and prompts the owner to cut a release, then curates the notes and runs the helper. Keeps the manual hand-curated release model (owner gates tag timing) while removing the toil — no CI/auto-publish toolchain added.
+
+### Fixed
+- `package-lock.json` is now version-synced on every release (it had drifted to 11.74.1); `docs/releasing.md` documents it as a release touchpoint.
+
 ## [v11.75.0] — 2026-06-20
 
 First release since the repository went public (2026-05-24). Headlines: the

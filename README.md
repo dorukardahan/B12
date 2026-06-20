@@ -540,6 +540,10 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 
 ## Changelog (recent)
 
+### v11.76.0 (2026-06-20)
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ### v11.75.0 (2026-06-20) — Public-release hardening + concurrency + smarter aging
 
 - **Importance/reinforcement-modulated aging** — valuable old memories stay discoverable (importance + reuse slow the FSRS decay curve), consistently across MCP, the retrieval hook, and the OpenCode plugin (#113, #114).
