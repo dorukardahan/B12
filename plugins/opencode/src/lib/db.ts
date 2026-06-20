@@ -144,14 +144,24 @@ function validateMetadata(value: unknown): string {
   }
 }
 
+function numEnv(name: string, dflt: number): number {
+  const v = Number(process.env[name] ?? dflt);
+  return Number.isFinite(v) ? v : dflt;
+}
+const AGING_ALPHA = numEnv("B12_AGING_ALPHA", 4.0);
+const WEIGHTS = {
+  decay: numEnv("B12_WEIGHT_DECAY", 0.25),
+  importance: numEnv("B12_WEIGHT_IMPORTANCE", 0.25),
+  relevance: numEnv("B12_WEIGHT_RELEVANCE", 0.40),
+  strength: numEnv("B12_WEIGHT_STRENGTH", 0.10),
+};
+
 export function unifiedScore(row: MemoryRow, relevance: number): number {
-  const nowMs = Date.now();
-  const nowTs = Math.floor(nowMs / 1000);
+  const nowTs = Math.floor(Date.now() / 1000);
   const accessed = row.last_accessed_at ?? row.created_at ?? nowTs;
   const ageDays = Math.max((nowTs - accessed) / 86400.0, 0.001);
   let strength = row.strength ?? 1.0;
   if (strength <= 0) strength = 0.01;
-  const decay = Math.max(1 / (1 + ageDays / (9 * strength)), 0.01);
 
   let meta: Record<string, unknown> = {};
   try {
@@ -175,7 +185,19 @@ export function unifiedScore(row: MemoryRow, relevance: number): number {
       : 0.5;
   const importance = Math.max(0.0, Math.min(raw >= 1.0 ? raw / 2.0 : raw, 1.0));
 
-  return 0.3 * decay + 0.3 * importance + 0.4 * relevance;
+  // Effective stability: importance AND reinforcement (strength) both flatten the
+  // FSRS aging curve, so valuable old memories fade slowly (parity with MCP
+  // _unified_score and the hook SQL).
+  const effStability = strength * (1.0 + AGING_ALPHA * importance);
+  const decay = Math.max(1 / (1 + ageDays / (9 * effStability)), 0.01);
+  const strengthScore = Math.min(strength / 5.0, 1.0);
+
+  return (
+    WEIGHTS.decay * decay +
+    WEIGHTS.importance * importance +
+    WEIGHTS.relevance * relevance +
+    WEIGHTS.strength * strengthScore
+  );
 }
 
 function formatMemory(row: MemoryRow, score?: number): string {
