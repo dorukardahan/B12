@@ -1976,6 +1976,18 @@ async def memory_consolidate(
             # CPU-heavy HDBSCAN pass to a worker thread — in daemon mode one FastMCP
             # loop serves every session, so it must never block on this rare admin
             # op. Precedent: daemon_request_async.
+            #
+            # Scoped-out caveat (same engine _daemon_request bypass noted in the
+            # apply branch below): if the dry-run reaches merge candidates, the
+            # engine's NLI check opens its OWN embed-daemon socket
+            # (consolidation_engine.py ~:171) that does NOT go through
+            # daemon_request_async / _daemon_lock. Off-loop, that socket call can
+            # now overlap a concurrent session's classify/encode on the
+            # single-connection-serial daemon — worst case a 5s client times out
+            # and degrades (the hook paths already produce this contention), NOT
+            # data loss. Routing the engine through daemon_request_async is the
+            # deferred fix; offloading is still a net win (loop stays responsive
+            # instead of frozen for the whole pass).
             result = await asyncio.to_thread(
                 _consolidate,
                 db_path=DB_PATH,
