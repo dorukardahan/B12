@@ -145,9 +145,10 @@ if [ "$DRY" -eq 1 ]; then
 fi
 
 # 3) Commit, annotated tag, push, GitHub release.
+# README.md is staged as a safety net in case the agent pre-edited a changelog
+# highlight there; `git add` of an unchanged tracked file is a no-op.
 git add CHANGELOG.md README.md pyproject.toml package.json .claude-plugin/plugin.json \
-        scripts/b12_mcp_server.py scripts/b12_health.py install.sh 2>/dev/null || true
-git add pyproject.toml package.json .claude-plugin/plugin.json scripts/b12_mcp_server.py scripts/b12_health.py install.sh CHANGELOG.md
+        scripts/b12_mcp_server.py scripts/b12_health.py install.sh
 git commit -m "chore(release): v$NEW"
 SUMMARY="$(head -1 "$NOTES" | sed 's/^#* *//')"
 git tag -a "v$NEW" -m "v$NEW${SUMMARY:+: $SUMMARY}"
