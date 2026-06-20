@@ -47,8 +47,26 @@ EOF
   esac
 }
 
+_current_version() {
+  # The release baseline: the last tag if present, else the installed package
+  # version (so a shallow/tagless clone doesn't think it's at 0.0.0).
+  if [ -n "$LAST_TAG" ]; then echo "${LAST_TAG#v}"; return; fi
+  grep -E '^version = ' pyproject.toml 2>/dev/null | head -1 | sed -E 's/^version = "([^"]+)".*/\1/'
+}
+
 if [ "${1:-}" = "--check" ]; then
-  if [ -z "$LAST_TAG" ]; then echo "No tags yet — first release."; exit 0; fi
+  if [ -z "$LAST_TAG" ]; then
+    # Shallow/tagless checkout — try to pull tags so the range is meaningful.
+    git fetch --tags --quiet 2>/dev/null || true
+    LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+  fi
+  if [ -z "$LAST_TAG" ]; then
+    CUR="$(_current_version)"
+    echo "No git tags in this checkout (shallow/tagless clone?)."
+    echo "Current package version: v${CUR:-unknown}. Run 'git fetch --tags' to compute"
+    echo "what's unreleased, or treat v${CUR:-?} as the baseline for the next release."
+    exit 0
+  fi
   RANGE="$LAST_TAG..HEAD"
   TOTAL=$(git rev-list --count "$RANGE")
   if [ "$TOTAL" -eq 0 ]; then echo "Up to date — nothing unreleased since $LAST_TAG."; exit 0; fi
@@ -85,6 +103,16 @@ if [ -n "$(git status --porcelain --untracked-files=no)" ]; then
   echo "ERROR: working tree has uncommitted tracked changes — commit/stash first." >&2; exit 2
 fi
 if git rev-parse "v$NEW" >/dev/null 2>&1; then echo "ERROR: tag v$NEW already exists." >&2; exit 2; fi
+# Refuse a non-incrementing version (typo / accidental downgrade) BEFORE mutating
+# any file. Baseline = last tag, or the package version on a tagless clone.
+CUR="$(_current_version)"
+if [ -n "$CUR" ]; then
+  python3 - "$CUR" "$NEW" <<'PY' || { echo "ERROR: v$NEW is not greater than current v$CUR — refusing to downgrade/repeat." >&2; exit 2; }
+import sys
+def t(v): return tuple(int(x) for x in v.split("."))
+sys.exit(0 if t(sys.argv[2]) > t(sys.argv[1]) else 1)
+PY
+fi
 
 echo "Cutting release v$NEW (last: ${LAST_TAG:-none})  dry-run=$DRY"
 
@@ -122,6 +150,20 @@ sub("install.sh", r'B12 Memory System Installer \(v[0-9.]*', f'B12 Memory System
 for jf in ("package.json", ".claude-plugin/plugin.json"):
     d = json.load(open(jf)); d["version"] = NEW
     json.dump(d, open(jf,"w"), indent=2); open(jf,"a").write("\n")
+
+# README front-page "## Changelog (recent)" — keep it in sync (AGENTS.md doc-sync
+# rule). Prepend a minimal stub entry so the front page never pins to an older
+# version; the agent may enrich it with highlights during curation.
+try:
+    rd = open("README.md").read()
+    anchor = "## Changelog (recent)\n"
+    if anchor in rd and f"### v{NEW} (" not in rd:
+        idx = rd.index(anchor) + len(anchor)
+        entry = f"\n### v{NEW} ({today})\n\nSee [CHANGELOG.md](CHANGELOG.md) for the full notes.\n"
+        open("README.md","w").write(rd[:idx] + entry + rd[idx:])
+        print("  prepended README 'Changelog (recent)' stub entry")
+except FileNotFoundError:
+    pass
 print(f"  synced 6 version touchpoints -> {NEW}; prepended CHANGELOG section")
 PY
 
