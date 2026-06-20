@@ -337,7 +337,13 @@ fi
 
 # ── FTS5 search with FSRS power-law retention ──────────────────
 # v8: importance+strength both feed effective stability (eff_stab = S*(1+4*imp));
-#     4-term weights 0.25/0.25/0.40/0.10 match MCP _unified_score/_DEFAULT_WEIGHTS.
+#     4-term weights 0.25/0.25/0.40/0.10 match MCP _unified_score on its DEFAULTS.
+# NOTE: alpha (4.0) and the weights are compiled-in literals here. The MCP scorer's
+# B12_AGING_ALPHA / B12_WEIGHT_* env overrides are NOT honored by this hook (it has
+# never read B12_WEIGHT_* — weights were always hardcoded). So those env knobs tune
+# `memory_search` only; this UserPromptSubmit ranking always uses the defaults. Parity
+# with _unified_score holds on the default config (the common case); a deployment that
+# overrides them deliberately accepts that the two surfaces diverge.
 RESULTS=$(sqlite3 "$DB_PATH" "
   WITH base AS (
     SELECT m.id AS id,

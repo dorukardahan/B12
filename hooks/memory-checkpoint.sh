@@ -384,10 +384,19 @@ try:
             continue
 
         tags = f"proj:{project_name},checkpoint,{item['category']}"
+        # Floor at 0.7 (the prior checkpoint constant): checkpoint only buffers
+        # content already flagged high-signal by the regex categories (decision /
+        # error / learning / preference / tool_pref / correction / blocker, base
+        # score >= 6) or a [Label] prefix, so a category-flagged capture stays at
+        # >= 0.7 even when b12_importance's content tokens don't fire (e.g.
+        # "user prefers tabs over spaces"). Content heuristics can only RAISE it
+        # (a date/decision/"remember" -> up to 0.95). Without the floor, importance
+        # now also shortens the aging half-life, so these would age faster than before.
+        importance_score = max(_imp_score(item["content"]), 0.7)
         metadata = validate_metadata({
             "type": item["category"],
             "source": "checkpoint",
-            "importance_score": _imp_score(item["content"]),
+            "importance_score": importance_score,
             "project": project_name,
             "content_hash": item["hash"],
         })
