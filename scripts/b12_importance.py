@@ -93,19 +93,131 @@ _FACT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\+\d{10,}|\b\d{3,4}[\s-]?\d{3,4}[\s-]?\d{2,4}\b"),            # phone-ish
 )
 
+# ── Phase-2 signal lexicons / patterns (EN + TR; 9 more langs in PR-2b) ──
+
+# Explicit "save this" cues. Distinct from _REMEMBER_TOKENS — fires only when
+# no legacy remember token matched (guarded in score_with_breakdown), floors
+# at MEMORABLE.
+_CUE_TOKENS: tuple[str, ...] = (
+    "save this", "save it", "store this", "pin this", "bookmark",
+    "mark this", "take note", "make a note",
+    # Turkish
+    "kaydet", "sakla", "saklayalım", "işaretle", "kaydedelim", "not düş",
+)
+
+# Commitment / obligation modals. Fire only when no legacy decision token
+# matched (guarded). Multi-word / apostrophe tokens are substring-matched;
+# single bare words use word boundaries.
+_COMMIT_TOKENS: tuple[str, ...] = (
+    "must", "will", "i'll", "we'll", "have to", "need to",
+    "committing to", "going to",
+    # Turkish obligation markers
+    "zorunda", "zorunlu", "mecbur", "gerek", "lazım", "lazim",
+    "şart", "sart", "yapacağım", "yapacagim", "edeceğiz", "edecegiz",
+)
+# Turkish "-malı/-meli" obligation suffix.
+_COMMIT_TR_SUFFIX: re.Pattern[str] = re.compile(r"\b\w+(?:malı|meli|mali|meli)\b")
+# Negated modals cancel the commitment signal (conservative: any negated
+# modal in the content suppresses it — a rare both-modal sentence is acceptable
+# loss for v1; documented).
+_NEG_MODAL: re.Pattern[str] = re.compile(
+    r"\b(?:won't|wont|will not|must not|mustn't|cannot|can't|shouldn't|"
+    r"not going to|no need to)\b"
+)
+
+# Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
+# numeric dates; this adds ISO dates and the *relative* deadline keyword
+# surface (future-oriented only — "ago"/"yesterday" intentionally excluded).
+_DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),                       # ISO date
+    re.compile(r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"),           # D.M.Y / D/M/Y
+)
+_DEADLINE_TOKENS: tuple[str, ...] = (
+    "deadline", "due ", "due:", "due date", "expires", "expiry", "by end of",
+    "no later than", "until ", "till ",
+    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
+    # Turkish
+    "son tarih", "vade", "teslim", "kadar", "bitiş tarihi", "bitis tarihi",
+    "pazartesi", "salı", "sali", "çarşamba", "carsamba", "perşembe", "persembe",
+    "cuma", "cumartesi", "pazar",
+)
+
+# Person mention — @handle or email local-part ONLY in Phase 2. The noisy
+# capitalized-word + relationship-verb heuristic is deferred until the
+# corpus audit (PR-2c) shows it matters.
+_PERSON_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"(?<![\w.])@[A-Za-z0-9_]{2,}\b"),               # @handle
+    re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),                # email
+)
+
+# Numeric value — fires only when a magnitude/number co-occurs with a
+# context word (prevents incidental digits flooring at FACT).
+_NUMERIC_VALUE: re.Pattern[str] = re.compile(
+    r"[\$€₺¥£]\s?\d|\b\d+(?:[.,]\d+)?\s?[kKmMbB]\b|\b\d{2,}\b|\b\d+\s?%",
+)
+_NUMERIC_CONTEXT: tuple[str, ...] = (
+    "cost", "budget", "price", "revenue", "salary", "users", "count",
+    "amount", "total", "fee", "rate", "percent",
+    # Turkish
+    "bütçe", "butce", "maliyet", "fiyat", "gelir", "maaş", "maas",
+    "kullanıcı", "kullanici", "adet", "tutar", "oran", "ücret", "ucret",
+)
+_NUMERIC_MAX_LEN: int = 100_000  # skip numeric scan on very large content
+_MAX_SCAN_LEN: int = 20_000      # cap regex scan window (O(n^2) backtracking guard)
+
+# Identifiers. SHA = 7–64 hex; domains require a host/path shape (not a bare
+# TLD); POSIX absolute paths. Floors at FACT.
+_IDENTIFIER_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\bPR#\d+\b", re.IGNORECASE),                   # PR#123
+    re.compile(r"#\d{1,6}\b"),                                  # #123 issue/PR
+    re.compile(r"\b[0-9a-f]{7,64}\b"),                          # git SHA
+    re.compile(r"\b[\w.-]+\.[a-z]{2,}/\S+"),                    # host/path
+    re.compile(r"(?:^|\s)(/\w[\w/.-]+)"),                       # POSIX abs path
+)
+
+# Secret / credential shapes. On match the importance boost is SKIPPED and
+# secret_suspected is flagged — the value is NEVER stored or logged (public-repo
+# secrets rule). Checked before identifiers so a key never floors at FACT.
+_DANGEROUS_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{8,}"),   # stripe-style
+    re.compile(r"\bghp_[A-Za-z0-9]{16,}"),                      # github PAT
+    re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),              # slack token
+    re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),               # aws key id
+    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),          # PEM private key
+    re.compile(r"\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),  # JWT
+    re.compile(r"\b(?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*\S{12,}",
+               re.IGNORECASE),                                  # key=value secret
+)
+
 
 # ── Result type ────────────────────────────────────────────────────
 
 
 @dataclass(frozen=True)
 class ImportanceBreakdown:
-    """Per-signal breakdown returned by score_with_breakdown."""
+    """Per-signal breakdown returned by score_with_breakdown.
+
+    The first five fields are the original (pre-Phase-2) contract; every
+    construction site passes them positionally. The Phase-2 signal fields are
+    APPENDED with defaults so those 5-positional calls keep working unchanged.
+    None of these fields store the matched content — only booleans / the final
+    band — so a breakdown's repr can never echo a detected secret value.
+    """
 
     band: str        # name of the final band ("memorable" / "decision" / ...)
     score: float     # final importance in [0.0, IMPORTANCE_CAP]
     remember_hit: bool
     decision_hit: bool
     fact_hits: int
+    # ── Phase-2 signal fields (appended; default False/"en"/0) ──────────
+    commitment_hit: bool = False   # modal/obligation verb (guarded by decision)
+    deadline_hit: bool = False     # ISO/relative date or deadline keyword
+    person_hit: bool = False       # @handle or email local-part
+    cue_hit: bool = False          # explicit "save/store this" (guarded by remember)
+    numeric_hit: bool = False      # number + context word (cost/budget/users/...)
+    identifier_hit: bool = False   # PR#/SHA/host-path/abs-path
+    lang_detected: str = "en"      # populated in PR-2b; "en" placeholder for now
+    secret_suspected: bool = False  # api-key/token shape seen; boost skipped, never logged
 
 
 # ── Public API ────────────────────────────────────────────────────
@@ -121,7 +233,15 @@ def score(content: str | None) -> float:
 
 
 def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
-    """Same as score() but also returns which signals fired."""
+    """Same as score() but also returns which signals fired.
+
+    Band resolution is max-wins (the highest band any signal fires takes the
+    score); the result is clamped to [0, IMPORTANCE_CAP] so the read-path RET-3
+    dual-scale normalization is never perturbed. Phase-2 signals are GUARDED:
+    the new MEMORABLE/DECISION-equivalent detectors fire only when the legacy
+    remember/decision tokens did not, so breakdown booleans stay truthful and
+    nothing is double-counted.
+    """
     if content is None:
         return ImportanceBreakdown("trivial", IMPORTANCE_TRIVIAL, False, False, 0)
 
@@ -129,39 +249,47 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
     if not stripped:
         return ImportanceBreakdown("trivial", IMPORTANCE_TRIVIAL, False, False, 0)
 
-    lower = stripped.lower()
+    # Bound the regex scan: several patterns here and in the legacy fact set
+    # (e.g. the email `\S+@\S+\.\S+`) backtrack O(n^2) on long no-match runs.
+    # Real memories are short and importance signals appear early, so scanning
+    # a prefix is both safe and a hard guard against pathological content.
+    scan = stripped[:_MAX_SCAN_LEN]
+    lower = scan.lower()
 
     # Exact-match trivial check (single word like "ok", "tamam")
     if lower in _TRIVIAL_EXACTS:
         return ImportanceBreakdown("trivial", IMPORTANCE_TRIVIAL, False, False, 0)
 
+    # ── Legacy signals (unchanged; now on the bounded scan window) ──
     remember_hit = any(_phrase_match(lower, tok) for tok in _REMEMBER_TOKENS)
-    decision_hit = any(
-        _word_match(lower, tok) for tok in _DECISION_TOKENS
-    )
+    decision_hit = any(_word_match(lower, tok) for tok in _DECISION_TOKENS)
+    fact_hits = sum(1 for p in _FACT_PATTERNS if p.search(scan))
 
-    fact_hits = 0
-    for pattern in _FACT_PATTERNS:
-        if pattern.search(stripped):
-            fact_hits += 1
+    # ── Phase-2 signals (guarded so they never double-count) ────────
+    cue_hit = (not remember_hit) and _detect_cue(lower)
+    commitment_hit = (not decision_hit) and _detect_commitment(lower)
+    deadline_hit = _detect_deadline(lower)
+    person_hit = _detect_person(scan)
+    numeric_hit = _detect_numeric(lower)
+    identifier_hit, secret_suspected = _detect_identifiers(scan)
 
-    # Pick the highest band that fired.
-    if remember_hit:
+    def _build(band: str, value: float) -> ImportanceBreakdown:
         return ImportanceBreakdown(
-            "memorable", IMPORTANCE_MEMORABLE, True, decision_hit, fact_hits
-        )
-    if decision_hit:
-        return ImportanceBreakdown(
-            "decision", IMPORTANCE_DECISION, False, True, fact_hits
-        )
-    if fact_hits >= 1:
-        return ImportanceBreakdown(
-            "fact", IMPORTANCE_FACT, False, False, fact_hits
+            band, min(value, IMPORTANCE_CAP), remember_hit, decision_hit, fact_hits,
+            commitment_hit=commitment_hit, deadline_hit=deadline_hit,
+            person_hit=person_hit, cue_hit=cue_hit, numeric_hit=numeric_hit,
+            identifier_hit=identifier_hit, lang_detected="en",
+            secret_suspected=secret_suspected,
         )
 
-    return ImportanceBreakdown(
-        "baseline", IMPORTANCE_BASELINE, False, False, 0
-    )
+    # Pick the highest band that fired (max-wins).
+    if remember_hit or cue_hit:
+        return _build("memorable", IMPORTANCE_MEMORABLE)
+    if decision_hit or commitment_hit:
+        return _build("decision", IMPORTANCE_DECISION)
+    if deadline_hit or fact_hits >= 1 or person_hit or numeric_hit or identifier_hit:
+        return _build("fact", IMPORTANCE_FACT)
+    return _build("baseline", IMPORTANCE_BASELINE)
 
 
 # ── Helpers ───────────────────────────────────────────────────────
@@ -185,6 +313,68 @@ def _phrase_match(haystack: str, token: str) -> bool:
     return bool(re.search(pattern, haystack))
 
 
+def _token_in(haystack: str, token: str) -> bool:
+    """Substring for multi-word / apostrophe tokens; word boundaries otherwise."""
+    if " " in token or "'" in token:
+        return token in haystack
+    return _word_match(haystack, token)
+
+
+# ── Phase-2 signal detectors (each returns bool; identifiers returns a pair) ──
+
+
+def _detect_cue(lower: str) -> bool:
+    """Explicit save/store cue → MEMORABLE (guarded by remember in caller)."""
+    return any(_token_in(lower, tok) for tok in _CUE_TOKENS)
+
+
+def _detect_commitment(lower: str) -> bool:
+    """Modal/obligation verb → DECISION (guarded by decision in caller).
+
+    A negated modal anywhere in the content cancels the signal (conservative;
+    a rare sentence carrying both a negated and an un-negated modal is an
+    accepted false-negative for v1).
+    """
+    if _NEG_MODAL.search(lower):
+        return False
+    if any(_token_in(lower, tok) for tok in _COMMIT_TOKENS):
+        return True
+    return bool(_COMMIT_TR_SUFFIX.search(lower))
+
+
+def _detect_deadline(lower: str) -> bool:
+    """ISO/numeric date or a future-oriented deadline keyword → FACT."""
+    if any(p.search(lower) for p in _DEADLINE_PATTERNS):
+        return True
+    return any(_token_in(lower, tok) for tok in _DEADLINE_TOKENS)
+
+
+def _detect_person(stripped: str) -> bool:
+    """@handle or email local-part → FACT (capitalized-word heuristic deferred)."""
+    return any(p.search(stripped) for p in _PERSON_PATTERNS)
+
+
+def _detect_numeric(lower: str) -> bool:
+    """Number + context word → FACT. Skipped on very large content."""
+    if len(lower) > _NUMERIC_MAX_LEN:
+        return False
+    if not _NUMERIC_VALUE.search(lower):
+        return False
+    return any(ctx in lower for ctx in _NUMERIC_CONTEXT)
+
+
+def _detect_identifiers(stripped: str) -> tuple[bool, bool]:
+    """Return (identifier_hit, secret_suspected).
+
+    A credential-shaped token short-circuits: the importance boost is skipped
+    (identifier_hit stays False) and secret_suspected is flagged. The matched
+    value is never returned, stored, or logged.
+    """
+    if any(p.search(stripped) for p in _DANGEROUS_PATTERNS):
+        return (False, True)
+    return (any(p.search(stripped) for p in _IDENTIFIER_PATTERNS), False)
+
+
 # ── CLI smoke-test ─────────────────────────────────────────────────
 
 
@@ -202,6 +392,18 @@ def _selftest() -> int:
         ("remember this: never amend a merged commit", IMPORTANCE_MEMORABLE, "remember-en"),
         ("lütfen not al: $0G launchı Mayıs", IMPORTANCE_MEMORABLE, "remember-tr"),
         ("hatırla, geçen sefer aynı hatayı yapmıştık", IMPORTANCE_MEMORABLE, "remember-tr-2"),
+        # ── Phase-2 signal cases (EN + TR) ──────────────────────────
+        ("save this for later: the prod endpoint", IMPORTANCE_MEMORABLE, "cue-en"),
+        ("sakla bunu: prod endpoint", IMPORTANCE_MEMORABLE, "cue-tr"),
+        ("I must finish the audit this week", IMPORTANCE_DECISION, "commit-en"),
+        ("bunu yapmak zorundayız, gerek var", IMPORTANCE_DECISION, "commit-tr"),
+        ("the invoice is due Friday", IMPORTANCE_FACT, "deadline-en"),
+        ("son tarih Pazartesi, atlamayalım", IMPORTANCE_FACT, "deadline-tr"),
+        ("ping @alice about the rollout", IMPORTANCE_FACT, "person-handle"),
+        ("the budget is 50k for 500 users", IMPORTANCE_FACT, "numeric-ctx"),
+        ("fixed in PR#123", IMPORTANCE_FACT, "identifier-pr"),
+        ("just chatting about the weather", IMPORTANCE_BASELINE, "no-signal"),
+        ("sk_live_abc123DEF456ghi789jkl012mno345pqr", IMPORTANCE_BASELINE, "secret-skip"),
     ]
     failed = 0
     for content, expected, label in cases:
