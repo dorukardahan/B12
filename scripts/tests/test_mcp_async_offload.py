@@ -124,6 +124,143 @@ def test_daemon_request_async_finishes_worker_on_cancellation():
     assert "slow" in completed, "worker was abandoned on cancellation (socket round-trip not awaited)"
 
 
+# ── PR-B: rare admin handlers offloaded off the FastMCP loop ────────────────
+
+
+def test_memory_import_offloads_plain_to_thread():
+    """memory_import must run the blocking importer in a worker thread (PLAIN
+    asyncio.to_thread) — never on the event loop and never routed through the
+    BB1 single writer. import_memories opens its own connection + BEGIN + a 5s
+    backfill socket call, so it must keep its standalone db_path/input_path/
+    mode/source_name signature. We assert it runs off-thread with exactly that
+    plain kwarg set."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_memory_import_offloads_plain_to_thread ({e})")
+        return
+    if M._import_memories is None:
+        print("SKIP test_memory_import_offloads_plain_to_thread (export_import unavailable)")
+        return
+
+    caller = threading.get_ident()
+    seen = {}
+
+    class _Res:
+        memories_imported = 1
+        memories_skipped = 0
+        edges_imported = 0
+        duration_seconds = 0.0
+        errors = []
+
+    def fake_import(**kwargs):
+        seen["thread"] = threading.get_ident()
+        seen["kwargs"] = set(kwargs)
+        return _Res()
+
+    orig = M._import_memories
+    M._import_memories = fake_import
+    try:
+        out = asyncio.run(M.memory_import(input_path="x.b12", mode="merge", source_name="s"))
+    finally:
+        M._import_memories = orig
+
+    assert "Import complete" in out
+    assert seen.get("thread") is not None, "importer was never called"
+    assert seen["thread"] != caller, "import ran on the event-loop thread (not offloaded)"
+    assert seen["kwargs"] == {"db_path", "input_path", "mode", "source_name"}, (
+        f"importer called with a non-plain signature {sorted(seen['kwargs'])} — "
+        "it must NOT be wrapped/rewired through the writer")
+
+
+def test_memory_consolidate_dry_run_offloads_apply_stays_inline():
+    """dry_run (read-only) is offloaded to a worker thread; the apply path
+    (dry_run=False) stays synchronous on the loop (scoped-out: its own-connection
+    writes would race the BB1 single writer)."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_memory_consolidate_dry_run_offloads_apply_stays_inline ({e})")
+        return
+    if M._consolidate is None:
+        print("SKIP test_memory_consolidate_dry_run_offloads_apply_stays_inline (engine unavailable)")
+        return
+
+    caller = threading.get_ident()
+
+    class _R:
+        memories_processed = 0
+        clusters_found = 0
+        memories_deduplicated = 0
+        memories_merged = 0
+        contradictions_flagged = 0
+        dry_run_report = []
+
+    rec = []
+
+    def fake_consolidate(**kwargs):
+        rec.append((kwargs.get("dry_run"), threading.get_ident()))
+        return _R()
+
+    orig = M._consolidate
+    M._consolidate = fake_consolidate
+    try:
+        asyncio.run(M.memory_consolidate(dry_run=True))
+        asyncio.run(M.memory_consolidate(dry_run=False))
+    finally:
+        M._consolidate = orig
+
+    by = dict(rec)
+    assert by.get(True) is not None and by.get(False) is not None, f"both paths must run: {rec}"
+    assert by[True] != caller, "dry_run consolidate ran on the event-loop thread (not offloaded)"
+    assert by[False] == caller, "apply consolidate must stay inline per the scoped-out caveat"
+
+
+def test_memory_dashboard_stop_offloads_to_worker_thread():
+    """memory_dashboard(action='stop') offloads the blocking _stop() (SIGTERM +
+    os.kill poll loop with sleeps) to a worker thread."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_memory_dashboard_stop_offloads_to_worker_thread ({e})")
+        return
+    import tempfile
+
+    caller = threading.get_ident()
+    d = tempfile.mkdtemp()
+    with open(os.path.join(d, "dashboard.pid"), "w") as f:
+        f.write("424242")
+    old_env = os.environ.get("B12_DATA_DIR")
+    os.environ["B12_DATA_DIR"] = d
+
+    seen = {}
+    state = {"sigterm": False}
+    real_kill = os.kill
+
+    def fake_kill(pid, sig):
+        if sig == 0:  # existence probe
+            if state["sigterm"]:
+                raise ProcessLookupError()
+            return None
+        state["sigterm"] = True  # SIGTERM — this is the offloaded work
+        seen["thread"] = threading.get_ident()
+        return None
+
+    os.kill = fake_kill
+    try:
+        out = asyncio.run(M.memory_dashboard(action="stop"))
+    finally:
+        os.kill = real_kill
+        if old_env is None:
+            os.environ.pop("B12_DATA_DIR", None)
+        else:
+            os.environ["B12_DATA_DIR"] = old_env
+
+    assert "stopped" in out.lower(), out
+    assert seen.get("thread") is not None, "_stop never sent SIGTERM"
+    assert seen["thread"] != caller, "_stop ran on the event-loop thread (not offloaded)"
+
+
 if __name__ == "__main__":
     rc = 0
     fns = [v for k, v in dict(globals()).items() if k.startswith("test_")]
