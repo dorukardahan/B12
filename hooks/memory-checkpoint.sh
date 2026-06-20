@@ -359,6 +359,13 @@ try:
         def _pii_scrub(_s):
             return _s
 
+    try:
+        import b12_importance as _b12imp
+        _imp_score = _b12imp.score
+    except ImportError:
+        def _imp_score(_content):
+            return 0.5   # baseline fallback if the scorer is unavailable
+
     # Deduplicate against existing memories (by content_hash)
     existing_hashes = set()
     try:
@@ -380,7 +387,7 @@ try:
         metadata = validate_metadata({
             "type": item["category"],
             "source": "checkpoint",
-            "importance_score": 0.7,
+            "importance_score": _imp_score(item["content"]),
             "project": project_name,
             "content_hash": item["hash"],
         })
