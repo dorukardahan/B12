@@ -53,7 +53,7 @@ Follow semver against the previous tag (`git describe --tags --abbrev=0`):
 
 When in doubt, prefer MINOR — B12 isn't on a strict semver contract yet.
 
-### 2. Update the six version touchpoints
+### 2. Update every version touchpoint
 
 Keep these in sync. The audit's "stale version constant" finding came
 from forgetting one of them (it caught `scripts/b12_health.py` lagging at
@@ -81,6 +81,9 @@ sed -i '' "s/B12 Memory System Installer (v[0-9.]*/B12 Memory System Installer (
 
 # .claude-plugin/plugin.json
 python3 -c "import json; d=json.load(open('.claude-plugin/plugin.json')); d['version']='$NEW'; json.dump(d, open('.claude-plugin/plugin.json','w'), indent=2); print(open('.claude-plugin/plugin.json').read())"
+
+# package-lock.json — version appears twice (top-level + the root package entry)
+python3 -c "import json; d=json.load(open('package-lock.json')); d['version']='$NEW'; d.get('packages',{}).get('',{}).__setitem__('version','$NEW') if '' in d.get('packages',{}) else None; json.dump(d, open('package-lock.json','w'), indent=2); open('package-lock.json','a').write(chr(10))"
 ```
 
 ### 3. Hand-curate CHANGELOG.md
@@ -152,8 +155,8 @@ Before tagging, a quick check that the things that should be in sync
 actually are:
 
 ```bash
-# All six version touchpoints match?
-grep -E '"version"' package.json .claude-plugin/plugin.json
+# All version touchpoints match? (scripts/release.sh does + verifies these for you)
+grep -E '"version"' package.json .claude-plugin/plugin.json package-lock.json
 grep -E '^version = ' pyproject.toml
 grep -E '^B12_VERSION' scripts/b12_mcp_server.py
 grep -E '^VERSION' scripts/b12_health.py

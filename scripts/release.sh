@@ -8,7 +8,7 @@
 # Usage:
 #   scripts/release.sh --check                 # is a release due? prints unreleased
 #                                               # commit count + suggested bump.
-#   scripts/release.sh <X.Y.Z> <notes-file>    # cut the release: sync the 6 version
+#   scripts/release.sh <X.Y.Z> <notes-file>    # cut the release: sync the version
 #                                               # touchpoints, prepend the curated
 #                                               # CHANGELOG section, commit, tag,
 #                                               # GitHub release.
@@ -62,9 +62,13 @@ if [ "${1:-}" = "--check" ]; then
   fi
   if [ -z "$LAST_TAG" ]; then
     CUR="$(_current_version)"
-    echo "No git tags in this checkout (shallow/tagless clone?)."
-    echo "Current package version: v${CUR:-unknown}. Run 'git fetch --tags' to compute"
-    echo "what's unreleased, or treat v${CUR:-?} as the baseline for the next release."
+    echo "── Release check: INDETERMINATE ────────────────────────"
+    echo "  No git tags in this checkout (shallow/tagless clone, or no 'origin'"
+    echo "  / no network in this sandbox), so the unreleased range CANNOT be"
+    echo "  computed. Current package version: v${CUR:-unknown}."
+    echo "  ACTION: run 'git fetch --tags' and re-run --check, or tell the owner"
+    echo "  the release state can't be determined here so they can check manually."
+    echo "────────────────────────────────────────────────────────"
     exit 0
   fi
   RANGE="$LAST_TAG..HEAD"
@@ -151,6 +155,18 @@ for jf in ("package.json", ".claude-plugin/plugin.json"):
     d = json.load(open(jf)); d["version"] = NEW
     json.dump(d, open(jf,"w"), indent=2); open(jf,"a").write("\n")
 
+# package-lock.json carries the version in two places (top-level + the root
+# package entry). Sync it too if present, so the release commit doesn't leave a
+# stale lockfile / dirty `npm install --package-lock-only` diff.
+try:
+    lock = json.load(open("package-lock.json"))
+    lock["version"] = NEW
+    if isinstance(lock.get("packages"), dict) and "" in lock["packages"]:
+        lock["packages"][""]["version"] = NEW
+    json.dump(lock, open("package-lock.json","w"), indent=2); open("package-lock.json","a").write("\n")
+except FileNotFoundError:
+    pass
+
 # README front-page "## Changelog (recent)" — keep it in sync (AGENTS.md doc-sync
 # rule). Prepend a minimal stub entry so the front page never pins to an older
 # version; the agent may enrich it with highlights during curation.
@@ -164,10 +180,10 @@ try:
         print("  prepended README 'Changelog (recent)' stub entry")
 except FileNotFoundError:
     pass
-print(f"  synced 6 version touchpoints -> {NEW}; prepended CHANGELOG section")
+print(f"  synced version touchpoints -> {NEW}; prepended CHANGELOG section")
 PY
 
-# 2) Sanity: all six touchpoints agree.
+# 2) Sanity: every version touchpoint agrees.
 echo "  verifying touchpoints..."
 for chk in \
   "pyproject.toml:^version = \"$NEW\"" \
@@ -179,7 +195,11 @@ for chk in \
   f="${chk%%:*}"; pat="${chk#*:}"
   grep -qE "$pat" "$f" || { echo "ERROR: touchpoint mismatch in $f" >&2; exit 1; }
 done
-echo "  all 6 touchpoints == $NEW ✓"
+# package-lock.json only if present (npm toolchain was removed; it may be absent).
+if [ -f package-lock.json ]; then
+  grep -qE "\"version\": \"$NEW\"" package-lock.json || { echo "ERROR: package-lock.json not synced to $NEW" >&2; exit 1; }
+fi
+echo "  all version touchpoints == $NEW ✓"
 
 if [ "$DRY" -eq 1 ]; then
   echo "DRY-RUN: edits applied locally, NOT committed. Review with 'git diff', then 'git checkout -- .' to undo or re-run without --dry-run."
@@ -191,6 +211,7 @@ fi
 # highlight there; `git add` of an unchanged tracked file is a no-op.
 git add CHANGELOG.md README.md pyproject.toml package.json .claude-plugin/plugin.json \
         scripts/b12_mcp_server.py scripts/b12_health.py install.sh
+if [ -f package-lock.json ]; then git add package-lock.json; fi
 git commit -m "chore(release): v$NEW"
 SUMMARY="$(head -1 "$NOTES" | sed 's/^#* *//')"
 git tag -a "v$NEW" -m "v$NEW${SUMMARY:+: $SUMMARY}"

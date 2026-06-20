@@ -132,7 +132,7 @@ of release-worthy work in this repo (e.g. you merged one or more user-facing PRs
    `### Added / ### Changed / ### Fixed / ### Internal`, user-facing wording, ignore
    dep-bump noise, PII/secret-clean — maintainer quality, NOT raw commit subjects),
    write it to a notes file, then run:
-   `scripts/release.sh <X.Y.Z> <notes-file>` — it syncs all 6 version touchpoints,
+   `scripts/release.sh <X.Y.Z> <notes-file>` — it syncs all version touchpoints,
    prepends the CHANGELOG, commits, annotated-tags, and creates the GitHub release.
    Use `scripts/release.sh --dry-run <X.Y.Z> <notes-file>` first if unsure.
 

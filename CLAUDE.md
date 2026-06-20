@@ -202,7 +202,7 @@ or a version-affecting change), at the end of the task — unprompted — run
 *"N commits since vX.Y.Z (suggested vNEXT) — cut a release?"*) and on approval
 hand-curate the CHANGELOG section (maintainer quality, grouped Added/Changed/
 Fixed/Internal, PII-clean) and run `scripts/release.sh <X.Y.Z> <notes-file>`
-(syncs the 6 version touchpoints, prepends CHANGELOG, commits, tags, creates the
+(syncs all version touchpoints, prepends CHANGELOG, commits, tags, creates the
 GitHub release; `--dry-run` to preview). This is the manual ritual made
 proactive — the owner still gates tag timing; it does NOT add an auto-publish
 toolchain. Same rule is in `AGENTS.md` so any agent (Codex/Gemini/OpenCode/
