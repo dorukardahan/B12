@@ -29,8 +29,10 @@ INPUT=$(cat)
 TOOL_NAME=$(echo "$INPUT" | jq -r '.tool_name // ""')
 SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // ""')
 
-# Q5 (P-RECALL) telemetry — start timestamp + log path.
-_Q5_START_MS=$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null || echo 0)
+# Q5 (P-RECALL) telemetry — session id + log path. (The latency field was
+# removed: measuring it required a per-hook `perl -MTime::HiRes` fork on this
+# machine's /bin/bash 3.2.57 where $EPOCHREALTIME is empty, and
+# checkpoint-telemetry.jsonl has no consumer for the field.)
 _Q5_SESSION_ID12="${SESSION_ID:0:12}"
 _Q5_TELEMETRY_LOG="${B12_DATA_DIR:-$HOME/.B12}/memory-logs/checkpoint-telemetry.jsonl"
 
@@ -51,17 +53,8 @@ COUNTER_FILE="$CHECKPOINT_DIR/.call-counter-${SESSION_ID:0:12}"
 BUFFER_FILE="$CHECKPOINT_DIR/.buffer-${SESSION_ID:0:12}.jsonl"
 LAST_FLUSH="$CHECKPOINT_DIR/.last-flush-${SESSION_ID:0:12}"
 
-# Cleanup stale session files (older than 24 hours).
-# Cleanup globs exclude `*.lock` — the new fcntl.flock sidecars on the
-# buffer file (e.g., `.buffer-<sid>.jsonl.lock`) would otherwise be
-# deleted while a concurrent worker holds flock on the inode, causing
-# the next worker to create a new inode under the same name and racing
-# the writers. Lock sidecars are 0 bytes; they get a 7-day mtime sweep
-# separately so they don't accumulate forever either.
-find "$CHECKPOINT_DIR" -name '.call-counter-*' ! -name '*.lock' -mtime +1 -delete 2>/dev/null || true
-find "$CHECKPOINT_DIR" -name '.buffer-*' ! -name '*.lock' -mtime +1 -delete 2>/dev/null || true
-find "$CHECKPOINT_DIR" -name '.last-flush-*' ! -name '*.lock' -mtime +1 -delete 2>/dev/null || true
-find "$CHECKPOINT_DIR" -name '*.lock' -mtime +7 -delete 2>/dev/null || true
+# (Stale-file cleanup runs inside the backgrounded worker below, collapsed into
+# a single `find` — see the comment there.)
 
 NOW=$(date +%s)
 
@@ -85,10 +78,7 @@ ELAPSED=$(( NOW - LAST_FLUSH_TIME ))
 # Q5: log the early-skip so we can tell "no opportunity to capture" apart
 # from "captured but found nothing" in the daily checkpoint audit.
 if [ "$COUNT" -lt 15 ] && [ "$ELAPSED" -lt 600 ]; then
-  _Q5_END_MS=$(perl -MTime::HiRes=time -e 'printf "%d", time()*1000' 2>/dev/null || echo "$_Q5_START_MS")
-  _Q5_LAT=$(( _Q5_END_MS - _Q5_START_MS ))
-  [ "$_Q5_LAT" -lt 0 ] && _Q5_LAT=0
-  echo "{\"ts\":$(date +%s),\"session_id\":\"${_Q5_SESSION_ID12}\",\"tool\":\"${TOOL_NAME}\",\"phase\":\"rate_limit_skip\",\"counter\":${COUNT},\"elapsed_s\":${ELAPSED},\"latency_ms\":${_Q5_LAT}}" \
+  echo "{\"ts\":$(date +%s),\"session_id\":\"${_Q5_SESSION_ID12}\",\"tool\":\"${TOOL_NAME}\",\"phase\":\"rate_limit_skip\",\"counter\":${COUNT},\"elapsed_s\":${ELAPSED}}" \
     >> "$_Q5_TELEMETRY_LOG" 2>/dev/null
   echo '{}'
   exit 0
@@ -131,7 +121,21 @@ PROJECT_NAME=$(basename "${PWD:-/tmp}")
 # `echo '{}'` immediately, the child process finishes the work,
 # disown'd so a parent exit cannot SIGHUP it.
 {
-python3 - "$SCAN_TEXT" "$BUFFER_FILE" "$B12_SCRIPTS" "$PROJECT_NAME" "$NOW" "$LAST_FLUSH" "$_Q5_TELEMETRY_LOG" "$_Q5_SESSION_ID12" "$TOOL_NAME" "$_Q5_START_MS" << 'PYEOF'
+# Stale-file cleanup. Collapsed from 4 separate `find` forks (which ran on every
+# PostToolUse before the rate-limit early-exit) into ONE `find` inside this
+# backgrounded worker, so cleanup never blocks the hot path. The 1-day sweep
+# excludes `*.lock` — the fcntl.flock sidecars on the buffer file
+# (`.buffer-<sid>.jsonl.lock`) must not be deleted while a concurrent worker
+# holds flock on the inode (the next worker would create a new inode under the
+# same name and race the writers). Lock sidecars are 0 bytes and get a separate
+# 7-day sweep so they don't accumulate forever either. The combined predicate
+# deletes the exact same set as the original four (verified).
+find "$CHECKPOINT_DIR" \( \
+    \( \( -name '.call-counter-*' -o -name '.buffer-*' -o -name '.last-flush-*' \) ! -name '*.lock' -mtime +1 \) \
+    -o \( -name '*.lock' -mtime +7 \) \
+  \) -delete 2>/dev/null || true
+
+python3 - "$SCAN_TEXT" "$BUFFER_FILE" "$B12_SCRIPTS" "$PROJECT_NAME" "$NOW" "$LAST_FLUSH" "$_Q5_TELEMETRY_LOG" "$_Q5_SESSION_ID12" "$TOOL_NAME" << 'PYEOF'
 import sys
 import os
 import json
@@ -161,22 +165,17 @@ except OSError:
 
 # ── Q5 (P-RECALL) telemetry plumbing ───────────────────────
 # We're inside a backgrounded subshell — write our own JSONL line so the
-# parent doesn't need to wait. Latency is measured from the parent's start
-# mark (sys.argv[10]) so a "captured" telemetry line covers the full
-# scan→insert path.
+# parent doesn't need to wait. (Latency tracking was removed: it required a
+# perl Time::HiRes fork — $EPOCHREALTIME is empty on bash 3.2.57 — and
+# checkpoint-telemetry.jsonl has no consumer for the field.)
 import time as _q5_time
 _q5_log_path = sys.argv[7] if len(sys.argv) > 7 else ""
 _q5_sid12 = sys.argv[8] if len(sys.argv) > 8 else ""
 _q5_tool = sys.argv[9] if len(sys.argv) > 9 else ""
-try:
-    _q5_start_ms = int(sys.argv[10]) if len(sys.argv) > 10 else int(_q5_time.time()*1000)
-except (TypeError, ValueError):
-    _q5_start_ms = int(_q5_time.time()*1000)
 
 def _q5_log(phase, captured=0, dropped_dedup=0, inserted=0, error=None):
     if not _q5_log_path:
         return
-    lat_ms = max(0, int(_q5_time.time()*1000) - _q5_start_ms)
     import json as _json
     rec = {
         "ts": int(_q5_time.time()),
@@ -186,7 +185,6 @@ def _q5_log(phase, captured=0, dropped_dedup=0, inserted=0, error=None):
         "captured": int(captured),
         "dropped_dedup": int(dropped_dedup),
         "inserted": int(inserted),
-        "latency_ms": int(lat_ms),
     }
     if error:
         rec["error"] = str(error)[:120]
