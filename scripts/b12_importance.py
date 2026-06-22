@@ -144,11 +144,14 @@ _COMMIT_TR_SUFFIX: re.Pattern[str] = re.compile(
 # "yok" (local negation), so an unrelated değil/yok elsewhere does not cancel a
 # real obligation. Bounded gap → linear.
 _TR_NEG_OBLIGATION: re.Pattern[str] = re.compile(
-    # \w* after each lets inflected forms match (zorundayız, değiliz, yoktur);
-    # up to 2 intervening words allow particles/adverbs ("zorunda da değiliz",
-    # "gerek de yok") while keeping the negation LOCAL.
+    # \w* after each lets inflected forms match (zorundayız, değiliz, yoktur).
+    # değil/yok must follow within the SAME clause (space-separated, optionally
+    # after one Turkish particle) — "zorunda da değiliz" / "gerek de yok" negate,
+    # but a comma clause break to an unrelated negation does NOT ("zorundayız,
+    # risk yok" still commits).
     r"\b(?:zorunda|zorunlu|mecbur|gerek|lazım|lazim|şart|sart)\w*"
-    r"(?:[\s,]+\w+){0,2}[\s,]+(?:değil|degil|yok)\w*"
+    r"(?:\s+(?:da|de|bile|hiç|hic|asla|artık|artik))?"
+    r"\s+(?:değil|degil|yok)\w*"
 )
 # Negative -mamalı/-memeli obligation infix ("yapmamalıyız" = we must NOT).
 _TR_NEG_SUFFIX: re.Pattern[str] = re.compile(r"\b\w*(?:mamalı|memeli|mamali)")

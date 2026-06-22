@@ -365,6 +365,12 @@ def test_tr_negation_with_particles():
     assert score_with_breakdown("bunu yapmak zorunda da değiliz").commitment_hit is False
     assert score_with_breakdown("buna gerek de yok").commitment_hit is False
 
+def test_tr_unrelated_yok_across_clause_does_not_cancel():
+    # Codex (:151 r16): a separate clause's yok/değil (across a comma) must NOT
+    # cancel a real obligation.
+    assert score_with_breakdown("bunu yapmak zorundayız, risk yok").commitment_hit is True
+    assert score_with_breakdown("bunu yapmalıyız, sorun değil").commitment_hit is True
+
 def test_is_secret_public_helper():
     # Public helper used by callers (memory_store, llm_extractor) to cap secrets.
     assert imp.is_secret("sk_live_abc123DEF456ghi789jkl012mno345pqr") is True
