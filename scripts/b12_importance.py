@@ -377,8 +377,9 @@ def score_with_breakdown(content: str | None, lang_code: str | None = None) -> I
     # that str.lower() inserts for the Turkish dotted "İ".
     lower = unicodedata.normalize("NFKC", scan).lower().replace("’", "'").replace("̇", "")
 
-    # Exact-match trivial check (single token like "ok", "tamam", "好的", "merci")
-    if lower in _TRIVIAL_EXACTS or _ml_is_trivial_exact(lower):
+    # Exact-match trivial check (single token like "ok", "tamam", "好的", "merci").
+    # The multilingual part respects lang_code so an explicit restriction scopes it.
+    if lower in _TRIVIAL_EXACTS or _ml_is_trivial_exact(lower, lang_code):
         return ImportanceBreakdown("trivial", IMPORTANCE_TRIVIAL, False, False, 0)
 
     # ── Legacy signals (unchanged; now on the bounded scan window) ──
@@ -651,10 +652,9 @@ def _build_lexicon(raw: dict) -> tuple[dict, frozenset]:
                 cats[cat] = ("re", re.compile(r"(?<!\w)(?:" + "|".join(re.escape(t) for t in toks) + r")(?!\w)"))
             else:
                 cats[cat] = ("sub", tuple(toks))
-        lex[lang] = {"script": stype, "cats": cats}
-        for t in e.get("trivial", ()):
-            if t.strip():
-                trivial_exact.add(_norm_tok(t, strip))
+        lang_trivial = {_norm_tok(t, strip) for t in e.get("trivial", ()) if t.strip()}
+        lex[lang] = {"script": stype, "cats": cats, "trivial": frozenset(lang_trivial)}
+        trivial_exact |= lang_trivial
     return lex, frozenset(trivial_exact)
 
 
@@ -701,9 +701,19 @@ def _ml_match(lower: str, lang: str, category: str) -> bool:
     return any(tok in hay for tok in val)
 
 
-def _ml_is_trivial_exact(lower: str) -> bool:
-    """True if the whole content is a single multilingual trivial token."""
-    return lower in _ML_TRIVIAL_EXACT or _ARABIC_TASHKEEL.sub("", lower) in _ML_TRIVIAL_EXACT
+def _ml_is_trivial_exact(lower: str, lang_code: str | None = None) -> bool:
+    """True if the whole content is a single multilingual trivial token.
+
+    When `lang_code` restricts the lexicon, only that language's trivial set is
+    consulted — so the override reliably scopes the check and an unrelated
+    language's one-token content is not demoted.
+    """
+    if lang_code:
+        entry = _LEXICON.get(lang_code)
+        toks = entry["trivial"] if entry else frozenset()
+    else:
+        toks = _ML_TRIVIAL_EXACT
+    return lower in toks or _ARABIC_TASHKEEL.sub("", lower) in toks
 
 
 # ── CLI smoke-test ─────────────────────────────────────────────────

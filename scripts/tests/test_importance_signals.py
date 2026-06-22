@@ -502,6 +502,15 @@ def test_ml_lang_code_override():
     assert imp.score("decidimos usar postgres", lang_code="es") >= imp.IMPORTANCE_DECISION
     assert imp.score("decidimos usar postgres", lang_code="de") == imp.IMPORTANCE_BASELINE
 
+def test_ml_lang_code_scopes_trivial():
+    # Codex: lang_code must scope the exact-trivial check too — another
+    # language's trivial token is not consulted under a restriction.
+    assert score_with_breakdown("danke", lang_code="es").band == "baseline"
+    assert score_with_breakdown("好的", lang_code="es").band == "baseline"
+    assert score_with_breakdown("danke", lang_code="de").band == "trivial"
+    # legacy EN/TR trivial stays always-on regardless of lang_code
+    assert score_with_breakdown("ok", lang_code="es").band == "trivial"
+
 def test_ml_candidate_langs_by_script():
     assert imp._candidate_langs("记住") == ("zh",)
     assert imp._candidate_langs("запомни") == ("ru",)
