@@ -133,6 +133,17 @@ _COMMIT_TR_SUFFIX: re.Pattern[str] = re.compile(
     # "normali", "kemali") and the word "mali" (financial) do NOT match.
     r"\b\w+(?:(?:malı|meli)" + _TR_PERSON_END + r"?|mali" + _TR_PERSON_END + r")\b"
 )
+# Turkish negated obligation — an obligation WORD closely followed by "değil"/
+# "yok" (local negation), so an unrelated değil/yok elsewhere does not cancel a
+# real obligation. Bounded gap → linear.
+_TR_NEG_OBLIGATION: re.Pattern[str] = re.compile(
+    # \w* after each lets inflected forms match (zorundayız, değiliz, yoktur);
+    # 1–8 spaces/commas between keeps the negation LOCAL.
+    r"\b(?:zorunda|zorunlu|mecbur|gerek|lazım|lazim|şart|sart)\w*"
+    r"[\s,]{1,8}(?:değil|degil|yok)\w*"
+)
+# Negative -mamalı/-memeli obligation infix ("yapmamalıyız" = we must NOT).
+_TR_NEG_SUFFIX: re.Pattern[str] = re.compile(r"\b\w*(?:mamalı|memeli|mamali)")
 # Negated modals cancel the commitment signal (conservative: any negated
 # modal in the content suppresses it — a rare both-modal sentence is acceptable
 # loss for v1; documented). Covers EN modal negations AND "don't/doesn't/do not
@@ -140,10 +151,13 @@ _COMMIT_TR_SUFFIX: re.Pattern[str] = re.compile(
 _NEG_MODAL: re.Pattern[str] = re.compile(
     r"\b(?:won't|wont|will not|must not|mustn't|cannot|can't|shouldn't|"
     r"not going to|no need to|"
-    # negated have-to/need-to, allowing up to 3 intervening words so
+    # negated have-to/need-to, allowing up to 3 intervening words/punctuation so
     # "don't really have to" / "do not necessarily need to" / "should not have to"
-    # are all suppressed.
-    r"(?:do|does|did|should|would|could)(?:n't| not)(?:[\s,]+\w+){0,3}[\s,]+(?:have|need) to)\b"
+    # / "do not, however, need to" are all suppressed.
+    r"(?:do|does|did|should|would|could)(?:n't| not)(?:[\s,]+\w+){0,3}[\s,]+(?:have|need) to|"
+    # negated future: "will/'ll ... not|never" ("we will never", "we'll never",
+    # "we will, however, not").
+    r"(?:will|'ll)(?:[\s,]+\w+){0,3}[\s,]+(?:not|never))\b"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
@@ -430,23 +444,24 @@ def _detect_cue(lower: str) -> bool:
 def _detect_commitment(lower: str) -> bool:
     """Modal/obligation verb → DECISION (guarded by decision in caller).
 
-    A negated modal anywhere in the content cancels the signal (conservative;
-    a rare sentence carrying both a negated and an un-negated modal is an
-    accepted false-negative for v1).
+    Negation is per-language. EN negated modals/obligations/futures are caught by
+    _NEG_MODAL. Turkish obligations are negated only LOCALLY — an obligation word
+    closely followed by "değil"/"yok" (_TR_NEG_OBLIGATION) or the negative
+    -mamalı/-memeli infix (_TR_NEG_SUFFIX) — so an unrelated "değil"/"yok"
+    elsewhere in the sentence no longer cancels a real obligation
+    ("risk yok, bunu yapmalıyız" still commits).
     """
     if _NEG_MODAL.search(lower):
         return False
-    # Turkish negation: obligation words are negated by a trailing "değil"
-    # ("zorunda değil", "şart değil") or "yok" ("gerek yok"). EN negation is
-    # handled by _NEG_MODAL above; mirror it for TR so negated non-commitments
-    # are not promoted to DECISION. Conservative — suppresses on any occurrence,
-    # matching the EN behavior.
-    if ("değil" in lower or "degil" in lower or _word_match(lower, "yok")
-            or "mamalı" in lower or "memeli" in lower or "mamali" in lower):
+    tok_hit = any(_token_in(lower, tok) for tok in _COMMIT_TOKENS)
+    suffix_hit = bool(_COMMIT_TR_SUFFIX.search(lower)) and not _TR_NEG_SUFFIX.search(lower)
+    if not (tok_hit or suffix_hit):
         return False
-    if any(_token_in(lower, tok) for tok in _COMMIT_TOKENS):
-        return True
-    return bool(_COMMIT_TR_SUFFIX.search(lower))
+    # A locally-negated TR obligation word cancels a word-token commitment, but
+    # an independent -malı/-meli obligation still stands.
+    if _TR_NEG_OBLIGATION.search(lower) and not suffix_hit:
+        return False
+    return True
 
 
 def _detect_deadline(lower: str) -> bool:

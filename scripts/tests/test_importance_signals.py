@@ -88,6 +88,22 @@ def test_commitment_tr_negation_yok():
     out = score_with_breakdown("buna gerek yok")
     assert out.commitment_hit is False
 
+def test_tr_unrelated_negation_does_not_cancel_obligation():
+    # Codex (:445 r12): değil/yok in an unrelated clause must NOT kill a real
+    # -malı/-meli obligation.
+    assert score_with_breakdown("bu kolay değil ama bunu yapmalıyız").commitment_hit is True
+    assert score_with_breakdown("risk yok, bunu yapmalıyız").commitment_hit is True
+    # but a locally-negated obligation word is still suppressed
+    assert score_with_breakdown("buna gerek yok").commitment_hit is False
+    assert score_with_breakdown("bunu yapmak zorunda değiliz").commitment_hit is False
+
+def test_en_negated_future_not_commitment():
+    # Codex (:142 r12): negated futures with never / intervening punctuation.
+    for s in ("we will never migrate", "we'll never migrate",
+              "we will, however, not migrate"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+    assert score_with_breakdown("we will migrate next week").commitment_hit is True
+
 
 # ── Task 4: explicit memory-cue detector (MEMORABLE 0.90, guarded) ─────────
 
