@@ -45,6 +45,16 @@ def test_deadline_relative_tr():
 def test_no_deadline_stays_baseline():
     assert imp.score("just chatting about the weather") == imp.IMPORTANCE_BASELINE
 
+def test_deadline_till_not_matched_inside_still():
+    # Codex P2: "till" must match as a word, not as a substring of "still".
+    out = score_with_breakdown("still waiting on the docs")
+    assert out.deadline_hit is False
+    assert out.score == imp.IMPORTANCE_BASELINE
+
+def test_deadline_due_not_matched_inside_overdue_word():
+    # "due" matches as a word ("due Friday") but not inside "overdue" alone.
+    assert score_with_breakdown("nothing overdue here yet").deadline_hit is False
+
 
 # ── Task 3: commitment detector (DECISION 0.75, guarded + negation) ────────
 
@@ -120,6 +130,16 @@ def test_secret_skips_boost_and_flags():
 def test_secret_value_never_in_breakdown_repr():
     out = score_with_breakdown("token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
     assert "ghp_" not in repr(out)  # value not echoed
+
+def test_secret_with_other_signal_still_baseline():
+    # Codex P1: a credential co-occurring with a boost signal (cue/commitment/
+    # deadline/...) must NOT be boosted — secret_suspected forces BASELINE so
+    # credential-bearing memories are never amplified or resurfaced.
+    out = score_with_breakdown("please save this token=abcdefghijklmnopqrstuvwxyz")
+    assert out.secret_suspected is True
+    assert out.cue_hit is True            # the cue did fire ...
+    assert out.score == imp.IMPORTANCE_BASELINE  # ... but the score is held at baseline
+    assert out.band == "baseline"
 
 
 # ── Task 8: parity lock — legacy scores unchanged + clamp invariant ────────

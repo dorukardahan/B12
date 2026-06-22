@@ -133,8 +133,11 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"),           # D.M.Y / D/M/Y
 )
 _DEADLINE_TOKENS: tuple[str, ...] = (
-    "deadline", "due ", "due:", "due date", "expires", "expiry", "by end of",
-    "no later than", "until ", "till ",
+    # Single words are matched with word boundaries by _token_in (so "till"
+    # never matches inside "still", and "due" never inside "overdue"); only the
+    # genuinely multi-word phrases below are substring-matched.
+    "deadline", "due", "due date", "expires", "expiry", "by end of",
+    "no later than", "until", "till",
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
     # Turkish
     "son tarih", "vade", "teslim", "kadar", "bitiş tarihi", "bitis tarihi",
@@ -281,6 +284,13 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
             identifier_hit=identifier_hit, lang_detected="en",
             secret_suspected=secret_suspected,
         )
+
+    # Credential-bearing content is NEVER boosted, even when other signals fire
+    # (e.g. "save this token=..."): amplifying/resurfacing a memory that carries
+    # a secret is exactly what we must avoid. Force BASELINE; the secret value is
+    # never stored or logged (only the secret_suspected flag is kept).
+    if secret_suspected:
+        return _build("baseline", IMPORTANCE_BASELINE)
 
     # Pick the highest band that fired (max-wins).
     if remember_hit or cue_hit:
