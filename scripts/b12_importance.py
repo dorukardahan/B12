@@ -140,7 +140,10 @@ _COMMIT_TR_SUFFIX: re.Pattern[str] = re.compile(
 _NEG_MODAL: re.Pattern[str] = re.compile(
     r"\b(?:won't|wont|will not|must not|mustn't|cannot|can't|shouldn't|"
     r"not going to|no need to|"
-    r"(?:do|does|did)n't (?:have|need) to|(?:do|does|did) not (?:have|need) to)\b"
+    # negated have-to/need-to, allowing up to 3 intervening words so
+    # "don't really have to" / "do not necessarily need to" / "should not have to"
+    # are all suppressed.
+    r"(?:do|does|did|should|would|could)(?:n't| not)(?:\s+\w+){0,3}\s+(?:have|need) to)\b"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and

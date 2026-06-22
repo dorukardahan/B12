@@ -275,6 +275,13 @@ def test_en_past_tense_negated_obligations():
     for s in ("we didn't have to migrate", "we did not need to migrate"):
         assert score_with_breakdown(s).commitment_hit is False, s
 
+def test_en_negated_obligation_with_intervening_words():
+    # Codex (:143 r8): negators with adverbs between must still suppress.
+    for s in ("we don't really have to migrate", "we do not necessarily need to migrate",
+              "we should not have to migrate"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+    assert score_with_breakdown("we have to ship today").commitment_hit is True
+
 def test_tr_pazar_market_not_deadline():
     # Codex (:165): bare "pazar" (market) is not a deadline; "pazar günü" is.
     assert score_with_breakdown("pazar araştırması yapalım").deadline_hit is False
