@@ -387,9 +387,14 @@ def _write_candidates(
             llm_imp = float(c["importance"])
             try:
                 heuristic_imp = float(b12_importance.score(content))
+                # A credential-bearing candidate caps at baseline — otherwise
+                # max(llm_imp, heuristic) could re-amplify a (scrubbed) secret row.
+                if b12_importance.is_secret(content):
+                    final_imp = b12_importance.IMPORTANCE_BASELINE
+                else:
+                    final_imp = max(llm_imp, heuristic_imp)
             except Exception:
-                heuristic_imp = 0.50
-            final_imp = max(llm_imp, heuristic_imp)
+                final_imp = max(llm_imp, 0.50)
 
             h = _content_hash(content)
 

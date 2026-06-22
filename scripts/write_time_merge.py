@@ -206,7 +206,12 @@ def _augment_importance(metadata: Any, content: str) -> Any:
     else:
         return metadata
 
-    if "importance_score" not in obj:
+    # A credential-bearing candidate caps at baseline, OVERRIDING any
+    # caller-supplied score, so hook / SessionEnd / extractor writes cannot
+    # amplify a (scrubbed) secret row. Otherwise auto-score when unset (caller wins).
+    if b12_importance.is_secret(content):
+        obj["importance_score"] = b12_importance.IMPORTANCE_BASELINE
+    elif "importance_score" not in obj:
         obj["importance_score"] = b12_importance.score(content)
 
     return obj
@@ -677,6 +682,21 @@ def merge_or_insert(
     metadata = _augment_importance(metadata, content)
     metadata_str = _metadata_to_str(metadata)
 
+    # Secret cap on the NORMALIZED metadata: _augment_importance bails on the
+    # legacy "key:val, ..." string format (it only handles dict/JSON), but
+    # _metadata_to_str above converts it to JSON — so re-apply the cap here to
+    # cover every supported metadata format on the insert/hash-dup paths.
+    if metadata_str:
+        try:
+            import b12_importance as _imp_cap
+            if _imp_cap.is_secret(content):
+                _mc = json.loads(metadata_str)
+                if isinstance(_mc, dict) and _mc.get("importance_score") != _imp_cap.IMPORTANCE_BASELINE:
+                    _mc["importance_score"] = _imp_cap.IMPORTANCE_BASELINE
+                    metadata_str = _metadata_to_str(_mc)
+        except Exception:
+            pass
+
     if not content_hash:
         content_hash = _sha256_hex(content)
 
@@ -818,6 +838,40 @@ def merge_or_insert(
                 (merged_content, now_ts, now_iso, best_id),
             )
             new_hash = best_hash
+
+        # Reconcile the merged row's importance (the content-only UPDATEs above
+        # don't touch metadata): a credential-bearing merge caps at baseline,
+        # otherwise carry the HIGHER of the row's existing score and the merged
+        # content's heuristic score — so a high-signal write ("save this ...")
+        # merged into a baseline row lifts it, and the write-side scoring isn't
+        # lost, while a higher explicit/level value is preserved.
+        try:
+            import b12_importance as _imp_merge
+            _row = conn.execute(
+                "SELECT metadata FROM memories WHERE id = ?", (best_id,)
+            ).fetchone()
+            _md: Any = {}
+            if _row and _row[0]:
+                try:
+                    _md = json.loads(_row[0])
+                except Exception:
+                    _md = {}
+            if not isinstance(_md, dict):
+                _md = {}
+            if _imp_merge.is_secret(merged_content):
+                _md["importance_score"] = _imp_merge.IMPORTANCE_BASELINE
+            else:
+                try:
+                    _existing = float(_md.get("importance_score"))
+                except (TypeError, ValueError):
+                    _existing = 0.0
+                _md["importance_score"] = max(_existing, _imp_merge.score(merged_content))
+            conn.execute(
+                "UPDATE memories SET metadata = ? WHERE id = ?",
+                (_metadata_to_str(_md), best_id),
+            )
+        except Exception:
+            pass
 
         _upsert_embedding(conn, best_id, new_embedding)
 

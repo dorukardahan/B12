@@ -12,7 +12,20 @@ useDefault = true
 
 [allowlist]
 description = "B12 secret-scrubber test fixtures (intentional fake secrets)"
+# Fabricated credential string used by the secret-filter tests
+# (test_importance_signals.py). Allowlisted BY VALUE so it is ignored no matter
+# which file/commit it appears in — surgical (this one fake string only, not any
+# whole production file). It briefly lived in b12_importance._selftest in an
+# earlier branch commit before being moved test-only; this also keeps that
+# historical diff clean across the PR's commit range. Self-allowlisted here too.
+regexes = [
+  '''sk_live_abc123DEF456ghi789jkl012mno345pqr''',
+]
 paths = [
   '''scripts/tests/test_b12_pii_scrubber\.py''',
   '''scripts/tests/test_sanitization_hooks\.py''',
+  # Phase-2 importance signal tests: assert the secret-suspected filter fires on
+  # real credential shapes (sk_live_, ghp_, ...), so the file carries intentional
+  # fake secrets — same category as the scrubber fixtures above.
+  '''scripts/tests/test_importance_signals\.py''',
 ]
