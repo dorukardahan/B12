@@ -109,8 +109,13 @@ _CUE_TOKENS: tuple[str, ...] = (
 # matched (guarded). Multi-word / apostrophe tokens are substring-matched;
 # single bare words use word boundaries.
 _COMMIT_TOKENS: tuple[str, ...] = (
-    "must", "will", "i'll", "we'll", "have to", "need to",
-    "committing to", "going to",
+    "must", "i'll", "we'll", "have to", "need to", "committing to",
+    # "<subject> will" — bare "will" is also a name ("Will reviewed the patch")
+    # and a noun ("free will"), and bare "going to" is usually movement
+    # ("going to the store"), so require a subject pronoun to catch the
+    # future/commitment sense without the false positives.
+    "i will", "we will", "you will", "they will", "he will", "she will",
+    "i am going to", "we are going to", "i'm going to", "we're going to",
     # Turkish obligation markers
     "zorunda", "zorunlu", "mecbur", "gerek", "lazım", "lazim",
     "şart", "sart", "yapacağım", "yapacagim", "edeceğiz", "edecegiz",
@@ -440,7 +445,15 @@ def _detect_secret(text: str) -> bool:
     forces BASELINE so secrets are not amplified/resurfaced); redaction of the
     stored value is the PII scrubber's job, which runs earlier on every write
     path. The matched value is never returned, stored, or logged.
+
+    Also treats the scrubber's own `[REDACTED:...]` marker as a secret: on the
+    normal write path the scrubber runs BEFORE scoring, so by the time we score
+    the raw credential is already redacted — without this, a cue like
+    "save this token=[REDACTED:generic]" would still boost the (formerly
+    credential-bearing) row. Detecting the marker keeps it at baseline.
     """
+    if "[REDACTED:" in text:
+        return True
     return any(p.search(text) for p in _SECRET_REGEXES)
 
 

@@ -280,6 +280,22 @@ def test_tr_pazar_market_not_deadline():
     assert score_with_breakdown("pazar araştırması yapalım").deadline_hit is False
     assert score_with_breakdown("teslim pazar günü").deadline_hit is True
 
+def test_bare_will_requires_subject():
+    # Codex (:112): the name "Will" / noun "will" must not score DECISION.
+    assert score_with_breakdown("Will reviewed the patch").commitment_hit is False
+    assert score_with_breakdown("free will is a hard problem").commitment_hit is False
+    assert score_with_breakdown("going to the store for milk").commitment_hit is False
+    # but a real subject+future is still a commitment
+    assert score_with_breakdown("I will finish the audit").commitment_hit is True
+    assert score_with_breakdown("I'm going to ship it today").commitment_hit is True
+
+def test_scrubbed_secret_marker_stays_baseline():
+    # Codex (:320): on the production path the scrubber runs BEFORE scoring, so
+    # the scorer sees the [REDACTED:...] marker — it must still hold at baseline.
+    out = score_with_breakdown("please save this token=[REDACTED:generic]")
+    assert out.secret_suspected is True
+    assert out.score == imp.IMPORTANCE_BASELINE
+
 def test_provider_keys_detected_as_secret():
     # Codex (:207): hyphenated provider keys must be caught (via the shared
     # scrubber patterns) so credential-bearing memories are not boosted.
