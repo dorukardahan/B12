@@ -199,6 +199,17 @@ def test_no_redos_on_pathological_content():
     dt = time.perf_counter() - t0
     assert dt < 1.0, f"scoring took {dt:.3f}s — possible ReDoS regression"
 
+def test_no_redos_on_many_pem_headers():
+    # Codex (:482): a blob of many BEGIN headers (no END) must not stall the
+    # full-content secret scan — detection uses a bounded header-only matcher.
+    import time
+    blob = "-----BEGIN PRIVATE KEY-----\n" * 5000
+    t0 = time.perf_counter()
+    out = score_with_breakdown(blob)
+    dt = time.perf_counter() - t0
+    assert dt < 1.0, f"PEM-blob secret scan took {dt:.3f}s — ReDoS regression"
+    assert out.secret_suspected is True  # the header still flags it
+
 def test_secret_after_scan_window_still_suppresses():
     # Codex P1 (:277): a credential PAST the 20k scan window must still force
     # BASELINE — the secret check runs over the full content.

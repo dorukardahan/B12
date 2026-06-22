@@ -233,14 +233,23 @@ _DANGEROUS_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._-]{16,}"),          # bearer token
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),              # slack token
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),               # aws key id
-    re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),          # PEM private key
+    re.compile(r"-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----"),     # PEM private key (header-only, bounded)
     re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),  # JWT
     re.compile(r"\b(?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*\S{12,}",
                re.IGNORECASE),                                  # key=value secret
 )
+# Header-only PEM detector — bounded, so it stays linear on a pathological blob
+# of many "-----BEGIN ... PRIVATE KEY-----" headers (detection needs the header,
+# not the whole block — the scrubber keeps the block-spanning rule for redaction).
+_PEM_HEADER: re.Pattern[str] = re.compile(r"-----BEGIN [A-Z ]{0,40}PRIVATE KEY-----")
 try:
     from b12_pii_scrubber import _PATTERNS as _SCRUBBER_PATTERNS
-    _SECRET_REGEXES: tuple[re.Pattern[str], ...] = tuple(p for _label, p in _SCRUBBER_PATTERNS)
+    # Reuse the scrubber's credential shapes for detection, EXCEPT its
+    # pem_private_key rule (its lazy `[\s\S]*?` span-to-END is O(k·n) on a blob
+    # with many BEGIN headers); substitute the bounded header-only matcher above.
+    _SECRET_REGEXES: tuple[re.Pattern[str], ...] = tuple(
+        p for label, p in _SCRUBBER_PATTERNS if label != "pem_private_key"
+    ) + (_PEM_HEADER,)
 except Exception:
     _SECRET_REGEXES = _DANGEROUS_PATTERNS
 
