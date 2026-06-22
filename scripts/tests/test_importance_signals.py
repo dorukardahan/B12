@@ -378,6 +378,18 @@ def test_tr_zorunda_kalma_negation():
     # positive obligation still fires
     assert score_with_breakdown("bunu yapmak zorundayız").commitment_hit is True
 
+def test_tr_zorunda_kalmak_positive_infinitive():
+    # Codex (:156 r18): the positive infinitive/gerund "kalmak"/"kalmanız" is NOT
+    # a negation, so the obligation still commits.
+    assert score_with_breakdown("bunu yapmak zorunda kalmak gerekiyor").commitment_hit is True
+    assert score_with_breakdown("bunu yapmak zorunda kalmanız gerekecek").commitment_hit is True
+
+def test_tr_negated_plus_affirmative_obligation_commits():
+    # Codex (:483 r18): a separate affirmative obligation survives a negated one.
+    assert score_with_breakdown("buna gerek yok ama bunu yapmak zorundayız").commitment_hit is True
+    # still suppressed when the only obligation is the negated one
+    assert score_with_breakdown("buna gerek yok").commitment_hit is False
+
 def test_is_secret_public_helper():
     # Public helper used by callers (memory_store, llm_extractor) to cap secrets.
     assert imp.is_secret("sk_live_abc123DEF456ghi789jkl012mno345pqr") is True

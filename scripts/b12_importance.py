@@ -152,8 +152,10 @@ _TR_NEG_OBLIGATION: re.Pattern[str] = re.compile(
     r"\b(?:zorunda|zorunlu|mecbur|gerek|lazım|lazim|şart|sart)\w*"
     r"(?:\s+(?:da|de|bile|hiç|hic|asla|artık|artik))?"
     r"\s+(?:değil|degil|yok)\w*"
-    # "zorunda kalma..." = negated "be forced to" (kalmayacağız / kalmadık / kalmaz)
-    r"|\bzorunda\s+kalma\w*"
+    # negated "be forced to": "zorunda kalma" + a NEGATIVE-tense suffix
+    # (kalmayacağız / kalmadık / kalmaz) — NOT the positive infinitive/gerund
+    # "kalmak"/"kalmanız".
+    r"|\bzorunda\s+kalma(?:yaca[kğg]|d[ıi]|z)\w*"
 )
 # Negative -mamalı/-memeli obligation infix ("yapmamalıyız" = we must NOT).
 _TR_NEG_SUFFIX: re.Pattern[str] = re.compile(r"\b\w*(?:mamalı|memeli|mamali)")
@@ -477,10 +479,16 @@ def _detect_commitment(lower: str) -> bool:
     suffix_hit = bool(_COMMIT_TR_SUFFIX.search(lower)) and not _TR_NEG_SUFFIX.search(lower)
     if not (tok_hit or suffix_hit):
         return False
-    # A locally-negated TR obligation word cancels a word-token commitment, but
-    # an independent -malı/-meli obligation still stands.
+    # A locally-negated TR obligation cancels its OWN word-token, but a separate
+    # affirmative obligation in the same sentence still stands. Subtract the
+    # negated phrase(s); if a -malı/-meli obligation or another obligation token
+    # remains, it commits ("gerek yok ama zorundayız" → commit).
     if _TR_NEG_OBLIGATION.search(lower) and not suffix_hit:
-        return False
+        residual = _TR_NEG_OBLIGATION.sub(" ", lower)
+        residual_hit = (any(_token_in(residual, tok) for tok in _COMMIT_TOKENS)
+                        or bool(_COMMIT_TR_WORDS.search(residual)))
+        if not residual_hit:
+            return False
     return True
 
 
