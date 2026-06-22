@@ -4,9 +4,10 @@
 
 ### Added
 - **Automatic write-side importance signal taxonomy** (`scripts/b12_importance.py`) — memories are scored into importance bands at store time with no manual tagging, via six new language-agnostic signals layered on the existing remember/decision/fact tokens: explicit save-cues (→ memorable), commitment/obligation verbs (→ decision, negation-aware), deadlines/dates, `@handle`/email person mentions, numeric-with-context values, and identifiers (PR#/git-SHA/host-path) (→ fact). English + Turkish today (9 more languages planned). This feeds the importance/reinforcement-modulated FSRS aging so genuinely valuable memories surface and stay discoverable.
+- The scorer is now wired into the **MCP `memory_store` write path** too (Cursor / Cline / Gemini / Kimi / OpenCode / Grok), not just hook capture: when a client doesn't supply `importance_score` it is auto-scored, and caller-supplied values are preserved.
 
 ### Fixed
-- Credential-bearing content is never amplified: a detected secret (using the shared `b12_pii_scrubber` patterns, so the two never drift) holds the memory at baseline importance instead of boosting/resurfacing it. The secret value is never stored or logged by the scorer (redaction remains the scrubber's job, which runs earlier on every write path).
+- Credential-bearing content is never amplified, on every write path: a detected secret (using the shared `b12_pii_scrubber` patterns, so the two never drift, and recognizing the scrubber's own `[REDACTED:…]` marker since scrubbing runs before scoring) caps the memory at baseline importance — overriding even a caller- or LLM-supplied value — instead of boosting/resurfacing it. The secret value is never stored or logged by the scorer (redaction remains the scrubber's job).
 - Importance scoring is ReDoS-safe: the email / host-path / identifier regexes are bounded to linear matching, so a large pasted blob can no longer stall the synchronous store path.
 
 ### Internal

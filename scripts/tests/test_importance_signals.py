@@ -301,6 +301,19 @@ def test_turkish_dotted_capital_i_normalized():
     assert score_with_breakdown("İşaretle bunu").cue_hit is True
     assert score_with_breakdown("BİTİŞ TARİHİ yaklaşıyor").deadline_hit is True
 
+def test_due_to_predicate_idiom_not_deadline():
+    # Codex (:161): "credit is due to X" is an acknowledgement, not a deadline.
+    assert score_with_breakdown("credit is due to the reviewer").deadline_hit is False
+    assert score_with_breakdown("the invoice is due Friday").deadline_hit is True
+
+def test_is_secret_public_helper():
+    # Public helper used by callers (memory_store, llm_extractor) to cap secrets.
+    assert imp.is_secret("sk_live_abc123DEF456ghi789jkl012mno345pqr") is True
+    assert imp.is_secret("token=[REDACTED:generic]") is True       # post-scrub marker
+    assert imp.is_secret("save this for later") is False
+    assert imp.is_secret(None) is False
+    assert imp.is_secret("") is False
+
 def test_bare_will_requires_subject():
     # Codex (:112): the name "Will" / noun "will" must not score DECISION.
     assert score_with_breakdown("Will reviewed the patch").commitment_hit is False

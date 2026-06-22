@@ -158,7 +158,8 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # and negated "not due" that bare "due" used to mis-fire on. ("due Friday"
     # is still caught by the weekday token.)
     re.compile(r"\bdue\s+(?:on|by|before|today|tonight|tomorrow|next|this|\d)"),
-    re.compile(r"\b(?:is|are|was|were|it'?s|they'?re)\s+due\b"),
+    # predicate "is/are due" but NOT the causal idiom "is due to ..." (credit is due to)
+    re.compile(r"\b(?:is|are|was|were|it'?s|they'?re)\s+due\b(?!\s+to\b)"),
 )
 _DEADLINE_TOKENS: tuple[str, ...] = (
     # Single words are matched with word boundaries by _token_in (so "till"
@@ -284,6 +285,19 @@ def score(content: str | None) -> float:
     content returns IMPORTANCE_TRIVIAL.
     """
     return score_with_breakdown(content).score
+
+
+def is_secret(content: str | None) -> bool:
+    """True if the content looks credential-bearing (raw or already scrubbed).
+
+    Callers that combine importance from multiple sources (e.g. an LLM-supplied
+    value max'd with the heuristic) must use this to CAP credential-bearing
+    content at baseline — `score()` already returns baseline, but a `max(...)`
+    against a higher supplied value would otherwise re-amplify it.
+    """
+    if not content:
+        return False
+    return _detect_secret(content)
 
 
 def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
