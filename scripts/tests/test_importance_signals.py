@@ -280,6 +280,20 @@ def test_tr_pazar_market_not_deadline():
     assert score_with_breakdown("pazar araştırması yapalım").deadline_hit is False
     assert score_with_breakdown("teslim pazar günü").deadline_hit is True
 
+def test_due_idioms_not_deadline():
+    # Codex (:153): non-deadline "due" idioms must not fire.
+    for s in ("due diligence is done", "give due credit", "due process matters",
+              "the report is not due"):
+        assert score_with_breakdown(s).deadline_hit is False, s
+    # real deadline uses still fire
+    assert score_with_breakdown("the invoice is due Friday").deadline_hit is True
+    assert score_with_breakdown("the task is due tomorrow").deadline_hit is True
+
+def test_turkish_dotted_capital_i_normalized():
+    # Codex (:305): "İ" lowercases to i + combining dot; strip it so TR tokens fire.
+    assert score_with_breakdown("İşaretle bunu").cue_hit is True
+    assert score_with_breakdown("BİTİŞ TARİHİ yaklaşıyor").deadline_hit is True
+
 def test_bare_will_requires_subject():
     # Codex (:112): the name "Will" / noun "will" must not score DECISION.
     assert score_with_breakdown("Will reviewed the patch").commitment_hit is False

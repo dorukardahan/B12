@@ -149,8 +149,13 @@ _NEG_MODAL: re.Pattern[str] = re.compile(
 _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),                       # ISO date
     re.compile(r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"),           # D.M.Y / D/M/Y
-    # "due Friday" / "report is due" but NOT causal "due to" (failed due to ...).
-    re.compile(r"\bdue\b(?!\s+to\b)"),
+    # "due" only in a real deadline context — followed by a temporal word/number
+    # ("due tomorrow", "due by 2026-07-01") or as the predicate "is/are due".
+    # This excludes the idioms ("due diligence/process/credit"), causal "due to",
+    # and negated "not due" that bare "due" used to mis-fire on. ("due Friday"
+    # is still caught by the weekday token.)
+    re.compile(r"\bdue\s+(?:on|by|before|today|tonight|tomorrow|next|this|\d)"),
+    re.compile(r"\b(?:is|are|was|were|it'?s|they'?re)\s+due\b"),
 )
 _DEADLINE_TOKENS: tuple[str, ...] = (
     # Single words are matched with word boundaries by _token_in (so "till"
@@ -301,8 +306,11 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
     # a prefix is both safe and a hard guard against pathological content.
     scan = stripped[:_MAX_SCAN_LEN]
     # Normalise the curly apostrophe (U+2019) to ASCII so "I'll" / "won't" /
-    # "can't" are detected the same whether typed straight or smart-quoted.
-    lower = scan.lower().replace("’", "'")
+    # "can't" are detected the same whether typed straight or smart-quoted, and
+    # strip the combining dot (U+0307) that Python's str.lower() inserts for the
+    # Turkish dotted "İ" (İ -> i+̇), so "İşaretle"/"BİTİŞ TARİHİ" match their
+    # TR tokens instead of staying baseline.
+    lower = scan.lower().replace("’", "'").replace("̇", "")
 
     # Exact-match trivial check (single word like "ok", "tamam")
     if lower in _TRIVIAL_EXACTS:
