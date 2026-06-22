@@ -682,6 +682,21 @@ def merge_or_insert(
     metadata = _augment_importance(metadata, content)
     metadata_str = _metadata_to_str(metadata)
 
+    # Secret cap on the NORMALIZED metadata: _augment_importance bails on the
+    # legacy "key:val, ..." string format (it only handles dict/JSON), but
+    # _metadata_to_str above converts it to JSON — so re-apply the cap here to
+    # cover every supported metadata format on the insert/hash-dup paths.
+    if metadata_str:
+        try:
+            import b12_importance as _imp_cap
+            if _imp_cap.is_secret(content):
+                _mc = json.loads(metadata_str)
+                if isinstance(_mc, dict) and _mc.get("importance_score") != _imp_cap.IMPORTANCE_BASELINE:
+                    _mc["importance_score"] = _imp_cap.IMPORTANCE_BASELINE
+                    metadata_str = _metadata_to_str(_mc)
+        except Exception:
+            pass
+
     if not content_hash:
         content_hash = _sha256_hex(content)
 

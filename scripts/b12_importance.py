@@ -145,9 +145,10 @@ _COMMIT_TR_SUFFIX: re.Pattern[str] = re.compile(
 # real obligation. Bounded gap → linear.
 _TR_NEG_OBLIGATION: re.Pattern[str] = re.compile(
     # \w* after each lets inflected forms match (zorundayız, değiliz, yoktur);
-    # 1–8 spaces/commas between keeps the negation LOCAL.
+    # up to 2 intervening words allow particles/adverbs ("zorunda da değiliz",
+    # "gerek de yok") while keeping the negation LOCAL.
     r"\b(?:zorunda|zorunlu|mecbur|gerek|lazım|lazim|şart|sart)\w*"
-    r"[\s,]{1,8}(?:değil|degil|yok)\w*"
+    r"(?:[\s,]+\w+){0,2}[\s,]+(?:değil|degil|yok)\w*"
 )
 # Negative -mamalı/-memeli obligation infix ("yapmamalıyız" = we must NOT).
 _TR_NEG_SUFFIX: re.Pattern[str] = re.compile(r"\b\w*(?:mamalı|memeli|mamali)")
@@ -179,8 +180,14 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # and negated "not due" that bare "due" used to mis-fire on. ("due Friday"
     # is still caught by the weekday token.)
     re.compile(r"\bdue\s+(?:(?:on|by|before|today|tonight|tomorrow|next|this)\b|\d)"),
-    # predicate "is/are due" but NOT the causal idiom "is due to ..." (credit is due to)
-    re.compile(r"\b(?:is|are|was|were|it'?s|they'?re)\s+due\b(?!\s+to\b)"),
+    # predicate "is/are due" only when "due" ends the clause (end / punctuation)
+    # or is followed by a temporal word/number — so "the report is due[.]" /
+    # "is due tomorrow" fire, but the idioms "is due diligence/process/credit"
+    # and the causal "is due to" do not.
+    re.compile(
+        r"\b(?:is|are|was|were|it'?s|they'?re)\s+due"
+        r"(?=\s*$|\s*[.,!?;:)]|\s+(?:on|by|before|today|tonight|tomorrow|next|this)\b|\s+\d)"
+    ),
 )
 _DEADLINE_TOKENS: tuple[str, ...] = (
     # Single words are matched with word boundaries by _token_in (so "till"

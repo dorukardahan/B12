@@ -352,6 +352,19 @@ def test_due_to_predicate_idiom_not_deadline():
     assert score_with_breakdown("credit is due to the reviewer").deadline_hit is False
     assert score_with_breakdown("the invoice is due Friday").deadline_hit is True
 
+def test_predicate_due_idioms_not_deadline():
+    # Codex (:183 r15): "is due diligence/process/credit" are idioms, not deadlines.
+    for s in ("this is due diligence", "that is due process", "this is due credit"):
+        assert score_with_breakdown(s).deadline_hit is False, s
+    # predicate due at end / before punctuation / temporal still fires
+    assert score_with_breakdown("the report is due").deadline_hit is True
+    assert score_with_breakdown("the report is due tomorrow").deadline_hit is True
+
+def test_tr_negation_with_particles():
+    # Codex (:150 r15): Turkish particles (da/de) between obligation and değil/yok.
+    assert score_with_breakdown("bunu yapmak zorunda da değiliz").commitment_hit is False
+    assert score_with_breakdown("buna gerek de yok").commitment_hit is False
+
 def test_is_secret_public_helper():
     # Public helper used by callers (memory_store, llm_extractor) to cap secrets.
     assert imp.is_secret("sk_live_abc123DEF456ghi789jkl012mno345pqr") is True
