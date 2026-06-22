@@ -88,8 +88,8 @@ _FACT_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d{1,2}[/.\-]\d{1,2}(?:[/.\-]\d{2,4})?\b"),                 # short date
     re.compile(r"[\$€₺¥£]\s?\d+|\b\d+(?:[.,]\d+)?\s?(?:usd|tl|eur|gbp)\b",
                re.IGNORECASE),                                                # price
-    re.compile(r"https?://\S+"),                                              # URL
-    re.compile(r"\S+@\S+\.\S+"),                                              # email
+    re.compile(r"https?://\S{1,2048}"),                                       # URL
+    re.compile(r"[^\s@]{1,64}@[^\s@]{1,255}\.[^\s@]{1,64}"),                   # email (bounded: linear, no O(n^2))
     re.compile(r"\+\d{10,}|\b\d{3,4}[\s-]?\d{3,4}[\s-]?\d{2,4}\b"),            # phone-ish
 )
 
@@ -115,14 +115,27 @@ _COMMIT_TOKENS: tuple[str, ...] = (
     "zorunda", "zorunlu", "mecbur", "gerek", "lazım", "lazim",
     "şart", "sart", "yapacağım", "yapacagim", "edeceğiz", "edecegiz",
 )
-# Turkish "-malı/-meli" obligation suffix.
-_COMMIT_TR_SUFFIX: re.Pattern[str] = re.compile(r"\b\w+(?:malı|meli|mali|meli)\b")
+# Turkish "-malı/-meli" obligation suffix, allowing the common personal
+# endings (yapmalı / yapmalıyız / yapmalısın / etmeliyim / gitmeliler ...).
+# Endings are enumerated (not a bare \w*) so noun forms that merely contain the
+# letters — "maliyet", "normalimiz", "önemli" — do NOT match.
+_TR_PERSON_END = r"(?:y[ıiu]z|y[ıiu]m|sın|sin|sınız|siniz|lar|ler|dır|dir|dur|dür)"
+_COMMIT_TR_SUFFIX: re.Pattern[str] = re.compile(
+    # Verb obligation: stem + -malı/-meli, optionally with a personal ending
+    # (yapmalı / yapmalıyız / yapmalısın / etmeliyim / beklemeliyiz). The dotless
+    # "ı" / front "e" are distinctive enough to match bare. The ASCII "mali"
+    # variant REQUIRES a personal ending, so accusative nouns ("ihtimali",
+    # "normali", "kemali") and the word "mali" (financial) do NOT match.
+    r"\b\w+(?:(?:malı|meli)" + _TR_PERSON_END + r"?|mali" + _TR_PERSON_END + r")\b"
+)
 # Negated modals cancel the commitment signal (conservative: any negated
 # modal in the content suppresses it — a rare both-modal sentence is acceptable
-# loss for v1; documented).
+# loss for v1; documented). Covers EN modal negations AND "don't/doesn't/do not
+# have to / need to" (common non-commitments that reverse the meaning).
 _NEG_MODAL: re.Pattern[str] = re.compile(
     r"\b(?:won't|wont|will not|must not|mustn't|cannot|can't|shouldn't|"
-    r"not going to|no need to)\b"
+    r"not going to|no need to|"
+    r"do(?:es)?n't (?:have|need) to|do(?:es)? not (?:have|need) to)\b"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
@@ -131,12 +144,15 @@ _NEG_MODAL: re.Pattern[str] = re.compile(
 _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b\d{4}-\d{2}-\d{2}\b"),                       # ISO date
     re.compile(r"\b\d{1,2}[./]\d{1,2}[./]\d{2,4}\b"),           # D.M.Y / D/M/Y
+    # "due Friday" / "report is due" but NOT causal "due to" (failed due to ...).
+    re.compile(r"\bdue\b(?!\s+to\b)"),
 )
 _DEADLINE_TOKENS: tuple[str, ...] = (
     # Single words are matched with word boundaries by _token_in (so "till"
-    # never matches inside "still", and "due" never inside "overdue"); only the
-    # genuinely multi-word phrases below are substring-matched.
-    "deadline", "due", "due date", "expires", "expiry", "by end of",
+    # never matches inside "still"); only the genuinely multi-word phrases below
+    # are substring-matched. ("due" is handled by a pattern above so the causal
+    # "due to" is excluded.)
+    "deadline", "expires", "expiry", "by end of",
     "no later than", "until", "till",
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
     # Turkish
@@ -153,8 +169,8 @@ _DEADLINE_TOKENS: tuple[str, ...] = (
 # capitalized-word + relationship-verb heuristic is deferred until the
 # corpus audit (PR-2c) shows it matters.
 _PERSON_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(?<![\w.])@[A-Za-z0-9_]{2,}\b"),               # @handle
-    re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b"),                # email
+    re.compile(r"(?<![\w.])@[A-Za-z0-9_]{2,64}\b"),            # @handle
+    re.compile(r"\b[\w.+-]{1,64}@[\w-]{1,255}\.[\w.-]{1,64}\b"),  # email (bounded: linear, no O(n^2))
 )
 
 # Numeric value — fires only when a magnitude/number co-occurs with a
@@ -169,17 +185,19 @@ _NUMERIC_CONTEXT: tuple[str, ...] = (
     "bütçe", "butce", "maliyet", "fiyat", "gelir", "maaş", "maas",
     "kullanıcı", "kullanici", "adet", "tutar", "oran", "ücret", "ucret",
 )
-_NUMERIC_MAX_LEN: int = 100_000  # skip numeric scan on very large content
-_MAX_SCAN_LEN: int = 20_000      # cap regex scan window (O(n^2) backtracking guard)
+_MAX_SCAN_LEN: int = 20_000      # cap regex scan window (defence-in-depth; the
+                                 # bounded quantifiers above are the real O(n^2) guard)
 
 # Identifiers. SHA = 7–64 hex; domains require a host/path shape (not a bare
 # TLD); POSIX absolute paths. Floors at FACT.
 _IDENTIFIER_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bPR#\d+\b", re.IGNORECASE),                   # PR#123
     re.compile(r"#\d{1,6}\b"),                                  # #123 issue/PR
-    re.compile(r"\b[0-9a-f]{7,64}\b"),                          # git SHA
-    re.compile(r"\b[\w.-]+\.[a-z]{2,}/\S+"),                    # host/path
-    re.compile(r"(?:^|\s)(/\w[\w/.-]+)"),                       # POSIX abs path
+    # git SHA: 7-64 hex that has BOTH a digit and an a-f letter, so all-alpha
+    # words ("deadbeef", "facade") and bare numbers ("1234567") don't match.
+    re.compile(r"\b(?=[0-9a-f]{7,64}\b)(?=[0-9a-f]*[0-9])(?=[0-9a-f]*[a-f])[0-9a-f]{7,64}\b"),
+    re.compile(r"\b[\w.-]{1,128}\.[a-z]{2,24}/\S{1,256}"),      # host/path (bounded: linear)
+    re.compile(r"(?:^|\s)/\w[\w.-]*/\S{1,256}"),                # POSIX abs path (needs an interior slash, not bare /etc)
 )
 
 # Secret / credential shapes. On match the importance boost is SKIPPED and
@@ -191,9 +209,18 @@ _DANGEROUS_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),              # slack token
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),               # aws key id
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),          # PEM private key
-    re.compile(r"\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}"),  # JWT
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),  # JWT (header is always base64url 'eyJ...')
     re.compile(r"\b(?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*\S{12,}",
                re.IGNORECASE),                                  # key=value secret
+)
+# Cheap literal pre-filter for the secret scan: every _DANGEROUS_PATTERNS rule
+# is anchored on one of these markers, so if none is present (the common case)
+# we skip the regexes entirely. This lets the secret check run over the FULL
+# content (not the bounded scan) in O(n) — a credential AFTER the scan window
+# must still suppress the boost.
+_SECRET_MARKERS: tuple[str, ...] = (
+    "sk_", "pk_", "ghp_", "xox", "akia", "asia", "begin", "eyj",
+    "key", "secret", "token", "password", "passwd",
 )
 
 
@@ -261,7 +288,9 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
     # Real memories are short and importance signals appear early, so scanning
     # a prefix is both safe and a hard guard against pathological content.
     scan = stripped[:_MAX_SCAN_LEN]
-    lower = scan.lower()
+    # Normalise the curly apostrophe (U+2019) to ASCII so "I'll" / "won't" /
+    # "can't" are detected the same whether typed straight or smart-quoted.
+    lower = scan.lower().replace("’", "'")
 
     # Exact-match trivial check (single word like "ok", "tamam")
     if lower in _TRIVIAL_EXACTS:
@@ -278,7 +307,11 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
     deadline_hit = _detect_deadline(lower)
     person_hit = _detect_person(scan)
     numeric_hit = _detect_numeric(lower)
-    identifier_hit, secret_suspected = _detect_identifiers(scan)
+    # Secret check runs over the FULL content (not the bounded scan) so a
+    # credential AFTER the scan window still suppresses the boost; identifier
+    # positives stay on the bounded scan.
+    secret_suspected = _detect_secret(stripped)
+    identifier_hit = (not secret_suspected) and _detect_identifier(scan)
 
     def _build(band: str, value: float) -> ImportanceBreakdown:
         return ImportanceBreakdown(
@@ -291,8 +324,10 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
 
     # Credential-bearing content is NEVER boosted, even when other signals fire
     # (e.g. "save this token=..."): amplifying/resurfacing a memory that carries
-    # a secret is exactly what we must avoid. Force BASELINE; the secret value is
-    # never stored or logged (only the secret_suspected flag is kept).
+    # a secret is exactly what we must avoid. This governs RANKING only (forces
+    # BASELINE); redacting what actually gets stored is the PII scrubber's job,
+    # which runs earlier on every write path. This module never stores or logs
+    # the value — only the secret_suspected flag is kept.
     if secret_suspected:
         return _build("baseline", IMPORTANCE_BASELINE)
 
@@ -356,7 +391,8 @@ def _detect_commitment(lower: str) -> bool:
     # handled by _NEG_MODAL above; mirror it for TR so negated non-commitments
     # are not promoted to DECISION. Conservative — suppresses on any occurrence,
     # matching the EN behavior.
-    if "değil" in lower or "degil" in lower or _word_match(lower, "yok"):
+    if ("değil" in lower or "degil" in lower or _word_match(lower, "yok")
+            or "mamalı" in lower or "memeli" in lower or "mamali" in lower):
         return False
     if any(_token_in(lower, tok) for tok in _COMMIT_TOKENS):
         return True
@@ -376,24 +412,31 @@ def _detect_person(stripped: str) -> bool:
 
 
 def _detect_numeric(lower: str) -> bool:
-    """Number + context word → FACT. Skipped on very large content."""
-    if len(lower) > _NUMERIC_MAX_LEN:
-        return False
+    """Number + context word → FACT (operates on the already-bounded scan)."""
     if not _NUMERIC_VALUE.search(lower):
         return False
     return any(ctx in lower for ctx in _NUMERIC_CONTEXT)
 
 
-def _detect_identifiers(stripped: str) -> tuple[bool, bool]:
-    """Return (identifier_hit, secret_suspected).
+def _detect_secret(text: str) -> bool:
+    """Credential/secret shape anywhere in the FULL content.
 
-    A credential-shaped token short-circuits: the importance boost is skipped
-    (identifier_hit stays False) and secret_suspected is flagged. The matched
-    value is never returned, stored, or logged.
+    A late secret (past the bounded scan window) must still suppress the boost,
+    so this scans the whole string. A cheap literal pre-filter keeps it O(n) and
+    avoids running the regexes on ordinary text. This only governs THIS module's
+    importance output (it forces BASELINE so secrets are not amplified/resurfaced);
+    redaction of the stored value is the PII scrubber's job, which runs earlier
+    on every write path. The matched value is never returned, stored, or logged.
     """
-    if any(p.search(stripped) for p in _DANGEROUS_PATTERNS):
-        return (False, True)
-    return (any(p.search(stripped) for p in _IDENTIFIER_PATTERNS), False)
+    low = text.lower()
+    if not any(m in low for m in _SECRET_MARKERS):
+        return False
+    return any(p.search(text) for p in _DANGEROUS_PATTERNS)
+
+
+def _detect_identifier(scan: str) -> bool:
+    """PR#/SHA/host-path/abs-path in the bounded scan → FACT."""
+    return any(p.search(scan) for p in _IDENTIFIER_PATTERNS)
 
 
 # ── CLI smoke-test ─────────────────────────────────────────────────

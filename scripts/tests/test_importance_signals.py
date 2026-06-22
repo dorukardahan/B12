@@ -187,6 +187,72 @@ def test_all_scores_within_unit_band():
         assert 0.0 <= v <= imp.IMPORTANCE_CAP, (s, v)
 
 
+# ── Second-round review fixes (Codex re-review + adversarial workflow) ─────
+
+def test_no_redos_on_pathological_content():
+    # regex-perf-1: the legacy email + host/path patterns were O(n^2). Bounded
+    # quantifiers make them linear; "a."*N must score fast, not in seconds.
+    import time
+    big = "a." * 40000  # 80k chars, no whitespace — the worst case
+    t0 = time.perf_counter()
+    imp.score(big)
+    dt = time.perf_counter() - t0
+    assert dt < 1.0, f"scoring took {dt:.3f}s — possible ReDoS regression"
+
+def test_secret_after_scan_window_still_suppresses():
+    # Codex P1 (:277): a credential PAST the 20k scan window must still force
+    # BASELINE — the secret check runs over the full content.
+    content = "please save this " + ("x" * 21000) + " token=abcdefghijklmnopqrstuvwxyz"
+    out = score_with_breakdown(content)
+    assert out.secret_suspected is True
+    assert out.score == imp.IMPORTANCE_BASELINE
+
+def test_en_negated_obligations_not_commitment():
+    # Codex (:126): "don't/do not have to / need to" must not score as DECISION.
+    for s in ("we don't have to migrate", "we do not need to migrate",
+              "we don't need to migrate", "it doesn't have to be perfect"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+
+def test_due_to_causal_not_deadline():
+    # Codex (:139): causal "due to" is not a deadline; "due <day>" still is.
+    assert score_with_breakdown("failed due to flaky tests").deadline_hit is False
+    assert score_with_breakdown("late due to traffic").deadline_hit is False
+    assert score_with_breakdown("the report is due Friday").deadline_hit is True
+
+def test_tr_obligation_inflected_forms_fire():
+    # IC-1: the common inflected obligation forms must score DECISION.
+    for s in ("bunu yapmalıyız", "gitmeliyim", "beklemeliyiz", "yapmalısın",
+              "yapmaliyiz"):
+        assert imp.score(s) >= imp.IMPORTANCE_DECISION, s
+
+def test_tr_obligation_lookalike_nouns_do_not_fire():
+    # CORR-3: accusative nouns / names ending -mali must NOT score DECISION.
+    for s in ("ihtimali değerlendirelim", "normali kontrol et", "kemali aradı",
+              "mali tablo hazır"):
+        out = score_with_breakdown(s)
+        assert out.commitment_hit is False, s
+
+def test_tr_negative_obligation_not_commitment():
+    # "-mamalı/-memeli" (must NOT) is a negation, not a commitment.
+    assert score_with_breakdown("bunu yapmamalıyız").commitment_hit is False
+
+def test_sha_requires_digit_and_hex_letter():
+    # regex-perf-2: all-alpha or all-digit runs are not SHAs.
+    assert score_with_breakdown("the deadbeef cafe").identifier_hit is False
+    assert score_with_breakdown("ticket 1234567 closed").identifier_hit is False
+    assert score_with_breakdown("see commit deadbeef1234567").identifier_hit is True
+
+def test_abs_path_requires_interior_slash():
+    # regex-perf-3: a bare "/etc" in prose is not an identifier.
+    assert score_with_breakdown("check the /etc folder").identifier_hit is False
+    assert score_with_breakdown("edit /etc/passwd now").identifier_hit is True
+
+def test_curly_apostrophe_normalized():
+    # CORR-4: smart-quoted contractions detect the same as ASCII.
+    assert score_with_breakdown("I’ll finish the audit").commitment_hit is True
+    assert score_with_breakdown("I won’t do that").commitment_hit is False
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
