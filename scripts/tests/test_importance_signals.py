@@ -371,6 +371,13 @@ def test_tr_unrelated_yok_across_clause_does_not_cancel():
     assert score_with_breakdown("bunu yapmak zorundayız, risk yok").commitment_hit is True
     assert score_with_breakdown("bunu yapmalıyız, sorun değil").commitment_hit is True
 
+def test_tr_zorunda_kalma_negation():
+    # Codex (:154 r17): "zorunda kalma..." (be forced to, negated) is not a commitment.
+    assert score_with_breakdown("bunu yapmak zorunda kalmayacağız").commitment_hit is False
+    assert score_with_breakdown("zorunda kalmayacagiz").commitment_hit is False
+    # positive obligation still fires
+    assert score_with_breakdown("bunu yapmak zorundayız").commitment_hit is True
+
 def test_is_secret_public_helper():
     # Public helper used by callers (memory_store, llm_extractor) to cap secrets.
     assert imp.is_secret("sk_live_abc123DEF456ghi789jkl012mno345pqr") is True

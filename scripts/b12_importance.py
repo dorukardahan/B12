@@ -152,6 +152,8 @@ _TR_NEG_OBLIGATION: re.Pattern[str] = re.compile(
     r"\b(?:zorunda|zorunlu|mecbur|gerek|lazım|lazim|şart|sart)\w*"
     r"(?:\s+(?:da|de|bile|hiç|hic|asla|artık|artik))?"
     r"\s+(?:değil|degil|yok)\w*"
+    # "zorunda kalma..." = negated "be forced to" (kalmayacağız / kalmadık / kalmaz)
+    r"|\bzorunda\s+kalma\w*"
 )
 # Negative -mamalı/-memeli obligation infix ("yapmamalıyız" = we must NOT).
 _TR_NEG_SUFFIX: re.Pattern[str] = re.compile(r"\b\w*(?:mamalı|memeli|mamali)")
