@@ -140,7 +140,11 @@ _DEADLINE_TOKENS: tuple[str, ...] = (
     "no later than", "until", "till",
     "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
     # Turkish
-    "son tarih", "vade", "teslim", "kadar", "bitiş tarihi", "bitis tarihi",
+    # NB: bare "kadar" is intentionally NOT a deadline token — it is far more
+    # common outside deadlines ("ne kadar güzel", "bu kadar yeter"). The
+    # "<date>'e kadar" deadline sense is carried by the co-occurring date /
+    # weekday tokens instead.
+    "son tarih", "vade", "teslim", "bitiş tarihi", "bitis tarihi",
     "pazartesi", "salı", "sali", "çarşamba", "carsamba", "perşembe", "persembe",
     "cuma", "cumartesi", "pazar",
 )
@@ -346,6 +350,13 @@ def _detect_commitment(lower: str) -> bool:
     accepted false-negative for v1).
     """
     if _NEG_MODAL.search(lower):
+        return False
+    # Turkish negation: obligation words are negated by a trailing "değil"
+    # ("zorunda değil", "şart değil") or "yok" ("gerek yok"). EN negation is
+    # handled by _NEG_MODAL above; mirror it for TR so negated non-commitments
+    # are not promoted to DECISION. Conservative — suppresses on any occurrence,
+    # matching the EN behavior.
+    if "değil" in lower or "degil" in lower or _word_match(lower, "yok"):
         return False
     if any(_token_in(lower, tok) for tok in _COMMIT_TOKENS):
         return True

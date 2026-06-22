@@ -55,6 +55,11 @@ def test_deadline_due_not_matched_inside_overdue_word():
     # "due" matches as a word ("due Friday") but not inside "overdue" alone.
     assert score_with_breakdown("nothing overdue here yet").deadline_hit is False
 
+def test_deadline_bare_kadar_not_a_deadline():
+    # Codex: bare Turkish "kadar" is common outside deadlines and must not fire.
+    assert score_with_breakdown("ne kadar güzel bir gün").deadline_hit is False
+    assert score_with_breakdown("bu kadar yeter").deadline_hit is False
+
 
 # ── Task 3: commitment detector (DECISION 0.75, guarded + negation) ────────
 
@@ -72,6 +77,16 @@ def test_commitment_guarded_by_legacy_decision():
     # legacy decision token present -> commitment_hit stays False (no double-count)
     out = score_with_breakdown("we decided and I will do it")
     assert out.decision_hit is True and out.commitment_hit is False
+
+def test_commitment_tr_negation_degil():
+    # Codex: negated Turkish obligation must NOT promote to DECISION.
+    out = score_with_breakdown("bunu yapmak zorunda değiliz")
+    assert out.commitment_hit is False
+    assert out.score == imp.IMPORTANCE_BASELINE
+
+def test_commitment_tr_negation_yok():
+    out = score_with_breakdown("buna gerek yok")
+    assert out.commitment_hit is False
 
 
 # ── Task 4: explicit memory-cue detector (MEMORABLE 0.90, guarded) ─────────
