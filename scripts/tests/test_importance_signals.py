@@ -485,6 +485,10 @@ def test_ml_no_cross_language_false_positive():
     # English text must not match FR/ES decision lexicons (dropped colliding ASCII).
     out = score_with_breakdown("please finalize the report and decide the budget")
     assert out.band == "baseline" and out.lang_detected == "en"
+    # Reviewer finding: "on a decide" (3 English words) must not fire FR decision.
+    # (Sentence avoids legacy EN decision tokens like "settled on".)
+    out2 = score_with_breakdown("the flag depends on a decide path in the code")
+    assert out2.band == "baseline" and out2.lang_detected == "en"
 
 def test_ml_does_not_perturb_en_tr():
     # EN/TR scoring is unchanged by the multilingual layer.

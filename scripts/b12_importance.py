@@ -317,7 +317,9 @@ class ImportanceBreakdown:
     cue_hit: bool = False          # explicit "save/store this" (guarded by remember)
     numeric_hit: bool = False      # number + context word (cost/budget/users/...)
     identifier_hit: bool = False   # PR#/SHA/host-path/abs-path
-    lang_detected: str = "en"      # populated in PR-2b; "en" placeholder for now
+    lang_detected: str = "en"      # multilingual lang that fired (first in scan order
+                                   # zh,hi,ar,ru,es,fr,pt,de,id; "en" = legacy/none).
+                                   # ES/PT share tokens, so it reports the first to fire.
     secret_suspected: bool = False  # api-key/token shape seen; boost skipped, never logged
 
 
@@ -375,7 +377,8 @@ def score_with_breakdown(content: str | None, lang_code: str | None = None) -> I
     # normalise the curly apostrophe (U+2019) to ASCII so "I'll" / "won't" are
     # detected straight or smart-quoted, and strip the combining dot (U+0307)
     # that str.lower() inserts for the Turkish dotted "İ".
-    lower = unicodedata.normalize("NFKC", scan).lower().replace("’", "'").replace("̇", "")
+    lower = (unicodedata.normalize("NFKC", scan).lower()
+             .replace("’", "'").replace("‘", "'").replace("̇", ""))
 
     # Exact-match trivial check (single token like "ok", "tamam", "好的", "merci").
     # The multilingual part respects lang_code so an explicit restriction scopes it.
@@ -606,8 +609,12 @@ _LEXICON_RAW: dict = {
     "fr": {"script": "SPACED",
            "remember": ["souviens-toi", "rappelle-toi", "n'oublie pas", "note bien", "à retenir",
                         "a retenir", "garde en mémoire", "garde en memoire", "important de retenir"],
+           # NB: "on a decide" (ASCII of "on a décidé") is dropped — it is three
+           # ordinary English words ("...on a decide...") and would cross-fire on
+           # English text. The accented "on a décidé" is kept; "j'ai decide" stays
+           # because the French "j'ai" anchor doesn't occur in English.
            "decision": ["décidé", "j'ai décidé", "j'ai decide", "nous avons décidé", "on a décidé",
-                        "on a decide", "convenu", "j'ai choisi", "finalisé"],
+                        "convenu", "j'ai choisi", "finalisé"],
            "trivial": ["merci", "d'accord", "parfait", "compris", "ça marche", "ca marche",
                        "très bien", "tres bien", "oui"]},
     "pt": {"script": "SPACED",
@@ -664,7 +671,7 @@ _ML_LANGS: tuple[str, ...] = tuple(_LEXICON.keys())
 # Script-presence detectors (non-Latin langs are scoped by their script so e.g.
 # the Russian lexicon is only consulted when Cyrillic is present).
 _SCRIPT_LANGS: dict = {
-    "zh": re.compile(r"[一-鿿㐀-䶿]"),
+    "zh": re.compile(r"[一-鿿㐀-䶿豈-﫿]"),  # CJK Unified + Ext-A + Compatibility Ideographs
     "hi": re.compile(r"[ऀ-ॿ]"),
     "ar": re.compile(r"[؀-ۿݐ-ݿ]"),
     "ru": re.compile(r"[Ѐ-ӿ]"),
