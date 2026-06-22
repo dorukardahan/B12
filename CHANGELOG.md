@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Multilingual importance lexicons (Phase 2 PR-2b)** — automatic importance scoring now covers **11 languages** (the EN/TR core plus zh, hi, es, fr, ar, ru, pt, id, de). Each language adds native-verified remember (→ memorable), decision (→ decision), and trivial (→ trivial, exact-match only) cues, matched script-aware: word-boundary for spaced scripts, NFKC-normalized substring for CJK / Devanagari / Arabic (Arabic also tashkeel-stripped). The language is auto-detected by script presence; `b12_importance.score(content, lang_code=...)` can override it, and `B12_IMPORTANCE_UNION_MODE=1` checks every lexicon. Lexicons are curated for precision (ambiguous homonyms/short substrings excluded), and English-colliding ASCII transliterations are omitted so cross-language false positives don't occur.
+
+### Internal
+- Read-side ranking and the RET-3 dual-scale parity are untouched; EN/TR scores stay bit-identical (NFKC is identity for ASCII and precomposed Turkish letters). New multilingual tests cover per-language remember/decision/trivial, cross-language and EN/TR controls, mixed-script, `lang_code`, and a ReDoS guard.
+
 ## [v11.77.0] — 2026-06-23
 
 First Phase-2 release: automatic, language-aware importance scoring at write time.

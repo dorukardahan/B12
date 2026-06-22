@@ -429,6 +429,106 @@ def test_provider_keys_detected_as_secret():
         assert out.score == imp.IMPORTANCE_BASELINE, s
 
 
+# ── PR-2b: multilingual lexicons (9 languages beyond the EN/TR core) ───────
+
+_ML_REMEMBER = [
+    ("zh", "请把这个记住一下"),
+    ("hi", "इसे याद रखना ज़रूरी है"),
+    ("ar", "تذكر هذا الأمر جيدا"),
+    ("ru", "запомни этот адрес"),
+    ("id", "jangan lupa backup datanya"),
+    ("es", "recuérdame comprar leche"),
+    ("fr", "n'oublie pas la réunion"),
+    ("pt", "não esqueça de salvar isso"),
+    ("de", "denk dran das morgen zu tun"),
+]
+
+_ML_DECISION = [
+    ("zh", "我们决定用 postgres"),
+    ("hi", "हमने तय किया"),
+    ("ar", "قررنا أن نبدأ غدا"),
+    ("ru", "мы решили начать"),
+    ("id", "kami sepakat untuk lanjut"),
+    ("es", "decidimos usar postgres"),
+    ("fr", "nous avons décidé de migrer"),
+    ("pt", "decidimos seguir em frente"),
+    ("de", "wir haben entschieden zu migrieren"),
+]
+
+_ML_TRIVIAL = [
+    ("zh", "好的"), ("ar", "شكرا"), ("ru", "спасибо"),
+    ("es", "vale"), ("de", "danke"), ("id", "oke"), ("hi", "ठीक है"),
+]
+
+def test_ml_remember_floors_memorable():
+    for lang, s in _ML_REMEMBER:
+        assert score_with_breakdown(s).band == "memorable", (lang, s)
+
+def test_ml_decision_floors_decision():
+    for lang, s in _ML_DECISION:
+        b = score_with_breakdown(s)
+        assert b.band == "decision", (lang, s, b.band)
+
+def test_ml_trivial_exact_only():
+    # A trivial token alone → TRIVIAL ...
+    for lang, s in _ML_TRIVIAL:
+        assert score_with_breakdown(s).band == "trivial", (lang, s)
+    # ... but the same token inside a substantive sentence must NOT demote it.
+    assert score_with_breakdown("gracias por todo el trabajo de hoy").band == "baseline"
+    assert score_with_breakdown("danke an das ganze team für den launch").band == "baseline"
+
+def test_ml_lang_detected_recorded():
+    assert score_with_breakdown("我们决定用 postgres").lang_detected == "zh"
+    assert score_with_breakdown("decidimos usar postgres").lang_detected == "es"
+
+def test_ml_no_cross_language_false_positive():
+    # English text must not match FR/ES decision lexicons (dropped colliding ASCII).
+    out = score_with_breakdown("please finalize the report and decide the budget")
+    assert out.band == "baseline" and out.lang_detected == "en"
+    # Reviewer finding: "on a decide" (3 English words) must not fire FR decision.
+    # (Sentence avoids legacy EN decision tokens like "settled on".)
+    out2 = score_with_breakdown("the flag depends on a decide path in the code")
+    assert out2.band == "baseline" and out2.lang_detected == "en"
+
+def test_ml_does_not_perturb_en_tr():
+    # EN/TR scoring is unchanged by the multilingual layer.
+    assert score_with_breakdown("just some plain text").band == "baseline"
+    assert score_with_breakdown("we decided to ship on Friday").band == "decision"
+    assert score_with_breakdown("bu işi yapmalıyız").band == "decision"
+    assert score_with_breakdown("hatırla bunu").band == "memorable"
+
+def test_ml_mixed_script():
+    # zh remember cue embedded in latin text still fires.
+    assert score_with_breakdown("hit a bug today, 记住这个").band == "memorable"
+
+def test_ml_lang_code_override():
+    # lang_code restricts the lexicon checked.
+    assert imp.score("decidimos usar postgres", lang_code="es") >= imp.IMPORTANCE_DECISION
+    assert imp.score("decidimos usar postgres", lang_code="de") == imp.IMPORTANCE_BASELINE
+
+def test_ml_lang_code_scopes_trivial():
+    # Codex: lang_code must scope the exact-trivial check too — another
+    # language's trivial token is not consulted under a restriction.
+    assert score_with_breakdown("danke", lang_code="es").band == "baseline"
+    assert score_with_breakdown("好的", lang_code="es").band == "baseline"
+    assert score_with_breakdown("danke", lang_code="de").band == "trivial"
+    # legacy EN/TR trivial stays always-on regardless of lang_code
+    assert score_with_breakdown("ok", lang_code="es").band == "trivial"
+
+def test_ml_candidate_langs_by_script():
+    assert imp._candidate_langs("记住") == ("zh",)
+    assert imp._candidate_langs("запомни") == ("ru",)
+    assert imp._candidate_langs("تذكر") == ("ar",)
+    assert imp._candidate_langs("याद") == ("hi",)
+    assert set(imp._candidate_langs("recuerda")) == {"es", "fr", "pt", "de", "id"}
+
+def test_ml_no_redos_on_cjk_blob():
+    import time
+    t0 = time.perf_counter()
+    score_with_breakdown("的" * 20000)
+    assert time.perf_counter() - t0 < 1.0
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))

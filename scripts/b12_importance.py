@@ -31,7 +31,9 @@ storage and Turkish-first token list. The fact-pattern regexes
 
 from __future__ import annotations
 
+import os
 import re
+import unicodedata
 from dataclasses import dataclass
 
 # ── Importance bands ────────────────────────────────────────────────
@@ -315,20 +317,23 @@ class ImportanceBreakdown:
     cue_hit: bool = False          # explicit "save/store this" (guarded by remember)
     numeric_hit: bool = False      # number + context word (cost/budget/users/...)
     identifier_hit: bool = False   # PR#/SHA/host-path/abs-path
-    lang_detected: str = "en"      # populated in PR-2b; "en" placeholder for now
+    lang_detected: str = "en"      # multilingual lang that fired (first in scan order
+                                   # zh,hi,ar,ru,es,fr,pt,de,id; "en" = legacy/none).
+                                   # ES/PT share tokens, so it reports the first to fire.
     secret_suspected: bool = False  # api-key/token shape seen; boost skipped, never logged
 
 
 # ── Public API ────────────────────────────────────────────────────
 
 
-def score(content: str | None) -> float:
+def score(content: str | None, lang_code: str | None = None) -> float:
     """Compute the ingest-time importance for a memory content string.
 
     Returns a float in [0.0, IMPORTANCE_CAP=0.95]. Empty / None / whitespace-only
-    content returns IMPORTANCE_TRIVIAL.
+    content returns IMPORTANCE_TRIVIAL. `lang_code` optionally restricts the
+    multilingual lexicon check to one language (default: auto-detect by script).
     """
-    return score_with_breakdown(content).score
+    return score_with_breakdown(content, lang_code).score
 
 
 def is_secret(content: str | None) -> bool:
@@ -344,7 +349,7 @@ def is_secret(content: str | None) -> bool:
     return _detect_secret(content)
 
 
-def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
+def score_with_breakdown(content: str | None, lang_code: str | None = None) -> ImportanceBreakdown:
     """Same as score() but also returns which signals fired.
 
     Band resolution is max-wins (the highest band any signal fires takes the
@@ -352,7 +357,8 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
     dual-scale normalization is never perturbed. Phase-2 signals are GUARDED:
     the new MEMORABLE/DECISION-equivalent detectors fire only when the legacy
     remember/decision tokens did not, so breakdown booleans stay truthful and
-    nothing is double-counted.
+    nothing is double-counted. `lang_code` optionally restricts the multilingual
+    lexicon check to one language (default: auto-detect by script).
     """
     if content is None:
         return ImportanceBreakdown("trivial", IMPORTANCE_TRIVIAL, False, False, 0)
@@ -366,15 +372,17 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
     # Real memories are short and importance signals appear early, so scanning
     # a prefix is both safe and a hard guard against pathological content.
     scan = stripped[:_MAX_SCAN_LEN]
-    # Normalise the curly apostrophe (U+2019) to ASCII so "I'll" / "won't" /
-    # "can't" are detected the same whether typed straight or smart-quoted, and
-    # strip the combining dot (U+0307) that Python's str.lower() inserts for the
-    # Turkish dotted "İ" (İ -> i+̇), so "İşaretle"/"BİTİŞ TARİHİ" match their
-    # TR tokens instead of staying baseline.
-    lower = scan.lower().replace("’", "'").replace("̇", "")
+    # NFKC-normalise (so the multilingual lexicons match composed/compatibility
+    # forms consistently — identity for ASCII and precomposed Turkish letters),
+    # normalise the curly apostrophe (U+2019) to ASCII so "I'll" / "won't" are
+    # detected straight or smart-quoted, and strip the combining dot (U+0307)
+    # that str.lower() inserts for the Turkish dotted "İ".
+    lower = (unicodedata.normalize("NFKC", scan).lower()
+             .replace("’", "'").replace("‘", "'").replace("̇", ""))
 
-    # Exact-match trivial check (single word like "ok", "tamam")
-    if lower in _TRIVIAL_EXACTS:
+    # Exact-match trivial check (single token like "ok", "tamam", "好的", "merci").
+    # The multilingual part respects lang_code so an explicit restriction scopes it.
+    if lower in _TRIVIAL_EXACTS or _ml_is_trivial_exact(lower, lang_code):
         return ImportanceBreakdown("trivial", IMPORTANCE_TRIVIAL, False, False, 0)
 
     # ── Legacy signals (unchanged; now on the bounded scan window) ──
@@ -394,12 +402,26 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
     secret_suspected = _detect_secret(stripped)
     identifier_hit = (not secret_suspected) and _detect_identifier(scan)
 
+    # ── Multilingual signals (PR-2b: 9 languages beyond EN/TR) ──────
+    ml_lang = ""
+    ml_remember = False
+    ml_decision = False
+    for lg in ((lang_code,) if lang_code else _candidate_langs(lower)):
+        if not ml_remember and _ml_match(lower, lg, "remember"):
+            ml_remember = True
+            ml_lang = ml_lang or lg
+        if not ml_decision and _ml_match(lower, lg, "decision"):
+            ml_decision = True
+            ml_lang = ml_lang or lg
+        if ml_remember and ml_decision:
+            break
+
     def _build(band: str, value: float) -> ImportanceBreakdown:
         return ImportanceBreakdown(
             band, min(value, IMPORTANCE_CAP), remember_hit, decision_hit, fact_hits,
             commitment_hit=commitment_hit, deadline_hit=deadline_hit,
             person_hit=person_hit, cue_hit=cue_hit, numeric_hit=numeric_hit,
-            identifier_hit=identifier_hit, lang_detected="en",
+            identifier_hit=identifier_hit, lang_detected=(ml_lang or "en"),
             secret_suspected=secret_suspected,
         )
 
@@ -413,9 +435,9 @@ def score_with_breakdown(content: str | None) -> ImportanceBreakdown:
         return _build("baseline", IMPORTANCE_BASELINE)
 
     # Pick the highest band that fired (max-wins).
-    if remember_hit or cue_hit:
+    if remember_hit or cue_hit or ml_remember:
         return _build("memorable", IMPORTANCE_MEMORABLE)
-    if decision_hit or commitment_hit:
+    if decision_hit or commitment_hit or ml_decision:
         return _build("decision", IMPORTANCE_DECISION)
     if deadline_hit or fact_hits >= 1 or person_hit or numeric_hit or identifier_hit:
         return _build("fact", IMPORTANCE_FACT)
@@ -539,6 +561,168 @@ def _detect_identifier(scan: str) -> bool:
     return any(p.search(scan) for p in _IDENTIFIER_PATTERNS)
 
 
+# ── Multilingual lexicons (PR-2b: 9 languages beyond the EN/TR core) ──
+#
+# EN + TR keep their dedicated detectors above. These nine add remember (→
+# MEMORABLE), decision (→ DECISION) and trivial (→ TRIVIAL, exact-full-content
+# only) cues. Tokens are native-verified and curated for PRECISION — ambiguous
+# homonyms and short substrings were deliberately excluded by the per-language
+# research (e.g. zh bare 好/记/是, ar bare لا/تم, ru да/нет, es bare "si").
+#
+# Matching strategy by script:
+#   SPACED (es/fr/pt/de/id/ru) → word-boundary regex; both the native (accented)
+#       and a distinctive ASCII transliteration are listed, so accent-typing and
+#       plain-typing both match. English-colliding ASCII (e.g. fr "decide",
+#       "finalise") is intentionally omitted to avoid cross-language false hits.
+#   IDEOGRAPHIC (zh) / DEVANAGARI (hi) / RTL (ar) → NFKC-normalized substring
+#       (no word boundaries); ar is also matched after tashkeel stripping. Only
+#       native script is listed (these langs are detected by script presence).
+_ARABIC_TASHKEEL: re.Pattern[str] = re.compile(r"[ـً-ْٰ]")  # tatweel + harakat + superscript alef
+
+_LEXICON_RAW: dict = {
+    "zh": {"script": "IDEOGRAPHIC",
+           "remember": ["记住", "记下来", "别忘了", "不要忘记", "请记得", "记一下", "重要的是"],
+           "decision": ["决定了", "我们决定", "同意了", "达成一致", "确定下来", "敲定", "就这么定"],
+           "trivial": ["好的", "谢谢", "明白了", "知道了", "没问题", "搞定了", "收到"]},
+    "hi": {"script": "DEVANAGARI",
+           "remember": ["याद रखना", "याद रखें", "मत भूलना", "नोट कर", "ध्यान रखना", "जरूरी है कि"],
+           "decision": ["तय किया", "तय हुआ", "फैसला किया", "तय कर लिया", "सहमत हैं", "फाइनल कर", "तय रहा"],
+           "trivial": ["ठीक है", "धन्यवाद", "शुक्रिया", "समझ गया", "हो गया", "बिल्कुल"]},
+    "ar": {"script": "RTL",
+           "remember": ["تذكر", "لا تنسى", "احفظ هذا", "من المهم", "دون هذا", "ضع في اعتبارك"],
+           "decision": ["قررنا", "تقرر", "اتفقنا", "اخترنا", "تم الاتفاق", "استقر الرأي"],
+           "trivial": ["حسنا", "شكرا", "تمام", "نعم", "فهمت", "تم الأمر"]},
+    "ru": {"script": "SPACED",
+           "remember": ["запомни", "запомните", "запиши", "сохрани", "не забудь", "напоминаю"],
+           "decision": ["договорились", "решено", "решили", "выбрали", "утвердили", "окончательно"],
+           "trivial": ["ок", "спасибо", "ясно", "понятно", "готово", "ага"]},
+    "id": {"script": "SPACED",
+           "remember": ["ingat", "catat", "simpan", "jangan lupa", "penting", "perhatikan"],
+           "decision": ["diputuskan", "memutuskan", "sepakat", "disepakati", "finalisasi", "ditetapkan"],
+           "trivial": ["oke", "makasih", "terima kasih", "siap", "sip", "mantap"]},
+    "es": {"script": "SPACED",
+           "remember": ["recuerda", "recuérdame", "recuerdame", "no olvides", "ten en cuenta",
+                        "guarda esto", "anota", "importante recordar"],
+           "decision": ["decidido", "decidí", "decidi", "decidimos", "acordamos", "quedamos en",
+                        "elegí", "elegi", "finalizado"],
+           "trivial": ["vale", "gracias", "perfecto", "listo", "de acuerdo", "entendido", "sí", "si"]},
+    "fr": {"script": "SPACED",
+           "remember": ["souviens-toi", "rappelle-toi", "n'oublie pas", "note bien", "à retenir",
+                        "a retenir", "garde en mémoire", "garde en memoire", "important de retenir"],
+           # NB: "on a decide" (ASCII of "on a décidé") is dropped — it is three
+           # ordinary English words ("...on a decide...") and would cross-fire on
+           # English text. The accented "on a décidé" is kept; "j'ai decide" stays
+           # because the French "j'ai" anchor doesn't occur in English.
+           "decision": ["décidé", "j'ai décidé", "j'ai decide", "nous avons décidé", "on a décidé",
+                        "convenu", "j'ai choisi", "finalisé"],
+           "trivial": ["merci", "d'accord", "parfait", "compris", "ça marche", "ca marche",
+                       "très bien", "tres bien", "oui"]},
+    "pt": {"script": "SPACED",
+           "remember": ["lembre-se", "lembra disso", "não esqueça", "nao esqueca", "anote",
+                        "guarde isso", "tenha em mente", "importante lembrar"],
+           "decision": ["decidido", "decidi", "decidimos", "ficou decidido", "combinamos",
+                        "escolhi", "finalizado"],
+           "trivial": ["obrigado", "obrigada", "beleza", "perfeito", "entendi", "feito",
+                       "tá bom", "ta bom"]},
+    "de": {"script": "SPACED",
+           "remember": ["merk dir", "merke dir", "nicht vergessen", "denk dran",
+                        "behalte im hinterkopf", "wichtig zu merken", "notiere"],
+           "decision": ["entschieden", "ich habe entschieden", "wir haben entschieden",
+                        "beschlossen", "vereinbart", "festgelegt", "geeinigt"],
+           "trivial": ["danke", "passt", "alles klar", "verstanden", "erledigt", "perfekt",
+                       "in ordnung"]},
+}
+
+
+def _norm_tok(t: str, strip_tashkeel: bool = False) -> str:
+    t = unicodedata.normalize("NFKC", t).lower()
+    if strip_tashkeel:
+        t = _ARABIC_TASHKEEL.sub("", t)
+    return t
+
+
+def _build_lexicon(raw: dict) -> tuple[dict, frozenset]:
+    """Compile each language's remember/decision cues into a matcher and collect
+    all trivial tokens into an exact-match set. SPACED → one word-boundary regex
+    per category; substring scripts → a tuple of normalized tokens."""
+    lex: dict = {}
+    trivial_exact: set = set()
+    for lang, e in raw.items():
+        stype = e["script"]
+        strip = stype == "RTL"
+        cats: dict = {}
+        for cat in ("remember", "decision"):
+            toks = sorted({_norm_tok(t, strip) for t in e.get(cat, ()) if t.strip()})
+            if not toks:
+                cats[cat] = None
+            elif stype == "SPACED":
+                cats[cat] = ("re", re.compile(r"(?<!\w)(?:" + "|".join(re.escape(t) for t in toks) + r")(?!\w)"))
+            else:
+                cats[cat] = ("sub", tuple(toks))
+        lang_trivial = {_norm_tok(t, strip) for t in e.get("trivial", ()) if t.strip()}
+        lex[lang] = {"script": stype, "cats": cats, "trivial": frozenset(lang_trivial)}
+        trivial_exact |= lang_trivial
+    return lex, frozenset(trivial_exact)
+
+
+_LEXICON, _ML_TRIVIAL_EXACT = _build_lexicon(_LEXICON_RAW)
+_ML_LANGS: tuple[str, ...] = tuple(_LEXICON.keys())
+
+# Script-presence detectors (non-Latin langs are scoped by their script so e.g.
+# the Russian lexicon is only consulted when Cyrillic is present).
+_SCRIPT_LANGS: dict = {
+    "zh": re.compile(r"[一-鿿㐀-䶿豈-﫿]"),  # CJK Unified + Ext-A + Compatibility Ideographs
+    "hi": re.compile(r"[ऀ-ॿ]"),
+    "ar": re.compile(r"[؀-ۿݐ-ݿ]"),
+    "ru": re.compile(r"[Ѐ-ӿ]"),
+}
+_LATIN_PATTERN: re.Pattern[str] = re.compile(r"[a-zA-ZÀ-ÖØ-öø-ÿĀ-ɏ]")
+_LATIN_LANGS: tuple[str, ...] = ("es", "fr", "pt", "de", "id")
+# Opt-in: try every language's lexicon regardless of detected script.
+_UNION_MODE: bool = os.environ.get("B12_IMPORTANCE_UNION_MODE", "").lower() in ("1", "true", "yes")
+
+
+def _candidate_langs(text: str) -> tuple[str, ...]:
+    """Which language lexicons to consult, by script presence (or all in union mode)."""
+    if _UNION_MODE:
+        return _ML_LANGS
+    langs = [lg for lg, pat in _SCRIPT_LANGS.items() if pat.search(text)]
+    if _LATIN_PATTERN.search(text):
+        langs.extend(_LATIN_LANGS)
+    return tuple(langs)
+
+
+def _ml_match(lower: str, lang: str, category: str) -> bool:
+    """True if a multilingual remember/decision cue for `lang` fires in `lower`
+    (already NFKC-normalized + lowercased)."""
+    entry = _LEXICON.get(lang)
+    if not entry:
+        return False
+    matcher = entry["cats"].get(category)
+    if not matcher:
+        return False
+    kind, val = matcher
+    if kind == "re":
+        return bool(val.search(lower))
+    hay = _ARABIC_TASHKEEL.sub("", lower) if entry["script"] == "RTL" else lower
+    return any(tok in hay for tok in val)
+
+
+def _ml_is_trivial_exact(lower: str, lang_code: str | None = None) -> bool:
+    """True if the whole content is a single multilingual trivial token.
+
+    When `lang_code` restricts the lexicon, only that language's trivial set is
+    consulted — so the override reliably scopes the check and an unrelated
+    language's one-token content is not demoted.
+    """
+    if lang_code:
+        entry = _LEXICON.get(lang_code)
+        toks = entry["trivial"] if entry else frozenset()
+    else:
+        toks = _ML_TRIVIAL_EXACT
+    return lower in toks or _ARABIC_TASHKEEL.sub("", lower) in toks
+
+
 # ── CLI smoke-test ─────────────────────────────────────────────────
 
 
@@ -567,6 +751,13 @@ def _selftest() -> int:
         ("the budget is 50k for 500 users", IMPORTANCE_FACT, "numeric-ctx"),
         ("fixed in PR#123", IMPORTANCE_FACT, "identifier-pr"),
         ("just chatting about the weather", IMPORTANCE_BASELINE, "no-signal"),
+        # ── Multilingual (PR-2b) — a few of the 9 languages ─────────
+        ("请把这个记住一下", IMPORTANCE_MEMORABLE, "zh-remember"),
+        ("我们决定用 postgres", IMPORTANCE_DECISION, "zh-decision"),
+        ("decidimos usar postgres", IMPORTANCE_DECISION, "es-decision"),
+        ("denk dran das morgen zu tun", IMPORTANCE_MEMORABLE, "de-remember"),
+        ("قررنا أن نبدأ غدا", IMPORTANCE_DECISION, "ar-decision"),
+        ("спасибо", IMPORTANCE_TRIVIAL, "ru-trivial"),
         # NB: the secret-filter skip path (credential-shaped content scores
         # BASELINE, never boosts) is covered in scripts/tests/test_importance_signals.py
         # — kept OUT of this in-module smoke so the production file carries no

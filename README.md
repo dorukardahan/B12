@@ -16,7 +16,7 @@
 - **Cross-tool memory** — the same DB powers Claude Code, Codex CLI, Grok CLI, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI
 - **Truly local** — SQLite + sqlite-vec on disk, no cloud calls, no API keys, no telemetry
 - **Hybrid retrieval** — FTS5 BM25 + 1024-dim BGE-M3 vector + importance- and reinforcement-weighted FSRS decay (important & frequently re-accessed memories rise, stale trivia fades)
-- **Automatic importance scoring** — at write time, content is scored into importance bands with no manual tagging via a language-agnostic signal taxonomy (save-cues, commitments, deadlines, people, numeric values, identifiers; EN+TR today). Credential-bearing content is held at baseline so secrets are never amplified
+- **Automatic importance scoring** — at write time, content is scored into importance bands with no manual tagging via a language-agnostic signal taxonomy (save-cues, commitments, deadlines, people, numeric values, identifiers) plus native remember/decision/trivial lexicons in **11 languages** (en, tr, zh, hi, es, fr, ar, ru, pt, id, de) with script-aware matching. Credential-bearing content is held at baseline so secrets are never amplified
 - **Write-time merge + NLI contradiction detection** — duplicates collapse at storage time; conflicting memories flag for review
 - **Hook automation** — session-end micro-extraction, sprint handoffs, working-memory restore through compaction, classifier-driven tagging
 - **Comparison vs alternatives** — full matrix vs Mem0 / Letta / Cursor memory / Claude Projects / ChatGPT memory ships in PR #68 (`docs/comparison.md`).
