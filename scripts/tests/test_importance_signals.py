@@ -252,6 +252,14 @@ def test_tr_obligation_inflected_forms_fire():
               "yapmaliyiz"):
         assert imp.score(s) >= imp.IMPORTANCE_DECISION, s
 
+def test_tr_obligation_word_inflections_fire():
+    # Codex (:456 r14): inflected obligation WORDS must fire on their own.
+    for s in ("bunu yapmak zorundayız", "bu işi yapmaya mecburuz", "bu lazımdır"):
+        assert score_with_breakdown(s).commitment_hit is True, s
+    # ambiguous derivations stay safe (no false DECISION)
+    assert score_with_breakdown("gereksiz bir toplantı").commitment_hit is False
+    assert score_with_breakdown("lazımlık nerede").commitment_hit is False
+
 def test_tr_obligation_lookalike_nouns_do_not_fire():
     # CORR-3: accusative nouns / names ending -mali must NOT score DECISION.
     for s in ("ihtimali değerlendirelim", "normali kontrol et", "kemali aradı",

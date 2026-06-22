@@ -824,29 +824,37 @@ def merge_or_insert(
             )
             new_hash = best_hash
 
-        # If the merged content is now credential-bearing, cap the existing row's
-        # importance at baseline too. The content-only UPDATEs above don't touch
-        # metadata, so without this a secret merged into a high-importance row
-        # would keep its old score and stay resurfaced.
+        # Reconcile the merged row's importance (the content-only UPDATEs above
+        # don't touch metadata): a credential-bearing merge caps at baseline,
+        # otherwise carry the HIGHER of the row's existing score and the merged
+        # content's heuristic score — so a high-signal write ("save this ...")
+        # merged into a baseline row lifts it, and the write-side scoring isn't
+        # lost, while a higher explicit/level value is preserved.
         try:
             import b12_importance as _imp_merge
-            if _imp_merge.is_secret(merged_content):
-                _row = conn.execute(
-                    "SELECT metadata FROM memories WHERE id = ?", (best_id,)
-                ).fetchone()
-                _md: Any = {}
-                if _row and _row[0]:
-                    try:
-                        _md = json.loads(_row[0])
-                    except Exception:
-                        _md = {}
-                if not isinstance(_md, dict):
+            _row = conn.execute(
+                "SELECT metadata FROM memories WHERE id = ?", (best_id,)
+            ).fetchone()
+            _md: Any = {}
+            if _row and _row[0]:
+                try:
+                    _md = json.loads(_row[0])
+                except Exception:
                     _md = {}
+            if not isinstance(_md, dict):
+                _md = {}
+            if _imp_merge.is_secret(merged_content):
                 _md["importance_score"] = _imp_merge.IMPORTANCE_BASELINE
-                conn.execute(
-                    "UPDATE memories SET metadata = ? WHERE id = ?",
-                    (_metadata_to_str(_md), best_id),
-                )
+            else:
+                try:
+                    _existing = float(_md.get("importance_score"))
+                except (TypeError, ValueError):
+                    _existing = 0.0
+                _md["importance_score"] = max(_existing, _imp_merge.score(merged_content))
+            conn.execute(
+                "UPDATE memories SET metadata = ? WHERE id = ?",
+                (_metadata_to_str(_md), best_id),
+            )
         except Exception:
             pass
 

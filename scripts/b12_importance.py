@@ -116,9 +116,16 @@ _COMMIT_TOKENS: tuple[str, ...] = (
     # future/commitment sense without the false positives.
     "i will", "we will", "you will", "they will", "he will", "she will",
     "i am going to", "we are going to", "i'm going to", "we're going to",
-    # Turkish obligation markers
-    "zorunda", "zorunlu", "mecbur", "gerek", "lazım", "lazim",
-    "şart", "sart", "yapacağım", "yapacagim", "edeceğiz", "edecegiz",
+    # Turkish bare-word markers. zorunda/zorunlu/mecbur/lazım are matched
+    # inflection-aware by _COMMIT_TR_WORDS below (so "zorundayız"/"mecburuz"/
+    # "lazımdır" fire). gerek/şart stay bare — their derivations are ambiguous
+    # ("gerekçe"=justification, "gereksiz"=unnecessary, "şartlar"=conditions).
+    "gerek", "şart", "sart", "yapacağım", "yapacagim", "edeceğiz", "edecegiz",
+)
+# Inflection-aware Turkish obligation stems + common copular endings.
+_COMMIT_TR_WORDS: re.Pattern[str] = re.compile(
+    r"\b(?:zorunda|zorunlu|mecbur|lazım|lazim)"
+    r"(?:y[ıiu]z|y[ıiu]m|sın|sin|sınız|siniz|d[ıiuü]r|d[ıi]|[uü]z)?\b"
 )
 # Turkish "-malı/-meli" obligation suffix, allowing the common personal
 # endings (yapmalı / yapmalıyız / yapmalısın / etmeliyim / gitmeliler ...).
@@ -453,7 +460,8 @@ def _detect_commitment(lower: str) -> bool:
     """
     if _NEG_MODAL.search(lower):
         return False
-    tok_hit = any(_token_in(lower, tok) for tok in _COMMIT_TOKENS)
+    tok_hit = (any(_token_in(lower, tok) for tok in _COMMIT_TOKENS)
+               or bool(_COMMIT_TR_WORDS.search(lower)))
     suffix_hit = bool(_COMMIT_TR_SUFFIX.search(lower)) and not _TR_NEG_SUFFIX.search(lower)
     if not (tok_hit or suffix_hit):
         return False
