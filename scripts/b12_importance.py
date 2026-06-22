@@ -143,7 +143,7 @@ _NEG_MODAL: re.Pattern[str] = re.compile(
     # negated have-to/need-to, allowing up to 3 intervening words so
     # "don't really have to" / "do not necessarily need to" / "should not have to"
     # are all suppressed.
-    r"(?:do|does|did|should|would|could)(?:n't| not)(?:\s+\w+){0,3}\s+(?:have|need) to)\b"
+    r"(?:do|does|did|should|would|could)(?:n't| not)(?:[\s,]+\w+){0,3}[\s,]+(?:have|need) to)\b"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
@@ -157,7 +157,7 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # This excludes the idioms ("due diligence/process/credit"), causal "due to",
     # and negated "not due" that bare "due" used to mis-fire on. ("due Friday"
     # is still caught by the weekday token.)
-    re.compile(r"\bdue\s+(?:on|by|before|today|tonight|tomorrow|next|this|\d)"),
+    re.compile(r"\bdue\s+(?:(?:on|by|before|today|tonight|tomorrow|next|this)\b|\d)"),
     # predicate "is/are due" but NOT the causal idiom "is due to ..." (credit is due to)
     re.compile(r"\b(?:is|are|was|were|it'?s|they'?re)\s+due\b(?!\s+to\b)"),
 )

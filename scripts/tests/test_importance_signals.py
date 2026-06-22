@@ -293,6 +293,17 @@ def test_en_negated_obligation_with_intervening_words():
         assert score_with_breakdown(s).commitment_hit is False, s
     assert score_with_breakdown("we have to ship today").commitment_hit is True
 
+def test_en_negated_obligation_with_punctuation():
+    # Codex (:146 r11): commas/parentheticals between negator and have/need to.
+    for s in ("we do not, however, need to migrate", "we don't, in fact, have to migrate"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+
+def test_due_context_alternatives_word_bounded():
+    # Codex (:160 r11): "due only"/"due online" must not match the on/by prefixes.
+    assert score_with_breakdown("failed due only to flaky tests").deadline_hit is False
+    assert score_with_breakdown("delay due online outage").deadline_hit is False
+    assert score_with_breakdown("the task is due on Monday").deadline_hit is True
+
 def test_tr_pazar_market_not_deadline():
     # Codex (:165): bare "pazar" (market) is not a deadline; "pazar günü" is.
     assert score_with_breakdown("pazar araştırması yapalım").deadline_hit is False
