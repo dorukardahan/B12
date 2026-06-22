@@ -1,17 +1,19 @@
 # Changelog
 
-## Unreleased
+## [v11.77.0] — 2026-06-23
+
+First Phase-2 release: automatic, language-aware importance scoring at write time.
 
 ### Added
-- **Automatic write-side importance signal taxonomy** (`scripts/b12_importance.py`) — memories are scored into importance bands at store time with no manual tagging, via six new language-agnostic signals layered on the existing remember/decision/fact tokens: explicit save-cues (→ memorable), commitment/obligation verbs (→ decision, negation-aware), deadlines/dates, `@handle`/email person mentions, numeric-with-context values, and identifiers (PR#/git-SHA/host-path) (→ fact). English + Turkish today (9 more languages planned). This feeds the importance/reinforcement-modulated FSRS aging so genuinely valuable memories surface and stay discoverable.
-- The scorer is now wired into the **MCP `memory_store` write path** too (Cursor / Cline / Gemini / Kimi / OpenCode / Grok), not just hook capture: when a client doesn't supply `importance_score` it is auto-scored, and caller-supplied values are preserved.
+- **Automatic importance signal taxonomy** (`scripts/b12_importance.py`) — memories are scored into importance bands at store time with no manual tagging, via six language-agnostic signals layered on the existing remember/decision/fact tokens: explicit save-cues (→ memorable), commitment/obligation verbs (→ decision, negation-aware), deadlines/dates, `@handle`/email person mentions, numeric-with-context values, and identifiers (PR#/git-SHA/host-path) (→ fact). English + Turkish today (more languages planned). This feeds the importance/reinforcement-modulated FSRS aging so genuinely valuable memories surface and stay discoverable. (#117)
+- Importance is now auto-scored on the **MCP `memory_store` write path** too (Cursor / Cline / Gemini / Kimi / OpenCode / Grok), not just hook capture; a caller-supplied `importance_score` is preserved. (#117)
 
 ### Fixed
-- Credential-bearing content is never amplified, on every write path: a detected secret (using the shared `b12_pii_scrubber` patterns, so the two never drift, and recognizing the scrubber's own `[REDACTED:…]` marker since scrubbing runs before scoring) caps the memory at baseline importance — overriding even a caller- or LLM-supplied value — instead of boosting/resurfacing it. The secret value is never stored or logged by the scorer (redaction remains the scrubber's job).
-- Importance scoring is ReDoS-safe: the email / host-path / identifier regexes are bounded to linear matching, so a large pasted blob can no longer stall the synchronous store path.
+- **Credential-bearing content is never amplified, on every write path.** A detected secret — using the shared `b12_pii_scrubber` patterns (so the two can't drift) and recognizing the scrubber's own `[REDACTED:…]` marker — caps the memory at baseline importance, overriding even a caller- or LLM-supplied value, across `memory_store`, the merge insert path, the legacy metadata-string format, and semantic merges. The scorer never stores or logs the secret value (redaction stays the scrubber's job). (#117)
+- Importance scoring is **ReDoS-safe**: the email / host-path / identifier regexes are bounded to linear matching, so a large pasted blob can no longer stall the synchronous store path. (#117)
 
 ### Internal
-- Read-side ranking (MCP `_unified_score`, the retrieval-hook SQL, and the OpenCode `unifiedScore`) is untouched; the RET-3 dual-scale parity tests stay green. New `scripts/tests/test_importance_signals.py` covers every signal, the secret-skip path, multilingual-negation edge cases, and a ReDoS performance guard.
+- Read-side ranking (MCP `_unified_score`, the retrieval-hook SQL, and the OpenCode `unifiedScore`) is untouched; the RET-3 dual-scale parity stays green. New `scripts/tests/test_importance_signals.py` (53 cases) covers every signal, the secret-skip cap across all write paths, EN/TR negation and Turkish-morphology edges, and a ReDoS performance guard. (#117)
 
 ## [v11.76.0] — 2026-06-20
 
