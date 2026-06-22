@@ -403,7 +403,10 @@ def _selftest() -> int:
         ("the budget is 50k for 500 users", IMPORTANCE_FACT, "numeric-ctx"),
         ("fixed in PR#123", IMPORTANCE_FACT, "identifier-pr"),
         ("just chatting about the weather", IMPORTANCE_BASELINE, "no-signal"),
-        ("sk_live_abc123DEF456ghi789jkl012mno345pqr", IMPORTANCE_BASELINE, "secret-skip"),
+        # NB: the secret-filter skip path (credential-shaped content scores
+        # BASELINE, never boosts) is covered in scripts/tests/test_importance_signals.py
+        # — kept OUT of this in-module smoke so the production file carries no
+        # secret-shaped literal (keeps gitleaks clean with no allowlist needed here).
     ]
     failed = 0
     for content, expected, label in cases:
