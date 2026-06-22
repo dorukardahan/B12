@@ -363,9 +363,13 @@ def _phrase_match(haystack: str, token: str) -> bool:
 
 
 def _token_in(haystack: str, token: str) -> bool:
-    """Substring for multi-word / apostrophe tokens; word boundaries otherwise."""
+    """Phrase-boundary match for multi-word / apostrophe tokens; word boundaries
+    otherwise. Both anchor on \\w boundaries so a token never matches inside a
+    larger word: "store this" not in "restore this backup", "pin this" not in
+    "spin this up", "have to" not in "shave together", "going to" not in
+    "ongoing total"."""
     if " " in token or "'" in token:
-        return token in haystack
+        return _phrase_match(haystack, token)
     return _word_match(haystack, token)
 
 
@@ -415,7 +419,9 @@ def _detect_numeric(lower: str) -> bool:
     """Number + context word → FACT (operates on the already-bounded scan)."""
     if not _NUMERIC_VALUE.search(lower):
         return False
-    return any(ctx in lower for ctx in _NUMERIC_CONTEXT)
+    # Context words matched on word boundaries so "migrate"/"generate" don't hit
+    # "rate" and "coffee" doesn't hit "fee".
+    return any(_word_match(lower, ctx) for ctx in _NUMERIC_CONTEXT)
 
 
 def _detect_secret(text: str) -> bool:

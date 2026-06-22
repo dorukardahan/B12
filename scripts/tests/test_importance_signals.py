@@ -252,6 +252,24 @@ def test_curly_apostrophe_normalized():
     assert score_with_breakdown("I’ll finish the audit").commitment_hit is True
     assert score_with_breakdown("I won’t do that").commitment_hit is False
 
+def test_multiword_cue_phrase_boundary():
+    # Codex (:368): multi-word cues must not match inside neighbouring words.
+    assert score_with_breakdown("restore this backup").cue_hit is False
+    assert score_with_breakdown("spin this up locally").cue_hit is False
+    assert score_with_breakdown("save this note for later").cue_hit is True
+
+def test_multiword_commitment_phrase_boundary():
+    # Same root fix: "have to"/"going to" must not match inside words.
+    assert score_with_breakdown("ongoing total review meeting").commitment_hit is False
+    assert score_with_breakdown("we have to ship today").commitment_hit is True
+
+def test_numeric_context_word_boundary():
+    # Codex (:418): context words must match on boundaries, not as substrings.
+    assert score_with_breakdown("migrate 20 tests").numeric_hit is False
+    assert score_with_breakdown("generate 20 fixtures").numeric_hit is False
+    assert score_with_breakdown("coffee 20 cups").numeric_hit is False
+    assert score_with_breakdown("the budget is 50k").numeric_hit is True
+
 
 if __name__ == "__main__":
     import pytest
