@@ -135,7 +135,7 @@ _COMMIT_TR_SUFFIX: re.Pattern[str] = re.compile(
 _NEG_MODAL: re.Pattern[str] = re.compile(
     r"\b(?:won't|wont|will not|must not|mustn't|cannot|can't|shouldn't|"
     r"not going to|no need to|"
-    r"do(?:es)?n't (?:have|need) to|do(?:es)? not (?:have|need) to)\b"
+    r"(?:do|does|did)n't (?:have|need) to|(?:do|does|did) not (?:have|need) to)\b"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
@@ -161,8 +161,10 @@ _DEADLINE_TOKENS: tuple[str, ...] = (
     # "<date>'e kadar" deadline sense is carried by the co-occurring date /
     # weekday tokens instead.
     "son tarih", "vade", "teslim", "bitiş tarihi", "bitis tarihi",
+    # NB: bare "pazar" is omitted — it is also the common noun "market"
+    # ("pazar araştırması"). Use the unambiguous "pazar günü" (Sunday) instead.
     "pazartesi", "salı", "sali", "çarşamba", "carsamba", "perşembe", "persembe",
-    "cuma", "cumartesi", "pazar",
+    "cuma", "cumartesi", "pazar günü", "pazar gunu",
 )
 
 # Person mention — @handle or email local-part ONLY in Phase 2. The noisy
@@ -201,27 +203,32 @@ _IDENTIFIER_PATTERNS: tuple[re.Pattern[str], ...] = (
 )
 
 # Secret / credential shapes. On match the importance boost is SKIPPED and
-# secret_suspected is flagged — the value is NEVER stored or logged (public-repo
-# secrets rule). Checked before identifiers so a key never floors at FACT.
+# secret_suspected is flagged so credential-bearing content is not amplified.
+# The canonical list lives in b12_pii_scrubber (the authoritative redactor that
+# runs on every write path BEFORE scoring); reuse it so the two never drift and
+# every provider key it knows (sk-ant-/sk-proj-/AIza/Bearer/...) is covered here
+# too. The local set below is only a standalone fallback if that import fails.
+# All these rules are anchored on specific literals, so running them over the
+# full content stays O(n) without a marker pre-filter.
 _DANGEROUS_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"\b(?:sk|pk)_(?:live|test)_[A-Za-z0-9]{8,}"),   # stripe-style
+    re.compile(r"\bsk-(?:ant|proj)-[A-Za-z0-9_-]{20,}"),        # anthropic / openai-project
+    re.compile(r"\bsk-[A-Za-z0-9]{32,}"),                       # openai classic
     re.compile(r"\bghp_[A-Za-z0-9]{16,}"),                      # github PAT
+    re.compile(r"\bAIza[A-Za-z0-9_-]{20,}"),                    # google api key
+    re.compile(r"(?i)\bBearer\s+[A-Za-z0-9._-]{16,}"),          # bearer token
     re.compile(r"\bxox[baprs]-[A-Za-z0-9-]{10,}"),              # slack token
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),               # aws key id
     re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----"),          # PEM private key
-    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),  # JWT (header is always base64url 'eyJ...')
+    re.compile(r"\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}"),  # JWT
     re.compile(r"\b(?:api[_-]?key|secret|token|password|passwd)\s*[:=]\s*\S{12,}",
                re.IGNORECASE),                                  # key=value secret
 )
-# Cheap literal pre-filter for the secret scan: every _DANGEROUS_PATTERNS rule
-# is anchored on one of these markers, so if none is present (the common case)
-# we skip the regexes entirely. This lets the secret check run over the FULL
-# content (not the bounded scan) in O(n) — a credential AFTER the scan window
-# must still suppress the boost.
-_SECRET_MARKERS: tuple[str, ...] = (
-    "sk_", "pk_", "ghp_", "xox", "akia", "asia", "begin", "eyj",
-    "key", "secret", "token", "password", "passwd",
-)
+try:
+    from b12_pii_scrubber import _PATTERNS as _SCRUBBER_PATTERNS
+    _SECRET_REGEXES: tuple[re.Pattern[str], ...] = tuple(p for _label, p in _SCRUBBER_PATTERNS)
+except Exception:
+    _SECRET_REGEXES = _DANGEROUS_PATTERNS
 
 
 # ── Result type ────────────────────────────────────────────────────
@@ -428,16 +435,13 @@ def _detect_secret(text: str) -> bool:
     """Credential/secret shape anywhere in the FULL content.
 
     A late secret (past the bounded scan window) must still suppress the boost,
-    so this scans the whole string. A cheap literal pre-filter keeps it O(n) and
-    avoids running the regexes on ordinary text. This only governs THIS module's
-    importance output (it forces BASELINE so secrets are not amplified/resurfaced);
-    redaction of the stored value is the PII scrubber's job, which runs earlier
-    on every write path. The matched value is never returned, stored, or logged.
+    so this scans the whole string with the canonical scrubber patterns (anchored
+    literals keep it O(n)). This only governs THIS module's importance output (it
+    forces BASELINE so secrets are not amplified/resurfaced); redaction of the
+    stored value is the PII scrubber's job, which runs earlier on every write
+    path. The matched value is never returned, stored, or logged.
     """
-    low = text.lower()
-    if not any(m in low for m in _SECRET_MARKERS):
-        return False
-    return any(p.search(text) for p in _DANGEROUS_PATTERNS)
+    return any(p.search(text) for p in _SECRET_REGEXES)
 
 
 def _detect_identifier(scan: str) -> bool:

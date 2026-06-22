@@ -270,6 +270,30 @@ def test_numeric_context_word_boundary():
     assert score_with_breakdown("coffee 20 cups").numeric_hit is False
     assert score_with_breakdown("the budget is 50k").numeric_hit is True
 
+def test_en_past_tense_negated_obligations():
+    # Codex (:138): "didn't / did not have to / need to" are non-commitments.
+    for s in ("we didn't have to migrate", "we did not need to migrate"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+
+def test_tr_pazar_market_not_deadline():
+    # Codex (:165): bare "pazar" (market) is not a deadline; "pazar günü" is.
+    assert score_with_breakdown("pazar araştırması yapalım").deadline_hit is False
+    assert score_with_breakdown("teslim pazar günü").deadline_hit is True
+
+def test_provider_keys_detected_as_secret():
+    # Codex (:207): hyphenated provider keys must be caught (via the shared
+    # scrubber patterns) so credential-bearing memories are not boosted.
+    cases = [
+        "save this sk-ant-api03-" + ("a" * 45),
+        "store this sk-proj-" + ("b" * 45),
+        "remember AIza" + ("C" * 35),
+        "key: Bearer " + ("d" * 24),
+    ]
+    for s in cases:
+        out = score_with_breakdown(s)
+        assert out.secret_suspected is True, s
+        assert out.score == imp.IMPORTANCE_BASELINE, s
+
 
 if __name__ == "__main__":
     import pytest

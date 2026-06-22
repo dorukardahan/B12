@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+- **Automatic write-side importance signal taxonomy** (`scripts/b12_importance.py`) — memories are scored into importance bands at store time with no manual tagging, via six new language-agnostic signals layered on the existing remember/decision/fact tokens: explicit save-cues (→ memorable), commitment/obligation verbs (→ decision, negation-aware), deadlines/dates, `@handle`/email person mentions, numeric-with-context values, and identifiers (PR#/git-SHA/host-path) (→ fact). English + Turkish today (9 more languages planned). This feeds the importance/reinforcement-modulated FSRS aging so genuinely valuable memories surface and stay discoverable.
+
+### Fixed
+- Credential-bearing content is never amplified: a detected secret (using the shared `b12_pii_scrubber` patterns, so the two never drift) holds the memory at baseline importance instead of boosting/resurfacing it. The secret value is never stored or logged by the scorer (redaction remains the scrubber's job, which runs earlier on every write path).
+- Importance scoring is ReDoS-safe: the email / host-path / identifier regexes are bounded to linear matching, so a large pasted blob can no longer stall the synchronous store path.
+
+### Internal
+- Read-side ranking (MCP `_unified_score`, the retrieval-hook SQL, and the OpenCode `unifiedScore`) is untouched; the RET-3 dual-scale parity tests stay green. New `scripts/tests/test_importance_signals.py` covers every signal, the secret-skip path, multilingual-negation edge cases, and a ReDoS performance guard.
+
 ## [v11.76.0] — 2026-06-20
 
 ### Added
