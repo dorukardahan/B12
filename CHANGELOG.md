@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+### Internal
+- **`scripts/audit_importance_gap.py`** (Phase 2 PR-2c) — read-only corpus audit that measures the "importance gap": how many high-value memories the write-side heuristic would score at baseline (no signal). Opens the DB `mode=ro` (never writes), PII/secret-scrubs and truncates samples, and prints a band distribution plus an ML-ROI recommendation. The output is the go/no-go input for the gated ML head (PR-2e); the owner sets the threshold.
+
 ## [v11.78.0] — 2026-06-23
 
 Phase 2 PR-2b: automatic importance scoring goes multilingual — 11 languages.
