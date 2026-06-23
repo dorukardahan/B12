@@ -102,9 +102,10 @@ or LLM-supplied importance. This is enforced wherever importance is finalized
 through `score()` / `is_secret()`: MCP `memory_store`,
 `write_time_merge._augment_importance` (insert), the legacy metadata-string
 format, and the semantic-merge update. The scorer never stores or logs the
-secret value — and, crucially, the PII scrubber redacts the value on **every**
-write path *before* scoring, so the secret VALUE is never persisted regardless of
-the importance number.
+secret value — and, crucially, the PII scrubber redacts the value on every
+**Python** write path *before* scoring, so on those paths the secret VALUE is
+never persisted regardless of the importance number (the OpenCode plugin path is
+the exception — see the gaps below).
 
 **Known gaps (tracked follow-ups).**
 
