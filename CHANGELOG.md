@@ -1,12 +1,18 @@
 # Changelog
 
-## Unreleased
+## [v11.78.0] — 2026-06-23
+
+Phase 2 PR-2b: automatic importance scoring goes multilingual — 11 languages.
 
 ### Added
-- **Multilingual importance lexicons (Phase 2 PR-2b)** — automatic importance scoring now covers **11 languages** (the EN/TR core plus zh, hi, es, fr, ar, ru, pt, id, de). Each language adds native-verified remember (→ memorable), decision (→ decision), and trivial (→ trivial, exact-match only) cues, matched script-aware: word-boundary for spaced scripts, NFKC-normalized substring for CJK / Devanagari / Arabic (Arabic also tashkeel-stripped). The language is auto-detected by script presence; `b12_importance.score(content, lang_code=...)` can override it, and `B12_IMPORTANCE_UNION_MODE=1` checks every lexicon. Lexicons are curated for precision (ambiguous homonyms/short substrings excluded), and English-colliding ASCII transliterations are omitted so cross-language false positives don't occur.
+- **Multilingual importance lexicons** — automatic, no-manual-tagging importance scoring now covers **11 languages** (the EN/TR core plus zh, hi, es, fr, ar, ru, pt, id, de). Each language adds native-verified remember (→ memorable), decision (→ decision), and trivial (→ trivial, exact-match only) cues, matched script-aware: word-boundary for spaced scripts, NFKC-normalized substring for CJK / Devanagari / Arabic (Arabic also tashkeel-stripped). (#118)
+- Language is auto-detected by script presence; `b12_importance.score(content, lang_code=...)` overrides it (and scopes the trivial check), and `B12_IMPORTANCE_UNION_MODE=1` checks every lexicon. (#118)
+
+### Changed
+- Lexicons are curated for **precision** — ambiguous homonyms and short substrings were excluded per-language, and English-colliding ASCII transliterations are omitted, so checking the Latin-script lexicons against English/Turkish text produces **no cross-language false positives** (covered by control tests). (#118)
 
 ### Internal
-- Read-side ranking and the RET-3 dual-scale parity are untouched; EN/TR scores stay bit-identical (NFKC is identity for ASCII and precomposed Turkish letters). New multilingual tests cover per-language remember/decision/trivial, cross-language and EN/TR controls, mixed-script, `lang_code`, and a ReDoS guard.
+- Read-side ranking and the RET-3 dual-scale parity are untouched; EN/TR scores stay bit-identical (NFKC is identity for ASCII and precomposed Turkish letters). New multilingual tests cover per-language remember/decision/trivial, cross-language and EN/TR controls, mixed-script, `lang_code` (incl. trivial scoping), `_candidate_langs`, and a ReDoS guard. (#118)
 
 ## [v11.77.0] — 2026-06-23
 
