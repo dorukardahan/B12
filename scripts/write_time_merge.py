@@ -850,11 +850,14 @@ def merge_or_insert(
             new_hash = best_hash
 
         # Reconcile the merged row's importance (the content-only UPDATEs above
-        # don't touch metadata): a credential-bearing merge caps at baseline,
-        # otherwise carry the HIGHER of the row's existing score and the merged
-        # content's heuristic score — so a high-signal write ("save this ...")
-        # merged into a baseline row lifts it, and the write-side scoring isn't
-        # lost, while a higher explicit/level value is preserved.
+        # don't touch metadata) through the SAME finalize_importance chokepoint as
+        # the insert path: a credential-bearing merge caps at baseline, the
+        # memory_type floor applies, and the row's existing score is compared
+        # against the merged content's heuristic on the RET-3-normalized scale —
+        # so a high-signal write ("save this ...") merged into a baseline row lifts
+        # it, a higher explicit/level value is preserved at its raw scale, and a
+        # level-multiplier existing value is no longer max'd against a fractional
+        # new signal on mismatched scales.
         try:
             import b12_importance as _imp_merge
             _row = conn.execute(
@@ -868,14 +871,8 @@ def merge_or_insert(
                     _md = {}
             if not isinstance(_md, dict):
                 _md = {}
-            if _imp_merge.is_secret(merged_content):
-                _md["importance_score"] = _imp_merge.IMPORTANCE_BASELINE
-            else:
-                try:
-                    _existing = float(_md.get("importance_score"))
-                except (TypeError, ValueError):
-                    _existing = 0.0
-                _md["importance_score"] = max(_existing, _imp_merge.score(merged_content))
+            _md["importance_score"] = _imp_merge.finalize_importance(
+                merged_content, _md.get("importance_score"), memory_type)
             conn.execute(
                 "UPDATE memories SET metadata = ? WHERE id = ?",
                 (_metadata_to_str(_md), best_id),
