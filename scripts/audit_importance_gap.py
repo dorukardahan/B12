@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -44,6 +45,8 @@ def _norm_importance(raw) -> float:
     if isinstance(raw, bool) or not isinstance(raw, (int, float)):
         return 0.50
     v = float(raw)
+    if not math.isfinite(v):  # NaN / inf (json.loads accepts NaN) -> baseline
+        return 0.50
     if v >= 1.0:
         v = v / 2.0
     return max(0.0, min(1.0, v))

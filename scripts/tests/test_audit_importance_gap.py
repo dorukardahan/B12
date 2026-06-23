@@ -60,6 +60,15 @@ def test_normalization_and_missing_importance():
     assert r["gap"] == 0
 
 
+def test_nan_inf_importance_is_baseline():
+    # Codex: NaN/inf importance (json.loads accepts NaN) must be treated as baseline.
+    assert A._norm_importance(float("nan")) == 0.50
+    assert A._norm_importance(float("inf")) == 0.50
+    db = _mk_db([("plain content", '{"importance_score":NaN}')])
+    r = A.audit(db, high=0.75, samples=10)
+    assert r["high_value"] == 0 and r["gap"] == 0
+
+
 def test_ttl_expired_excluded():
     # Codex: TTL-expired rows must be excluded (match the retrieval paths).
     db = _mk_db([
