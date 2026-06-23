@@ -149,24 +149,30 @@ def audit(db_path: str, high: float, samples: int) -> dict:
                                         "heuristic_band": bd.band,
                                         "snippet": snippet})
 
-    gap_pct = (gap / high_value * 100.0) if high_value else 0.0
+    # Gap % is over the ML-ADDRESSABLE set (high-value minus secret-suppressed
+    # rows, which no heuristic/ML head may ever boost) — otherwise a pile of
+    # credential rows would dilute the rate and wrongly shelve the ML head.
+    eligible = high_value - secret_suppressed
+    gap_pct = (gap / eligible * 100.0) if eligible else 0.0
     return {
         "db": db_path,
         "total_memories": total,
         "high_threshold": high,
         "high_value": high_value,
-        "gap": gap,
-        "gap_pct_of_high_value": round(gap_pct, 1),
         "secret_suppressed": secret_suppressed,
+        "eligible": eligible,
+        "gap": gap,
+        "gap_pct_of_eligible": round(gap_pct, 1),
         "heuristic_band_distribution": bands,
         "gap_samples": gap_samples,
     }
 
 
-def _recommendation(gap_pct: float, high_value: int) -> str:
-    if high_value == 0:
-        return ("No high-value memories found — corpus too small / unseeded to judge. "
-                "Re-run after more usage before considering the ML head (PR-2e).")
+def _recommendation(gap_pct: float, eligible: int) -> str:
+    if eligible == 0:
+        return ("No ML-addressable high-value memories found — corpus too small / "
+                "unseeded to judge. Re-run after more usage before considering the "
+                "ML head (PR-2e).")
     if gap_pct >= 15.0:
         return (f"Gap is {gap_pct:.1f}% (>= 15%): a meaningful share of high-value memories "
                 "are missed by the heuristic. The gated ML classifier (PR-2e) MAY be worth "
@@ -196,17 +202,17 @@ def main(argv=None) -> int:
     print(f"  DB                 : {result['db']}")
     print(f"  Total memories     : {result['total_memories']}")
     print(f"  High-value (>= {result['high_threshold']}) : {result['high_value']}")
-    print(f"  Gap (high but heuristic gives no signal): {result['gap']} "
-          f"({result['gap_pct_of_high_value']}% of high-value)")
-    print(f"  Secret-suppressed (high but credential -> baselined, NOT a miss): "
-          f"{result['secret_suppressed']}")
+    print(f"  Secret-suppressed (credential -> baselined, NOT a miss): {result['secret_suppressed']}")
+    print(f"  Eligible (ML-addressable high-value)    : {result['eligible']}")
+    print(f"  Gap (eligible but heuristic gives no signal): {result['gap']} "
+          f"({result['gap_pct_of_eligible']}% of eligible)")
     print(f"  Heuristic bands    : {result['heuristic_band_distribution']}")
     if result["gap_samples"]:
         print("  Gap samples (scrubbed):")
         for s in result["gap_samples"]:
             print(f"    [stored={s['stored']} heuristic={s['heuristic_band']}] {s['snippet']}")
     print("────────────────────────────────────────────────────────────")
-    print("  " + _recommendation(result["gap_pct_of_high_value"], result["high_value"]))
+    print("  " + _recommendation(result["gap_pct_of_eligible"], result["eligible"]))
     return 0
 
 

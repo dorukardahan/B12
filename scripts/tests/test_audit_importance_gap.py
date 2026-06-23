@@ -43,7 +43,7 @@ def test_gap_arithmetic():
     assert r["total_memories"] == 5
     assert r["high_value"] == 4
     assert r["gap"] == 2
-    assert r["gap_pct_of_high_value"] == 50.0
+    assert r["gap_pct_of_eligible"] == 50.0
     assert len(r["gap_samples"]) == 2
 
 
@@ -95,6 +95,10 @@ def test_secret_suppressed_not_counted_as_gap():
     assert r["high_value"] == 2
     assert r["gap"] == 1
     assert r["secret_suppressed"] == 1
+    # gap % is over the ELIGIBLE set (high_value - secret_suppressed = 1), so the
+    # one eligible miss is 100% — not 50% diluted by the secret-suppressed row.
+    assert r["eligible"] == 1
+    assert r["gap_pct_of_eligible"] == 100.0
 
 
 def test_missing_db_returns_error():
