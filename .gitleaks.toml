@@ -20,6 +20,14 @@ description = "B12 secret-scrubber test fixtures (intentional fake secrets)"
 # historical diff clean across the PR's commit range. Self-allowlisted here too.
 regexes = [
   '''sk_live_abc123DEF456ghi789jkl012mno345pqr''',
+  # Historical false positive (NOT a real key): a docstring in the now-deleted
+  # docs/B12_llm_extraction_design.md — "Requires ANTHROPIC_API_KEY. Default model:
+  # claude-haiku-4-5-20251001" — made the generic-api-key rule match the Claude
+  # MODEL IDENTIFIER. Allowlisted by the model-id VALUE (not by file path) so only
+  # this exact false positive is suppressed wherever it appears, while a real secret
+  # in any path — including a reintroduced one — is still caught. (Only the weekly
+  # full-history scan flagged it; PR/push scans see new commits only.)
+  '''claude-haiku-4-5-20251001''',
 ]
 paths = [
   '''scripts/tests/test_b12_pii_scrubber\.py''',
@@ -35,11 +43,4 @@ paths = [
   # (xoxb-/sk-ant-/ghp_/AKIA/…) the scrubber must redact — same category as the
   # Python scrubber test fixtures above.
   '''plugins/opencode/tests/scrubber\.test\.ts''',
-  # Historical false positive (NOT a fixture): the now-deleted
-  # docs/B12_llm_extraction_design.md carried a docstring "Requires
-  # ANTHROPIC_API_KEY. Default model: <claude-model-id>" where the generic-api-key
-  # rule matched the MODEL IDENTIFIER, not a real key. The file is gone from HEAD,
-  # so only the weekly full-history scan flagged it; allowlisted by path to clear
-  # that recurring noise (a real secret can't hide in a file that no longer exists).
-  '''docs/B12_llm_extraction_design\.md''',
 ]
