@@ -36,14 +36,19 @@ const PATTERNS: SecretPattern[] = [
   { label: "google_api", re: /\bAIza[A-Za-z0-9_\-]{35}\b/g },
   { label: "stripe", re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
   {
-    // JS-side hardening: the block span is bounded to 16 KB so that a large
-    // malformed paste with many BEGIN headers and no matching END can't make the
-    // lazy scan retry to end-of-string from each header (a ~20s stall on a ~1 MB
-    // paste was measured; the bound keeps it sub-second). A real PEM private key
-    // is well under 16 KB. (Python's b12_importance uses a bounded header-only
-    // PEM check for the same reason; this runs on OpenCode lifecycle writes.)
+    // The body is matched with an UNROLLED, ReDoS-safe loop `(?:[^-]|-(?!----))*`
+    // (consume any non-dash, or a dash not starting a `-----` run) and the END
+    // marker is OPTIONAL. This diverges from the Python `[\s\S]*?` full-block on
+    // purpose — it is strictly more robust for the OpenCode lifecycle-write path:
+    //   • detects + redacts a BEGIN header even when the END line is missing or the
+    //     body exceeds any fixed bound (so isSecret never misses an oversized /
+    //     truncated key — it would otherwise slip the importance cap), and
+    //   • is linear: a large malformed paste of many BEGIN headers with no END
+    //     scrubs in ~2ms (an unbounded lazy `[\s\S]*?` stalled ~20s on ~1 MB), since
+    //     the two branches are mutually exclusive (no catastrophic backtracking).
+    // A complete block still redacts exactly (body stops at the END's `-----`).
     label: "pem_private_key",
-    re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----[\s\S]{0,16384}?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----/g,
+    re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----(?:[^-]|-(?!----))*(?:-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----)?/g,
   },
   {
     label: "db_uri",

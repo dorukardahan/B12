@@ -37,12 +37,28 @@ describe("scrubSecrets", () => {
     expect(generic).not.toContain("SuperSecretValue123");
   });
 
-  test("redacts a PEM private-key block", () => {
-    const pem =
-      "-----BEGIN RSA PRIVATE KEY-----\nMIIabc\nDEFghi\n-----END RSA PRIVATE KEY-----";
-    const out = scrubSecrets(pem);
-    expect(out).toContain("[REDACTED:pem_private_key]");
+  test("redacts a PEM private-key block (complete, leaving surrounding text)", () => {
+    const out = scrubSecrets(
+      "before\n-----BEGIN RSA PRIVATE KEY-----\nMIIabc\nDEFghi\n-----END RSA PRIVATE KEY-----\nafter",
+    );
+    expect(out).toBe("before\n[REDACTED:pem_private_key]\nafter");
     expect(out).not.toContain("MIIabc");
+  });
+
+  test("redacts + detects a PEM key even with no END line (truncated/oversized)", () => {
+    const endless = "x -----BEGIN RSA PRIVATE KEY-----\nMIIaaa\nbbbccc no end marker here";
+    expect(scrubSecrets(endless)).toContain("[REDACTED:pem_private_key]");
+    expect(scrubSecrets(endless)).not.toContain("MIIaaa");
+    expect(isSecret(endless)).toBe(true);
+    // an oversized body is still detected (the cap must apply)
+    expect(isSecret("-----BEGIN RSA PRIVATE KEY-----\n" + "A".repeat(40000))).toBe(true);
+  });
+
+  test("PEM scan is linear — a large malformed paste does not stall", () => {
+    const malformed = "-----BEGIN RSA PRIVATE KEY-----\n".repeat(20000); // ~600KB, no END
+    const t0 = Date.now();
+    scrubSecrets(malformed);
+    expect(Date.now() - t0).toBeLessThan(1000); // unrolled loop is linear (was ~10s+ unbounded)
   });
 
   test("redacts a DB URI carrying inline credentials but leaves clean URIs alone", () => {
@@ -66,14 +82,6 @@ describe("scrubSecrets", () => {
     }
   });
 
-  test("PEM scan is bounded — a large malformed paste does not stall", () => {
-    const malformed = "-----BEGIN RSA PRIVATE KEY-----\n".repeat(20000); // ~600KB, no END
-    const t0 = Date.now();
-    const out = scrubSecrets(malformed);
-    const elapsed = Date.now() - t0;
-    expect(out).toBe(malformed); // no END → nothing redacted
-    expect(elapsed).toBeLessThan(3000); // bounded; unbounded was ~10s+ here
-  });
 
   test("leaves ordinary content untouched", () => {
     const plain = "we shipped the migration on 2026-07-01, see PR#42";
