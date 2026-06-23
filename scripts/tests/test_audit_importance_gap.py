@@ -62,6 +62,15 @@ def test_missing_db_returns_error():
     assert "error" in r
 
 
+def test_scrub_forces_redaction_despite_optout(monkeypatch):
+    # Even with B12_DISABLE_PII_SCRUB=1, audit samples must be redacted, not raw.
+    monkeypatch.setenv("B12_DISABLE_PII_SCRUB", "1")
+    out = A._scrub("token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789012345")
+    assert "ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ" not in out
+    # the env opt-out is restored after the call
+    assert os.environ.get("B12_DISABLE_PII_SCRUB") == "1"
+
+
 def test_audit_is_read_only():
     # Opening mode=ro must reject writes; the audit must not mutate the DB.
     db = _mk_db([("we decided to ship", '{"importance_score":0.75}')])

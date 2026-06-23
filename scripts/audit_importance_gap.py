@@ -50,11 +50,22 @@ def _norm_importance(raw) -> float:
 
 
 def _scrub(text: str) -> str:
+    """Always redact a sample before display — even if B12_DISABLE_PII_SCRUB=1 is
+    set (the audit must never print raw corpus secrets/PII). The opt-out is
+    temporarily cleared for the scrub call; if the scrubber is unavailable, the
+    sample is OMITTED rather than leaked."""
     try:
         from b12_pii_scrubber import scrub
+    except Exception:
+        return "[sample omitted: scrubber unavailable]"
+    saved = os.environ.pop("B12_DISABLE_PII_SCRUB", None)
+    try:
         return scrub(text)
     except Exception:
-        return text
+        return "[sample omitted: scrub failed]"
+    finally:
+        if saved is not None:
+            os.environ["B12_DISABLE_PII_SCRUB"] = saved
 
 
 def audit(db_path: str, high: float, samples: int) -> dict:
