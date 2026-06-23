@@ -123,7 +123,8 @@ def audit(db_path: str, high: float, samples: int) -> dict:
     total = len(rows)
     bands = {"trivial": 0, "baseline": 0, "fact": 0, "decision": 0, "memorable": 0}
     high_value = 0
-    gap = 0           # high-value, but heuristic fires NO signal (band <= baseline)
+    gap = 0               # high-value, heuristic fires NO signal — a genuine miss
+    secret_suppressed = 0  # high-value but credential-bearing: deliberately baselined, NOT a miss
     gap_samples: list = []
     FACT = getattr(b12_importance, "IMPORTANCE_FACT", 0.70)
 
@@ -135,8 +136,12 @@ def audit(db_path: str, high: float, samples: int) -> dict:
         bands[bd.band] = bands.get(bd.band, 0) + 1
         if stored >= high:
             high_value += 1
-            # "no signal" = the heuristic would only have given baseline/trivial.
-            if bd.score < FACT:
+            if bd.secret_suspected:
+                # Credential-bearing: the scorer deliberately baselines this and
+                # no ML head should ever boost it — so it is NOT a heuristic miss.
+                secret_suppressed += 1
+            elif bd.score < FACT:
+                # "no signal" = the heuristic would only have given baseline/trivial.
                 gap += 1
                 if len(gap_samples) < samples:
                     snippet = _scrub(content)[:120].replace("\n", " ")
@@ -152,6 +157,7 @@ def audit(db_path: str, high: float, samples: int) -> dict:
         "high_value": high_value,
         "gap": gap,
         "gap_pct_of_high_value": round(gap_pct, 1),
+        "secret_suppressed": secret_suppressed,
         "heuristic_band_distribution": bands,
         "gap_samples": gap_samples,
     }
@@ -192,6 +198,8 @@ def main(argv=None) -> int:
     print(f"  High-value (>= {result['high_threshold']}) : {result['high_value']}")
     print(f"  Gap (high but heuristic gives no signal): {result['gap']} "
           f"({result['gap_pct_of_high_value']}% of high-value)")
+    print(f"  Secret-suppressed (high but credential -> baselined, NOT a miss): "
+          f"{result['secret_suppressed']}")
     print(f"  Heuristic bands    : {result['heuristic_band_distribution']}")
     if result["gap_samples"]:
         print("  Gap samples (scrubbed):")

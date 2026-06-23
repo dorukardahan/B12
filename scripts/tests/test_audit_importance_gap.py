@@ -83,6 +83,20 @@ def test_legacy_metadata_format_parsed():
     assert r["gap"] == 1
 
 
+def test_secret_suppressed_not_counted_as_gap():
+    # Codex: a high-importance credential-bearing row is deliberately baselined
+    # (secret cap) and must be reported separately, NOT counted as a gap/miss.
+    db = _mk_db([
+        ("api key is token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789012345",
+         '{"importance_score":2.0}'),                       # high + secret -> suppressed, not gap
+        ("the quarterly target is fixed", '{"importance_score":2.0}'),  # high baseline -> GAP
+    ])
+    r = A.audit(db, high=0.75, samples=10)
+    assert r["high_value"] == 2
+    assert r["gap"] == 1
+    assert r["secret_suppressed"] == 1
+
+
 def test_missing_db_returns_error():
     r = A.audit("/nonexistent/path/sqlite_vec.db", high=0.75, samples=5)
     assert "error" in r
