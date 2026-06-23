@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+- **The SessionEnd identity-correction cascade** (`hooks/memory-session-end.sh`) is removed. It was dead code — `user_messages` was never defined in the embed-script heredoc, so the whole block raised `NameError` into a swallowing `except` and never ran. Its behavior (regex-scan user messages → string-replace `old→new` across up to 10 existing memories, rewriting their content) was destructive and untested in practice, with a real false-positive corruption risk (e.g. casual Turkish phrasing). It was deleted rather than revived; a properly designed and tested version can be reintroduced if the feature is wanted.
+
+### Internal
+- **`.gitleaks.toml`** now allowlists the now-deleted `docs/B12_llm_extraction_design.md` by path: a docstring there (`Requires ANTHROPIC_API_KEY. Default model: <claude-model-id>`) made the `generic-api-key` rule match the **model identifier**, not a real key. PR/push scans (new commits only) were unaffected; only the weekly full-history scan flagged it. The file no longer exists on `HEAD`, so a real secret cannot hide there.
+
 ## [v11.80.0] — 2026-06-23
 
 Phase 2 (PR-3a/3b/3c): the write-side **secret cap** is centralized and extended to **every** B12 write path, plus a deterministic `memory_type` importance floor. A credential is never amplified above baseline, and the OpenCode plugin no longer persists one raw.

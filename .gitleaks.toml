@@ -35,4 +35,11 @@ paths = [
   # (xoxb-/sk-ant-/ghp_/AKIA/…) the scrubber must redact — same category as the
   # Python scrubber test fixtures above.
   '''plugins/opencode/tests/scrubber\.test\.ts''',
+  # Historical false positive (NOT a fixture): the now-deleted
+  # docs/B12_llm_extraction_design.md carried a docstring "Requires
+  # ANTHROPIC_API_KEY. Default model: <claude-model-id>" where the generic-api-key
+  # rule matched the MODEL IDENTIFIER, not a real key. The file is gone from HEAD,
+  # so only the weekly full-history scan flagged it; allowlisted by path to clear
+  # that recurring noise (a real secret can't hide in a file that no longer exists).
+  '''docs/B12_llm_extraction_design\.md''',
 ]
