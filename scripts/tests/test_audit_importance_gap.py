@@ -15,14 +15,17 @@ import audit_importance_gap as A  # noqa: E402
 
 
 def _mk_db(rows):
+    # rows: (content, metadata) or (content, metadata, valid_until)
     d = tempfile.mkdtemp()
     db = os.path.join(d, "sqlite_vec.db")
     c = sqlite3.connect(db)
     c.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT, "
-              "metadata TEXT, deleted_at REAL)")
-    for content, meta in rows:
-        c.execute("INSERT INTO memories(content, metadata, deleted_at) VALUES (?, ?, NULL)",
-                  (content, meta))
+              "metadata TEXT, deleted_at REAL, valid_until TEXT)")
+    for row in rows:
+        content, meta = row[0], row[1]
+        valid_until = row[2] if len(row) > 2 else None
+        c.execute("INSERT INTO memories(content, metadata, deleted_at, valid_until) "
+                  "VALUES (?, ?, NULL, ?)", (content, meta, valid_until))
     c.commit()
     c.close()
     return db
@@ -55,6 +58,29 @@ def test_normalization_and_missing_importance():
     r = A.audit(db, high=0.75, samples=10)
     assert r["high_value"] == 0
     assert r["gap"] == 0
+
+
+def test_ttl_expired_excluded():
+    # Codex: TTL-expired rows must be excluded (match the retrieval paths).
+    db = _mk_db([
+        ("expired high baseline memory", '{"importance_score":2.0}', "2000-01-01 00:00:00"),
+        ("live high baseline memory", '{"importance_score":2.0}', "2999-01-01 00:00:00"),
+    ])
+    r = A.audit(db, high=0.75, samples=10)
+    assert r["total_memories"] == 1      # the expired row is filtered out
+    assert r["high_value"] == 1
+    assert r["gap"] == 1                 # only the live one counts
+
+
+def test_legacy_metadata_format_parsed():
+    # Codex: legacy "key:val, ..." metadata must be parsed, not dropped to {}.
+    db = _mk_db([
+        ("the quarterly target is fixed", "type:progress, importance:1.5"),  # ->0.75 high, baseline -> GAP
+        ("we decided to proceed", "type:decision, importance:0.75"),         # high, decision -> not gap
+    ])
+    r = A.audit(db, high=0.75, samples=10)
+    assert r["high_value"] == 2
+    assert r["gap"] == 1
 
 
 def test_missing_db_returns_error():

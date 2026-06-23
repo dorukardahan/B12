@@ -77,17 +77,48 @@ def audit(db_path: str, high: float, samples: int) -> dict:
     except Exception as e:  # pragma: no cover - defensive
         return {"error": f"cannot import b12_importance: {e}"}
 
+    # Canonical metadata normalizer (handles dict / JSON / the legacy
+    # "key:val, ..." string format) so legacy high-importance rows aren't dropped.
+    try:
+        from write_time_merge import _metadata_to_str as _mts
+    except Exception:
+        _mts = None
+
+    def _meta_dict(meta):
+        for parse in ((lambda m: json.loads(_mts(m))) if _mts else None,
+                      (lambda m: json.loads(m) if m else {})):
+            if parse is None:
+                continue
+            try:
+                d = parse(meta)
+                if isinstance(d, dict):
+                    return d
+            except Exception:
+                continue
+        return {}
+
     uri = f"file:{db_path}?mode=ro"
     conn = sqlite3.connect(uri, uri=True)
+    # Match the retrieval paths: exclude soft-deleted AND TTL-expired rows so the
+    # gap reflects memories users can actually retrieve (b12_mcp_server.py:1096-1097).
+    queries = (
+        "SELECT content, metadata FROM memories WHERE deleted_at IS NULL "
+        "AND (valid_until IS NULL OR valid_until > datetime('now'))",
+        "SELECT content, metadata FROM memories WHERE deleted_at IS NULL",
+        "SELECT content, metadata FROM memories",
+    )
+    rows = None
     try:
-        rows = conn.execute(
-            "SELECT content, metadata FROM memories WHERE deleted_at IS NULL"
-        ).fetchall()
-    except sqlite3.OperationalError:
-        # older schema without deleted_at
-        rows = conn.execute("SELECT content, metadata FROM memories").fetchall()
+        for q in queries:
+            try:
+                rows = conn.execute(q).fetchall()
+                break
+            except sqlite3.OperationalError:
+                continue
     finally:
         conn.close()
+    if rows is None:
+        return {"error": f"no readable memories table in {db_path}"}
 
     total = len(rows)
     bands = {"trivial": 0, "baseline": 0, "fact": 0, "decision": 0, "memorable": 0}
@@ -98,11 +129,7 @@ def audit(db_path: str, high: float, samples: int) -> dict:
 
     for content, meta in rows:
         content = content or ""
-        try:
-            md = json.loads(meta) if meta else {}
-            md = md if isinstance(md, dict) else {}
-        except (json.JSONDecodeError, TypeError):
-            md = {}
+        md = _meta_dict(meta)
         stored = _norm_importance(md.get("importance_score"))
         bd = b12_importance.score_with_breakdown(content)
         bands[bd.band] = bands.get(bd.band, 0) + 1
