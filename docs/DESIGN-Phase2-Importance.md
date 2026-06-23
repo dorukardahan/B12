@@ -106,22 +106,24 @@ by writers that persist `score()`'s output **unmodified** — currently MCP
 `memory_store` and `write_time_merge` (insert + merge, including the legacy
 metadata-string format). Any writer that sets `importance_score` *itself* without
 re-applying `is_secret()` does **not** honor the cap, so a credential row can
-land above baseline there. Known examples (not exhaustive):
+land above baseline there. Known importance-cap bypasses (not exhaustive): the
+checkpoint hook (`hooks/memory-checkpoint.sh`, `max(score, 0.7)` → fact 0.70),
+the PreCompact hook (`hooks/memory-precompact.sh`, hard-coded `1.5`), and the CLI
+store (`scripts/b12_cli.py`).
 
-- *Importance only — no leak* (the value is PII-scrubbed first, so nothing
-  persists raw): the checkpoint hook (`hooks/memory-checkpoint.sh`) floors at
-  `max(score, 0.7)` → fact 0.70; the PreCompact hook
-  (`hooks/memory-precompact.sh`) hard-codes `importance_score = 1.5`; the CLI
-  store (`scripts/b12_cli.py`) sets its own importance.
-- *Higher priority — potential leak:* the OpenCode plugin's *native* TypeScript
-  write path (`plugins/opencode/src/lib/db.ts`) runs **neither** this scorer
-  **nor** a PII scrubber — it hashes and inserts `content` directly (no scrubber
-  exists under `plugins/opencode/src`), so an OpenCode-captured secret can be
-  **persisted raw** (a real leak).
+**Leak vs importance-only is a separate axis** — whether a bypass also persists
+the raw secret depends on that writer's *PII-scrubbing* coverage, not its
+importance handling. The Python writers scrub content (the checkpoint/PreCompact
+paths fully; the CLI store scrubs content but not necessarily `--tags`), so those
+are mostly importance-only. The **OpenCode plugin** native write path
+(`plugins/opencode/src/lib/db.ts`) is the clear leak: it runs neither this scorer
+nor any scrubber (none exists under `plugins/opencode/src`) and inserts `content`
+directly, so an OpenCode-captured secret can be **persisted raw**.
 
-**The robust fix is to centralize** a single `finalize_importance(content,
-supplied)` helper (secret-cap + max(supplied, score)) that every writer calls,
-and to port PII scrubbing to the OpenCode plugin. Tracked as follow-ups.
+**The robust fix is to centralize** both concerns — a single
+`finalize_importance(content, supplied)` helper (secret-cap + max(supplied,
+score)) that every writer calls, and uniform PII scrubbing (content **and** tags)
+on every write path, including the OpenCode plugin. Tracked as follow-ups.
 
 ## 5. ReDoS safety
 
