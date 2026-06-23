@@ -101,29 +101,23 @@ runs before scoring) **caps the memory at baseline** — overriding even a calle
 or LLM-supplied importance. The scorer itself never stores or logs the secret
 value.
 
-**The cap is a property of the scorer, not of every writer.** It is honored only
-by writers that persist `score()`'s output **unmodified** — currently MCP
-`memory_store` and `write_time_merge` (insert + merge, including the legacy
-metadata-string format). Any writer that sets `importance_score` *itself* without
-re-applying `is_secret()` does **not** honor the cap, so a credential row can
-land above baseline there. Known importance-cap bypasses (not exhaustive): the
-checkpoint hook (`hooks/memory-checkpoint.sh`, `max(score, 0.7)` → fact 0.70),
-the PreCompact hook (`hooks/memory-precompact.sh`, hard-coded `1.5`), and the CLI
-store (`scripts/b12_cli.py`).
+**Centralized via `finalize_importance(content, supplied, memory_type)`** (PR-3a)
+— a single chokepoint that returns baseline for a secret (overriding the floor,
+the heuristic, and any supplied value) and otherwise the strongest of the
+heuristic score, the `memory_type` floor (§2.1), and the supplied value. Every
+**Python** writer now routes through it: MCP `memory_store`, `write_time_merge`
+(insert + merge), the checkpoint hook (`is_secret` cap before its `0.7` floor),
+the PreCompact hook (cap + floor, replacing the hard-coded `1.5`), and the CLI
+store. So a credential row is held at baseline on all of these.
 
-**Leak vs importance-only is a separate axis** — whether a bypass also persists
-the raw secret depends on that writer's *PII-scrubbing* coverage, not its
-importance handling. The Python writers scrub content (the checkpoint/PreCompact
-paths fully; the CLI store scrubs content but not necessarily `--tags`), so those
-are mostly importance-only. The **OpenCode plugin** native write path
-(`plugins/opencode/src/lib/db.ts`) is the clear leak: it runs neither this scorer
-nor any scrubber (none exists under `plugins/opencode/src`) and inserts `content`
-directly, so an OpenCode-captured secret can be **persisted raw**.
-
-**The robust fix is to centralize** both concerns — a single
-`finalize_importance(content, supplied)` helper (secret-cap + max(supplied,
-score)) that every writer calls, and uniform PII scrubbing (content **and** tags)
-on every write path, including the OpenCode plugin. Tracked as follow-ups.
+**Remaining gap — the OpenCode plugin.** Its native TypeScript write path
+(`plugins/opencode/src/lib/db.ts`) runs neither this scorer nor any PII scrubber
+(none exists under `plugins/opencode/src`) and inserts `content` directly, so an
+OpenCode-captured secret can be **persisted raw** (a real leak, not just
+importance). Fix (tracked, PR-3b): port PII scrubbing + the cap to the plugin
+write path. (Leak-vs-importance is a separate axis from the cap — it depends on
+each writer's scrubbing coverage; the Python writers scrub content, the OpenCode
+plugin scrubs nothing.)
 
 ## 5. ReDoS safety
 

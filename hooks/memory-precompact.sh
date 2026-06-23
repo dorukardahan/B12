@@ -322,10 +322,20 @@ try:
             continue
 
         m_tags = f"proj:{project_name},precompact-save,{category},{now.strftime('%Y-%m')}"
+        # Single chokepoint: PreCompact only persists items that survived the
+        # priority filter, so 0.70 is passed as the supplied floor. finalize_importance
+        # caps a credential-bearing line at baseline (overriding the floor, never
+        # amplified) and otherwise returns the strongest of {content score,
+        # memory_type floor, 0.70}.
+        try:
+            import b12_importance as _b12imp
+            imp_val = _b12imp.finalize_importance(prefixed, supplied=0.70, memory_type=category)
+        except Exception:
+            imp_val = 1.5   # prior behavior if the scorer is unavailable
         m_metadata = json.dumps({
             "project": project_name,
             "type": category,
-            "importance_score": 1.5,
+            "importance_score": imp_val,
             "source": "precompact",
             "extraction_method": "precompact_v12"
         })

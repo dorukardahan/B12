@@ -31,6 +31,7 @@ storage and Turkish-first token list. The fact-pattern regexes
 
 from __future__ import annotations
 
+import math
 import os
 import re
 import unicodedata
@@ -347,6 +348,63 @@ def is_secret(content: str | None) -> bool:
     if not content:
         return False
     return _detect_secret(content)
+
+
+# memory_type -> importance floor. A meaningful type already signals value at
+# WRITE time (the PR-2c audit found ~97% of the importance gap is typed), so the
+# type floors the score when the content carries no explicit keyword cue. Generic
+# types (general / note / progress / session_summary / chat) get no floor.
+_TYPE_FLOOR: dict[str, float] = {
+    "decision": IMPORTANCE_DECISION,
+    "error_fix": IMPORTANCE_FACT,
+    "gotcha": IMPORTANCE_FACT,
+    "preference": IMPORTANCE_FACT,
+    "learning": IMPORTANCE_FACT,
+    "architecture": IMPORTANCE_FACT,
+    "infra": IMPORTANCE_FACT,
+    "observation": IMPORTANCE_FACT,
+    "pattern": IMPORTANCE_FACT,
+    "feedback": IMPORTANCE_FACT,
+}
+
+
+def _normalize_supplied(raw: object) -> float:
+    """RET-3 read-path normalization, used to COMPARE a caller/level value
+    against the fractional heuristic. Bool / non-numeric / NaN / inf -> baseline;
+    a level multiplier (>= 1.0) is halved; result clamped to [0, 1]."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        return IMPORTANCE_BASELINE
+    v = float(raw)
+    if not math.isfinite(v):
+        return IMPORTANCE_BASELINE
+    if v >= 1.0:
+        v = v / 2.0
+    return max(0.0, min(1.0, v))
+
+
+def finalize_importance(content: str | None, supplied: object = None,
+                        memory_type: str | None = None) -> float:
+    """Single chokepoint for the importance a writer should store.
+
+    - A detected secret CAPS at baseline (overriding the type floor, the
+      heuristic, and any caller/LLM-supplied value) — credential content is never
+      amplified, on whichever write path calls this.
+    - Otherwise the result is the strongest of: the heuristic `score(content)`,
+      the `memory_type` floor, and any caller/LLM-supplied value. Caller vs
+      heuristic is compared on the RET-3-normalized scale, and the winner's RAW
+      value is returned so a level multiplier keeps its scale for the read path.
+
+    Every Python writer (MCP store, write_time_merge, checkpoint, PreCompact, CLI)
+    should route through this so the secret cap and the type floor are uniform.
+    """
+    if is_secret(content):
+        return IMPORTANCE_BASELINE
+    heuristic = max(score(content), _TYPE_FLOOR.get((memory_type or "").lower(), 0.0))
+    if isinstance(supplied, bool) or not isinstance(supplied, (int, float)):
+        return heuristic
+    if not math.isfinite(float(supplied)):
+        return heuristic
+    return float(supplied) if _normalize_supplied(supplied) >= heuristic else heuristic
 
 
 def score_with_breakdown(content: str | None, lang_code: str | None = None) -> ImportanceBreakdown:

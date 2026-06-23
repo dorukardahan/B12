@@ -529,6 +529,44 @@ def test_ml_no_redos_on_cjk_blob():
     assert time.perf_counter() - t0 < 1.0
 
 
+# ── PR-3a: finalize_importance (centralized cap + memory_type floor) ───────
+
+def test_finalize_secret_caps_over_everything():
+    # A secret caps at baseline regardless of type floor or supplied value.
+    out = imp.finalize_importance("save this token=ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789012345",
+                                  supplied=2.0, memory_type="decision")
+    assert out == imp.IMPORTANCE_BASELINE
+    out2 = imp.finalize_importance("token=[REDACTED:generic]", supplied=2.0, memory_type="error_fix")
+    assert out2 == imp.IMPORTANCE_BASELINE
+
+def test_finalize_type_floor():
+    # A meaningful memory_type floors baseline-content importance.
+    assert imp.finalize_importance("some plain note text", memory_type="decision") == imp.IMPORTANCE_DECISION
+    assert imp.finalize_importance("some plain note text", memory_type="error_fix") == imp.IMPORTANCE_FACT
+    assert imp.finalize_importance("some plain note text", memory_type="learning") == imp.IMPORTANCE_FACT
+    # generic types get no floor
+    assert imp.finalize_importance("some plain note text", memory_type="general") == imp.IMPORTANCE_BASELINE
+    assert imp.finalize_importance("some plain note text", memory_type="progress") == imp.IMPORTANCE_BASELINE
+    assert imp.finalize_importance("some plain note text", memory_type=None) == imp.IMPORTANCE_BASELINE
+
+def test_finalize_heuristic_beats_floor():
+    # An explicit content cue still wins over a lower type floor.
+    assert imp.finalize_importance("remember this important thing", memory_type="general") == imp.IMPORTANCE_MEMORABLE
+    assert imp.finalize_importance("remember this important thing", memory_type="error_fix") == imp.IMPORTANCE_MEMORABLE
+
+def test_finalize_supplied_preserved_when_stronger():
+    # A higher caller/level value is kept at its RAW scale (read path normalizes).
+    assert imp.finalize_importance("plain content", supplied=2.0) == 2.0
+    assert imp.finalize_importance("plain content", supplied=0.95) == 0.95
+    # ...but a weaker supplied value loses to the heuristic.
+    assert imp.finalize_importance("remember this thing", supplied=1.0) == imp.IMPORTANCE_MEMORABLE
+
+def test_finalize_ignores_bad_supplied():
+    for bad in (True, False, "high", None, float("nan"), float("inf")):
+        out = imp.finalize_importance("some plain note text", supplied=bad, memory_type="decision")
+        assert out == imp.IMPORTANCE_DECISION, bad   # falls back to heuristic+floor
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))

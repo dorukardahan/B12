@@ -206,13 +206,13 @@ def _augment_importance(metadata: Any, content: str) -> Any:
     else:
         return metadata
 
-    # A credential-bearing candidate caps at baseline, OVERRIDING any
-    # caller-supplied score, so hook / SessionEnd / extractor writes cannot
-    # amplify a (scrubbed) secret row. Otherwise auto-score when unset (caller wins).
-    if b12_importance.is_secret(content):
-        obj["importance_score"] = b12_importance.IMPORTANCE_BASELINE
-    elif "importance_score" not in obj:
-        obj["importance_score"] = b12_importance.score(content)
+    # Resolve through the single finalize_importance chokepoint: secret-cap +
+    # memory_type floor + the strongest of caller/heuristic. So hook / SessionEnd /
+    # extractor writes get a uniform secret cap AND the type floor (a typed memory
+    # — decision/error_fix/learning/… — is no longer stuck at baseline when its
+    # content lacks a keyword cue), while a stronger caller value is preserved.
+    obj["importance_score"] = b12_importance.finalize_importance(
+        content, obj.get("importance_score"), obj.get("type"))
 
     return obj
 

@@ -965,18 +965,14 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         "access_count": 0, "source_type": "user", "credibility": 1.0,
     }
     base_meta.update(metadata)
-    # Phase-2: auto-score importance when the caller didn't supply one, and CAP
-    # credential-bearing content at baseline regardless of any supplied value, so
-    # the signal taxonomy applies on the MCP write path too (Cursor/Cline/Gemini/…),
-    # not just the hook capture path. Guarded — if the scorer is unavailable this
-    # falls back to the prior behavior (retrieval defaults missing importance to
-    # baseline). Content is already PII/secret-scrubbed above.
+    # Phase-2: resolve importance through the single finalize_importance chokepoint
+    # — secret-cap + memory_type floor + the strongest of caller/heuristic — so the
+    # MCP write path (Cursor/Cline/Gemini/…) gets the same scoring as hook capture.
+    # Guarded; content is already PII/secret-scrubbed above.
     try:
         import b12_importance as _b12_imp
-        if _b12_imp.is_secret(content):
-            base_meta["importance_score"] = _b12_imp.IMPORTANCE_BASELINE
-        elif "importance_score" not in base_meta:
-            base_meta["importance_score"] = _b12_imp.score(content)
+        base_meta["importance_score"] = _b12_imp.finalize_importance(
+            content, base_meta.get("importance_score"), memory_type)
     except Exception:
         pass
     meta_json = _validate_metadata(base_meta)
