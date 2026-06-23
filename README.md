@@ -387,6 +387,8 @@ B12/
 │   ├── start-mcp.sh                #   MCP bootstrap (venv detection, used by plugin)
 │   ├── embed_daemon.py             #   Background embedding daemon (Unix socket)
 │   ├── write_time_merge.py         #   Semantic dedup at write time
+│   ├── b12_importance.py           #   Write-side importance scoring (11-language signal taxonomy)
+│   ├── audit_importance_gap.py     #   Read-only importance-gap audit (ML-ROI gate, PR-2c)
 │   ├── contradiction_resolver.py   #   ONNX NLI contradiction detection
 │   ├── graph_enrich.py             #   Memory graph enrichment
 │   ├── consolidation_engine.py     #   Smart consolidation (dedup, merge, contradictions)
