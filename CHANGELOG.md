@@ -1,12 +1,14 @@
 # Changelog
 
-## Unreleased
+## [v11.79.0] — 2026-06-23
+
+Phase 2 PR-2c/2d: the importance-gap audit (with a typed/untyped breakdown) and the design reference. Concludes the importance work — the ML head (PR-2e) is shelved.
 
 ### Added
-- **`docs/DESIGN-Phase2-Importance.md`** (Phase 2 PR-2d) — canonical design reference for the write-side importance scorer: the signal taxonomy, the 11-language lexicons + script-aware matching, the secret-never-amplified invariant (honored by writers that store the scorer's output — `memory_store`, `write_time_merge` — with the checkpoint/PreCompact/CLI floor-or-override bypasses and the OpenCode-plugin raw-secret gap documented as follow-ups), ReDoS safety, the RET-3 read-path freeze, and the ML-gate decision (the audit shows ~97% of the gap is typed → a `memory_type`→importance mapping, not the ML head, is the cheap win; PR-2e shelved).
+- **`docs/DESIGN-Phase2-Importance.md`** — canonical design reference for the write-side importance scorer: the signal taxonomy, the 11-language lexicons + script-aware matching, the secret-never-amplified invariant (honored by writers that store the scorer's output; the checkpoint/PreCompact/CLI bypasses and the OpenCode-plugin raw-secret gap are documented as follow-ups), ReDoS safety, the RET-3 read-path freeze, and the ML-gate decision. (#121)
 
 ### Internal
-- **`scripts/audit_importance_gap.py`** (Phase 2 PR-2c) — read-only corpus audit that measures the "importance gap": how many high-value memories the write-side heuristic would score at baseline (no signal). Opens the DB `mode=ro` (never writes), PII/secret-scrubs and truncates samples, excludes TTL-expired/secret-suppressed rows, and splits the gap into **typed** (a meaningful `memory_type` already signals value → closable by a cheap `memory_type`→importance mapping, no ML) vs **untyped** (the content-only ML candidate). Prints the band distribution, gap-by-memory_type, and an ML-ROI recommendation keyed off the untyped residual — the go/no-go input for the gated ML head (PR-2e).
+- **`scripts/audit_importance_gap.py`** — read-only corpus audit (`mode=ro`, never writes) that measures the "importance gap": high-value memories the heuristic would only score at baseline. PII/secret-scrubs and truncates samples (forced even under `B12_DISABLE_PII_SCRUB`), excludes TTL-expired and secret-suppressed rows, and **splits the gap into typed vs untyped by `memory_type`** — so a corpus of well-typed memories (error_fix/decision/learning/…) reads as "closable by a cheap `memory_type`→importance mapping," not "build the ML head." On the live corpus the gap is ~97% typed and only ~0.5% untyped, so the gated ML classifier (PR-2e) is **shelved**. (#119, #120)
 
 ## [v11.78.0] — 2026-06-23
 
