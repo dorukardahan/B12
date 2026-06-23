@@ -27,6 +27,11 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# memory_types that carry no inherent importance signal — the residual where a
+# content-based ML head (not a type->importance mapping) would be the only lever.
+_GENERIC_TYPES = frozenset({"", "general", "note", "progress", "chat",
+                            "session_summary", "working-context", "working_context"})
+
 
 def _default_db_path() -> str:
     """Mirror b12_mcp_server's DB_PATH resolution (no import to stay light)."""
@@ -105,10 +110,10 @@ def audit(db_path: str, high: float, samples: int) -> dict:
     # Match the retrieval paths: exclude soft-deleted AND TTL-expired rows so the
     # gap reflects memories users can actually retrieve (b12_mcp_server.py:1096-1097).
     queries = (
-        "SELECT content, metadata FROM memories WHERE deleted_at IS NULL "
+        "SELECT content, metadata, memory_type FROM memories WHERE deleted_at IS NULL "
         "AND (valid_until IS NULL OR valid_until > datetime('now'))",
-        "SELECT content, metadata FROM memories WHERE deleted_at IS NULL",
-        "SELECT content, metadata FROM memories",
+        "SELECT content, metadata, memory_type FROM memories WHERE deleted_at IS NULL",
+        "SELECT content, metadata, '' FROM memories",
     )
     rows = None
     try:
@@ -128,12 +133,14 @@ def audit(db_path: str, high: float, samples: int) -> dict:
     high_value = 0
     gap = 0               # high-value, heuristic fires NO signal — a genuine miss
     secret_suppressed = 0  # high-value but credential-bearing: deliberately baselined, NOT a miss
+    gap_by_type: dict = {}
     gap_samples: list = []
     FACT = getattr(b12_importance, "IMPORTANCE_FACT", 0.70)
 
-    for content, meta in rows:
+    for content, meta, mtype in rows:
         content = content or ""
         md = _meta_dict(meta)
+        mt = (mtype or md.get("type") or "general")
         stored = _norm_importance(md.get("importance_score"))
         bd = b12_importance.score_with_breakdown(content)
         bands[bd.band] = bands.get(bd.band, 0) + 1
@@ -146,17 +153,26 @@ def audit(db_path: str, high: float, samples: int) -> dict:
             elif bd.score < FACT:
                 # "no signal" = the heuristic would only have given baseline/trivial.
                 gap += 1
+                gap_by_type[mt] = gap_by_type.get(mt, 0) + 1
                 if len(gap_samples) < samples:
                     snippet = _scrub(content)[:120].replace("\n", " ")
                     gap_samples.append({"stored": round(stored, 3),
                                         "heuristic_band": bd.band,
+                                        "memory_type": mt,
                                         "snippet": snippet})
+
+    # Split the gap: a meaningful memory_type already signals value at WRITE time
+    # (closable by a cheap memory_type -> importance mapping, no ML), versus the
+    # generic/untyped residual where only content-based ML could help.
+    typed_gap = sum(n for t, n in gap_by_type.items() if t not in _GENERIC_TYPES)
+    untyped_gap = gap - typed_gap
 
     # Gap % is over the ML-ADDRESSABLE set (high-value minus secret-suppressed
     # rows, which no heuristic/ML head may ever boost) — otherwise a pile of
     # credential rows would dilute the rate and wrongly shelve the ML head.
     eligible = high_value - secret_suppressed
     gap_pct = (gap / eligible * 100.0) if eligible else 0.0
+    untyped_pct = (untyped_gap / eligible * 100.0) if eligible else 0.0
     return {
         "db": db_path,
         "total_memories": total,
@@ -166,22 +182,31 @@ def audit(db_path: str, high: float, samples: int) -> dict:
         "eligible": eligible,
         "gap": gap,
         "gap_pct_of_eligible": round(gap_pct, 1),
+        "typed_gap": typed_gap,
+        "untyped_gap": untyped_gap,
+        "untyped_pct_of_eligible": round(untyped_pct, 1),
+        "gap_by_memory_type": dict(sorted(gap_by_type.items(), key=lambda kv: -kv[1])),
         "heuristic_band_distribution": bands,
         "gap_samples": gap_samples,
     }
 
 
-def _recommendation(gap_pct: float, eligible: int) -> str:
+def _recommendation(gap_pct: float, eligible: int, typed_gap: int, untyped_gap: int,
+                    untyped_pct: float) -> str:
     if eligible == 0:
         return ("No ML-addressable high-value memories found — corpus too small / "
                 "unseeded to judge. Re-run after more usage before considering the "
                 "ML head (PR-2e).")
-    if gap_pct >= 15.0:
-        return (f"Gap is {gap_pct:.1f}% (>= 15%): a meaningful share of high-value memories "
-                "are missed by the heuristic. The gated ML classifier (PR-2e) MAY be worth "
-                "prototyping. Owner sets the final threshold.")
-    return (f"Gap is {gap_pct:.1f}% (< 15%): the heuristic + multilingual lexicons catch most "
-            "high-value memories. ML head (PR-2e) is NOT warranted; keep it shelved.")
+    lead = (f"Gap is {gap_pct:.1f}% of eligible, but it splits into {typed_gap} TYPED "
+            f"(known memory_type — closable by a cheap memory_type->importance mapping, "
+            f"no ML) and {untyped_gap} UNTYPED/general ({untyped_pct:.1f}% of eligible — "
+            f"the only content-only ML candidate).\n  ")
+    if untyped_pct >= 15.0:
+        return lead + ("Even the untyped residual is large: the gated ML classifier "
+                       "(PR-2e) MAY be worth prototyping. Owner sets the final threshold.")
+    return lead + ("The untyped residual is small: a memory_type->importance mapping "
+                   "addresses most of the gap deterministically; the ML head (PR-2e) is "
+                   "NOT warranted on content alone. Recommend shelving PR-2e.")
 
 
 def main(argv=None) -> int:
@@ -209,13 +234,21 @@ def main(argv=None) -> int:
     print(f"  Eligible (ML-addressable high-value)    : {result['eligible']}")
     print(f"  Gap (eligible but heuristic gives no signal): {result['gap']} "
           f"({result['gap_pct_of_eligible']}% of eligible)")
+    print(f"    ├─ typed   (closable by memory_type->importance): {result['typed_gap']}")
+    print(f"    └─ untyped (content-only / ML candidate): {result['untyped_gap']} "
+          f"({result['untyped_pct_of_eligible']}% of eligible)")
+    if result["gap_by_memory_type"]:
+        top = list(result["gap_by_memory_type"].items())[:10]
+        print("  Gap by memory_type : " + ", ".join(f"{t}={n}" for t, n in top))
     print(f"  Heuristic bands    : {result['heuristic_band_distribution']}")
     if result["gap_samples"]:
         print("  Gap samples (scrubbed):")
         for s in result["gap_samples"]:
-            print(f"    [stored={s['stored']} heuristic={s['heuristic_band']}] {s['snippet']}")
+            print(f"    [{s['memory_type']} stored={s['stored']} heuristic={s['heuristic_band']}] {s['snippet']}")
     print("────────────────────────────────────────────────────────────")
-    print("  " + _recommendation(result["gap_pct_of_eligible"], result["eligible"]))
+    print("  " + _recommendation(result["gap_pct_of_eligible"], result["eligible"],
+                                  result["typed_gap"], result["untyped_gap"],
+                                  result["untyped_pct_of_eligible"]))
     return 0
 
 

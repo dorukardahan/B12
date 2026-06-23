@@ -15,17 +15,18 @@ import audit_importance_gap as A  # noqa: E402
 
 
 def _mk_db(rows):
-    # rows: (content, metadata) or (content, metadata, valid_until)
+    # rows: (content, metadata[, valid_until[, memory_type]])
     d = tempfile.mkdtemp()
     db = os.path.join(d, "sqlite_vec.db")
     c = sqlite3.connect(db)
     c.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT, "
-              "metadata TEXT, deleted_at REAL, valid_until TEXT)")
+              "metadata TEXT, deleted_at REAL, valid_until TEXT, memory_type TEXT DEFAULT 'general')")
     for row in rows:
         content, meta = row[0], row[1]
         valid_until = row[2] if len(row) > 2 else None
-        c.execute("INSERT INTO memories(content, metadata, deleted_at, valid_until) "
-                  "VALUES (?, ?, NULL, ?)", (content, meta, valid_until))
+        mtype = row[3] if len(row) > 3 else "general"
+        c.execute("INSERT INTO memories(content, metadata, deleted_at, valid_until, memory_type) "
+                  "VALUES (?, ?, NULL, ?, ?)", (content, meta, valid_until, mtype))
     c.commit()
     c.close()
     return db
@@ -108,6 +109,22 @@ def test_secret_suppressed_not_counted_as_gap():
     # one eligible miss is 100% — not 50% diluted by the secret-suppressed row.
     assert r["eligible"] == 1
     assert r["gap_pct_of_eligible"] == 100.0
+
+
+def test_gap_split_typed_vs_untyped():
+    # The gap splits into typed (closable by a memory_type->importance mapping)
+    # and untyped/general (the only content-only ML candidate).
+    db = _mk_db([
+        ("a fix for the flaky CI run", '{"importance_score":2.0}', None, "error_fix"),
+        ("we observed odd latency spikes", '{"importance_score":2.0}', None, "observation"),
+        ("modified 13 files in the repo", '{"importance_score":2.0}', None, "progress"),
+        ("a miscellaneous jotting", '{"importance_score":2.0}', None, "general"),
+    ])
+    r = A.audit(db, high=0.75, samples=10)
+    assert r["gap"] == 4
+    assert r["typed_gap"] == 2       # error_fix + observation
+    assert r["untyped_gap"] == 2     # progress + general
+    assert r["gap_by_memory_type"].get("error_fix") == 1
 
 
 def test_missing_db_returns_error():
