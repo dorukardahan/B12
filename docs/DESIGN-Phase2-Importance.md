@@ -106,19 +106,20 @@ secret value — and, crucially, the PII scrubber redacts the value on **every**
 write path *before* scoring, so the secret VALUE is never persisted regardless of
 the importance number.
 
-**Known gaps — importance only, not leaks.** Two write paths bypass *this cap*
-(so a *redacted* credential memory can land above baseline there; the value is
-still scrubbed):
+**Known gaps (tracked follow-ups).**
 
-- The checkpoint hook (`hooks/memory-checkpoint.sh`) floors importance at
-  `max(score, 0.7)`, so a `[REDACTED:…]` checkpoint item lands at fact (0.70)
-  rather than baseline.
-- The OpenCode plugin's *native* TypeScript write path
-  (`plugins/opencode/src/lib/db.ts`) serializes caller-supplied metadata (some
-  hooks set `importance_score` directly) without running this Python scorer.
-
-Closing either means applying the cap before the floor / on the plugin side;
-both are tracked follow-ups.
+- *Importance only — no leak.* The checkpoint hook (`hooks/memory-checkpoint.sh`)
+  floors importance at `max(score, 0.7)`, so a `[REDACTED:…]` checkpoint item
+  lands at fact (0.70) instead of baseline. The value is already scrubbed (every
+  Python write path runs the PII scrubber first), so nothing leaks — only the
+  importance is inflated. Fix: apply the secret cap before the 0.7 floor.
+- *Higher priority — potential leak.* The OpenCode plugin's *native* TypeScript
+  write path (`plugins/opencode/src/lib/db.ts`) runs **neither** this scorer
+  **nor** a PII scrubber — it hashes and inserts `content` directly, and there is
+  no scrubber under `plugins/opencode/src`. So a secret captured by an OpenCode
+  plugin hook can be **persisted raw** (a real leak), and its importance is also
+  not capped. Fix: port PII scrubbing (and the secret cap) to the plugin write
+  path.
 
 ## 5. ReDoS safety
 
