@@ -1,5 +1,6 @@
 import Database from "better-sqlite3";
 import { effectiveSearchMode, type SearchMode } from "./search-mode.js";
+import { scrubSecrets, isSecret, IMPORTANCE_BASELINE } from "./scrubber.js";
 import { createHash } from "crypto";
 import { homedir } from "os";
 import { join } from "path";
@@ -249,7 +250,14 @@ export class B12Database {
   }
 
   private storeLocked(options: StoreOptions): { hash: string; id: number } {
-    const { content, valid_until } = options;
+    const { valid_until } = options;
+    // Secret hygiene (parity with the Python write paths): detect on the RAW
+    // content (so the importance cap applies even under the B12_DISABLE_PII_SCRUB
+    // raw-capture opt-out), then redact the content BEFORE it is hashed or
+    // persisted so a credential never lands in SQLite. Without this the plugin
+    // write path stored content verbatim — the one remaining raw-secret leak.
+    const secret = isSecret(options.content);
+    const content = scrubSecrets(options.content);
     const tags = normalizeTags(options.tags);
     const requestedMemoryType = options.memory_type;
     const memoryType = requestedMemoryType || "general";
@@ -263,7 +271,11 @@ export class B12Database {
       source_type: "user",
       credibility: 1.0,
     };
-    const explicitMeta = options.metadata || {};
+    // Credential-bearing content is never amplified: cap its importance at baseline,
+    // overriding any caller-supplied value (matches finalize_importance on the
+    // Python side). Applied to both the insert and merge metadata below.
+    const explicitMeta = { ...(options.metadata || {}) };
+    if (secret) explicitMeta.importance_score = IMPORTANCE_BASELINE;
     const metaJson = validateMetadata({ ...defaultMeta, ...explicitMeta });
 
     const existing = this.db
@@ -1101,10 +1113,13 @@ export class B12Database {
   }
 
   storeWorkingMemory(
-    content: string,
+    rawContent: string,
     project: string,
     extraTags: string[] = [],
   ): void {
+    // Redact secrets before this content is hashed or persisted (working_memory
+    // captures recent context, which can include pasted credentials).
+    const content = scrubSecrets(rawContent);
     const tags = [
       `proj:${project}`,
       "type:working_memory",

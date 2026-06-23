@@ -28,6 +28,79 @@ function effectiveSearchMode(mode) {
   return mode === "exact" ? "exact" : "hybrid";
 }
 
+// src/lib/scrubber.ts
+var IMPORTANCE_BASELINE = 0.5;
+var PATTERNS = [
+  { label: "anthropic", re: /\bsk-ant-[A-Za-z0-9_\-]{40,}\b/g },
+  { label: "openai_project", re: /\bsk-proj-[A-Za-z0-9_\-]{40,}\b/g },
+  { label: "github_pat", re: /\bghp_[A-Za-z0-9]{36,}\b/g },
+  { label: "github_fg", re: /\bgithub_pat_[A-Za-z0-9_]{50,}\b/g },
+  { label: "slack_bot", re: /\bxoxb-[0-9]{10,}-[0-9]{10,}-[A-Za-z0-9]{20,}\b/g },
+  { label: "openai", re: /\bsk-[A-Za-z0-9]{40,}\b/g },
+  { label: "aws_access", re: /\b(?:AKIA|ASIA)[A-Z0-9]{16}\b/g },
+  {
+    label: "aws_secret",
+    re: /aws[_\-]?secret[_\-]?(?:access[_\-]?)?key\s*[=:]\s*['"]?([A-Za-z0-9/+=]{40})['"]?/gi
+  },
+  { label: "bearer", re: /\bBearer\s+[A-Za-z0-9_\-.]{20,}\b/gi },
+  { label: "jwt", re: /\beyJ[A-Za-z0-9_\-]+\.eyJ[A-Za-z0-9_\-]+\.[A-Za-z0-9_\-]+\b/g },
+  { label: "google_api", re: /\bAIza[A-Za-z0-9_\-]{35}\b/g },
+  { label: "stripe", re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
+  {
+    label: "pem_private_key",
+    re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----/g
+  },
+  {
+    label: "db_uri",
+    re: /\b(?:postgres(?:ql)?|mysql|mongodb(?:\+srv)?|redis|amqps?):\/\/[^:\s/@]+:[^@\s/]+@[^\s'"]+/g
+  },
+  {
+    label: "generic",
+    re: /(?<![A-Za-z0-9_])(api[_\-]?key|password|passwd|secret|token|parola|\u015Fifre|sifre|gizli[_\- ]?anahtar)\s*[=:]\s*['"]?([A-Za-z0-9_\-+=/.]{12,})['"]?/gi
+  }
+];
+var VALUE_GROUP = { aws_secret: 1, generic: 2 };
+function scrubDisabled() {
+  const v = typeof process !== "undefined" && process.env && process.env.B12_DISABLE_PII_SCRUB || "";
+  return ["1", "true", "yes"].includes(String(v).toLowerCase());
+}
+function scrubSecrets(content) {
+  if (!content)
+    return content;
+  if (scrubDisabled())
+    return content;
+  let out = content;
+  for (const { label, re } of PATTERNS) {
+    const valueGroup = VALUE_GROUP[label];
+    out = out.replace(re, (match, ...rest) => {
+      if (valueGroup) {
+        const value = rest[valueGroup - 1];
+        if (value) {
+          const vStart = match.indexOf(value);
+          if (vStart >= 0)
+            return match.slice(0, vStart) + `[REDACTED:${label}]`;
+        }
+      }
+      return `[REDACTED:${label}]`;
+    });
+  }
+  return out;
+}
+function isSecret(content) {
+  if (!content)
+    return false;
+  if (content.includes("[REDACTED:"))
+    return true;
+  for (const { re } of PATTERNS) {
+    re.lastIndex = 0;
+    const hit = re.test(content);
+    re.lastIndex = 0;
+    if (hit)
+      return true;
+  }
+  return false;
+}
+
 // src/lib/db.ts
 import { createHash } from "crypto";
 import { homedir } from "os";
@@ -175,7 +248,9 @@ class B12Database {
     }
   }
   storeLocked(options) {
-    const { content, valid_until } = options;
+    const { valid_until } = options;
+    const secret = isSecret(options.content);
+    const content = scrubSecrets(options.content);
     const tags = normalizeTags(options.tags);
     const requestedMemoryType = options.memory_type;
     const memoryType = requestedMemoryType || "general";
@@ -188,7 +263,9 @@ class B12Database {
       source_type: "user",
       credibility: 1
     };
-    const explicitMeta = options.metadata || {};
+    const explicitMeta = { ...options.metadata || {} };
+    if (secret)
+      explicitMeta.importance_score = IMPORTANCE_BASELINE;
     const metaJson = validateMetadata({ ...defaultMeta, ...explicitMeta });
     const existing = this.db.prepare("SELECT id, deleted_at, tags, metadata, valid_until FROM memories WHERE content_hash = ?").get(contentHash);
     if (existing && existing.deleted_at !== null) {
@@ -737,7 +814,8 @@ class B12Database {
     appendFileSync(feedbackFile, JSON.stringify(entry) + `
 `);
   }
-  storeWorkingMemory(content, project, extraTags = []) {
+  storeWorkingMemory(rawContent, project, extraTags = []) {
+    const content = scrubSecrets(rawContent);
     const tags = [
       `proj:${project}`,
       "type:working_memory",

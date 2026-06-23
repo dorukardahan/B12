@@ -122,14 +122,22 @@ context value and, being fractional, could drop a level value below the
 `b12_long_session`'s `>= 0.7`/`>= 0.8`) — the same regression the PreCompact
 `supplied=1.5` choice avoids.
 
-**Remaining gap — the OpenCode plugin** (tracked, PR-3c). Its native TypeScript
-write path (`plugins/opencode/src/lib/db.ts`) runs neither this scorer nor any
-PII scrubber (none exists under `plugins/opencode/src`) and inserts `content`
-directly, so an OpenCode-captured secret can be **persisted raw** (a real leak,
-not just importance). Fix: port PII scrubbing + the cap to the plugin write path.
-(Leak-vs-importance is a separate axis from the cap — it depends on each writer's
-scrubbing coverage; the Python writers scrub content, the OpenCode plugin scrubs
-nothing.)
+**The OpenCode plugin scrubs + caps** (PR-3c). Its native TypeScript write path
+(`plugins/opencode/src/lib/db.ts`) previously inserted `content` directly with no
+scrubber, so an OpenCode-captured secret was **persisted raw** — the one remaining
+real leak (not just importance). It now redacts content via a TypeScript scrubber
+(`src/lib/scrubber.ts`, a faithful port of `b12_pii_scrubber`'s credential
+patterns — kept in sync, guarded by a parity-style test) before the row is hashed
+or stored, on both the `storeLocked` and `storeWorkingMemory` paths, and caps a
+credential-bearing memory's importance at baseline (overriding any caller value).
+The TS scrubber and the Python one are parallel implementations of the same
+patterns — a pattern added to one must be mirrored in the other.
+
+With this, every B12 write path — the Python writers (this scorer / `is_secret`)
+and the OpenCode TypeScript plugin (its own scrubber) — holds a credential at
+baseline and never persists it raw. (Leak-vs-importance is a separate axis: the
+cap governs importance, scrubbing governs raw persistence; each writer now does
+both.)
 
 ## 5. ReDoS safety
 
