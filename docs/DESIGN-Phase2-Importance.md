@@ -111,16 +111,17 @@ PreCompact hook (`supplied=1.5`, replacing the hard-coded `1.5`), and the CLI
 store. They build importance from content, so the heuristic + type floor apply.
 
 **Context-importance writers apply the cap only** (PR-3b). The SessionEnd summary
-writer, the SessionEnd Identity-Correction insert, and Codex `store_memory`
-assign importance from **context** — summary richness (`1.0–2.0`), a fixed
-correction level (`2.0`), or a per-category value (`0.6–0.8`) — not from content.
-They apply the chokepoint's secret cap via the public `is_secret()` (→ baseline)
-and **preserve** their deliberate value otherwise. The full `finalize_importance`
+writer and Codex `store_memory` assign importance from **context** — summary
+richness (`1.0–2.0`) or a per-category value (`0.6–0.8`) — not from content. They
+apply the chokepoint's secret cap via the public `is_secret()` (→ baseline) and
+**preserve** their deliberate value otherwise. The full `finalize_importance`
 heuristic/floor is intentionally **not** applied here: it would override the
 context value and, being fractional, could drop a level value below the
 **un-normalized** downstream filters that read `importance_score` raw (e.g.
 `b12_long_session`'s `>= 0.7`/`>= 0.8`) — the same regression the PreCompact
-`supplied=1.5` choice avoids.
+`supplied=1.5` choice avoids. (A third such writer, the SessionEnd
+Identity-Correction insert, was **removed** as dead code rather than capped — it
+referenced an undefined `user_messages` and never ran.)
 
 **The OpenCode plugin scrubs + caps** (PR-3c). Its native TypeScript write path
 (`plugins/opencode/src/lib/db.ts`) previously inserted `content` directly with no
