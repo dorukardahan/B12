@@ -109,11 +109,12 @@ the exception — see the gaps below).
 
 **Known gaps (tracked follow-ups).**
 
-- *Importance only — no leak.* The checkpoint hook (`hooks/memory-checkpoint.sh`)
-  floors importance at `max(score, 0.7)`, so a `[REDACTED:…]` checkpoint item
-  lands at fact (0.70) instead of baseline. The value is already scrubbed (every
-  Python write path runs the PII scrubber first), so nothing leaks — only the
-  importance is inflated. Fix: apply the secret cap before the 0.7 floor.
+- *Importance only — no leak.* Two Python writers scrub the value (so nothing
+  leaks) but set importance themselves instead of storing `score()`'s output, so
+  a `[REDACTED:…]` row lands above baseline: the checkpoint hook
+  (`hooks/memory-checkpoint.sh`) floors at `max(score, 0.7)` → fact (0.70), and
+  the PreCompact hook (`hooks/memory-precompact.sh`) hard-codes
+  `importance_score = 1.5`. Fix: apply the secret cap after scoring on both.
 - *Higher priority — potential leak.* The OpenCode plugin's *native* TypeScript
   write path (`plugins/opencode/src/lib/db.ts`) runs **neither** this scorer
   **nor** a PII scrubber — it hashes and inserts `content` directly, and there is
