@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## [v11.80.0] — 2026-06-23
+
+Phase 2 (PR-3a/3b/3c): the write-side **secret cap** is centralized and extended to **every** B12 write path, plus a deterministic `memory_type` importance floor. A credential is never amplified above baseline, and the OpenCode plugin no longer persists one raw.
 
 ### Changed
 - **Write-side importance is now finalized through one chokepoint, `b12_importance.finalize_importance(content, supplied, memory_type)`.** It returns baseline for a credential-shaped string (overriding the heuristic, the type floor, and any caller/LLM-supplied value), and otherwise the strongest of the heuristic score, a new `memory_type` floor, and the supplied value (RET-3-normalized before comparison so dual-scale inputs are compared correctly). Every Python writer routes through it — MCP `memory_store`, `write_time_merge` (insert + merge), the checkpoint hook, the PreCompact hook, and the CLI store — so the secret-never-amplified cap is enforced uniformly instead of per-writer. (#122)
@@ -14,7 +16,7 @@
 - **The OpenCode plugin no longer persists secrets raw.** Its TypeScript write path (`plugins/opencode/src/lib/db.ts`) ran no scrubber, so a captured credential was stored verbatim — the last remaining raw-secret leak. A new TypeScript scrubber (`src/lib/scrubber.ts`, a faithful port of `b12_pii_scrubber`'s credential patterns, parity-tested) now redacts content to `[REDACTED:…]` before it is hashed or stored on both the `storeLocked` and `storeWorkingMemory` paths, and caps a credential-bearing memory's importance at baseline. Honors `B12_DISABLE_PII_SCRUB`. With this, **every** B12 write path (Python + the OpenCode plugin) holds credentials at baseline and never persists them raw. (#124)
 
 ### Internal
-- New `finalize_importance` / `_TYPE_FLOOR` / `_normalize_supplied` tests (secret cap over everything, type floor, heuristic-beats-floor, supplied-preserved-when-stronger, bad-supplied ignored); `is_secret(content)` is now public. `docs/DESIGN-Phase2-Importance.md` §4 updated to reflect the centralized cap (only the OpenCode plugin write path remains, tracked separately). (#122)
+- New `finalize_importance` / `_TYPE_FLOOR` / `_normalize_supplied` tests (secret cap over everything, type floor, heuristic-beats-floor, supplied-preserved-when-stronger, bad-supplied ignored) and a TypeScript scrubber parity suite; `is_secret(content)` is now public. `docs/DESIGN-Phase2-Importance.md` §4 updated to document the cap across every write path (the five generic-content Python writers via `finalize_importance`, the context-importance writers + the OpenCode plugin via the secret cap). (#122, #123, #124)
 
 ## [v11.79.0] — 2026-06-23
 
