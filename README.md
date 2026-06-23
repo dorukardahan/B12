@@ -83,7 +83,6 @@ Claude Code Session (full hook automation)
     └── SessionEnd ────────────> Extract session summary (latest + rolling)
                                   + micro-memory extraction via write-time merge
                                   + sprint handoff generation
-                                  + identity correction cascade
                                   + infra/content pattern extraction
                                   + host version tracking
                                   + background embedding generation
