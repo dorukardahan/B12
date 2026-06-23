@@ -352,19 +352,39 @@ def is_secret(content: str | None) -> bool:
 
 # memory_type -> importance floor. A meaningful type already signals value at
 # WRITE time (the PR-2c audit found ~97% of the importance gap is typed), so the
-# type floors the score when the content carries no explicit keyword cue. Generic
-# types (general / note / progress / session_summary / chat) get no floor.
+# type floors the score when the content carries no explicit keyword cue.
+#
+# Covers the repo's actual type vocabulary, since finalize_importance is fed types
+# from three paths that don't all normalize: the canonical types from
+# classification (shared_patterns._PREFIX_MAP / the classifier-corpus LABEL_MAP —
+# decision / error_fix / learning / preference / observation / knowledge), the LLM
+# classifier's RAW output (memory_store passes resp["type"] un-normalized: gotcha /
+# fact / ...), and whatever raw label a caller passes directly as the type field
+# (architecture / pattern / infra / bugfix / feedback / progress / ...). All the
+# raw aliases are floored to the same band as the canonical type they normalize to.
+# Generic / bulk types (general / note / chat / session_summary / handoff) get no
+# floor.
 _TYPE_FLOOR: dict[str, float] = {
+    # decision band
     "decision": IMPORTANCE_DECISION,
+    # fact band — canonical types
     "error_fix": IMPORTANCE_FACT,
-    "gotcha": IMPORTANCE_FACT,
-    "preference": IMPORTANCE_FACT,
     "learning": IMPORTANCE_FACT,
-    "architecture": IMPORTANCE_FACT,
-    "infra": IMPORTANCE_FACT,
+    "preference": IMPORTANCE_FACT,
     "observation": IMPORTANCE_FACT,
-    "pattern": IMPORTANCE_FACT,
-    "feedback": IMPORTANCE_FACT,
+    "knowledge": IMPORTANCE_FACT,
+    # fact band — raw aliases a caller or the LLM classifier can pass un-normalized
+    "bugfix": IMPORTANCE_FACT,          # -> error_fix
+    "gotcha": IMPORTANCE_FACT,          # -> learning (also an LLM raw label)
+    "fact": IMPORTANCE_FACT,            # LLM raw label
+    "feedback": IMPORTANCE_FACT,        # -> preference
+    "progress": IMPORTANCE_FACT,        # -> observation
+    "architecture": IMPORTANCE_FACT,    # -> knowledge
+    "pattern": IMPORTANCE_FACT,         # -> knowledge
+    "reference": IMPORTANCE_FACT,       # -> knowledge
+    "audit": IMPORTANCE_FACT,           # -> knowledge
+    "infra": IMPORTANCE_FACT,           # -> knowledge
+    "content_decision": IMPORTANCE_FACT,  # -> knowledge
 }
 
 

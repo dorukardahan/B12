@@ -175,13 +175,19 @@ def _metadata_to_str(metadata: Any) -> Optional[str]:
     return json.dumps(metadata, ensure_ascii=False)
 
 
-def _augment_importance(metadata: Any, content: str) -> Any:
+def _augment_importance(metadata: Any, content: str,
+                        memory_type: Optional[str] = None) -> Any:
     """Pre-populate metadata.importance_score from b12_importance heuristics.
 
     If the caller already provided `importance_score` in metadata, do nothing
     (caller wins). Otherwise compute the band-based score using
     `b12_importance.score(content)` and stash it under `importance_score` so
     the recall path picks it up identically to a caller-set value.
+
+    `memory_type` is the type merge_or_insert actually stores for the row; it is
+    used for the type floor in preference to any type embedded in metadata, so a
+    caller passing `memory_type="decision"` with metadata that does not duplicate
+    the type still receives the floor.
 
     Pattern from AytuncYildizli/B12 PR 24 (3534d0d).
     """
@@ -211,8 +217,12 @@ def _augment_importance(metadata: Any, content: str) -> Any:
     # extractor writes get a uniform secret cap AND the type floor (a typed memory
     # — decision/error_fix/learning/… — is no longer stuck at baseline when its
     # content lacks a keyword cue), while a stronger caller value is preserved.
+    # Prefer the explicit memory_type arg (what merge_or_insert stores for the
+    # row) when it is a real type; fall back to a type embedded in metadata.
+    mt = (memory_type if (memory_type and memory_type not in ("general", "note", ""))
+          else obj.get("type"))
     obj["importance_score"] = b12_importance.finalize_importance(
-        content, obj.get("importance_score"), obj.get("type"))
+        content, obj.get("importance_score"), mt)
 
     return obj
 
@@ -679,7 +689,7 @@ def merge_or_insert(
     # Memorable / decision / fact bands map to importance_score values
     # the recall scorer already understands (>= 0.7 ranks above
     # baseline). Caller-provided metadata.importance_score wins.
-    metadata = _augment_importance(metadata, content)
+    metadata = _augment_importance(metadata, content, memory_type)
     metadata_str = _metadata_to_str(metadata)
 
     # Secret cap on the NORMALIZED metadata: _augment_importance bails on the

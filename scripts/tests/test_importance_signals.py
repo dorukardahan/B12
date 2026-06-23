@@ -544,9 +544,19 @@ def test_finalize_type_floor():
     assert imp.finalize_importance("some plain note text", memory_type="decision") == imp.IMPORTANCE_DECISION
     assert imp.finalize_importance("some plain note text", memory_type="error_fix") == imp.IMPORTANCE_FACT
     assert imp.finalize_importance("some plain note text", memory_type="learning") == imp.IMPORTANCE_FACT
-    # generic types get no floor
+    # canonical `knowledge` (architecture/pattern/reference/audit prefixes normalize
+    # to it) and the LLM's raw `fact` label both floor too.
+    assert imp.finalize_importance("some plain note text", memory_type="knowledge") == imp.IMPORTANCE_FACT
+    assert imp.finalize_importance("some plain note text", memory_type="fact") == imp.IMPORTANCE_FACT
+    # raw aliases a caller / the LLM can pass un-normalized floor to their band.
+    assert imp.finalize_importance("some plain note text", memory_type="progress") == imp.IMPORTANCE_FACT
+    assert imp.finalize_importance("some plain note text", memory_type="architecture") == imp.IMPORTANCE_FACT
+    assert imp.finalize_importance("some plain note text", memory_type="gotcha") == imp.IMPORTANCE_FACT
+    assert imp.finalize_importance("some plain note text", memory_type="GOTCHA") == imp.IMPORTANCE_FACT  # case-insensitive
+    # generic / bulk types get no floor
     assert imp.finalize_importance("some plain note text", memory_type="general") == imp.IMPORTANCE_BASELINE
-    assert imp.finalize_importance("some plain note text", memory_type="progress") == imp.IMPORTANCE_BASELINE
+    assert imp.finalize_importance("some plain note text", memory_type="note") == imp.IMPORTANCE_BASELINE
+    assert imp.finalize_importance("some plain note text", memory_type="session_summary") == imp.IMPORTANCE_BASELINE
     assert imp.finalize_importance("some plain note text", memory_type=None) == imp.IMPORTANCE_BASELINE
 
 def test_finalize_heuristic_beats_floor():
@@ -565,6 +575,21 @@ def test_finalize_ignores_bad_supplied():
     for bad in (True, False, "high", None, float("nan"), float("inf")):
         out = imp.finalize_importance("some plain note text", supplied=bad, memory_type="decision")
         assert out == imp.IMPORTANCE_DECISION, bad   # falls back to heuristic+floor
+
+
+def test_augment_importance_uses_memory_type_arg():
+    # write_time_merge._augment_importance must floor by the memory_type ARG
+    # (what merge_or_insert stores), not only a type embedded in metadata.
+    import write_time_merge as wtm
+    # metadata has no "type" key; the explicit arg supplies it -> decision floor.
+    out = wtm._augment_importance({"source": "queue"}, "some plain note text", "decision")
+    assert out["importance_score"] == imp.IMPORTANCE_DECISION
+    # a generic arg falls back to the metadata-embedded type.
+    out2 = wtm._augment_importance({"type": "error_fix"}, "some plain note text", "general")
+    assert out2["importance_score"] == imp.IMPORTANCE_FACT
+    # a caller-supplied importance_score still wins when stronger.
+    out3 = wtm._augment_importance({"importance_score": 2.0}, "some plain note text", "decision")
+    assert out3["importance_score"] == 2.0
 
 
 if __name__ == "__main__":
