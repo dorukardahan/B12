@@ -185,6 +185,24 @@ def store_memory(db_path, content, metadata_str, tags, embedding=None, memory_ty
             if embedding is not None:
                 embedding = get_embedding(content)
 
+    # Phase-2 secret cap: content is already scrubbed above, so a credential-bearing
+    # capture is now [REDACTED:...]; cap its importance at baseline so a secret can't
+    # be amplified or resurfaced. The caller's deliberate per-category importance
+    # (0.6-0.8 fractional micro-memories / 1.0-2.0 level macro-verbs) is preserved
+    # otherwise — finalize's type floor / content heuristic are NOT applied: they
+    # would override the caller's context-assigned value and, being fractional,
+    # could drop a level value below the un-normalized downstream filters that read
+    # importance_score raw (b12_long_session >= 0.7/0.8). Runs before validate_metadata.
+    try:
+        import b12_importance as _b12imp
+        if _b12imp.is_secret(content):
+            _imd = json.loads(metadata_str) if isinstance(metadata_str, str) and metadata_str.strip() else {}
+            if isinstance(_imd, dict):
+                _imd["importance_score"] = _b12imp.IMPORTANCE_BASELINE
+                metadata_str = json.dumps(_imd)
+    except Exception:
+        pass  # keep caller metadata if the scorer is unavailable (prior behavior)
+
     # Validate metadata is valid JSON before INSERT
     try:
         from shared_patterns import validate_metadata
