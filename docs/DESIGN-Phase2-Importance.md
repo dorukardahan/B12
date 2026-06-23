@@ -98,18 +98,27 @@ A credential-shaped string (api key / PAT / JWT / PEM / AWS / Bearer /
 `key=value`, detected via the shared `b12_pii_scrubber` patterns so the two
 never drift, **and** the scrubber's own `[REDACTED:…]` marker since scrubbing
 runs before scoring) **caps the memory at baseline** — overriding even a caller-
-or LLM-supplied importance. This is enforced on every **Python** write path that
-flows through this scorer: MCP `memory_store`, `write_time_merge._augment_importance`
-(insert), the legacy metadata-string format, and the semantic-merge update. The
-scorer never stores or logs the secret value (redaction itself is the scrubber's
-job).
+or LLM-supplied importance. This is enforced wherever importance is finalized
+through `score()` / `is_secret()`: MCP `memory_store`,
+`write_time_merge._augment_importance` (insert), the legacy metadata-string
+format, and the semantic-merge update. The scorer never stores or logs the
+secret value — and, crucially, the PII scrubber redacts the value on **every**
+write path *before* scoring, so the secret VALUE is never persisted regardless of
+the importance number.
 
-**Known gap:** the OpenCode plugin's *native* TypeScript write path
-(`plugins/opencode/src/lib/db.ts`) does not call this Python scorer — it
-serializes caller-supplied metadata (some hooks set `importance_score` directly),
-so it does **not** apply this secret cap. OpenCode-captured/staged credential
-content is not held at baseline by this mechanism; closing that would mean adding
-an equivalent cap (and PII scrubbing) on the plugin side.
+**Known gaps — importance only, not leaks.** Two write paths bypass *this cap*
+(so a *redacted* credential memory can land above baseline there; the value is
+still scrubbed):
+
+- The checkpoint hook (`hooks/memory-checkpoint.sh`) floors importance at
+  `max(score, 0.7)`, so a `[REDACTED:…]` checkpoint item lands at fact (0.70)
+  rather than baseline.
+- The OpenCode plugin's *native* TypeScript write path
+  (`plugins/opencode/src/lib/db.ts`) serializes caller-supplied metadata (some
+  hooks set `importance_score` directly) without running this Python scorer.
+
+Closing either means applying the cap before the floor / on the plugin side;
+both are tracked follow-ups.
 
 ## 5. ReDoS safety
 
