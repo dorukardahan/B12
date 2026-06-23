@@ -98,30 +98,30 @@ A credential-shaped string (api key / PAT / JWT / PEM / AWS / Bearer /
 `key=value`, detected via the shared `b12_pii_scrubber` patterns so the two
 never drift, **and** the scrubber's own `[REDACTED:…]` marker since scrubbing
 runs before scoring) **caps the memory at baseline** — overriding even a caller-
-or LLM-supplied importance. This is enforced wherever importance is finalized
-through `score()` / `is_secret()`: MCP `memory_store`,
-`write_time_merge._augment_importance` (insert), the legacy metadata-string
-format, and the semantic-merge update. The scorer never stores or logs the
-secret value — and, crucially, the PII scrubber redacts the value on every
-**Python** write path *before* scoring, so on those paths the secret VALUE is
-never persisted regardless of the importance number (the OpenCode plugin path is
-the exception — see the gaps below).
+or LLM-supplied importance. The scorer itself never stores or logs the secret
+value.
 
-**Known gaps (tracked follow-ups).**
+**The cap is a property of the scorer, not of every writer.** It is honored only
+by writers that persist `score()`'s output **unmodified** — currently MCP
+`memory_store` and `write_time_merge` (insert + merge, including the legacy
+metadata-string format). Any writer that sets `importance_score` *itself* without
+re-applying `is_secret()` does **not** honor the cap, so a credential row can
+land above baseline there. Known examples (not exhaustive):
 
-- *Importance only — no leak.* Two Python writers scrub the value (so nothing
-  leaks) but set importance themselves instead of storing `score()`'s output, so
-  a `[REDACTED:…]` row lands above baseline: the checkpoint hook
-  (`hooks/memory-checkpoint.sh`) floors at `max(score, 0.7)` → fact (0.70), and
-  the PreCompact hook (`hooks/memory-precompact.sh`) hard-codes
-  `importance_score = 1.5`. Fix: apply the secret cap after scoring on both.
-- *Higher priority — potential leak.* The OpenCode plugin's *native* TypeScript
+- *Importance only — no leak* (the value is PII-scrubbed first, so nothing
+  persists raw): the checkpoint hook (`hooks/memory-checkpoint.sh`) floors at
+  `max(score, 0.7)` → fact 0.70; the PreCompact hook
+  (`hooks/memory-precompact.sh`) hard-codes `importance_score = 1.5`; the CLI
+  store (`scripts/b12_cli.py`) sets its own importance.
+- *Higher priority — potential leak:* the OpenCode plugin's *native* TypeScript
   write path (`plugins/opencode/src/lib/db.ts`) runs **neither** this scorer
-  **nor** a PII scrubber — it hashes and inserts `content` directly, and there is
-  no scrubber under `plugins/opencode/src`. So a secret captured by an OpenCode
-  plugin hook can be **persisted raw** (a real leak), and its importance is also
-  not capped. Fix: port PII scrubbing (and the secret cap) to the plugin write
-  path.
+  **nor** a PII scrubber — it hashes and inserts `content` directly (no scrubber
+  exists under `plugins/opencode/src`), so an OpenCode-captured secret can be
+  **persisted raw** (a real leak).
+
+**The robust fix is to centralize** a single `finalize_importance(content,
+supplied)` helper (secret-cap + max(supplied, score)) that every writer calls,
+and to port PII scrubbing to the OpenCode plugin. Tracked as follow-ups.
 
 ## 5. ReDoS safety
 
