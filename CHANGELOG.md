@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## Unreleased
 
 ### Changed
 - **Write-side importance is now finalized through one chokepoint, `b12_importance.finalize_importance(content, supplied, memory_type)`.** It returns baseline for a credential-shaped string (overriding the heuristic, the type floor, and any caller/LLM-supplied value), and otherwise the strongest of the heuristic score, a new `memory_type` floor, and the supplied value (RET-3-normalized before comparison so dual-scale inputs are compared correctly). Every Python writer routes through it — MCP `memory_store`, `write_time_merge` (insert + merge), the checkpoint hook, the PreCompact hook, and the CLI store — so the secret-never-amplified cap is enforced uniformly instead of per-writer. (#122)
