@@ -175,13 +175,19 @@ def _metadata_to_str(metadata: Any) -> Optional[str]:
     return json.dumps(metadata, ensure_ascii=False)
 
 
-def _augment_importance(metadata: Any, content: str) -> Any:
+def _augment_importance(metadata: Any, content: str,
+                        memory_type: Optional[str] = None) -> Any:
     """Pre-populate metadata.importance_score from b12_importance heuristics.
 
     If the caller already provided `importance_score` in metadata, do nothing
     (caller wins). Otherwise compute the band-based score using
     `b12_importance.score(content)` and stash it under `importance_score` so
     the recall path picks it up identically to a caller-set value.
+
+    `memory_type` is the type merge_or_insert actually stores for the row; it is
+    used for the type floor in preference to any type embedded in metadata, so a
+    caller passing `memory_type="decision"` with metadata that does not duplicate
+    the type still receives the floor.
 
     Pattern from AytuncYildizli/B12 PR 24 (3534d0d).
     """
@@ -206,13 +212,17 @@ def _augment_importance(metadata: Any, content: str) -> Any:
     else:
         return metadata
 
-    # A credential-bearing candidate caps at baseline, OVERRIDING any
-    # caller-supplied score, so hook / SessionEnd / extractor writes cannot
-    # amplify a (scrubbed) secret row. Otherwise auto-score when unset (caller wins).
-    if b12_importance.is_secret(content):
-        obj["importance_score"] = b12_importance.IMPORTANCE_BASELINE
-    elif "importance_score" not in obj:
-        obj["importance_score"] = b12_importance.score(content)
+    # Resolve through the single finalize_importance chokepoint: secret-cap +
+    # memory_type floor + the strongest of caller/heuristic. So hook / SessionEnd /
+    # extractor writes get a uniform secret cap AND the type floor (a typed memory
+    # — decision/error_fix/learning/… — is no longer stuck at baseline when its
+    # content lacks a keyword cue), while a stronger caller value is preserved.
+    # Prefer the explicit memory_type arg (what merge_or_insert stores for the
+    # row) when it is a real type; fall back to a type embedded in metadata.
+    mt = (memory_type if (memory_type and memory_type not in ("general", "note", ""))
+          else obj.get("type"))
+    obj["importance_score"] = b12_importance.finalize_importance(
+        content, obj.get("importance_score"), mt)
 
     return obj
 
@@ -679,7 +689,7 @@ def merge_or_insert(
     # Memorable / decision / fact bands map to importance_score values
     # the recall scorer already understands (>= 0.7 ranks above
     # baseline). Caller-provided metadata.importance_score wins.
-    metadata = _augment_importance(metadata, content)
+    metadata = _augment_importance(metadata, content, memory_type)
     metadata_str = _metadata_to_str(metadata)
 
     # Secret cap on the NORMALIZED metadata: _augment_importance bails on the
@@ -840,11 +850,14 @@ def merge_or_insert(
             new_hash = best_hash
 
         # Reconcile the merged row's importance (the content-only UPDATEs above
-        # don't touch metadata): a credential-bearing merge caps at baseline,
-        # otherwise carry the HIGHER of the row's existing score and the merged
-        # content's heuristic score — so a high-signal write ("save this ...")
-        # merged into a baseline row lifts it, and the write-side scoring isn't
-        # lost, while a higher explicit/level value is preserved.
+        # don't touch metadata) through the SAME finalize_importance chokepoint as
+        # the insert path: a credential-bearing merge caps at baseline, the
+        # memory_type floor applies, and the row's existing score is compared
+        # against the merged content's heuristic on the RET-3-normalized scale —
+        # so a high-signal write ("save this ...") merged into a baseline row lifts
+        # it, a higher explicit/level value is preserved at its raw scale, and a
+        # level-multiplier existing value is no longer max'd against a fractional
+        # new signal on mismatched scales.
         try:
             import b12_importance as _imp_merge
             _row = conn.execute(
@@ -858,14 +871,8 @@ def merge_or_insert(
                     _md = {}
             if not isinstance(_md, dict):
                 _md = {}
-            if _imp_merge.is_secret(merged_content):
-                _md["importance_score"] = _imp_merge.IMPORTANCE_BASELINE
-            else:
-                try:
-                    _existing = float(_md.get("importance_score"))
-                except (TypeError, ValueError):
-                    _existing = 0.0
-                _md["importance_score"] = max(_existing, _imp_merge.score(merged_content))
+            _md["importance_score"] = _imp_merge.finalize_importance(
+                merged_content, _md.get("importance_score"), memory_type)
             conn.execute(
                 "UPDATE memories SET metadata = ? WHERE id = ?",
                 (_metadata_to_str(_md), best_id),

@@ -1,5 +1,19 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+- **Write-side importance is now finalized through one chokepoint, `b12_importance.finalize_importance(content, supplied, memory_type)`.** It returns baseline for a credential-shaped string (overriding the heuristic, the type floor, and any caller/LLM-supplied value), and otherwise the strongest of the heuristic score, a new `memory_type` floor, and the supplied value (RET-3-normalized before comparison so dual-scale inputs are compared correctly). Every Python writer routes through it — MCP `memory_store`, `write_time_merge` (insert + merge), the checkpoint hook, the PreCompact hook, and the CLI store — so the secret-never-amplified cap is enforced uniformly instead of per-writer. (#122)
+
+### Added
+- **`memory_type`→importance floor** — inherently-valuable memory types floor at the fact/decision band even when their content carries no surface signal, closing the typed slice of the importance gap deterministically (the cheap alternative to the shelved ML head). The map covers the repo's real type vocabulary: the canonical types from classification (`decision`→decision band; `error_fix`/`learning`/`preference`/`observation`/`knowledge`→fact band) plus the raw aliases a caller or the LLM classifier can pass un-normalized (`error`/`error fix`/`bugfix`/`gotcha`/`fact`/`feedback`/`progress`/`architecture`/`pattern`/`reference`/`review`/`audit`/`test`/`infra`/…). Generic/bulk types (general/note/session_summary) get no floor. `merge_or_insert`'s `memory_type` argument is threaded into finalization so a typed row whose metadata doesn't duplicate the type is still floored. (#122)
+
+### Fixed
+- **The checkpoint hook, PreCompact hook, and CLI store no longer bypass the secret cap.** They previously set importance themselves (`max(score, 0.7)`, a hard-coded `1.5`, raw caller value) without re-applying `is_secret()`, so a credential row could land above baseline there; routing them through `finalize_importance` holds them at baseline. (#122)
+
+### Internal
+- New `finalize_importance` / `_TYPE_FLOOR` / `_normalize_supplied` tests (secret cap over everything, type floor, heuristic-beats-floor, supplied-preserved-when-stronger, bad-supplied ignored); `is_secret(content)` is now public. `docs/DESIGN-Phase2-Importance.md` §4 updated to reflect the centralized cap (only the OpenCode plugin write path remains, tracked separately). (#122)
+
 ## [v11.79.0] — 2026-06-23
 
 Phase 2 PR-2c/2d: the importance-gap audit (with a typed/untyped breakdown) and the design reference. Concludes the importance work — the ML head (PR-2e) is shelved.
