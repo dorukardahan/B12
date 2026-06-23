@@ -48,7 +48,7 @@ var PATTERNS = [
   { label: "stripe", re: /\b(?:sk|rk)_(?:live|test)_[A-Za-z0-9]{20,}\b/g },
   {
     label: "pem_private_key",
-    re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----/g
+    re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----[\s\S]{0,16384}?-----END (?:RSA |EC |OPENSSH |DSA |ENCRYPTED |PGP )?PRIVATE KEY(?: BLOCK)?-----/g
   },
   {
     label: "db_uri",
@@ -56,7 +56,7 @@ var PATTERNS = [
   },
   {
     label: "generic",
-    re: /(?<![A-Za-z0-9_])(api[_\-]?key|password|passwd|secret|token|parola|\u015Fifre|sifre|gizli[_\- ]?anahtar)\s*[=:]\s*['"]?([A-Za-z0-9_\-+=/.]{12,})['"]?/gi
+    re: /(?<![A-Za-z0-9_])(api[_\-]?key|password|passwd|secret|token|parola|\u015F[i\u0130]fre|s[i\u0130]fre|g[i\u0130]zl[i\u0130][_\- ]?anahtar)\s*[=:]\s*['"]?([A-Za-z0-9_\-+=/.]{12,})['"]?/gi
   }
 ];
 var VALUE_GROUP = { aws_secret: 1, generic: 2 };

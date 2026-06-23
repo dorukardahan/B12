@@ -53,9 +53,26 @@ describe("scrubSecrets", () => {
     expect(scrubSecrets(clean)).toBe(clean);
   });
 
-  test("Turkish credential keywords fire the generic pattern", () => {
-    const out = scrubSecrets("şifre: HunterTwoSecret42");
-    expect(out).toContain("[REDACTED:generic]");
+  test("Turkish credential keywords fire the generic pattern (incl. uppercase)", () => {
+    // JS /i doesn't fold the dotted capital İ to i — the keyword classes must.
+    for (const s of [
+      "şifre: HunterTwoSecret42",
+      "ŞİFRE: HunterTwoSecret42",
+      "Şifre: HunterTwoSecret42",
+      "GİZLİ ANAHTAR: HunterTwoSecret42",
+    ]) {
+      expect(scrubSecrets(s)).toContain("[REDACTED:generic]");
+      expect(isSecret(s)).toBe(true);
+    }
+  });
+
+  test("PEM scan is bounded — a large malformed paste does not stall", () => {
+    const malformed = "-----BEGIN RSA PRIVATE KEY-----\n".repeat(20000); // ~600KB, no END
+    const t0 = Date.now();
+    const out = scrubSecrets(malformed);
+    const elapsed = Date.now() - t0;
+    expect(out).toBe(malformed); // no END → nothing redacted
+    expect(elapsed).toBeLessThan(3000); // bounded; unbounded was ~10s+ here
   });
 
   test("leaves ordinary content untouched", () => {
