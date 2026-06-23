@@ -66,6 +66,33 @@ def test_codex_store_preserves_nonsecret_importance(tmp_path):
     assert _stored_importance(db, mid) == 0.8  # caller's deliberate value preserved
 
 
+def test_codex_store_caps_secret_in_legacy_metadata(tmp_path):
+    # Codex review: the legacy f-string metadata format ("type:x, importance:0.8")
+    # must still be capped. The cap runs AFTER validate_metadata, which normalizes
+    # the legacy form to JSON (importance -> importance_score) first.
+    db = str(tmp_path / "codex.db")
+    _make_db(db)
+    mid = cse.store_memory(
+        db, "deploy token=[REDACTED:generic] keep secret",
+        "type:decision, importance:0.8",  # legacy f-string format (not JSON)
+        "proj:test", embedding=None, memory_type="decision",
+    )
+    assert mid is not None
+    assert _stored_importance(db, mid) == imp.IMPORTANCE_BASELINE
+
+
+def test_codex_store_preserves_legacy_metadata_nonsecret(tmp_path):
+    db = str(tmp_path / "codex.db")
+    _make_db(db)
+    mid = cse.store_memory(
+        db, "we shipped the migration cleanly this week",
+        "type:decision, importance:0.8",  # legacy f-string -> importance_score 0.8
+        "proj:test", embedding=None, memory_type="decision",
+    )
+    assert mid is not None
+    assert _stored_importance(db, mid) == 0.8
+
+
 if __name__ == "__main__":
     import pytest
     sys.exit(pytest.main([__file__, "-v"]))
