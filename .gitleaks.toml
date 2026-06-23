@@ -28,4 +28,7 @@ paths = [
   # real credential shapes (sk_live_, ghp_, ...), so the file carries intentional
   # fake secrets — same category as the scrubber fixtures above.
   '''scripts/tests/test_importance_signals\.py''',
+  # PR-2c audit test: asserts the audit force-redacts a fake credential even
+  # when B12_DISABLE_PII_SCRUB=1, so it carries an intentional fake secret.
+  '''scripts/tests/test_audit_importance_gap\.py''',
 ]
