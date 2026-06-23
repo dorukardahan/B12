@@ -835,6 +835,21 @@ try:
             importance += 0.25
     importance = min(importance, 2.0)
 
+    # Phase-2 secret cap: a credential-bearing summary is held at baseline (content
+    # is PII-scrubbed above, so is_secret sees the [REDACTED:...] marker). The
+    # richness-based level (1.0-2.0) is the summary's DELIBERATE, context-assigned
+    # importance, so it is preserved for non-secret summaries — finalize_importance's
+    # content heuristic / type floor are intentionally NOT applied here: they would
+    # override the context level and, being fractional, could drop it below the
+    # un-normalized downstream filters that read importance_score raw (e.g.
+    # b12_long_session's >= 0.7/0.8). Same lesson as PreCompact.
+    try:
+        import b12_importance as _b12imp
+        if _b12imp.is_secret(content):
+            importance = _b12imp.IMPORTANCE_BASELINE
+    except Exception:
+        pass  # keep the richness score if the scorer is unavailable
+
     metadata = json.dumps({
         "project": project_name,
         "setup": setup_context,
@@ -1088,9 +1103,20 @@ try:
                 corr_hash = hashlib.sha256(corr_text.strip().lower().encode('utf-8')).hexdigest()
                 if not conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (corr_hash,)).fetchone():
                     corr_tags = f"proj:{project_name},user:{setup_context},correction,{now.strftime('%Y-%m')}"
+                    # Phase-2 secret cap: a credential-shaped correction value is held at
+                    # baseline; otherwise the deliberate 2.0 level (and strength) is
+                    # preserved. finalize's heuristic/floor are not applied — they would
+                    # override the context level and drop it below un-normalized filters.
+                    corr_importance = 2.0
+                    try:
+                        import b12_importance as _b12imp
+                        if _b12imp.is_secret(corr_text):
+                            corr_importance = _b12imp.IMPORTANCE_BASELINE
+                    except Exception:
+                        pass
                     corr_meta = json.dumps({
                         "project": project_name, "type": "correction",
-                        "importance_score": 2.0, "old_value": old_val[:50],
+                        "importance_score": corr_importance, "old_value": old_val[:50],
                         "new_value": new_val[:50], "affected_count": len(affected)
                     })
                     conn.execute("""
