@@ -553,6 +553,10 @@ def test_finalize_type_floor():
     assert imp.finalize_importance("some plain note text", memory_type="architecture") == imp.IMPORTANCE_FACT
     assert imp.finalize_importance("some plain note text", memory_type="gotcha") == imp.IMPORTANCE_FACT
     assert imp.finalize_importance("some plain note text", memory_type="GOTCHA") == imp.IMPORTANCE_FACT  # case-insensitive
+    # raw error aliases a caller passes directly (bypass prefix classification).
+    assert imp.finalize_importance("some plain note text", memory_type="error") == imp.IMPORTANCE_FACT
+    assert imp.finalize_importance("some plain note text", memory_type="error fix") == imp.IMPORTANCE_FACT
+    assert imp.finalize_importance("some plain note text", memory_type="Error Fix") == imp.IMPORTANCE_FACT  # case-insensitive
     # generic / bulk types get no floor
     assert imp.finalize_importance("some plain note text", memory_type="general") == imp.IMPORTANCE_BASELINE
     assert imp.finalize_importance("some plain note text", memory_type="note") == imp.IMPORTANCE_BASELINE

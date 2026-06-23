@@ -374,6 +374,10 @@ _TYPE_FLOOR: dict[str, float] = {
     "observation": IMPORTANCE_FACT,
     "knowledge": IMPORTANCE_FACT,
     # fact band — raw aliases a caller or the LLM classifier can pass un-normalized
+    # (the keys/values of shared_patterns._PREFIX_MAP and the classifier-corpus
+    # LABEL_MAP that resolve to a floored canonical type), matched by exact lookup.
+    "error": IMPORTANCE_FACT,           # -> error_fix
+    "error fix": IMPORTANCE_FACT,       # -> error_fix (prefix form)
     "bugfix": IMPORTANCE_FACT,          # -> error_fix
     "gotcha": IMPORTANCE_FACT,          # -> learning (also an LLM raw label)
     "fact": IMPORTANCE_FACT,            # LLM raw label
@@ -382,7 +386,9 @@ _TYPE_FLOOR: dict[str, float] = {
     "architecture": IMPORTANCE_FACT,    # -> knowledge
     "pattern": IMPORTANCE_FACT,         # -> knowledge
     "reference": IMPORTANCE_FACT,       # -> knowledge
+    "review": IMPORTANCE_FACT,          # -> knowledge
     "audit": IMPORTANCE_FACT,           # -> knowledge
+    "test": IMPORTANCE_FACT,            # -> knowledge
     "infra": IMPORTANCE_FACT,           # -> knowledge
     "content_decision": IMPORTANCE_FACT,  # -> knowledge
 }
