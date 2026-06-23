@@ -31,4 +31,8 @@ paths = [
   # PR-2c audit test: asserts the audit force-redacts a fake credential even
   # when B12_DISABLE_PII_SCRUB=1, so it carries an intentional fake secret.
   '''scripts/tests/test_audit_importance_gap\.py''',
+  # PR-3c OpenCode TS scrubber test: parity fixtures of fake credential shapes
+  # (xoxb-/sk-ant-/ghp_/AKIA/…) the scrubber must redact — same category as the
+  # Python scrubber test fixtures above.
+  '''plugins/opencode/tests/scrubber\.test\.ts''',
 ]
