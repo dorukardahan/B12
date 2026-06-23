@@ -1119,6 +1119,7 @@ export class B12Database {
   ): void {
     // Redact secrets before this content is hashed or persisted (working_memory
     // captures recent context, which can include pasted credentials).
+    const secret = isSecret(rawContent);
     const content = scrubSecrets(rawContent);
     const tags = [
       `proj:${project}`,
@@ -1129,14 +1130,20 @@ export class B12Database {
     const contentHash = computeContentHash(content);
     const [ts, iso] = nowTs();
 
+    // The session-context ranking queries default a missing importance_score to
+    // 1.0 (COALESCE(...,1.0)), so a credential-bearing (now-redacted) row would
+    // otherwise resurface above baseline. Cap those rows at baseline; plain rows
+    // keep the empty-metadata default.
+    const metadata = secret ? JSON.stringify({ importance_score: IMPORTANCE_BASELINE }) : "{}";
+
     this.db
       .prepare(
         `INSERT OR IGNORE INTO memories
          (content_hash, content, tags, memory_type, metadata,
           strength, created_at, created_at_iso, updated_at, updated_at_iso)
-         VALUES (?, ?, ?, 'working_memory', '{}', 1.0, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, 'working_memory', ?, 1.0, ?, ?, ?, ?)`,
       )
-      .run(contentHash, content, tags, ts, iso, ts, iso);
+      .run(contentHash, content, tags, metadata, ts, iso, ts, iso);
   }
 
   getStats(): {

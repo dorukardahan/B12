@@ -815,6 +815,7 @@ class B12Database {
 `);
   }
   storeWorkingMemory(rawContent, project, extraTags = []) {
+    const secret = isSecret(rawContent);
     const content = scrubSecrets(rawContent);
     const tags = [
       `proj:${project}`,
@@ -824,10 +825,11 @@ class B12Database {
     ].join(",");
     const contentHash = computeContentHash(content);
     const [ts, iso] = nowTs();
+    const metadata = secret ? JSON.stringify({ importance_score: IMPORTANCE_BASELINE }) : "{}";
     this.db.prepare(`INSERT OR IGNORE INTO memories
          (content_hash, content, tags, memory_type, metadata,
           strength, created_at, created_at_iso, updated_at, updated_at_iso)
-         VALUES (?, ?, ?, 'working_memory', '{}', 1.0, ?, ?, ?, ?)`).run(contentHash, content, tags, ts, iso, ts, iso);
+         VALUES (?, ?, ?, 'working_memory', ?, 1.0, ?, ?, ?, ?)`).run(contentHash, content, tags, metadata, ts, iso, ts, iso);
   }
   getStats() {
     const active = this.db.prepare("SELECT COUNT(*) as c FROM memories WHERE deleted_at IS NULL").get().c;
