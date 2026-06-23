@@ -214,8 +214,9 @@ by script presence (an optional `lang_code` overrides it); trivial cues only flo
 when they are the whole memory. A read-only audit (`scripts/audit_importance_gap.py`,
 `mode=ro`) measures the "importance gap" — how many high-value memories the heuristic
 would only score at baseline — to decide whether a future ML classifier is worth it
-(it reports the gap %, band distribution, scrubbed samples, and excludes
-secret-suppressed rows). A credential-shaped string (detected via the shared `b12_pii_scrubber` patterns) is **never boosted** — it is held at baseline so secrets are not amplified or resurfaced (redaction itself is the scrubber's job, which runs earlier on every write path). Regex scans are bounded with linear (non-backtracking) patterns so a large pasted blob cannot stall the synchronous store. This value flows into `metadata.importance_score` and the effective-stability aging below; the read-side normalization is unchanged (see RET-3).
+(it reports the gap %, band distribution, scrubbed samples, the typed/untyped
+split by `memory_type`, and excludes secret-suppressed rows; full design in
+[docs/DESIGN-Phase2-Importance.md](DESIGN-Phase2-Importance.md)). A credential-shaped string (detected via the shared `b12_pii_scrubber` patterns) is **held at baseline** by the scorer, so writers that store its output unmodified do not amplify it; other writers bypass the cap and PII-scrubbing coverage varies by writer (the OpenCode plugin scrubs nothing). The exact per-writer cap/leak status and the recommended centralized fix are covered in the [design doc §4](DESIGN-Phase2-Importance.md) — see it for the authoritative treatment. Regex scans are bounded with linear (non-backtracking) patterns so a large pasted blob cannot stall the synchronous store. This value flows into `metadata.importance_score` and the effective-stability aging below; the read-side normalization is unchanged (see RET-3).
 
 ### PostToolUse hooks
 
