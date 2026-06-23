@@ -3,7 +3,7 @@
 ## Unreleased
 
 ### Added
-- **`docs/DESIGN-Phase2-Importance.md`** (Phase 2 PR-2d) — canonical design reference for the write-side importance scorer: the signal taxonomy, the 11-language lexicons + script-aware matching, the secret-never-amplified invariant across all write paths, ReDoS safety, the RET-3 read-path freeze, and the ML-gate decision (the audit shows ~97% of the gap is typed → a `memory_type`→importance mapping, not the ML head, is the cheap win; PR-2e shelved).
+- **`docs/DESIGN-Phase2-Importance.md`** (Phase 2 PR-2d) — canonical design reference for the write-side importance scorer: the signal taxonomy, the 11-language lexicons + script-aware matching, the secret-never-amplified invariant across the Python write paths (with the OpenCode-plugin path noted as a gap), ReDoS safety, the RET-3 read-path freeze, and the ML-gate decision (the audit shows ~97% of the gap is typed → a `memory_type`→importance mapping, not the ML head, is the cheap win; PR-2e shelved).
 
 ### Internal
 - **`scripts/audit_importance_gap.py`** (Phase 2 PR-2c) — read-only corpus audit that measures the "importance gap": how many high-value memories the write-side heuristic would score at baseline (no signal). Opens the DB `mode=ro` (never writes), PII/secret-scrubs and truncates samples, excludes TTL-expired/secret-suppressed rows, and splits the gap into **typed** (a meaningful `memory_type` already signals value → closable by a cheap `memory_type`→importance mapping, no ML) vs **untyped** (the content-only ML candidate). Prints the band distribution, gap-by-memory_type, and an ML-ROI recommendation keyed off the untyped residual — the go/no-go input for the gated ML head (PR-2e).
