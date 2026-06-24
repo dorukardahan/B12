@@ -181,6 +181,11 @@ def cached_top_n(project_root: str, n: int = 5, max_age_s: int = 86400) -> list[
     os.makedirs(cache_dir, exist_ok=True)
     key = hashlib.sha256(project_root.encode()).hexdigest()[:12]
     cache = os.path.join(cache_dir, f"pagerank-{key}.json")
+    # The effective cap is part of the cache identity: a cached cap-skip (top=[])
+    # must NOT be served after the user raises the cap or sets it to 0 — that
+    # would make the documented opt-out appear broken until the 24h TTL expired.
+    # Bumping the cap (or disabling it) changes this value → cache miss → rerun.
+    cap = _env_int("B12_PAGERANK_MAX_NODES", DEFAULT_MAX_NODES)
     head = ""
     try:
         head = subprocess.check_output(
@@ -193,14 +198,15 @@ def cached_top_n(project_root: str, n: int = 5, max_age_s: int = 86400) -> list[
             with open(cache) as fh:
                 d = json.load(fh)
             if (d.get("head") == head and (time.time() - d.get("ts", 0)) < max_age_s
-                    and d.get("n", 0) >= n):
+                    and d.get("n", 0) >= n and d.get("max_nodes") == cap):
                 return d.get("top", [])[:n]
         except (OSError, json.JSONDecodeError):
             pass
     top = top_n(project_root, n)
     try:
         with open(cache, "w") as fh:
-            json.dump({"head": head, "ts": time.time(), "n": n, "top": top}, fh)
+            json.dump({"head": head, "ts": time.time(), "n": n,
+                       "max_nodes": cap, "top": top}, fh)
     except OSError:
         pass
     return top

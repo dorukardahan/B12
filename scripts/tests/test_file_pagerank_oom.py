@@ -177,6 +177,25 @@ def test_top_n_caps_oversized_tree(tmp_path, monkeypatch, capsys):
     assert "skip" in err and "cap 10" in err
 
 
+def test_cache_not_served_after_cap_change(tmp_path, monkeypatch):
+    """Regression for PR #126 Codex P2: a cached cap-skip ([]) must NOT be
+    served after the cap is raised or disabled — the effective cap is part of
+    the cache identity, so changing it forces a recompute."""
+    monkeypatch.setenv("B12_DATA_DIR", str(tmp_path / "data"))
+    proj = tmp_path / "proj"
+    proj.mkdir()
+    (proj / "core.py").write_text("VALUE = 1\n")
+    (proj / "a.py").write_text("import core\n")
+    (proj / "b.py").write_text("import core\n")
+    # Cap=1 → cap-skip → [] written to the 24h cache (with max_nodes=1).
+    monkeypatch.setenv("B12_PAGERANK_MAX_NODES", "1")
+    assert fp.cached_top_n(str(proj), 5) == []
+    # Disable the cap: the cached [] must be ignored (cap mismatch) → recompute.
+    monkeypatch.setenv("B12_PAGERANK_MAX_NODES", "0")
+    top = fp.cached_top_n(str(proj), 5)
+    assert top and top[0] == "core.py"
+
+
 def test_top_n_cap_disabled_with_zero(tmp_path, monkeypatch):
     """B12_PAGERANK_MAX_NODES=0 disables the cap (opt-out documented)."""
     for i in range(12):

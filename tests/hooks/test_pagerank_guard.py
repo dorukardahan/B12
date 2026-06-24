@@ -172,6 +172,29 @@ def test_timeout_disabled_with_zero_still_runs(guard_env, tmp_path):
 
 @pytest.mark.skipif(not _numpy_available(),
                     reason="numpy needed for the positive (ranking) path")
+def test_dotdir_not_counted_in_precount(guard_env, tmp_path):
+    """Regression for PR #126 Codex P2: a large dot-directory (e.g. .tox) must
+    not inflate the bounded pre-count — file_pagerank._walk() prunes all
+    dot-dirs, so the hook's pre-count must too, or it falsely skips a small
+    eligible repo."""
+    env, _ = guard_env
+    env["B12_PAGERANK_MAX_NODES"] = "5"   # low cap
+    proj = tmp_path / "withtox"
+    proj.mkdir()
+    _git_init(proj)
+    (proj / "core.py").write_text("VALUE = 1\n")
+    (proj / "a.py").write_text("import core\n")
+    tox = proj / ".tox"
+    tox.mkdir()
+    for i in range(30):   # would push the count past the cap if it were counted
+        (tox / f"junk{i}.py").write_text("import os\n")
+    result = _run(proj, env)
+    assert result.returncode == 0, result.stderr[:500]
+    assert PAGERANK_MARKER in result.stdout   # ranked because .tox is pruned
+
+
+@pytest.mark.skipif(not _numpy_available(),
+                    reason="numpy needed for the positive (ranking) path")
 def test_cap_disabled_with_zero_still_runs(guard_env, tmp_path):
     """Regression for PR #126 Codex P2: B12_PAGERANK_MAX_NODES=0 is the
     documented cap opt-out (honored by file_pagerank.top_n). The hook must NOT

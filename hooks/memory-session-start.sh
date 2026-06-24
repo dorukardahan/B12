@@ -524,11 +524,16 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
         PAGERANK_HINT=$(_pagerank_guarded "$_PR_CWD" | head -5 | sed 's/^/- /')
       else
         # Cheap, bounded pre-count: `head -n MAX+1` closes the pipe so `find`
-        # dies (SIGPIPE) instead of walking an unbounded tree. Prune the same
-        # noisy dirs file_pagerank skips so the count reflects real candidates.
-        _PR_COUNT=$(find "$_PR_CWD" \( -name .git -o -name node_modules -o -name .venv \
-            -o -name venv -o -name __pycache__ -o -name .pytest_cache -o -name dist \
-            -o -name build -o -name .next -o -name target \) -prune -o \
+        # dies (SIGPIPE) instead of walking an unbounded tree. Prune the SAME
+        # dirs file_pagerank._walk() does so the count reflects what the ranker
+        # would actually see: the explicit noisy set PLUS every dot-directory
+        # (_walk drops `d.startswith(".")`). Without the dot-dir prune, a large
+        # .tox/.cache could inflate the count and cause a false skip. `-mindepth
+        # 1` keeps a dot-named project root from pruning itself (supported on
+        # BSD/macOS + GNU find).
+        _PR_COUNT=$(find "$_PR_CWD" -mindepth 1 \
+            \( -type d \( -name '.*' -o -name node_modules -o -name venv \
+               -o -name __pycache__ -o -name dist -o -name build -o -name target \) \) -prune -o \
             -type f \( -name '*.py' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' \
             -o -name '*.jsx' \) -print 2>/dev/null \
             | head -n "$((_PR_MAX + 1))" | wc -l | tr -d ' ')
