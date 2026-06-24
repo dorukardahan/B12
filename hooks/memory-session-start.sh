@@ -70,9 +70,10 @@ fi
 _WATCHDOG=$!
 # Cleanup on ANY exit, including when the watchdog SIGTERMs us mid-pagerank:
 # tear down the watchdog AND group-kill any in-flight pagerank child (tracked
-# in _PR_GUARD_CHILD by _pagerank_guarded). Without the TERM trap, a watchdog
-# kill would orphan that child — it would still self-terminate via its own
-# SIGALRM, but we additionally reap it here so the hook never leaves one behind.
+# in _PR_GUARD_CHILD by _pagerank_run, which runs in THIS shell so the PID is
+# visible here). Without the TERM trap, a watchdog kill would orphan that child
+# — it would still self-terminate via its own SIGALRM, but we additionally reap
+# it here so the hook never leaves one behind.
 _PR_GUARD_CHILD=""
 _b12_cleanup() {
   if [ -n "${_PR_GUARD_CHILD:-}" ]; then
@@ -94,62 +95,58 @@ B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 # Portable stat: macOS uses -f %m, Linux uses -c %Y
 file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "0"; }
 
-# Run file_pagerank under a HARD wall-clock budget, killing the whole process
-# GROUP on expiry so an orphaned numpy child can never survive the hook. This
-# is the bug that exhausted RAM and panicked the machine: the old code ran
-# `$(python …)` with no python-level timeout, so when this hook's own watchdog
-# SIGTERM'd the shell, the numpy grandchild was orphaned and kept allocating.
-# file_pagerank ALSO self-limits (SIGALRM + os.setsid + best-effort RLIMIT_AS);
-# this is the defense-in-depth outer layer.
-_pagerank_guarded() {
-  local cwd="$1" budget="${B12_PAGERANK_TIMEOUT_S:-8}"
+# Run file_pagerank to OUTFILE under a hard wall-clock budget, killing the whole
+# process GROUP on expiry so an orphaned numpy child can never survive the hook
+# — the bug that exhausted RAM and panicked the machine (old code ran
+# `$(python …)` with no python timeout, so a watchdog SIGTERM orphaned the numpy
+# grandchild). file_pagerank ALSO self-limits (SIGALRM + os.setsid + best-effort
+# RLIMIT_AS); this is the defense-in-depth outer layer.
+#
+# IMPORTANT: call this as a SIMPLE COMMAND in the parent shell (never inside
+# `$( … )` or a pipeline). It backgrounds the child and records its PID in the
+# parent's _PR_GUARD_CHILD so the EXIT/TERM cleanup trap can group-kill it when
+# the 15s watchdog fires mid-run. A command-substitution would run this in a
+# subshell, where _PR_GUARD_CHILD would be invisible to the parent trap and the
+# trap would be deferred until the substitution returned (overrunning the hook).
+# The single background+poll path works on every platform (no `timeout` dep) and
+# is the only one the parent can track, so we use it uniformly.
+_pagerank_run() {
+  local cwd="$1" out="$2" budget="${B12_PAGERANK_TIMEOUT_S:-8}"
   # Non-integer env value → fall back to the default (mirror file_pagerank's
   # _env_int). After this, budget is a non-negative integer.
   case "$budget" in (*[!0-9]*|'') budget=8 ;; esac
-  if [ "$budget" -le 0 ]; then
-    # Timeout disabled (B12_PAGERANK_TIMEOUT_S=0) — honor the documented opt-out
-    # in EVERY branch: run with no wall-clock kill (file_pagerank's SIGALRM is
-    # likewise disabled at 0). Memory is still bounded by the sparse algorithm +
-    # node cap; the user has explicitly opted out of the time limit.
-    "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 2>/dev/null
-    return
-  fi
-  # Clamp below the 15s self-watchdog so NO enforced path (coreutils timeout or
-  # the bare-macOS poll) can outlive the hook. The foreground timeout/gtimeout
-  # branches don't set _PR_GUARD_CHILD, so the cleanup trap can't shorten them —
-  # the clamp is what keeps them from blocking past the watchdog.
+  # Clamp below the 15s self-watchdog (only when a limit is set) so the poll
+  # wins the race with the watchdog. budget=0 = documented opt-out (no
+  # pagerank-level kill); the child is then bounded only by the hook watchdog +
+  # the sparse algorithm + node cap — still killable via the trap below.
   [ "$budget" -gt 12 ] && budget=12
-  # Preferred: coreutils timeout (Linux / Homebrew) — SIGKILL on expiry.
-  if command -v timeout >/dev/null 2>&1; then
-    timeout -s KILL "$budget" "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 2>/dev/null
-    return
-  elif command -v gtimeout >/dev/null 2>&1; then
-    gtimeout -s KILL "$budget" "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 2>/dev/null
-    return
-  fi
-  # Bare macOS has no `timeout`. Background the child (file_pagerank calls
-  # os.setsid → it leads its own process group, PGID==PID), poll, then SIGKILL
-  # the WHOLE GROUP (negative PID). The budget is already clamped above, so this
-  # poll wins the race with the watchdog; if the watchdog somehow fires first,
-  # the EXIT/TERM trap group-kills _PR_GUARD_CHILD, and the child's own SIGALRM
-  # is the final backstop — so no orphaned allocator can linger.
-  local out; out=$(mktemp 2>/dev/null) || return 0
   "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 >"$out" 2>/dev/null &
-  local child=$! waited=0
-  _PR_GUARD_CHILD=$child   # exposed to the trap so a watchdog kill also reaps it
-  while kill -0 "$child" 2>/dev/null; do
-    if [ "$waited" -ge "$budget" ]; then
-      kill -KILL -"$child" 2>/dev/null || kill -KILL "$child" 2>/dev/null
-      pkill -KILL -P "$child" 2>/dev/null
+  _PR_GUARD_CHILD=$!   # set in the PARENT → the cleanup trap can group-kill it
+  local waited=0
+  while kill -0 "$_PR_GUARD_CHILD" 2>/dev/null; do
+    if [ "$budget" -gt 0 ] && [ "$waited" -ge "$budget" ]; then
+      # file_pagerank called os.setsid → PGID==PID; SIGKILL the whole group.
+      kill -KILL -"$_PR_GUARD_CHILD" 2>/dev/null || kill -KILL "$_PR_GUARD_CHILD" 2>/dev/null
+      pkill -KILL -P "$_PR_GUARD_CHILD" 2>/dev/null
       break
     fi
     sleep 1
     waited=$((waited + 1))
   done
-  wait "$child" 2>/dev/null
+  wait "$_PR_GUARD_CHILD" 2>/dev/null
   _PR_GUARD_CHILD=""
-  cat "$out" 2>/dev/null
-  rm -f "$out" 2>/dev/null
+}
+
+# Set PAGERANK_HINT for project $1. MUST be called as a simple command in the
+# parent shell (not in `$( … )`) so _pagerank_run's child stays trackable by the
+# cleanup trap. Reading the temp file via a command-substitution is fine — that
+# subshell backgrounds nothing.
+_set_pagerank_hint() {
+  local _o
+  _o=$(mktemp 2>/dev/null) || return 0
+  _pagerank_run "$1" "$_o"
+  PAGERANK_HINT=$(head -5 "$_o" | sed 's/^/- /')
+  rm -f "$_o" 2>/dev/null
 }
 
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
@@ -520,8 +517,8 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
         # Cap disabled (B12_PAGERANK_MAX_NODES=0) — honor the documented opt-out
         # that file_pagerank.top_n() supports: skip the pre-count gate and run
         # uncapped. Still bounded by the $HOME/git guards above and the
-        # wall-clock + process-group kill + SIGALRM/sparse guards below.
-        PAGERANK_HINT=$(_pagerank_guarded "$_PR_CWD" | head -5 | sed 's/^/- /')
+        # process-group kill + watchdog trap + SIGALRM/sparse guards.
+        _set_pagerank_hint "$_PR_CWD"
       else
         # Cheap, bounded pre-count: `head -n MAX+1` closes the pipe so `find`
         # dies (SIGPIPE) instead of walking an unbounded tree. Prune the SAME
@@ -538,7 +535,7 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
             -o -name '*.jsx' \) -print 2>/dev/null \
             | head -n "$((_PR_MAX + 1))" | wc -l | tr -d ' ')
         if [ "${_PR_COUNT:-0}" -gt 0 ] && [ "${_PR_COUNT:-0}" -le "$_PR_MAX" ]; then
-          PAGERANK_HINT=$(_pagerank_guarded "$_PR_CWD" | head -5 | sed 's/^/- /')
+          _set_pagerank_hint "$_PR_CWD"
         fi
       fi
     fi
