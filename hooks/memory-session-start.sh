@@ -68,7 +68,21 @@ fi
 # Kills this script if it exceeds max runtime. Prevents orphan processes.
 ( sleep 15 && kill -TERM $$ 2>/dev/null ) &
 _WATCHDOG=$!
-trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
+# Cleanup on ANY exit, including when the watchdog SIGTERMs us mid-pagerank:
+# tear down the watchdog AND group-kill any in-flight pagerank child (tracked
+# in _PR_GUARD_CHILD by _pagerank_guarded). Without the TERM trap, a watchdog
+# kill would orphan that child — it would still self-terminate via its own
+# SIGALRM, but we additionally reap it here so the hook never leaves one behind.
+_PR_GUARD_CHILD=""
+_b12_cleanup() {
+  if [ -n "${_PR_GUARD_CHILD:-}" ]; then
+    kill -KILL -"$_PR_GUARD_CHILD" 2>/dev/null || kill -KILL "$_PR_GUARD_CHILD" 2>/dev/null
+  fi
+  kill "$_WATCHDOG" 2>/dev/null
+  wait "$_WATCHDOG" 2>/dev/null
+}
+trap _b12_cleanup EXIT
+trap '_b12_cleanup; exit 143' TERM
 
 INPUT=$(cat)
 SOURCE=$(echo "$INPUT" | jq -r '.source // "startup"')
@@ -79,6 +93,49 @@ B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 
 # Portable stat: macOS uses -f %m, Linux uses -c %Y
 file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "0"; }
+
+# Run file_pagerank under a HARD wall-clock budget, killing the whole process
+# GROUP on expiry so an orphaned numpy child can never survive the hook. This
+# is the bug that exhausted RAM and panicked the machine: the old code ran
+# `$(python …)` with no python-level timeout, so when this hook's own watchdog
+# SIGTERM'd the shell, the numpy grandchild was orphaned and kept allocating.
+# file_pagerank ALSO self-limits (SIGALRM + os.setsid + best-effort RLIMIT_AS);
+# this is the defense-in-depth outer layer.
+_pagerank_guarded() {
+  local cwd="$1" budget="${B12_PAGERANK_TIMEOUT_S:-8}"
+  # Preferred: coreutils timeout (Linux / Homebrew) — SIGKILL on expiry.
+  if command -v timeout >/dev/null 2>&1; then
+    timeout -s KILL "$budget" "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 2>/dev/null
+    return
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout -s KILL "$budget" "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 2>/dev/null
+    return
+  fi
+  # Bare macOS has no `timeout`. Background the child (file_pagerank calls
+  # os.setsid → it leads its own process group, PGID==PID), poll, then SIGKILL
+  # the WHOLE GROUP (negative PID). Clamp the budget below the 15s self-watchdog
+  # so this poll normally wins the race; if the watchdog fires first anyway, the
+  # EXIT/TERM trap group-kills _PR_GUARD_CHILD, and the child's own SIGALRM is
+  # the final backstop — so no orphaned allocator can linger.
+  [ "$budget" -gt 12 ] 2>/dev/null && budget=12
+  local out; out=$(mktemp 2>/dev/null) || return 0
+  "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 >"$out" 2>/dev/null &
+  local child=$! waited=0
+  _PR_GUARD_CHILD=$child   # exposed to the trap so a watchdog kill also reaps it
+  while kill -0 "$child" 2>/dev/null; do
+    if [ "$waited" -ge "$budget" ]; then
+      kill -KILL -"$child" 2>/dev/null || kill -KILL "$child" 2>/dev/null
+      pkill -KILL -P "$child" 2>/dev/null
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$child" 2>/dev/null
+  _PR_GUARD_CHILD=""
+  cat "$out" 2>/dev/null
+  rm -f "$out" 2>/dev/null
+}
 
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 SUMMARY_DIR="$B12_BASE/memory-summaries"
@@ -427,8 +484,28 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
 
   PAGERANK_HINT=""
   if [ -d "$CWD" ] && [ -x "$VENV_PYTHON" ] && [ -f "$B12_SCRIPTS/file_pagerank.py" ]; then
-    PAGERANK_HINT=$("$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$CWD" 5 2>/dev/null \
-                      | head -5 | sed 's/^/- /')
+    # ── Memory-safety guard (the 2026-06 OOM fix) ──────────────
+    # Never let pagerank walk a giant tree. Resolve symlinks so a symlinked
+    # $HOME or nested mount can't slip past the equality checks, then require
+    # a git repo and a BOUNDED candidate-file pre-count before invoking python.
+    _PR_CWD=$(cd "$CWD" 2>/dev/null && pwd -P)
+    _PR_HOME=$(cd "$HOME" 2>/dev/null && pwd -P)
+    _PR_MAX="${B12_PAGERANK_MAX_NODES:-20000}"
+    if [ -n "$_PR_CWD" ] && [ "$_PR_CWD" != "$_PR_HOME" ] && [ "$_PR_CWD" != "/" ] \
+       && [ -e "$_PR_CWD/.git" ]; then
+      # Cheap, bounded pre-count: `head -n MAX+1` closes the pipe so `find`
+      # dies (SIGPIPE) instead of walking an unbounded tree. Prune the same
+      # noisy dirs file_pagerank skips so the count reflects real candidates.
+      _PR_COUNT=$(find "$_PR_CWD" \( -name .git -o -name node_modules -o -name .venv \
+          -o -name venv -o -name __pycache__ -o -name .pytest_cache -o -name dist \
+          -o -name build -o -name .next -o -name target \) -prune -o \
+          -type f \( -name '*.py' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' \
+          -o -name '*.jsx' \) -print 2>/dev/null \
+          | head -n "$((_PR_MAX + 1))" | wc -l | tr -d ' ')
+      if [ "${_PR_COUNT:-0}" -gt 0 ] && [ "${_PR_COUNT:-0}" -le "$_PR_MAX" ]; then
+        PAGERANK_HINT=$(_pagerank_guarded "$_PR_CWD" | head -5 | sed 's/^/- /')
+      fi
+    fi
   fi
   if [ -n "$PAGERANK_HINT" ]; then
     CONTEXT="${CONTEXT}\n\n--- LIKELY-NEXT FILES (pagerank) ---\n${PAGERANK_HINT}\n--- END LIKELY-NEXT ---"

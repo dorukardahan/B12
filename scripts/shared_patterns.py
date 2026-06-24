@@ -551,3 +551,38 @@ BLOCKER_RE = re.compile(
     r'|(?:(?:çözmemiz|düzeltmemiz)\s+(?:lazım|gerek)\s*.{0,150})'
     r')'
 )
+
+
+# ── Process memory self-guard ─────────────────────────────────────
+# Used by the long-lived daemons (embed_daemon, b12_mcp_daemon) so a runaway
+# allocation logs and exits cleanly instead of starving the host — the failure
+# mode behind the 2026-06 OOM machine panic. getrusage is a pure read, so this
+# works everywhere (unlike RLIMIT_AS, which macOS refuses to let a process set).
+
+def rss_bytes() -> int:
+    """Peak resident set size of THIS process, in bytes.
+
+    Built on getrusage(RUSAGE_SELF).ru_maxrss, normalized across platforms:
+    macOS/BSD report the value in bytes, Linux in kibibytes. It is a
+    high-water mark (never decreases), so a guard built on it trips on the
+    PEAK — a deliberately conservative signal for a long-lived process.
+    """
+    import resource
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    return rss if sys.platform == "darwin" else rss * 1024
+
+
+def rss_exceeds(ceiling_mb: int) -> int:
+    """Return current peak RSS in MB when it exceeds ceiling_mb, else 0.
+
+    ceiling_mb <= 0 disables the check. Cheap enough to call on every served
+    request or timer tick. Never raises — a measurement failure returns 0
+    (fail-open: a guard that can't measure must not kill a healthy daemon).
+    """
+    if ceiling_mb <= 0:
+        return 0
+    try:
+        mb = rss_bytes() // (1024 * 1024)
+    except Exception:
+        return 0
+    return int(mb) if mb > ceiling_mb else 0

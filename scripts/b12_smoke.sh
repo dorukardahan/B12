@@ -30,8 +30,22 @@ drive_hook() {
   echo "exit=$rc"
 }
 
-SESSION_PAYLOAD='{"session_id":"smoke-test-synth","source":"startup","cwd":"'"$HOME"'"}'
-RETRIEVAL_PAYLOAD='{"session_id":"smoke-test-synth","prompt":"smoke probe — memory recall sanity check","cwd":"'"$HOME"'"}'
+# Drive the hooks against a TINY throwaway git repo — never $HOME. Passing
+# cwd=$HOME made SessionStart's file_pagerank walk ~167k files and allocate a
+# huge matrix, exhausting RAM and panicking the machine (2026-06). A 2-file
+# git repo still meaningfully exercises session-start (project detection,
+# pagerank pre-count + rank) and retrieval, with a bounded footprint.
+SMOKE_CWD=$(mktemp -d 2>/dev/null || mktemp -d -t b12smoke) || { echo "mktemp failed" >&2; exit 1; }
+trap 'rm -rf "$SMOKE_CWD" 2>/dev/null' EXIT
+(
+  cd "$SMOKE_CWD" || exit 0
+  git init -q 2>/dev/null || true   # .git presence lets the pagerank guard run
+  printf 'import b\n' > a.py
+  printf 'x = 1\n'    > b.py
+) || true
+
+SESSION_PAYLOAD='{"session_id":"smoke-test-synth","source":"startup","cwd":"'"$SMOKE_CWD"'"}'
+RETRIEVAL_PAYLOAD='{"session_id":"smoke-test-synth","prompt":"smoke probe — memory recall sanity check","cwd":"'"$SMOKE_CWD"'"}'
 
 # Dedupe by inode — macOS HFS+/APFS is case-insensitive by default, so two
 # setup dirs differing only in case resolve to the same directory.

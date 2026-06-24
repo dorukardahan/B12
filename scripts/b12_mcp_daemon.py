@@ -52,6 +52,12 @@ from mcp.shared.message import SessionMessage
 # happens under `if __name__ == "__main__":`.
 import b12_mcp_server as srv
 
+try:
+    from shared_patterns import rss_exceeds
+except Exception:  # pragma: no cover — never block daemon on import
+    def rss_exceeds(ceiling_mb):  # fail-open
+        return 0
+
 _UID = os.getuid() if hasattr(os, "getuid") else os.getpid()
 SOCK_PATH = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
 PID_PATH = f"/tmp/b12-mcp-{_UID}.pid"
@@ -77,6 +83,17 @@ REAP_INTERVAL = float(os.environ.get("B12_MCP_REAP_INTERVAL", "60"))      # 1 mi
 # long-lived legacy reader) can let the WAL grow unbounded and block checkpoint.
 # A periodic TRUNCATE checkpoint under the shared DB lock covers the idle case.
 WAL_CHECKPOINT_INTERVAL = float(os.environ.get("B12_MCP_WAL_CHECKPOINT_INTERVAL", "300"))  # 5 min
+# ── Memory self-guard ────────────────────────────────────────────
+# Log + exit if peak RSS exceeds this (MB) so a runaway leak can't starve the
+# host (the failure mode behind the 2026-06 OOM panic). This daemon is small
+# (~tens of MB live), so the default trips only on a genuine leak; launchd
+# KeepAlive respawns a fresh process. getrusage-based (works on macOS, where
+# RLIMIT_AS does not). Set B12_MCP_MAX_RSS_MB<=0 to disable.
+try:
+    MCP_MAX_RSS_MB = int(os.environ.get("B12_MCP_MAX_RSS_MB", "2048"))
+except (TypeError, ValueError):
+    MCP_MAX_RSS_MB = 2048
+RSS_GUARD_INTERVAL = float(os.environ.get("B12_MCP_RSS_GUARD_INTERVAL", "60"))  # 1 min
 
 
 def log(msg: str) -> None:
@@ -264,6 +281,28 @@ async def _wal_checkpoint_timer() -> None:
             log(f"WAL checkpoint error: {e}")
 
 
+async def _rss_self_guard_timer() -> None:
+    """Periodically check peak RSS; if it exceeds MCP_MAX_RSS_MB, log and exit
+    so launchd respawns a fresh daemon. A memory-runaway emergency — os._exit
+    is intentional (WAL is durable; the periodic checkpoint timer keeps it
+    truncated), avoiding a hang while the host's RAM is exhausted."""
+    if MCP_MAX_RSS_MB <= 0 or RSS_GUARD_INTERVAL <= 0:
+        return
+    while True:
+        try:
+            await asyncio.sleep(RSS_GUARD_INTERVAL)
+            over = rss_exceeds(MCP_MAX_RSS_MB)
+            if over:
+                log(f"RSS {over}MB > ceiling {MCP_MAX_RSS_MB}MB "
+                    f"(B12_MCP_MAX_RSS_MB) — exiting to protect host; launchd respawns")
+                cleanup_socket_files()
+                os._exit(1)
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log(f"rss guard error: {e}")
+
+
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """Serve one MCP session for one connected client (one Claude Code session)."""
     global _active_connections, _conn_seq
@@ -362,6 +401,7 @@ async def _serve() -> None:
         _maint_tasks = [
             asyncio.create_task(_reap_idle_connections()),
             asyncio.create_task(_wal_checkpoint_timer()),
+            asyncio.create_task(_rss_self_guard_timer()),
         ]
 
         log(f"Listening on {SOCK_PATH}")

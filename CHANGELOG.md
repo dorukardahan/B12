@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+Fix an unbounded-memory defect in the SessionStart "likely-next files" PageRank feature that could exhaust machine RAM. `file_pagerank._pagerank` built a dense `n × n` float32 matrix with no node cap, and both SessionStart and `b12_smoke.sh` ran it against `$HOME` (~167k code files) — at that size the matrix is ~112 GB per process, so concurrent runs exhausted RAM, starved the macOS WindowServer, and tripped the userspace watchdog into a kernel panic + reboot. The fix is defense-in-depth: no hook, smoke run, or session CWD can drive pagerank into a multi-GB allocation, and normal repos are unaffected.
+
+### Fixed
+- **`file_pagerank._pagerank` is now sparse.** It power-iterates over the adjacency lists as three flat `(src, dst, weight)` arrays with a vectorized `np.add.at` scatter-add — O(nodes + edges) memory, never a dense `n × n` matrix. A 100k-node graph uses a few MB instead of tens of GB, and the result reproduces the former dense ranking to float rounding (top-N identical; covered by a sparse-vs-dense oracle test).
+- **`b12_smoke.sh` no longer drives the hooks against `$HOME`.** It builds a tiny throwaway git repo (two importing files, removed on exit) that still exercises session-start (project detection, pagerank pre-count + rank) and retrieval, with a bounded footprint.
+
+### Added
+- **Node cap.** `top_n` refuses a root with more than `B12_PAGERANK_MAX_NODES` (default 20000) candidate files: it logs the reason and returns `[]` *before* reading any file, so a giant tree is never walked. `0` disables.
+- **SessionStart pagerank guard.** The hook skips pagerank when the CWD is `$HOME` / `/`, is not a git repo, or fails a cheap **bounded** candidate-file pre-count (`find … | head -n MAX+1`, which stops `find` early via SIGPIPE instead of walking an unbounded tree). It runs the Python under a hard wall-clock budget (`B12_PAGERANK_TIMEOUT_S`, default 8s) and **kills the whole process group** on expiry (`timeout -s KILL` where available; otherwise background + poll + `kill -KILL -<pgid>`), so an orphaned numpy child cannot survive the hook. The existing 24h pagerank cache is preserved.
+- **`file_pagerank` process self-limits.** Run as a script it installs a SIGALRM wall-clock self-timeout (orphan-proof — fires even if the parent shell is killed mid command-substitution), calls `os.setsid()` so a caller's group-kill is clean, and best-effort sets `RLIMIT_AS` (`B12_PAGERANK_MAX_MEM_MB`, default 2048; a real backstop on Linux, a no-op on macOS which refuses to let a process lower its own address-space limit).
+- **Daemon RSS self-guards.** `embed_daemon.py` (`B12_EMBED_MAX_RSS_MB`, default 6144) and `b12_mcp_daemon.py` (`B12_MCP_MAX_RSS_MB`, default 2048) log and exit cleanly when peak RSS exceeds the ceiling (the host respawns a fresh process). Built on a shared `shared_patterns.rss_exceeds` (`getrusage(ru_maxrss)`, platform-normalized) — a pure read, so it works on macOS where `RLIMIT_AS` / `ulimit -v` are not enforced.
+
+### Internal
+- New regression tests: `scripts/tests/test_file_pagerank_oom.py` (no dense `n × n` allocation in source; sparse == dense oracle; a 20k-node graph trips no dense constructor — `zeros`/`empty`/`ones`/`full`, tuple or list shaped; the node cap returns `[]` + logs; a normal repo still ranks; `b12_smoke.sh` no longer targets `$HOME`), `scripts/tests/test_rss_self_guard.py` (the `rss_exceeds`/`rss_bytes` disabled / fail-open / over-ceiling contracts and the macOS-bytes vs Linux-KiB normalization), and `tests/hooks/test_pagerank_guard.py` (session-start skips pagerank on a `$HOME` / non-git / oversized CWD and still ranks a small git repo).
+- README "Environment variables" gains a Memory-safety guards table; `docs/architecture.md` documents the layered fix. Both note the macOS reality: `ulimit -v` / `RLIMIT_AS` are not enforced there, so the `getrusage` guards, the SIGALRM self-timeout, and the node cap are the effective protections.
+
 ## [v11.80.1] — 2026-06-24
 
 Phase-2 follow-up cleanup: remove the dead SessionEnd identity-correction cascade and narrow the weekly-scan gitleaks allowlist. No functional behavior change (the removed cascade never ran).
