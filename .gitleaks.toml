@@ -12,7 +12,35 @@ useDefault = true
 
 [allowlist]
 description = "B12 secret-scrubber test fixtures (intentional fake secrets)"
+# Fabricated credential string used by the secret-filter tests
+# (test_importance_signals.py). Allowlisted BY VALUE so it is ignored no matter
+# which file/commit it appears in — surgical (this one fake string only, not any
+# whole production file). It briefly lived in b12_importance._selftest in an
+# earlier branch commit before being moved test-only; this also keeps that
+# historical diff clean across the PR's commit range. Self-allowlisted here too.
+regexes = [
+  '''sk_live_abc123DEF456ghi789jkl012mno345pqr''',
+  # Historical false positive (NOT a real key): a docstring in the now-deleted
+  # docs/B12_llm_extraction_design.md — "Requires ANTHROPIC_API_KEY. Default model:
+  # claude-haiku-4-5-20251001" — made the generic-api-key rule match the Claude
+  # MODEL IDENTIFIER. Allowlisted by the model-id VALUE (not by file path) so only
+  # this exact false positive is suppressed wherever it appears, while a real secret
+  # in any path — including a reintroduced one — is still caught. (Only the weekly
+  # full-history scan flagged it; PR/push scans see new commits only.)
+  '''claude-haiku-4-5-20251001''',
+]
 paths = [
   '''scripts/tests/test_b12_pii_scrubber\.py''',
   '''scripts/tests/test_sanitization_hooks\.py''',
+  # Phase-2 importance signal tests: assert the secret-suspected filter fires on
+  # real credential shapes (sk_live_, ghp_, ...), so the file carries intentional
+  # fake secrets — same category as the scrubber fixtures above.
+  '''scripts/tests/test_importance_signals\.py''',
+  # PR-2c audit test: asserts the audit force-redacts a fake credential even
+  # when B12_DISABLE_PII_SCRUB=1, so it carries an intentional fake secret.
+  '''scripts/tests/test_audit_importance_gap\.py''',
+  # PR-3c OpenCode TS scrubber test: parity fixtures of fake credential shapes
+  # (xoxb-/sk-ant-/ghp_/AKIA/…) the scrubber must redact — same category as the
+  # Python scrubber test fixtures above.
+  '''plugins/opencode/tests/scrubber\.test\.ts''',
 ]

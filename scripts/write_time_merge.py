@@ -175,13 +175,19 @@ def _metadata_to_str(metadata: Any) -> Optional[str]:
     return json.dumps(metadata, ensure_ascii=False)
 
 
-def _augment_importance(metadata: Any, content: str) -> Any:
+def _augment_importance(metadata: Any, content: str,
+                        memory_type: Optional[str] = None) -> Any:
     """Pre-populate metadata.importance_score from b12_importance heuristics.
 
     If the caller already provided `importance_score` in metadata, do nothing
     (caller wins). Otherwise compute the band-based score using
     `b12_importance.score(content)` and stash it under `importance_score` so
     the recall path picks it up identically to a caller-set value.
+
+    `memory_type` is the type merge_or_insert actually stores for the row; it is
+    used for the type floor in preference to any type embedded in metadata, so a
+    caller passing `memory_type="decision"` with metadata that does not duplicate
+    the type still receives the floor.
 
     Pattern from AytuncYildizli/B12 PR 24 (3534d0d).
     """
@@ -206,8 +212,17 @@ def _augment_importance(metadata: Any, content: str) -> Any:
     else:
         return metadata
 
-    if "importance_score" not in obj:
-        obj["importance_score"] = b12_importance.score(content)
+    # Resolve through the single finalize_importance chokepoint: secret-cap +
+    # memory_type floor + the strongest of caller/heuristic. So hook / SessionEnd /
+    # extractor writes get a uniform secret cap AND the type floor (a typed memory
+    # — decision/error_fix/learning/… — is no longer stuck at baseline when its
+    # content lacks a keyword cue), while a stronger caller value is preserved.
+    # Prefer the explicit memory_type arg (what merge_or_insert stores for the
+    # row) when it is a real type; fall back to a type embedded in metadata.
+    mt = (memory_type if (memory_type and memory_type not in ("general", "note", ""))
+          else obj.get("type"))
+    obj["importance_score"] = b12_importance.finalize_importance(
+        content, obj.get("importance_score"), mt)
 
     return obj
 
@@ -674,8 +689,23 @@ def merge_or_insert(
     # Memorable / decision / fact bands map to importance_score values
     # the recall scorer already understands (>= 0.7 ranks above
     # baseline). Caller-provided metadata.importance_score wins.
-    metadata = _augment_importance(metadata, content)
+    metadata = _augment_importance(metadata, content, memory_type)
     metadata_str = _metadata_to_str(metadata)
+
+    # Secret cap on the NORMALIZED metadata: _augment_importance bails on the
+    # legacy "key:val, ..." string format (it only handles dict/JSON), but
+    # _metadata_to_str above converts it to JSON — so re-apply the cap here to
+    # cover every supported metadata format on the insert/hash-dup paths.
+    if metadata_str:
+        try:
+            import b12_importance as _imp_cap
+            if _imp_cap.is_secret(content):
+                _mc = json.loads(metadata_str)
+                if isinstance(_mc, dict) and _mc.get("importance_score") != _imp_cap.IMPORTANCE_BASELINE:
+                    _mc["importance_score"] = _imp_cap.IMPORTANCE_BASELINE
+                    metadata_str = _metadata_to_str(_mc)
+        except Exception:
+            pass
 
     if not content_hash:
         content_hash = _sha256_hex(content)
@@ -818,6 +848,37 @@ def merge_or_insert(
                 (merged_content, now_ts, now_iso, best_id),
             )
             new_hash = best_hash
+
+        # Reconcile the merged row's importance (the content-only UPDATEs above
+        # don't touch metadata) through the SAME finalize_importance chokepoint as
+        # the insert path: a credential-bearing merge caps at baseline, the
+        # memory_type floor applies, and the row's existing score is compared
+        # against the merged content's heuristic on the RET-3-normalized scale —
+        # so a high-signal write ("save this ...") merged into a baseline row lifts
+        # it, a higher explicit/level value is preserved at its raw scale, and a
+        # level-multiplier existing value is no longer max'd against a fractional
+        # new signal on mismatched scales.
+        try:
+            import b12_importance as _imp_merge
+            _row = conn.execute(
+                "SELECT metadata FROM memories WHERE id = ?", (best_id,)
+            ).fetchone()
+            _md: Any = {}
+            if _row and _row[0]:
+                try:
+                    _md = json.loads(_row[0])
+                except Exception:
+                    _md = {}
+            if not isinstance(_md, dict):
+                _md = {}
+            _md["importance_score"] = _imp_merge.finalize_importance(
+                merged_content, _md.get("importance_score"), memory_type)
+            conn.execute(
+                "UPDATE memories SET metadata = ? WHERE id = ?",
+                (_metadata_to_str(_md), best_id),
+            )
+        except Exception:
+            pass
 
         _upsert_embedding(conn, best_id, new_embedding)
 

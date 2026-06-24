@@ -206,6 +206,18 @@ Process:
 
 **Write-time merge**: Imports `merge_or_insert` from `scripts/write_time_merge.py`. Falls back to direct INSERT if the script is unavailable (graceful degradation).
 
+**Write-side importance scoring** (`scripts/b12_importance.py`): before a row is stored, content is scored into a fractional `[0, 0.95]` importance band with **no manual tagging**. Five bands (trivial 0.30 / baseline 0.50 / fact 0.70 / decision 0.75 / memorable 0.90, max-wins) are floored by a language-agnostic **signal taxonomy** layered on the original remember/decision/fact tokens: explicit save-cues, commitment/obligation verbs (negation-aware), deadlines/dates, `@handle`/email person mentions, numeric-with-context values, and identifiers (PR#/git-SHA/host-path). Detectors cover **11 languages** (en, tr, zh, hi, es, fr, ar, ru, pt, id, de): the
+six signal detectors plus native remember/decision/trivial lexicons per language,
+matched script-aware — word-boundary for spaced scripts, NFKC-normalized substring
+for CJK/Devanagari/Arabic (Arabic also tashkeel-stripped). The language is detected
+by script presence (an optional `lang_code` overrides it); trivial cues only floor
+when they are the whole memory. A read-only audit (`scripts/audit_importance_gap.py`,
+`mode=ro`) measures the "importance gap" — how many high-value memories the heuristic
+would only score at baseline — to decide whether a future ML classifier is worth it
+(it reports the gap %, band distribution, scrubbed samples, the typed/untyped
+split by `memory_type`, and excludes secret-suppressed rows; full design in
+[docs/DESIGN-Phase2-Importance.md](DESIGN-Phase2-Importance.md)). A credential-shaped string (detected via the shared `b12_pii_scrubber` patterns) is **held at baseline** by the scorer, so writers that store its output unmodified do not amplify it; other writers bypass the cap and PII-scrubbing coverage varies by writer (the OpenCode plugin scrubs nothing). The exact per-writer cap/leak status and the recommended centralized fix are covered in the [design doc §4](DESIGN-Phase2-Importance.md) — see it for the authoritative treatment. Regex scans are bounded with linear (non-backtracking) patterns so a large pasted blob cannot stall the synchronous store. This value flows into `metadata.importance_score` and the effective-stability aging below; the read-side normalization is unchanged (see RET-3).
+
 ### PostToolUse hooks
 
 **Feedback hook** (v3): Logs every memory store/search/update/quality call to `feedback.jsonl`. Tracks: action, query text, result count, session sequence number, scope compliance. Used by the weekly feedback digest.

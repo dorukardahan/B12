@@ -191,6 +191,16 @@ def cmd_store(args):
     content = scrub_pii(content)
     ch = content_hash(content)
 
+    # Resolve importance through the shared chokepoint: secret-cap + memory_type
+    # floor + the strongest of the supplied --importance and the content score.
+    try:
+        import b12_importance as _b12imp
+        importance = _b12imp.finalize_importance(content, args.importance, mem_type)
+    except Exception:
+        # Scorer unavailable: keep the supplied/default importance (prior behavior).
+        # Content is already PII-scrubbed above, so no raw secret leaks on this path.
+        pass
+
     # Build tags
     tags = f"proj:{project},type:{mem_type},source:cli"
     if args.tags:

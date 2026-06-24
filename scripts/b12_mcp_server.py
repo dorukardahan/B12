@@ -55,7 +55,7 @@ SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 # falls back to legacy in-process stdio mode below — non-Claude-Code consumers
 # (Codex, Gemini, Kimi, OpenCode, Grok) see zero behaviour change either way.
 MCP_DAEMON_SOCK = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
-B12_VERSION = "v11.76.0"
+B12_VERSION = "v11.80.0"
 
 # ── SQLite access (BB1: per-connection, off the event loop) ──────
 # Reads run concurrently on a thread pool — WAL allows many concurrent readers —
@@ -965,6 +965,16 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         "access_count": 0, "source_type": "user", "credibility": 1.0,
     }
     base_meta.update(metadata)
+    # Phase-2: resolve importance through the single finalize_importance chokepoint
+    # — secret-cap + memory_type floor + the strongest of caller/heuristic — so the
+    # MCP write path (Cursor/Cline/Gemini/…) gets the same scoring as hook capture.
+    # Guarded; content is already PII/secret-scrubbed above.
+    try:
+        import b12_importance as _b12_imp
+        base_meta["importance_score"] = _b12_imp.finalize_importance(
+            content, base_meta.get("importance_score"), memory_type)
+    except Exception:
+        pass
     meta_json = _validate_metadata(base_meta)
 
     # One atomic writer op: dedup-check → undelete OR INSERT OR IGNORE → read id.

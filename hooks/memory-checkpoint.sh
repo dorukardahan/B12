@@ -361,10 +361,17 @@ try:
 
     try:
         import b12_importance as _b12imp
-        _imp_score = _b12imp.score
+
+        def _resolve_importance(_content):
+            # Single chokepoint: 0.70 (the prior checkpoint floor) is passed as the
+            # supplied value. finalize_importance caps a credential-bearing item at
+            # baseline (never floored to 0.70) and otherwise returns the strongest
+            # of {content score, 0.70} — bit-identical to the prior
+            # max(score, 0.70) since no memory_type floor is applied here.
+            return _b12imp.finalize_importance(_content, supplied=0.70)
     except ImportError:
-        def _imp_score(_content):
-            return 0.5   # baseline fallback if the scorer is unavailable
+        def _resolve_importance(_content):
+            return 0.7   # prior checkpoint floor if the scorer is unavailable
 
     # Deduplicate against existing memories (by content_hash)
     existing_hashes = set()
@@ -392,7 +399,10 @@ try:
         # "user prefers tabs over spaces"). Content heuristics can only RAISE it
         # (a date/decision/"remember" -> up to 0.95). Without the floor, importance
         # now also shortens the aging half-life, so these would age faster than before.
-        importance_score = max(_imp_score(item["content"]), 0.7)
+        # Secret cap first (a credential-bearing checkpoint item is held at
+        # baseline, never floored to 0.7), then the checkpoint's own high-signal
+        # floor for everything else — both via the shared chokepoint.
+        importance_score = _resolve_importance(item["content"])
         metadata = validate_metadata({
             "type": item["category"],
             "source": "checkpoint",

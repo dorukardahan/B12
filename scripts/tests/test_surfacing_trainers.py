@@ -453,6 +453,51 @@ def test_write_time_merge_revives_expired_exact_duplicate(tmp_path, monkeypatch)
     assert row[1] is None
 
 
+def test_merge_reconciles_importance_through_finalize(monkeypatch):
+    # PR-3a (Codex review): the semantic-merge branch must route importance
+    # reconciliation through finalize_importance, not max(existing, score) — which
+    # mixes RET-3 scales. An existing row stored at raw LEVEL 1.0 (-> 0.5 normalized)
+    # merged with a memorable-signal write must end at the fractional 0.90 signal,
+    # not the scale-mixed 1.0.
+    conn = sqlite3.connect(":memory:")
+    conn.execute(
+        """
+        CREATE TABLE memories (
+            id INTEGER PRIMARY KEY, content TEXT, content_hash TEXT UNIQUE,
+            tags TEXT, memory_type TEXT, metadata TEXT, created_at REAL,
+            updated_at REAL, created_at_iso TEXT, updated_at_iso TEXT,
+            deleted_at REAL, valid_until TEXT, strength REAL
+        )
+        """
+    )
+    existing_content = "the deploy host is configured"
+    existing_hash = write_time_merge._sha256_hex(existing_content)
+    conn.execute(
+        "INSERT INTO memories (id, content, content_hash, tags, memory_type, "
+        "metadata, created_at, updated_at, created_at_iso, updated_at_iso, "
+        "deleted_at, valid_until, strength) VALUES "
+        "(1, ?, ?, 'old', 'note', ?, 0, 0, '', '', NULL, NULL, 1.0)",
+        (existing_content, existing_hash, json.dumps({"importance_score": 1.0})),
+    )
+    # Force the semantic-merge path with a high-similarity match.
+    monkeypatch.setattr(write_time_merge, "_ensure_sqlite_vec_loaded", lambda conn: None)
+    monkeypatch.setattr(write_time_merge, "_upsert_embedding", lambda *a, **k: None)
+    monkeypatch.setattr(write_time_merge, "_encode_embedding_bytes", lambda *a, **k: b"")
+    monkeypatch.setattr(write_time_merge, "_best_match",
+                        lambda *a, **k: (1, existing_content, existing_hash, 1.0, 0.99))
+    monkeypatch.setenv("B12_DISABLE_FRAGMENT_FILTER", "1")
+
+    result = write_time_merge.merge_or_insert(
+        conn, content="remember this important thing", content_hash=None,
+        tags="fresh", memory_type="note", metadata={}, embedding_bytes=b"",
+        now=1_779_379_200,
+    )
+
+    assert result.action == "merged"
+    row_md = json.loads(conn.execute("SELECT metadata FROM memories WHERE id = 1").fetchone()[0])
+    assert row_md["importance_score"] == 0.90   # fractional signal beats normalized 1.0
+
+
 def test_valid_until_parser_treats_same_day_iso_expiration_as_inactive():
     now = datetime.fromisoformat("2026-05-21T10:00:00+00:00")
 

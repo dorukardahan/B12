@@ -835,6 +835,21 @@ try:
             importance += 0.25
     importance = min(importance, 2.0)
 
+    # Phase-2 secret cap: a credential-bearing summary is held at baseline (content
+    # is PII-scrubbed above, so is_secret sees the [REDACTED:...] marker). The
+    # richness-based level (1.0-2.0) is the summary's DELIBERATE, context-assigned
+    # importance, so it is preserved for non-secret summaries — finalize_importance's
+    # content heuristic / type floor are intentionally NOT applied here: they would
+    # override the context level and, being fractional, could drop it below the
+    # un-normalized downstream filters that read importance_score raw (e.g.
+    # b12_long_session's >= 0.7/0.8). Same lesson as PreCompact.
+    try:
+        import b12_importance as _b12imp
+        if _b12imp.is_secret(content):
+            importance = _b12imp.IMPORTANCE_BASELINE
+    except Exception:
+        pass  # keep the richness score if the scorer is unavailable
+
     metadata = json.dumps({
         "project": project_name,
         "setup": setup_context,
@@ -1026,81 +1041,12 @@ try:
                 conn.execute("INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
                              (m_row, m_emb))
 
-    # ─── Correction cascade (v12 — F4) ──────────────────────────
-    # Scan user messages for identity corrections, cascade update existing memories
-    try:
-        CORRECTION_SCAN_RE = _re.compile(
-            r'(?i)(?:'
-            r'not\s+(.{3,30})(?:,\s*|\s+but\s+)(?:it.?s|actually)\s+(.{3,30})'     # not X, actually Y
-            r'|(?:wrong|incorrect)\s+(.{3,20})(?:should be|is actually)\s+(.{3,30})' # X wrong, should be Y
-            r'|changed?\s+(?:from|my)\s+(.{3,30})\s+to\s+(.{3,30})'                  # changed from X to Y
-            r'|(?:yanlış|hatalı)\s+(.{3,30})(?:aslında|artık|olarak)\s+(.{3,30})'    # Turkish: yanlış X, aslında Y
-            r'|(.{3,30})\s+değil\s*,?\s*(?:artık|şimdi)\s+(.{3,30})'                 # Turkish: X değil, artık Y
-            r')'
-        )
-
-        for msg_text in [m for m in (user_messages or []) if len(m) > 10]:
-            for cm in CORRECTION_SCAN_RE.finditer(msg_text[:500]):
-                groups = cm.groups()
-                # Extract old/new from whichever capture group matched
-                old_val, new_val = None, None
-                for gi in range(0, len(groups), 2):
-                    if groups[gi] and groups[gi+1]:
-                        old_val = groups[gi].strip().rstrip('.,;:')
-                        new_val = groups[gi+1].strip().rstrip('.,;:')
-                        break
-
-                if not old_val or not new_val or len(old_val) < 4:
-                    continue
-
-                # Find affected memories (max 10)
-                escaped_old = old_val.replace('%', '\\%').replace('_', '\\_')
-                affected = conn.execute("""
-                    SELECT id, content, content_hash FROM memories
-                    WHERE content LIKE ? ESCAPE '\\' AND deleted_at IS NULL
-                    LIMIT 10
-                """, (f'%{escaped_old}%',)).fetchall()
-
-                for mem_id, mem_content, mem_hash in affected:
-                    updated_content = mem_content.replace(old_val, new_val)
-                    if updated_content == mem_content:
-                        continue
-                    new_hash = hashlib.sha256(updated_content.strip().lower().encode('utf-8')).hexdigest()
-                    # Update content + metadata
-                    try:
-                        existing_meta = conn.execute(
-                            "SELECT metadata FROM memories WHERE id = ?", (mem_id,)
-                        ).fetchone()
-                        meta_dict = json.loads(existing_meta[0]) if existing_meta and existing_meta[0] else {}
-                        meta_dict['correction_applied'] = now.isoformat()
-                        meta_dict['corrected_from'] = old_val[:50]
-                        conn.execute("""
-                            UPDATE memories
-                            SET content = ?, content_hash = ?, metadata = ?, updated_at = ?, updated_at_iso = ?
-                            WHERE id = ?
-                        """, (updated_content, new_hash, json.dumps(meta_dict),
-                              now.timestamp(), now.isoformat(), mem_id))
-                    except Exception:
-                        continue
-
-                # Store the correction itself as a high-strength memory
-                corr_text = f"[Correction] Not '{old_val}', actually '{new_val}'"
-                corr_hash = hashlib.sha256(corr_text.strip().lower().encode('utf-8')).hexdigest()
-                if not conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (corr_hash,)).fetchone():
-                    corr_tags = f"proj:{project_name},user:{setup_context},correction,{now.strftime('%Y-%m')}"
-                    corr_meta = json.dumps({
-                        "project": project_name, "type": "correction",
-                        "importance_score": 2.0, "old_value": old_val[:50],
-                        "new_value": new_val[:50], "affected_count": len(affected)
-                    })
-                    conn.execute("""
-                        INSERT INTO memories (content, content_hash, tags, memory_type, metadata,
-                                              created_at, updated_at, created_at_iso, updated_at_iso, strength)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 2.0)
-                    """, (corr_text, corr_hash, corr_tags, 'correction', corr_meta,
-                          now.timestamp(), now.timestamp(), now.isoformat(), now.isoformat()))
-    except Exception:
-        pass  # Non-critical — don't block session end
+    # (Identity-correction cascade removed 2026-06: it was dead code — `user_messages`
+    # was never defined in this embed script, so the whole block raised NameError into
+    # the swallowing `except` and never ran. Its destructive content-rewrite (regex over
+    # user messages → string-replace across existing memories) was untested in practice
+    # and risked false-positive corruption, so it was deleted rather than revived. A
+    # properly designed + tested version can be reintroduced if the feature is wanted.)
 
     # ─── Progress memory TTL: expire progress entries after 14 days ───
     try:

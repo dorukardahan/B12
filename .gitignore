@@ -83,3 +83,4 @@ B12-backup-pre-filter/
 
 # Python build artifacts (editable install)
 *.egg-info/
+.superpowers/

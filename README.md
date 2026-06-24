@@ -16,6 +16,7 @@
 - **Cross-tool memory** — the same DB powers Claude Code, Codex CLI, Grok CLI, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI
 - **Truly local** — SQLite + sqlite-vec on disk, no cloud calls, no API keys, no telemetry
 - **Hybrid retrieval** — FTS5 BM25 + 1024-dim BGE-M3 vector + importance- and reinforcement-weighted FSRS decay (important & frequently re-accessed memories rise, stale trivia fades)
+- **Automatic importance scoring** — at write time, content is scored into importance bands with no manual tagging via a language-agnostic signal taxonomy (save-cues, commitments, deadlines, people, numeric values, identifiers) plus native remember/decision/trivial lexicons in **11 languages** (en, tr, zh, hi, es, fr, ar, ru, pt, id, de) with script-aware matching. Credential-bearing content is held at baseline so secrets are never amplified
 - **Write-time merge + NLI contradiction detection** — duplicates collapse at storage time; conflicting memories flag for review
 - **Hook automation** — session-end micro-extraction, sprint handoffs, working-memory restore through compaction, classifier-driven tagging
 - **Comparison vs alternatives** — full matrix vs Mem0 / Letta / Cursor memory / Claude Projects / ChatGPT memory ships in PR #68 (`docs/comparison.md`).
@@ -82,7 +83,6 @@ Claude Code Session (full hook automation)
     └── SessionEnd ────────────> Extract session summary (latest + rolling)
                                   + micro-memory extraction via write-time merge
                                   + sprint handoff generation
-                                  + identity correction cascade
                                   + infra/content pattern extraction
                                   + host version tracking
                                   + background embedding generation
@@ -386,6 +386,8 @@ B12/
 │   ├── start-mcp.sh                #   MCP bootstrap (venv detection, used by plugin)
 │   ├── embed_daemon.py             #   Background embedding daemon (Unix socket)
 │   ├── write_time_merge.py         #   Semantic dedup at write time
+│   ├── b12_importance.py           #   Write-side importance scoring (11-language signal taxonomy)
+│   ├── audit_importance_gap.py     #   Read-only importance-gap audit (ML-ROI gate, PR-2c)
 │   ├── contradiction_resolver.py   #   ONNX NLI contradiction detection
 │   ├── graph_enrich.py             #   Memory graph enrichment
 │   ├── consolidation_engine.py     #   Smart consolidation (dedup, merge, contradictions)
@@ -539,6 +541,22 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 | **Working Memory** | Conversation momentum | `~/.B12/memory-staging/working-memory.json` | Post-compaction recovery |
 
 ## Changelog (recent)
+
+### v11.80.0 (2026-06-23)
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+### v11.79.0 (2026-06-23)
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+### v11.78.0 (2026-06-23)
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+### v11.77.0 (2026-06-23)
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
 
 ### v11.76.0 (2026-06-20)
 

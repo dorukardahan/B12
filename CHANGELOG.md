@@ -1,5 +1,70 @@
 # Changelog
 
+## Unreleased
+
+### Removed
+- **The SessionEnd identity-correction cascade** (`hooks/memory-session-end.sh`) is removed. It was dead code — `user_messages` was never defined in the embed-script heredoc, so the whole block raised `NameError` into a swallowing `except` and never ran. Its behavior (regex-scan user messages → string-replace `old→new` across up to 10 existing memories, rewriting their content) was destructive and untested in practice, with a real false-positive corruption risk (e.g. casual Turkish phrasing). It was deleted rather than revived; a properly designed and tested version can be reintroduced if the feature is wanted.
+
+### Internal
+- **`.gitleaks.toml`** now allowlists a historical false positive by **value**: a docstring in the now-deleted `docs/B12_llm_extraction_design.md` (`Requires ANTHROPIC_API_KEY. Default model: claude-haiku-4-5-20251001`) made the `generic-api-key` rule match the **Claude model identifier**, not a real key. Allowlisting the model-id value (rather than the whole file path) suppresses only this exact false positive wherever it appears, while a real secret in any path is still caught. PR/push scans (new commits only) were unaffected; only the weekly full-history scan flagged it.
+
+## [v11.80.0] — 2026-06-23
+
+Phase 2 (PR-3a/3b/3c): the write-side **secret cap** is centralized and extended to **every** B12 write path, plus a deterministic `memory_type` importance floor. A credential is never amplified above baseline, and the OpenCode plugin no longer persists one raw.
+
+### Changed
+- **Write-side importance is now finalized through one chokepoint, `b12_importance.finalize_importance(content, supplied, memory_type)`.** It returns baseline for a credential-shaped string (overriding the heuristic, the type floor, and any caller/LLM-supplied value), and otherwise the strongest of the heuristic score, a new `memory_type` floor, and the supplied value (RET-3-normalized before comparison so dual-scale inputs are compared correctly). Every Python writer routes through it — MCP `memory_store`, `write_time_merge` (insert + merge), the checkpoint hook, the PreCompact hook, and the CLI store — so the secret-never-amplified cap is enforced uniformly instead of per-writer. (#122)
+
+### Added
+- **`memory_type`→importance floor** — inherently-valuable memory types floor at the fact/decision band even when their content carries no surface signal, closing the typed slice of the importance gap deterministically (the cheap alternative to the shelved ML head). The map covers the repo's real type vocabulary: the canonical types from classification (`decision`→decision band; `error_fix`/`learning`/`preference`/`observation`/`knowledge`→fact band) plus the raw aliases a caller or the LLM classifier can pass un-normalized (`error`/`error fix`/`bugfix`/`gotcha`/`fact`/`feedback`/`progress`/`architecture`/`pattern`/`reference`/`review`/`audit`/`test`/`infra`/…). Generic/bulk types (general/note/session_summary) get no floor. `merge_or_insert`'s `memory_type` argument is threaded into finalization so a typed row whose metadata doesn't duplicate the type is still floored. (#122)
+
+### Fixed
+- **The checkpoint hook, PreCompact hook, and CLI store no longer bypass the secret cap.** They previously set importance themselves (`max(score, 0.7)`, a hard-coded `1.5`, raw caller value) without re-applying `is_secret()`, so a credential row could land above baseline there; routing them through `finalize_importance` holds them at baseline. (#122)
+- **The remaining Python direct-INSERT writers no longer bypass the secret cap.** The SessionEnd summary writer, the SessionEnd Identity-Correction insert, and Codex `store_memory` now apply the chokepoint's secret cap via the public `is_secret()` — a credential-bearing capture (PII-scrubbed to `[REDACTED:…]`) is held at baseline instead of keeping its hard-coded high importance (`1.0–2.0`/`2.0`/caller value). These writers assign importance from **context** (summary richness, correction level, per-category value), so the cap is applied while their deliberate value is preserved — the full heuristic/type-floor is intentionally not applied, as it would override the context value and could drop a level below the un-normalized downstream resurfacing filters (`b12_long_session >= 0.7`/`0.8`). (#123)
+- **The OpenCode plugin no longer persists secrets raw.** Its TypeScript write path (`plugins/opencode/src/lib/db.ts`) ran no scrubber, so a captured credential was stored verbatim — the last remaining raw-secret leak. A new TypeScript scrubber (`src/lib/scrubber.ts`, a faithful port of `b12_pii_scrubber`'s credential patterns, parity-tested) now redacts content to `[REDACTED:…]` before it is hashed or stored on both the `storeLocked` and `storeWorkingMemory` paths, and caps a credential-bearing memory's importance at baseline. Honors `B12_DISABLE_PII_SCRUB`. With this, **every** B12 write path (Python + the OpenCode plugin) holds credentials at baseline and never persists them raw. (#124)
+
+### Internal
+- New `finalize_importance` / `_TYPE_FLOOR` / `_normalize_supplied` tests (secret cap over everything, type floor, heuristic-beats-floor, supplied-preserved-when-stronger, bad-supplied ignored) and a TypeScript scrubber parity suite; `is_secret(content)` is now public. `docs/DESIGN-Phase2-Importance.md` §4 updated to document the cap across every write path (the five generic-content Python writers via `finalize_importance`, the context-importance writers + the OpenCode plugin via the secret cap). (#122, #123, #124)
+
+## [v11.79.0] — 2026-06-23
+
+Phase 2 PR-2c/2d: the importance-gap audit (with a typed/untyped breakdown) and the design reference. Concludes the importance work — the ML head (PR-2e) is shelved.
+
+### Added
+- **`docs/DESIGN-Phase2-Importance.md`** — canonical design reference for the write-side importance scorer: the signal taxonomy, the 11-language lexicons + script-aware matching, the secret-never-amplified invariant (honored by writers that store the scorer's output; the checkpoint/PreCompact/CLI bypasses and the OpenCode-plugin raw-secret gap are documented as follow-ups), ReDoS safety, the RET-3 read-path freeze, and the ML-gate decision. (#121)
+
+### Internal
+- **`scripts/audit_importance_gap.py`** — read-only corpus audit (`mode=ro`, never writes) that measures the "importance gap": high-value memories the heuristic would only score at baseline. PII/secret-scrubs and truncates samples (forced even under `B12_DISABLE_PII_SCRUB`), excludes TTL-expired and secret-suppressed rows, and **splits the gap into typed vs untyped by `memory_type`** — so a corpus of well-typed memories (error_fix/decision/learning/…) reads as "closable by a cheap `memory_type`→importance mapping," not "build the ML head." On the live corpus the gap is ~97% typed and only ~0.5% untyped, so the gated ML classifier (PR-2e) is **shelved**. (#119, #120)
+
+## [v11.78.0] — 2026-06-23
+
+Phase 2 PR-2b: automatic importance scoring goes multilingual — 11 languages.
+
+### Added
+- **Multilingual importance lexicons** — automatic, no-manual-tagging importance scoring now covers **11 languages** (the EN/TR core plus zh, hi, es, fr, ar, ru, pt, id, de). Each language adds native-verified remember (→ memorable), decision (→ decision), and trivial (→ trivial, exact-match only) cues, matched script-aware: word-boundary for spaced scripts, NFKC-normalized substring for CJK / Devanagari / Arabic (Arabic also tashkeel-stripped). (#118)
+- Language is auto-detected by script presence; `b12_importance.score(content, lang_code=...)` overrides it (and scopes the trivial check), and `B12_IMPORTANCE_UNION_MODE=1` checks every lexicon. (#118)
+
+### Changed
+- Lexicons are curated for **precision** — ambiguous homonyms and short substrings were excluded per-language, and English-colliding ASCII transliterations are omitted, so checking the Latin-script lexicons against English/Turkish text produces **no cross-language false positives** (covered by control tests). (#118)
+
+### Internal
+- Read-side ranking and the RET-3 dual-scale parity are untouched; EN/TR scores stay bit-identical (NFKC is identity for ASCII and precomposed Turkish letters). New multilingual tests cover per-language remember/decision/trivial, cross-language and EN/TR controls, mixed-script, `lang_code` (incl. trivial scoping), `_candidate_langs`, and a ReDoS guard. (#118)
+
+## [v11.77.0] — 2026-06-23
+
+First Phase-2 release: automatic, language-aware importance scoring at write time.
+
+### Added
+- **Automatic importance signal taxonomy** (`scripts/b12_importance.py`) — memories are scored into importance bands at store time with no manual tagging, via six language-agnostic signals layered on the existing remember/decision/fact tokens: explicit save-cues (→ memorable), commitment/obligation verbs (→ decision, negation-aware), deadlines/dates, `@handle`/email person mentions, numeric-with-context values, and identifiers (PR#/git-SHA/host-path) (→ fact). English + Turkish today (more languages planned). This feeds the importance/reinforcement-modulated FSRS aging so genuinely valuable memories surface and stay discoverable. (#117)
+- Importance is now auto-scored on the **MCP `memory_store` write path** too (Cursor / Cline / Gemini / Kimi / OpenCode / Grok), not just hook capture; a caller-supplied `importance_score` is preserved. (#117)
+
+### Fixed
+- **Credential-bearing content is never amplified, on every write path.** A detected secret — using the shared `b12_pii_scrubber` patterns (so the two can't drift) and recognizing the scrubber's own `[REDACTED:…]` marker — caps the memory at baseline importance, overriding even a caller- or LLM-supplied value, across `memory_store`, the merge insert path, the legacy metadata-string format, and semantic merges. The scorer never stores or logs the secret value (redaction stays the scrubber's job). (#117)
+- Importance scoring is **ReDoS-safe**: the email / host-path / identifier regexes are bounded to linear matching, so a large pasted blob can no longer stall the synchronous store path. (#117)
+
+### Internal
+- Read-side ranking (MCP `_unified_score`, the retrieval-hook SQL, and the OpenCode `unifiedScore`) is untouched; the RET-3 dual-scale parity stays green. New `scripts/tests/test_importance_signals.py` (53 cases) covers every signal, the secret-skip cap across all write paths, EN/TR negation and Turkish-morphology edges, and a ReDoS performance guard. (#117)
+
 ## [v11.76.0] — 2026-06-20
 
 ### Added

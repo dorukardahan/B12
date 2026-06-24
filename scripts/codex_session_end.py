@@ -195,6 +195,28 @@ def store_memory(db_path, content, metadata_str, tags, embedding=None, memory_ty
                 json.loads(metadata_str)
             except (json.JSONDecodeError, ValueError):
                 metadata_str = "{}"
+
+    # Phase-2 secret cap (AFTER validate_metadata so metadata_str is already
+    # normalized to JSON — incl. the legacy "type:x, importance:0.8" f-string form,
+    # which validate_metadata rewrites to importance_score). Content is scrubbed
+    # above, so a credential-bearing capture is now [REDACTED:...]; cap its
+    # importance at baseline so a secret can't be amplified or resurfaced. The
+    # caller's deliberate per-category importance (0.6-0.8 fractional micro-memories
+    # / 1.0-2.0 level macro-verbs) is preserved otherwise — finalize's type floor /
+    # content heuristic are NOT applied here: they would override the context-
+    # assigned value and, being fractional, could drop a level value below the
+    # un-normalized downstream filters that read importance_score raw
+    # (b12_long_session >= 0.7/0.8).
+    try:
+        import b12_importance as _b12imp
+        if _b12imp.is_secret(content):
+            _imd = json.loads(metadata_str) if isinstance(metadata_str, str) and metadata_str.strip() else {}
+            if isinstance(_imd, dict):
+                _imd["importance_score"] = _b12imp.IMPORTANCE_BASELINE
+                metadata_str = json.dumps(_imd)
+    except Exception:
+        pass  # keep caller metadata if the scorer is unavailable (prior behavior)
+
     hash_input = content.strip().lower().encode() + b"|" + (hash_salt or "").encode()
     content_hash = hashlib.sha256(hash_input).hexdigest()
     now = datetime.now(timezone.utc).isoformat()
