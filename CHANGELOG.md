@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## [v11.80.1] — 2026-06-24
+
+Phase-2 follow-up cleanup: remove the dead SessionEnd identity-correction cascade and narrow the weekly-scan gitleaks allowlist. No functional behavior change (the removed cascade never ran).
 
 ### Removed
 - **The SessionEnd identity-correction cascade** (`hooks/memory-session-end.sh`) is removed. It was dead code — `user_messages` was never defined in the embed-script heredoc, so the whole block raised `NameError` into a swallowing `except` and never ran. Its behavior (regex-scan user messages → string-replace `old→new` across up to 10 existing memories, rewriting their content) was destructive and untested in practice, with a real false-positive corruption risk (e.g. casual Turkish phrasing). It was deleted rather than revived; a properly designed and tested version can be reintroduced if the feature is wanted.
