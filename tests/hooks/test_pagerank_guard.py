@@ -133,6 +133,45 @@ def test_runs_pagerank_on_small_git_repo(guard_env, tmp_path):
 
 @pytest.mark.skipif(not _numpy_available(),
                     reason="numpy needed for the positive (ranking) path")
+def test_runs_pagerank_from_repo_subdirectory(guard_env, tmp_path):
+    """Regression for PR #126 Codex P2: launching from a SUBDIRECTORY of a git
+    repo (e.g. repo/packages/api) must still rank — the old `[ -e $CWD/.git ]`
+    check only matched the repo root and wrongly skipped subdirs/worktrees."""
+    env, _ = guard_env
+    proj = tmp_path / "repo"
+    proj.mkdir()
+    _git_init(proj)
+    sub = proj / "packages" / "api"
+    sub.mkdir(parents=True)
+    (sub / "core.py").write_text("VALUE = 1\n")
+    (sub / "a.py").write_text("import core\n")
+    (sub / "b.py").write_text("import core\n")
+    result = _run(sub, env)   # CWD is the subdir, not the repo root
+    assert result.returncode == 0, result.stderr[:500]
+    assert PAGERANK_MARKER in result.stdout
+    assert "core.py" in result.stdout
+
+
+@pytest.mark.skipif(not _numpy_available(),
+                    reason="numpy needed for the positive (ranking) path")
+def test_timeout_disabled_with_zero_still_runs(guard_env, tmp_path):
+    """Regression for PR #126 Codex P2: B12_PAGERANK_TIMEOUT_S=0 disables the
+    wall-clock kill (documented opt-out). The bare-macOS fallback must NOT
+    insta-SIGKILL the child (waited>=0); pagerank should still produce output."""
+    env, _ = guard_env
+    env["B12_PAGERANK_TIMEOUT_S"] = "0"
+    proj = tmp_path / "notimeout"
+    proj.mkdir()
+    _git_init(proj)
+    (proj / "core.py").write_text("VALUE = 1\n")
+    (proj / "a.py").write_text("import core\n")
+    result = _run(proj, env)
+    assert result.returncode == 0, result.stderr[:500]
+    assert PAGERANK_MARKER in result.stdout
+
+
+@pytest.mark.skipif(not _numpy_available(),
+                    reason="numpy needed for the positive (ranking) path")
 def test_cap_disabled_with_zero_still_runs(guard_env, tmp_path):
     """Regression for PR #126 Codex P2: B12_PAGERANK_MAX_NODES=0 is the
     documented cap opt-out (honored by file_pagerank.top_n). The hook must NOT

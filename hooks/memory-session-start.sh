@@ -103,6 +103,17 @@ file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || ech
 # this is the defense-in-depth outer layer.
 _pagerank_guarded() {
   local cwd="$1" budget="${B12_PAGERANK_TIMEOUT_S:-8}"
+  # Non-integer env value → fall back to the default (mirror file_pagerank's
+  # _env_int). After this, budget is a non-negative integer.
+  case "$budget" in (*[!0-9]*|'') budget=8 ;; esac
+  if [ "$budget" -le 0 ]; then
+    # Timeout disabled (B12_PAGERANK_TIMEOUT_S=0) — honor the documented opt-out
+    # in EVERY branch: run with no wall-clock kill (file_pagerank's SIGALRM is
+    # likewise disabled at 0). Memory is still bounded by the sparse algorithm +
+    # node cap; the user has explicitly opted out of the time limit.
+    "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 2>/dev/null
+    return
+  fi
   # Preferred: coreutils timeout (Linux / Homebrew) — SIGKILL on expiry.
   if command -v timeout >/dev/null 2>&1; then
     timeout -s KILL "$budget" "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 2>/dev/null
@@ -117,7 +128,7 @@ _pagerank_guarded() {
   # so this poll normally wins the race; if the watchdog fires first anyway, the
   # EXIT/TERM trap group-kills _PR_GUARD_CHILD, and the child's own SIGALRM is
   # the final backstop — so no orphaned allocator can linger.
-  [ "$budget" -gt 12 ] 2>/dev/null && budget=12
+  [ "$budget" -gt 12 ] && budget=12
   local out; out=$(mktemp 2>/dev/null) || return 0
   "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 >"$out" 2>/dev/null &
   local child=$! waited=0
@@ -487,15 +498,20 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
     # ── Memory-safety guard (the 2026-06 OOM fix) ──────────────
     # Never let pagerank walk a giant tree. Resolve symlinks so a symlinked
     # $HOME or nested mount can't slip past the equality checks, then require
-    # a git repo and a BOUNDED candidate-file pre-count before invoking python.
+    # being inside a git work tree and a BOUNDED candidate-file pre-count before
+    # invoking python.
     _PR_CWD=$(cd "$CWD" 2>/dev/null && pwd -P)
     _PR_HOME=$(cd "$HOME" 2>/dev/null && pwd -P)
     _PR_MAX="${B12_PAGERANK_MAX_NODES:-20000}"
     # Non-integer env value → fall back to the default (mirror file_pagerank's
     # robust _env_int). After this _PR_MAX is always a non-negative integer.
     case "$_PR_MAX" in (*[!0-9]*|'') _PR_MAX=20000 ;; esac
+    # Use git's own work-tree detection rather than testing for `.git` at $CWD:
+    # that only matched a repo ROOT, so launching in a subdirectory (e.g.
+    # repo/packages/api) or a linked worktree wrongly skipped pagerank. $HOME is
+    # still excluded by the equality check above even if it is itself a repo.
     if [ -n "$_PR_CWD" ] && [ "$_PR_CWD" != "$_PR_HOME" ] && [ "$_PR_CWD" != "/" ] \
-       && [ -e "$_PR_CWD/.git" ]; then
+       && git -C "$_PR_CWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
       if [ "$_PR_MAX" -le 0 ]; then
         # Cap disabled (B12_PAGERANK_MAX_NODES=0) — honor the documented opt-out
         # that file_pagerank.top_n() supports: skip the pre-count gate and run
