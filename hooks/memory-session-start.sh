@@ -114,6 +114,11 @@ _pagerank_guarded() {
     "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 2>/dev/null
     return
   fi
+  # Clamp below the 15s self-watchdog so NO enforced path (coreutils timeout or
+  # the bare-macOS poll) can outlive the hook. The foreground timeout/gtimeout
+  # branches don't set _PR_GUARD_CHILD, so the cleanup trap can't shorten them —
+  # the clamp is what keeps them from blocking past the watchdog.
+  [ "$budget" -gt 12 ] && budget=12
   # Preferred: coreutils timeout (Linux / Homebrew) — SIGKILL on expiry.
   if command -v timeout >/dev/null 2>&1; then
     timeout -s KILL "$budget" "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 2>/dev/null
@@ -124,11 +129,10 @@ _pagerank_guarded() {
   fi
   # Bare macOS has no `timeout`. Background the child (file_pagerank calls
   # os.setsid → it leads its own process group, PGID==PID), poll, then SIGKILL
-  # the WHOLE GROUP (negative PID). Clamp the budget below the 15s self-watchdog
-  # so this poll normally wins the race; if the watchdog fires first anyway, the
-  # EXIT/TERM trap group-kills _PR_GUARD_CHILD, and the child's own SIGALRM is
-  # the final backstop — so no orphaned allocator can linger.
-  [ "$budget" -gt 12 ] && budget=12
+  # the WHOLE GROUP (negative PID). The budget is already clamped above, so this
+  # poll wins the race with the watchdog; if the watchdog somehow fires first,
+  # the EXIT/TERM trap group-kills _PR_GUARD_CHILD, and the child's own SIGALRM
+  # is the final backstop — so no orphaned allocator can linger.
   local out; out=$(mktemp 2>/dev/null) || return 0
   "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 >"$out" 2>/dev/null &
   local child=$! waited=0
