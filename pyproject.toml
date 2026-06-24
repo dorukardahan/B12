@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "b12-memory"
-version = "11.80.1"
+version = "11.80.2"
 description = "Persistent cross-session memory system for AI coding assistants"
 readme = "README.md"
 license = {text = "MIT"}
