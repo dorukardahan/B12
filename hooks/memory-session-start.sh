@@ -491,19 +491,30 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
     _PR_CWD=$(cd "$CWD" 2>/dev/null && pwd -P)
     _PR_HOME=$(cd "$HOME" 2>/dev/null && pwd -P)
     _PR_MAX="${B12_PAGERANK_MAX_NODES:-20000}"
+    # Non-integer env value → fall back to the default (mirror file_pagerank's
+    # robust _env_int). After this _PR_MAX is always a non-negative integer.
+    case "$_PR_MAX" in (*[!0-9]*|'') _PR_MAX=20000 ;; esac
     if [ -n "$_PR_CWD" ] && [ "$_PR_CWD" != "$_PR_HOME" ] && [ "$_PR_CWD" != "/" ] \
        && [ -e "$_PR_CWD/.git" ]; then
-      # Cheap, bounded pre-count: `head -n MAX+1` closes the pipe so `find`
-      # dies (SIGPIPE) instead of walking an unbounded tree. Prune the same
-      # noisy dirs file_pagerank skips so the count reflects real candidates.
-      _PR_COUNT=$(find "$_PR_CWD" \( -name .git -o -name node_modules -o -name .venv \
-          -o -name venv -o -name __pycache__ -o -name .pytest_cache -o -name dist \
-          -o -name build -o -name .next -o -name target \) -prune -o \
-          -type f \( -name '*.py' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' \
-          -o -name '*.jsx' \) -print 2>/dev/null \
-          | head -n "$((_PR_MAX + 1))" | wc -l | tr -d ' ')
-      if [ "${_PR_COUNT:-0}" -gt 0 ] && [ "${_PR_COUNT:-0}" -le "$_PR_MAX" ]; then
+      if [ "$_PR_MAX" -le 0 ]; then
+        # Cap disabled (B12_PAGERANK_MAX_NODES=0) — honor the documented opt-out
+        # that file_pagerank.top_n() supports: skip the pre-count gate and run
+        # uncapped. Still bounded by the $HOME/git guards above and the
+        # wall-clock + process-group kill + SIGALRM/sparse guards below.
         PAGERANK_HINT=$(_pagerank_guarded "$_PR_CWD" | head -5 | sed 's/^/- /')
+      else
+        # Cheap, bounded pre-count: `head -n MAX+1` closes the pipe so `find`
+        # dies (SIGPIPE) instead of walking an unbounded tree. Prune the same
+        # noisy dirs file_pagerank skips so the count reflects real candidates.
+        _PR_COUNT=$(find "$_PR_CWD" \( -name .git -o -name node_modules -o -name .venv \
+            -o -name venv -o -name __pycache__ -o -name .pytest_cache -o -name dist \
+            -o -name build -o -name .next -o -name target \) -prune -o \
+            -type f \( -name '*.py' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' \
+            -o -name '*.jsx' \) -print 2>/dev/null \
+            | head -n "$((_PR_MAX + 1))" | wc -l | tr -d ' ')
+        if [ "${_PR_COUNT:-0}" -gt 0 ] && [ "${_PR_COUNT:-0}" -le "$_PR_MAX" ]; then
+          PAGERANK_HINT=$(_pagerank_guarded "$_PR_CWD" | head -5 | sed 's/^/- /')
+        fi
       fi
     fi
   fi

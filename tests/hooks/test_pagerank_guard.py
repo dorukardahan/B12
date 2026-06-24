@@ -129,3 +129,24 @@ def test_runs_pagerank_on_small_git_repo(guard_env, tmp_path):
     assert result.returncode == 0, result.stderr[:500]
     assert PAGERANK_MARKER in result.stdout
     assert "core.py" in result.stdout
+
+
+@pytest.mark.skipif(not _numpy_available(),
+                    reason="numpy needed for the positive (ranking) path")
+def test_cap_disabled_with_zero_still_runs(guard_env, tmp_path):
+    """Regression for PR #126 Codex P2: B12_PAGERANK_MAX_NODES=0 is the
+    documented cap opt-out (honored by file_pagerank.top_n). The hook must NOT
+    silently suppress pagerank in that mode — the old pre-count gate required
+    `count > 0 AND count <= 0`, which can never hold, so it always skipped."""
+    env, _ = guard_env
+    env["B12_PAGERANK_MAX_NODES"] = "0"   # disable the cap
+    proj = tmp_path / "uncapped"
+    proj.mkdir()
+    _git_init(proj)
+    (proj / "core.py").write_text("VALUE = 1\n")
+    (proj / "a.py").write_text("import core\n")
+    (proj / "b.py").write_text("import core\n")
+    result = _run(proj, env)
+    assert result.returncode == 0, result.stderr[:500]
+    assert PAGERANK_MARKER in result.stdout
+    assert "core.py" in result.stdout
