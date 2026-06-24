@@ -99,8 +99,10 @@ def _pagerank(adj: dict[str, list[str]], damping=0.85, iters=30) -> dict[str, fl
     """Sparse PageRank power iteration over adjacency lists.
 
     Equivalent to the former dense `rank = tp + damping * (M @ rank)` where M
-    is column-stochastic (each source distributes weight 1/outdeg to its
-    targets, duplicates accumulated), but it NEVER materializes the n×n M.
+    is the source-weighted adjacency (each source distributes weight 1/outdeg
+    over its in-idx targets, duplicates accumulated; unresolved/out-of-idx
+    imports lose their mass — exactly as the prior dense matrix did, so M is not
+    strictly column-stochastic), but it NEVER materializes the n×n M.
     Memory is O(nodes + edges): three 1-D edge arrays + one rank vector, so a
     100k-node graph costs a few MB instead of tens of GB. Verified to match
     the dense result to float rounding (top-N identical) — see

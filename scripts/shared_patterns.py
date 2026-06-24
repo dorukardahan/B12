@@ -569,7 +569,13 @@ def rss_bytes() -> int:
     """
     import resource
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return rss if sys.platform == "darwin" else rss * 1024
+    # ru_maxrss is BYTES on macOS/BSD, KIBIBYTES on Linux. Treat every known
+    # BSD-family platform as bytes; only scale on Linux (and unknown, which is
+    # almost always Linux). Misclassifying a bytes platform as KiB would inflate
+    # the reading 1024× and trip the daemon RSS guard immediately.
+    if sys.platform == "darwin" or "bsd" in sys.platform:
+        return rss
+    return rss * 1024
 
 
 def rss_exceeds(ceiling_mb: int) -> int:

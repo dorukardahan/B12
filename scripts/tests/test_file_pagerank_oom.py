@@ -86,9 +86,13 @@ def test_sparse_matches_dense_reference(n, seed):
     top_s = [k for k, _ in sorted(sparse.items(), key=lambda kv: kv[1], reverse=True)[:5]]
     top_d = [k for k, _ in sorted(dense.items(), key=lambda kv: kv[1], reverse=True)[:5]]
     assert top_s == top_d, (top_s, top_d)
-    # Ranks equal to float32↔float64 rounding.
+    # Ranks equal to float32↔float64 rounding. Tolerance 1e-4 (not 1e-5): the
+    # dense reference is float32 while the production sparse path is float64, so
+    # accumulated float32 roundoff over 30 iterations can approach 1e-5 on some
+    # numpy/BLAS builds. Top-N ordering (the meaningful invariant) is asserted
+    # exactly above; this just bounds the value drift.
     if dense:
-        assert max(abs(sparse[k] - dense[k]) for k in dense) < 1e-5
+        assert max(abs(sparse[k] - dense[k]) for k in dense) < 1e-4
 
 
 def test_empty_and_edgeless_graphs():

@@ -58,6 +58,15 @@ def test_rss_bytes_linux_scales_kib_to_bytes(monkeypatch):
     assert sp.rss_bytes() == 5000 * 1024  # Linux reports KiB → ×1024
 
 
+def test_rss_bytes_bsd_treats_value_as_bytes(monkeypatch):
+    # BSD-family platforms (freebsd/openbsd/netbsd) report ru_maxrss in BYTES
+    # like macOS — must NOT be scaled ×1024 (would trip the guard 1024× early).
+    for plat in ("freebsd14", "openbsd", "netbsd"):
+        monkeypatch.setattr(sp.sys, "platform", plat)
+        monkeypatch.setattr(resource, "getrusage", lambda who: _FakeRusage(5_000_000))
+        assert sp.rss_bytes() == 5_000_000, plat
+
+
 def test_normalization_makes_ceiling_consistent_across_platforms(monkeypatch):
     """The whole point of normalization: the SAME physical footprint compares
     the same against a ceiling regardless of platform units. A 3 GB process

@@ -149,6 +149,51 @@ _set_pagerank_hint() {
   rm -f "$_o" 2>/dev/null
 }
 
+# Bounded candidate-file pre-count for $1 (cap $2), written to the global
+# _PR_COUNT. MUST be called as a simple command in the parent shell (not in
+# `$( … )`): it runs `find` as a TRACKED background child so the cleanup trap
+# can kill it and a huge or slow UNPRUNED tree (vendor assets, a mounted dir)
+# can't hang the hook — `find` only stops early when it has emitted MAX+1
+# *matches*, but a tree with few code files yet millions of other entries makes
+# it traverse forever, and inside a `$( … )` the watchdog's TERM trap is
+# deferred until it returns. Sets _PR_COUNT to the match count, or -1 if the
+# traversal hit the wall-clock budget (caller treats -1 as "too big → skip").
+_pagerank_precount() {
+  local cwd="$1" max="$2" budget="${B12_PAGERANK_TIMEOUT_S:-8}"
+  case "$budget" in (*[!0-9]*|'') budget=8 ;; esac
+  [ "$budget" -le 0 ] && budget=8     # the gate must terminate to decide
+  [ "$budget" -gt 12 ] && budget=12   # stay under the 15s watchdog
+  local raw; raw=$(mktemp 2>/dev/null) || { _PR_COUNT=0; return; }
+  # Single `find` (no pipeline) backgrounded → $! is find's own PID, killable
+  # directly (find spawns no children). Prune the SAME dirs file_pagerank._walk
+  # does: dot-dirs + the noisy set. -mindepth 1 spares a dot-named root.
+  find "$cwd" -mindepth 1 \
+      \( -type d \( -name '.*' -o -name node_modules -o -name venv \
+         -o -name __pycache__ -o -name dist -o -name build -o -name target \) \) -prune -o \
+      -type f \( -name '*.py' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' \
+      -o -name '*.jsx' \) -print > "$raw" 2>/dev/null &
+  _PR_GUARD_CHILD=$!
+  local waited=0 timed_out=0
+  while kill -0 "$_PR_GUARD_CHILD" 2>/dev/null; do
+    if [ "$waited" -ge "$budget" ]; then
+      kill -KILL "$_PR_GUARD_CHILD" 2>/dev/null
+      pkill -KILL -P "$_PR_GUARD_CHILD" 2>/dev/null
+      timed_out=1
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$_PR_GUARD_CHILD" 2>/dev/null
+  _PR_GUARD_CHILD=""
+  if [ "$timed_out" -eq 1 ]; then
+    _PR_COUNT=-1   # traversal too slow/large → caller skips (treat as oversized)
+  else
+    _PR_COUNT=$(head -n "$((max + 1))" "$raw" | wc -l | tr -d ' ')
+  fi
+  rm -f "$raw" 2>/dev/null
+}
+
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 SUMMARY_DIR="$B12_BASE/memory-summaries"
 
@@ -520,20 +565,11 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
         # process-group kill + watchdog trap + SIGALRM/sparse guards.
         _set_pagerank_hint "$_PR_CWD"
       else
-        # Cheap, bounded pre-count: `head -n MAX+1` closes the pipe so `find`
-        # dies (SIGPIPE) instead of walking an unbounded tree. Prune the SAME
-        # dirs file_pagerank._walk() does so the count reflects what the ranker
-        # would actually see: the explicit noisy set PLUS every dot-directory
-        # (_walk drops `d.startswith(".")`). Without the dot-dir prune, a large
-        # .tox/.cache could inflate the count and cause a false skip. `-mindepth
-        # 1` keeps a dot-named project root from pruning itself (supported on
-        # BSD/macOS + GNU find).
-        _PR_COUNT=$(find "$_PR_CWD" -mindepth 1 \
-            \( -type d \( -name '.*' -o -name node_modules -o -name venv \
-               -o -name __pycache__ -o -name dist -o -name build -o -name target \) \) -prune -o \
-            -type f \( -name '*.py' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' \
-            -o -name '*.jsx' \) -print 2>/dev/null \
-            | head -n "$((_PR_MAX + 1))" | wc -l | tr -d ' ')
+        # Bounded pre-count via _pagerank_precount (a TRACKED background `find`,
+        # so a huge/slow unpruned tree can't hang the hook inside a `$( … )`).
+        # It sets _PR_COUNT to the match count, or -1 on a traversal timeout
+        # (treated as "too big → skip"). Only rank when within the cap.
+        _pagerank_precount "$_PR_CWD" "$_PR_MAX"
         if [ "${_PR_COUNT:-0}" -gt 0 ] && [ "${_PR_COUNT:-0}" -le "$_PR_MAX" ]; then
           _set_pagerank_hint "$_PR_CWD"
         fi
