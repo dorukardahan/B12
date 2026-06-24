@@ -48,7 +48,7 @@ try:
     if _here not in sys.path:
         sys.path.insert(0, _here)
     from b12_config import get as _b12_cfg_get
-    from shared_patterns import exact_tag_param, exact_tag_predicate
+    from shared_patterns import exact_tag_param, exact_tag_predicate, rss_exceeds
 except Exception:  # pragma: no cover — never block daemon on config import
     def _b12_cfg_get(*_path, default=None):
         return default
@@ -58,6 +58,8 @@ except Exception:  # pragma: no cover — never block daemon on config import
     def exact_tag_param(tag: str) -> str:
         escaped = tag.strip().replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         return f"%,{escaped},%"
+    def rss_exceeds(ceiling_mb):  # fail-open if shared_patterns is unavailable
+        return 0
 
 warnings.filterwarnings('ignore')
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -80,6 +82,14 @@ MODEL_NAME = os.environ.get('MCP_EMBEDDING_MODEL', 'BAAI/bge-m3')
 EXPECTED_DIM = None  # set after model load
 # Backend selector: sentence-transformers (default) | gguf (opt-in via env)
 EMBED_BACKEND = os.environ.get('B12_EMBED_BACKEND', 'sentence-transformers').lower()
+# Memory self-guard ceiling (MB). BGE-M3 resident is ~2-4GB, so the generous
+# default only trips on a genuine leak; on a trip the daemon exits cleanly and
+# the next SessionStart respawns a fresh one. Set B12_EMBED_MAX_RSS_MB<=0 to
+# disable. (getrusage-based — works on macOS, where RLIMIT_AS does not.)
+try:
+    EMBED_MAX_RSS_MB = int(os.environ.get('B12_EMBED_MAX_RSS_MB', '6144'))
+except (TypeError, ValueError):
+    EMBED_MAX_RSS_MB = 6144
 
 
 def log(msg):
@@ -1164,6 +1174,15 @@ def main():
                 response = handle_request(model, request, start_time, requests_served)
                 requests_served += 1
                 last_request = time.time()
+
+                # Memory self-guard: if we've ballooned past the ceiling, send
+                # this response then shut down cleanly (server.close + cleanup
+                # run after the loop). A peak-RSS trip is conservative by design.
+                _rss_over = rss_exceeds(EMBED_MAX_RSS_MB)
+                if _rss_over:
+                    log(f"RSS {_rss_over}MB > ceiling {EMBED_MAX_RSS_MB}MB "
+                        f"(B12_EMBED_MAX_RSS_MB) — shutting down to protect host")
+                    running[0] = False
 
                 should_shutdown = response.pop('_shutdown', False)
                 conn.sendall((json.dumps(response) + '\n').encode('utf-8'))

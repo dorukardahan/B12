@@ -489,6 +489,20 @@ If you run multiple Claude Code setups (e.g., personal + work):
 | `B12_MCP_WAL_CHECKPOINT_INTERVAL` | MCP daemon: seconds between `PRAGMA wal_checkpoint(TRUNCATE)` runs (keeps the WAL from growing unbounded on an idle daemon). `0` disables. | `300` (5min) | `600` |
 | `B12_MCP_READ_POOL` | MCP server: number of worker threads (and thread-owned SQLite read connections) that serve reads off the event loop, so a slow query on one tab never blocks the others (WAL → concurrent readers). Writes always go through a single serialized writer thread (no knob). `0`/unset auto-sizes to `max(4, min(8, cpu_count))`. | `0` (auto) | `4` / `16` |
 
+#### Memory-safety guards
+
+These bound the SessionStart "likely-next files" PageRank feature and the long-lived daemons so no session CWD, smoke run, or leak can exhaust machine RAM (see [CHANGELOG](CHANGELOG.md) — the 2026-06 OOM fix). `getrusage`-based; effective on macOS, where `RLIMIT_AS` / `ulimit -v` are **not** enforced.
+
+| Variable | Controls | Default | Example |
+|----------|----------|---------|---------|
+| `B12_PAGERANK_MAX_NODES` | Above this many candidate code files, file-pagerank refuses to rank (skips + logs) and the SessionStart hook skips invoking it — the bound that keeps a giant CWD (e.g. `$HOME`) from building a huge graph. `0` disables the cap. | `20000` | `5000` / `0` |
+| `B12_PAGERANK_TIMEOUT_S` | Hard wall-clock budget for the file-pagerank child. Enforced both by the hook (process-group kill) and by the process itself (SIGALRM self-timeout, so an orphaned child still dies). Internally clamped below the SessionStart 15s watchdog (so it can't outlive the hook); `0` disables the wall-clock kill entirely. | `8` | `10` |
+| `B12_PAGERANK_MAX_MEM_MB` | Best-effort `RLIMIT_AS` ceiling for the file-pagerank child. A real backstop on Linux; a **no-op on macOS** (the OS refuses to let a process lower its own address-space limit). `0` disables. | `2048` | `4096` |
+| `B12_EMBED_MAX_RSS_MB` | Embedding daemon: log + exit (cleanly; next session respawns) if peak RSS exceeds this. Generous — BGE-M3 resident is ~2-4 GB — so it trips only on a genuine leak. `0` disables. | `6144` | `8192` |
+| `B12_MCP_MAX_RSS_MB` | MCP daemon: log + exit (launchd respawns) if peak RSS exceeds this. `0` disables. | `2048` | `4096` |
+
+> **`ulimit -v` note:** on **Linux** a per-shell `ulimit -v 8388608` (≈8 GB) is a cheap belt-and-suspenders cap for any shell that launches B12. On **macOS** `ulimit -v` reports `unlimited` and is not enforced — the in-process `getrusage` guards, the SIGALRM self-timeout, and the node cap above are the effective protections there.
+
 #### LLM extraction (opt-in, default off)
 
 The LLM extraction subagent runs at SessionEnd in a detached background process and writes through the same `merge_or_insert` path as regex extraction. Default-off; set `B12_LLM_PROVIDER` to enable.

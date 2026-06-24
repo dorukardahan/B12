@@ -66,9 +66,34 @@ fi
 
 # ── Self-timeout watchdog ─────────────────────────────────────
 # Kills this script if it exceeds max runtime. Prevents orphan processes.
-( sleep 15 && kill -TERM $$ 2>/dev/null ) &
+# Redirect the watchdog's stdio to /dev/null: otherwise its `sleep` child
+# inherits the hook's stdout pipe, and when the watchdog is killed at exit the
+# orphaned `sleep` keeps that write-end open — a pipe-capturing consumer (the
+# test harness, and any host that reads to EOF) then blocks ~15s after the hook
+# has actually finished. With the redirect, the hook's output reaches the
+# consumer the moment the main process exits.
+( sleep 15 && kill -TERM $$ 2>/dev/null ) >/dev/null 2>&1 &
 _WATCHDOG=$!
-trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
+# Wall-clock deadline (bash $SECONDS, no subprocess) the pagerank phases budget
+# against, so the pre-count + rank together can't overrun the 15s watchdog and
+# trip its TERM trap (exit 143) on an otherwise-valid repo.
+_HOOK_DEADLINE=$(( SECONDS + 15 ))
+# Cleanup on ANY exit, including when the watchdog SIGTERMs us mid-pagerank:
+# tear down the watchdog AND group-kill any in-flight pagerank child (tracked
+# in _PR_GUARD_CHILD by _pagerank_run, which runs in THIS shell so the PID is
+# visible here). Without the TERM trap, a watchdog kill would orphan that child
+# — it would still self-terminate via its own SIGALRM, but we additionally reap
+# it here so the hook never leaves one behind.
+_PR_GUARD_CHILD=""
+_b12_cleanup() {
+  if [ -n "${_PR_GUARD_CHILD:-}" ]; then
+    kill -KILL -"$_PR_GUARD_CHILD" 2>/dev/null || kill -KILL "$_PR_GUARD_CHILD" 2>/dev/null
+  fi
+  kill "$_WATCHDOG" 2>/dev/null
+  wait "$_WATCHDOG" 2>/dev/null
+}
+trap _b12_cleanup EXIT
+trap '_b12_cleanup; exit 143' TERM
 
 INPUT=$(cat)
 SOURCE=$(echo "$INPUT" | jq -r '.source // "startup"')
@@ -79,6 +104,116 @@ B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 
 # Portable stat: macOS uses -f %m, Linux uses -c %Y
 file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "0"; }
+
+# Configured per-phase pagerank budget (seconds): env, sanitized to a
+# non-negative int, clamped <15s watchdog. 0 = documented opt-out (no
+# pagerank-level wall-clock kill; still bounded by the hook watchdog trap).
+_pr_cfg_budget() {
+  local b="${B12_PAGERANK_TIMEOUT_S:-8}"
+  case "$b" in (*[!0-9]*|'') b=8 ;; esac
+  [ "$b" -gt 12 ] && b=12
+  printf '%s' "$b"
+}
+
+# Whole seconds left before the 15s self-watchdog fires, minus a 2s safety
+# margin. The pre-count and rank phases budget against this so their COMBINED
+# wall time can't trip the watchdog's TERM trap (exit 143) on a valid repo.
+_pr_remaining() {
+  local rem=$(( _HOOK_DEADLINE - SECONDS - 2 ))
+  [ "$rem" -lt 0 ] && rem=0
+  printf '%s' "$rem"
+}
+
+# Run file_pagerank to OUTFILE ($2) under a wall-clock budget ($3 seconds; 0 =
+# no pagerank-level kill), killing the whole process GROUP on expiry so an
+# orphaned numpy child can never survive the hook — the bug that panicked the
+# machine. file_pagerank ALSO self-limits (SIGALRM + os.setsid + best-effort
+# RLIMIT_AS); this is the defense-in-depth outer layer.
+#
+# IMPORTANT: call as a SIMPLE COMMAND in the parent shell (never inside `$( … )`
+# or a pipeline). It backgrounds the child and records its PID in the parent's
+# _PR_GUARD_CHILD so the EXIT/TERM cleanup trap can group-kill it when the
+# watchdog fires mid-run. A command-substitution would run this in a subshell,
+# where _PR_GUARD_CHILD would be invisible to the parent trap.
+_pagerank_run() {
+  local cwd="$1" out="$2" budget="$3"
+  case "$budget" in (''|*[!0-9]*) budget=8 ;; esac   # default to a kill, not 0
+  "$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$cwd" 5 >"$out" 2>/dev/null &
+  _PR_GUARD_CHILD=$!   # set in the PARENT → the cleanup trap can group-kill it
+  local waited=0
+  while kill -0 "$_PR_GUARD_CHILD" 2>/dev/null; do
+    if [ "$budget" -gt 0 ] && [ "$waited" -ge "$budget" ]; then
+      # file_pagerank called os.setsid → PGID==PID; SIGKILL the whole group.
+      kill -KILL -"$_PR_GUARD_CHILD" 2>/dev/null || kill -KILL "$_PR_GUARD_CHILD" 2>/dev/null
+      pkill -KILL -P "$_PR_GUARD_CHILD" 2>/dev/null
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$_PR_GUARD_CHILD" 2>/dev/null
+  _PR_GUARD_CHILD=""
+}
+
+# Set PAGERANK_HINT for project $1 under budget $2. MUST be a simple command in
+# the parent shell (not in `$( … )`) so _pagerank_run's child stays trackable.
+_set_pagerank_hint() {
+  local _o
+  _o=$(mktemp 2>/dev/null) || return 0
+  _pagerank_run "$1" "$_o" "$2"
+  PAGERANK_HINT=$(head -5 "$_o" | sed 's/^/- /')
+  rm -f "$_o" 2>/dev/null
+}
+
+# Bounded candidate-file pre-count for $1 (cap $2) under budget $3, written to
+# the global _PR_COUNT. MUST be a simple command in the parent shell (not in
+# `$( … )`): it runs `find` as a TRACKED background child so the cleanup trap
+# can kill it and a huge/slow UNPRUNED tree (vendor assets, a mount) can't hang
+# the hook. It STOPS find as soon as MAX+1 matches are observed (so an oversized
+# repo doesn't traverse/write the whole tree) OR the budget expires. Sets
+# _PR_COUNT to the match count, or -1 on a traversal timeout (caller treats -1
+# as "too big → skip").
+_pagerank_precount() {
+  local cwd="$1" max="$2" budget="$3"
+  case "$budget" in (''|*[!0-9]*) budget=8 ;; esac
+  [ "$budget" -lt 1 ] && budget=1     # the gate must terminate to decide
+  local raw; raw=$(mktemp 2>/dev/null) || { _PR_COUNT=0; return; }
+  # Single `find` (no pipeline) backgrounded → $! is find's own PID, killable
+  # directly (find spawns no children). Prune the SAME dirs file_pagerank._walk
+  # does: dot-dirs + the noisy set. -mindepth 1 spares a dot-named root.
+  find "$cwd" -mindepth 1 \
+      \( -type d \( -name '.*' -o -name node_modules -o -name venv \
+         -o -name __pycache__ -o -name dist -o -name build -o -name target \) \) -prune -o \
+      -type f \( -name '*.py' -o -name '*.ts' -o -name '*.tsx' -o -name '*.js' \
+      -o -name '*.jsx' \) -print > "$raw" 2>/dev/null &
+  _PR_GUARD_CHILD=$!
+  local waited=0 timed_out=0 cur
+  while kill -0 "$_PR_GUARD_CHILD" 2>/dev/null; do
+    # Early stop: cap already exceeded → kill find now, don't traverse the rest.
+    cur=$(wc -l < "$raw" 2>/dev/null | tr -d ' ')
+    if [ "${cur:-0}" -gt "$max" ]; then
+      kill -KILL "$_PR_GUARD_CHILD" 2>/dev/null
+      pkill -KILL -P "$_PR_GUARD_CHILD" 2>/dev/null
+      break
+    fi
+    if [ "$waited" -ge "$budget" ]; then
+      kill -KILL "$_PR_GUARD_CHILD" 2>/dev/null
+      pkill -KILL -P "$_PR_GUARD_CHILD" 2>/dev/null
+      timed_out=1
+      break
+    fi
+    sleep 1
+    waited=$((waited + 1))
+  done
+  wait "$_PR_GUARD_CHILD" 2>/dev/null
+  _PR_GUARD_CHILD=""
+  if [ "$timed_out" -eq 1 ]; then
+    _PR_COUNT=-1   # traversal too slow/large → caller skips (treat as oversized)
+  else
+    _PR_COUNT=$(head -n "$((max + 1))" "$raw" | wc -l | tr -d ' ')
+  fi
+  rm -f "$raw" 2>/dev/null
+}
 
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 SUMMARY_DIR="$B12_BASE/memory-summaries"
@@ -427,8 +562,62 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
 
   PAGERANK_HINT=""
   if [ -d "$CWD" ] && [ -x "$VENV_PYTHON" ] && [ -f "$B12_SCRIPTS/file_pagerank.py" ]; then
-    PAGERANK_HINT=$("$VENV_PYTHON" "$B12_SCRIPTS/file_pagerank.py" "$CWD" 5 2>/dev/null \
-                      | head -5 | sed 's/^/- /')
+    # ── Memory-safety guard (the 2026-06 OOM fix) ──────────────
+    # Never let pagerank walk a giant tree. Resolve symlinks so a symlinked
+    # $HOME or nested mount can't slip past the equality checks, then require
+    # being inside a git work tree and a BOUNDED candidate-file pre-count before
+    # invoking python.
+    _PR_CWD=$(cd "$CWD" 2>/dev/null && pwd -P)
+    _PR_HOME=$(cd "$HOME" 2>/dev/null && pwd -P)
+    _PR_MAX="${B12_PAGERANK_MAX_NODES:-20000}"
+    # Non-integer env value → fall back to the default (mirror file_pagerank's
+    # robust _env_int). After this _PR_MAX is always a non-negative integer.
+    case "$_PR_MAX" in (*[!0-9]*|'') _PR_MAX=20000 ;; esac
+    # Use git's own work-tree detection rather than testing for `.git` at $CWD:
+    # that only matched a repo ROOT, so launching in a subdirectory (e.g.
+    # repo/packages/api) or a linked worktree wrongly skipped pagerank. $HOME is
+    # still excluded by the equality check above even if it is itself a repo.
+    if [ -n "$_PR_CWD" ] && [ "$_PR_CWD" != "$_PR_HOME" ] && [ "$_PR_CWD" != "/" ] \
+       && git -C "$_PR_CWD" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+      # The pre-count and rank phases SHARE the remaining watchdog budget so
+      # their combined wall time can't trip the 15s TERM trap (exit 143) on a
+      # valid repo. _PR_CFG is the per-phase ceiling (0 = wall-clock-kill opt-out).
+      _PR_CFG=$(_pr_cfg_budget)
+      _PR_REM=$(_pr_remaining)
+      if [ "$_PR_MAX" -le 0 ]; then
+        # Cap disabled (B12_PAGERANK_MAX_NODES=0) — honor the documented opt-out:
+        # skip the pre-count gate, rank directly. Still bounded by the $HOME/git
+        # guards + process-group kill + watchdog trap + SIGALRM/sparse guards.
+        if [ "$_PR_REM" -ge 2 ]; then
+          if [ "$_PR_CFG" -gt 0 ]; then
+            _RK=$_PR_CFG; [ "$_RK" -gt "$_PR_REM" ] && _RK=$_PR_REM
+          else
+            _RK=0   # opt-out: no pagerank-level kill, watchdog-bounded
+          fi
+          _set_pagerank_hint "$_PR_CWD" "$_RK"
+        fi
+      elif [ "$_PR_REM" -ge 2 ]; then
+        # Bounded pre-count via _pagerank_precount (a TRACKED background `find`).
+        # Give it min(cfg, remaining) — but a forced floor so it can decide even
+        # at TIMEOUT_S=0. It sets _PR_COUNT (or -1 on traversal timeout).
+        if [ "$_PR_CFG" -gt 0 ]; then _PC=$_PR_CFG; else _PC=8; fi
+        [ "$_PC" -gt "$_PR_REM" ] && _PC=$_PR_REM
+        _pagerank_precount "$_PR_CWD" "$_PR_MAX" "$_PC"
+        if [ "${_PR_COUNT:-0}" -gt 0 ] && [ "${_PR_COUNT:-0}" -le "$_PR_MAX" ]; then
+          # Re-check remaining AFTER the pre-count: a slow pre-count must not
+          # leave the rank pass to overrun the watchdog — skip rank if <2s left.
+          _PR_REM=$(_pr_remaining)
+          if [ "$_PR_REM" -ge 2 ]; then
+            if [ "$_PR_CFG" -gt 0 ]; then
+              _RK=$_PR_CFG; [ "$_RK" -gt "$_PR_REM" ] && _RK=$_PR_REM
+            else
+              _RK=0
+            fi
+            _set_pagerank_hint "$_PR_CWD" "$_RK"
+          fi
+        fi
+      fi
+    fi
   fi
   if [ -n "$PAGERANK_HINT" ]; then
     CONTEXT="${CONTEXT}\n\n--- LIKELY-NEXT FILES (pagerank) ---\n${PAGERANK_HINT}\n--- END LIKELY-NEXT ---"

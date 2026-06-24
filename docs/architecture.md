@@ -381,6 +381,18 @@ SessionStart now surfaces two project-derived context blocks:
 
 Both blocks are token-budgeted within the SessionStart 6000-char cap and trim before older tier-1b/1c sections.
 
+### PageRank memory safety (the 2026-06 OOM fix)
+
+The original `file_pagerank._pagerank` built a **dense `n × n` float32 matrix with no node cap**, and both SessionStart and `b12_smoke.sh` ran it against `$HOME` (~167k code files). At `n = 167k` that matrix is ~112 GB *per process*; several concurrent runs exhausted 64 GB of RAM, starved WindowServer, and tripped the macOS userspace watchdog → kernel panic + reboot. The fix is defense-in-depth — any **one** layer prevents the crash; together they make it unreachable:
+
+1. **Sparse power iteration.** `_pagerank` now iterates over the adjacency lists as three flat `(src, dst, weight)` arrays with a vectorized `np.add.at` scatter-add — O(nodes + edges) memory, never a dense matrix. A 100k-node graph costs a few MB; verified to reproduce the former dense ranking to float rounding (top-N identical).
+2. **Node cap.** `top_n` refuses a root with more than `B12_PAGERANK_MAX_NODES` (default 20000) candidate files — it logs the reason and returns `[]` *before* reading any file, so a giant tree is never walked/read.
+3. **SessionStart guard.** The hook skips pagerank entirely when the CWD is `$HOME` / `/`, is not a git repo, or fails a **cheap bounded pre-count** (`find … | head -n MAX+1`, which closes the pipe so `find` stops early instead of walking an unbounded tree). It runs the Python under a hard wall-clock budget and **kills the whole process group** on expiry (`timeout -s KILL` where available; otherwise background + poll + `kill -KILL -<pgid>`) so an orphaned numpy child can never survive the hook — the exact path that leaked the runaway allocator.
+4. **Process self-limits.** Run as a script, `file_pagerank` installs a SIGALRM wall-clock self-timeout (`B12_PAGERANK_TIMEOUT_S`, default 8s — orphan-proof), calls `os.setsid()` (so the hook's group-kill is clean), and best-effort sets `RLIMIT_AS` (`B12_PAGERANK_MAX_MEM_MB`, default 2048; a real backstop on Linux, a no-op on macOS).
+5. **Smoke harness.** `b12_smoke.sh` drives the hooks against a tiny throwaway git repo, never `$HOME`.
+
+Long-lived daemons (`embed_daemon.py`, `b12_mcp_daemon.py`) additionally carry a `getrusage(ru_maxrss)`-based RSS self-guard (`shared_patterns.rss_exceeds`): above `B12_EMBED_MAX_RSS_MB` / `B12_MCP_MAX_RSS_MB` they log and exit cleanly so the host respawns a fresh process. `getrusage` is a pure read, so the guard works on macOS — unlike `RLIMIT_AS` / `ulimit -v`, which Darwin does not enforce.
+
 ## Exact-KNN recall over memory_embeddings (v11.49+; default-on since 2026-06-19)
 
 When `[recall.ann]` is enabled and the embeddings table is at least `threshold_count` rows, `_semantic_search` and `_recall` in `embed_daemon.py` use sqlite-vec's KNN MATCH:
