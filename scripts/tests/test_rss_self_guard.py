@@ -58,13 +58,15 @@ def test_rss_bytes_linux_scales_kib_to_bytes(monkeypatch):
     assert sp.rss_bytes() == 5000 * 1024  # Linux reports KiB → ×1024
 
 
-def test_rss_bytes_bsd_treats_value_as_bytes(monkeypatch):
-    # BSD-family platforms (freebsd/openbsd/netbsd) report ru_maxrss in BYTES
-    # like macOS — must NOT be scaled ×1024 (would trip the guard 1024× early).
+def test_rss_bytes_bsd_scales_kib_to_bytes(monkeypatch):
+    # The BSDs (FreeBSD/OpenBSD/NetBSD man pages) document ru_maxrss in
+    # KIBIBYTES, like Linux — so it MUST be scaled ×1024. Only Darwin reports
+    # raw bytes. (Treating BSD as bytes would 1024×-under-read and disable the
+    # daemon RSS guard there — PR #126 review.)
     for plat in ("freebsd14", "openbsd", "netbsd"):
         monkeypatch.setattr(sp.sys, "platform", plat)
-        monkeypatch.setattr(resource, "getrusage", lambda who: _FakeRusage(5_000_000))
-        assert sp.rss_bytes() == 5_000_000, plat
+        monkeypatch.setattr(resource, "getrusage", lambda who: _FakeRusage(3000))
+        assert sp.rss_bytes() == 3000 * 1024, plat
 
 
 def test_normalization_makes_ceiling_consistent_across_platforms(monkeypatch):

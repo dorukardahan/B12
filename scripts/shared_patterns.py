@@ -563,17 +563,19 @@ def rss_bytes() -> int:
     """Peak resident set size of THIS process, in bytes.
 
     Built on getrusage(RUSAGE_SELF).ru_maxrss, normalized across platforms:
-    macOS/BSD report the value in bytes, Linux in kibibytes. It is a
-    high-water mark (never decreases), so a guard built on it trips on the
-    PEAK — a deliberately conservative signal for a long-lived process.
+    macOS (Darwin) reports the value in BYTES; Linux AND the BSDs report it in
+    KIBIBYTES. It is a high-water mark (never decreases), so a guard built on it
+    trips on the PEAK — a deliberately conservative signal for a long-lived
+    process.
     """
     import resource
     rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    # ru_maxrss is BYTES on macOS/BSD, KIBIBYTES on Linux. Treat every known
-    # BSD-family platform as bytes; only scale on Linux (and unknown, which is
-    # almost always Linux). Misclassifying a bytes platform as KiB would inflate
-    # the reading 1024× and trip the daemon RSS guard immediately.
-    if sys.platform == "darwin" or "bsd" in sys.platform:
+    # ONLY Darwin reports ru_maxrss in bytes. Linux and the BSDs
+    # (FreeBSD/OpenBSD/NetBSD man pages) document it in KIBIBYTES → scale ×1024
+    # everywhere except Darwin. (An earlier change wrongly treated BSD as bytes;
+    # that 1024× under-read silently disabled the daemon RSS guard on the BSDs —
+    # PR #126 review.)
+    if sys.platform == "darwin":
         return rss
     return rss * 1024
 
