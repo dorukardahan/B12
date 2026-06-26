@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## Unreleased
 
 Fix B12 MCP repeatedly disconnecting mid-session in Claude Code. The shared MCP daemon's idle-connection reaper cancelled any client connection idle beyond `B12_MCP_IDLE_TIMEOUT` (default 1800s = 30 min); during a normal coding stretch with no B12 tool call the connection legitimately sat idle and was reaped. The per-session stdio proxy exits on the resulting socket EOF, and Claude Code does **not** auto-respawn an exited stdio MCP server — it shows B12 "disconnected" until a manual `/mcp` reconnect, which only reset the 30-min clock so it dropped again. Root cause independently confirmed by GPT-5.5, GLM-5.2, and Grok review.
 
