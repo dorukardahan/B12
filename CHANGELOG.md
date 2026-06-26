@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+Fix B12 MCP repeatedly disconnecting mid-session in Claude Code. The shared MCP daemon's idle-connection reaper cancelled any client connection idle beyond `B12_MCP_IDLE_TIMEOUT` (default 1800s = 30 min); during a normal coding stretch with no B12 tool call the connection legitimately sat idle and was reaped. The per-session stdio proxy exits on the resulting socket EOF, and Claude Code does **not** auto-respawn an exited stdio MCP server — it shows B12 "disconnected" until a manual `/mcp` reconnect, which only reset the 30-min clock so it dropped again. Root cause independently confirmed by GPT-5.5, GLM-5.2, and Grok review.
+
+### Fixed
+- **Idle-connection reaping is now DISABLED by default** (`B12_MCP_IDLE_TIMEOUT` default `1800` → `0`) in `b12_mcp_daemon.py` and in the `config/com.b12.mcp.daemon.plist` launchd template. Reaping a live-but-idle session was never client-invisible (the "host respawns the proxy on next use" premise is false for Claude Code) and was never needed for cleanup: a closed tab, a crashed host, and a SIGKILL'd proxy all deliver socket EOF, so connections track open editors 1:1 and self-clean. Set `B12_MCP_IDLE_TIMEOUT>0` to re-enable (not recommended for Claude Code).
+
+### Changed
+- **`B12_MCP_MAX_CONN` default `64` → `256`.** With the reaper off, the connection-cap evictor is the remaining intentional drop path (it cancels via the same client-visible code path), so the cap is raised well above realistic concurrency and documented as an emergency backstop only.
+- Corrected the now-false "reaping is client-invisible / Claude Code respawns the proxy" comments in `b12_mcp_daemon.py`, `b12_mcp_server.py:_run_as_proxy`, and `docs/architecture.md`. The remaining socket-close triggers (cap eviction, RSS self-guard `os._exit`, launchd restart, daemon redeploy) are documented as still surfacing a one-time drop, to be addressed by a future reconnect-with-`initialize`-replay proxy (Fix C).
+
 ## [v11.80.2] — 2026-06-24
 
 Fix an unbounded-memory defect in the SessionStart "likely-next files" PageRank feature that could exhaust machine RAM. `file_pagerank._pagerank` built a dense `n × n` float32 matrix with no node cap, and both SessionStart and `b12_smoke.sh` ran it against `$HOME` (~167k code files) — at that size the matrix is ~112 GB per process, so concurrent runs exhausted RAM, starved the macOS WindowServer, and tripped the userspace watchdog into a kernel panic + reboot. The fix is defense-in-depth: no hook, smoke run, or session CWD can drive pagerank into a multi-GB allocation, and normal repos are unaffected.

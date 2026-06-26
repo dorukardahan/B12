@@ -67,16 +67,27 @@ LOG_DIR = os.path.join(_B12_DATA_DIR, "memory-logs")
 LOG_PATH = os.path.join(LOG_DIR, "mcp-daemon.log")
 
 # ── P2: idle-connection reaping + connection cap ─────────────────
-# Bounds FD/coroutine growth from long-lived idle proxy connections (one per
-# open CLI tab — they otherwise accumulate 1:1 with tabs and are never reaped).
-# A reaped connection is client-invisible: the host proxy sees the socket close
-# and the host respawns it on next use (Claude Code does so — see
-# b12_mcp_server.py:_run_as_proxy shutdown semantics), reconnecting fresh. The
-# idle timeout is generous by default so only clearly-abandoned connections are
-# reaped; the cap is a defensive backstop against runaway accumulation. Both
-# knobs are env-overridable; set IDLE_TIMEOUT/MAX_CONNECTIONS to 0 to disable.
-IDLE_TIMEOUT = float(os.environ.get("B12_MCP_IDLE_TIMEOUT", "1800"))      # 30 min
-MAX_CONNECTIONS = int(os.environ.get("B12_MCP_MAX_CONN", "64"))
+# IMPORTANT (2026-06-27): idle-reaping is DISABLED BY DEFAULT (IDLE_TIMEOUT=0).
+# The original premise — "a reaped connection is client-invisible because the
+# host proxy reconnects on next use (Claude Code does so)" — is FALSE for Claude
+# Code: when the per-session stdio proxy process exits (which it does on socket
+# EOF, see b12_mcp_server.py:_run_as_proxy), Claude Code marks the MCP server
+# "failed/disconnected" and does NOT auto-respawn it; the user must run /mcp to
+# reconnect. So reaping a LIVE-but-idle session (no B12 tool call for 30 min — a
+# routine coding stretch) silently dropped B12 mid-session. Reconnecting just
+# reset the idle clock, so it dropped again. (Root cause confirmed by GPT-5.5,
+# GLM-5.2 and Grok review + the daemon log's "cancelled (idle-reap)" lines.)
+#
+# Reaping was never needed for cleanup: a closed tab (host exit), a crashed host
+# (pipe torn down) and a SIGKILL'd proxy (kernel closes the FD) ALL deliver
+# socket EOF to the daemon, so handle_client completes normally and the
+# connection is removed. Connections therefore track open editors 1:1 and
+# self-clean. MAX_CONNECTIONS stays as an emergency backstop ONLY — note it
+# evicts via the same task.cancel() path, so it too is a client-visible drop;
+# keep it well above realistic concurrency. Env-overridable; set
+# B12_MCP_IDLE_TIMEOUT>0 to re-enable reaping (not recommended for Claude Code).
+IDLE_TIMEOUT = float(os.environ.get("B12_MCP_IDLE_TIMEOUT", "0"))         # 0 = disabled
+MAX_CONNECTIONS = int(os.environ.get("B12_MCP_MAX_CONN", "256"))          # emergency backstop only
 REAP_INTERVAL = float(os.environ.get("B12_MCP_REAP_INTERVAL", "60"))      # 1 min
 # ── P7: periodic WAL checkpoint ──────────────────────────────────
 # wal_autocheckpoint=100 only fires on writes, so an idle daemon (or a
@@ -217,8 +228,11 @@ def _enforce_conn_cap(current_id: int) -> None:
 
 
 async def _reap_idle_connections() -> None:
-    """P2: periodically cancel connections idle longer than IDLE_TIMEOUT. The
-    host proxy reconnects on next use, so reaping is client-invisible."""
+    """P2: periodically cancel connections idle longer than IDLE_TIMEOUT.
+    DISABLED by default (IDLE_TIMEOUT=0) — reaping a live-but-idle session is NOT
+    client-invisible: the proxy exits on socket close and Claude Code does not
+    auto-respawn it, so the user sees B12 drop until a manual /mcp reconnect.
+    See the IDLE_TIMEOUT block above for the full rationale."""
     if IDLE_TIMEOUT <= 0:
         return
     while True:

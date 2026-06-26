@@ -44,6 +44,20 @@
         <string>B12_HOME_DATA_DIR</string>
         <key>PYTHONUNBUFFERED</key>
         <string>1</string>
+        <!--
+            Idle-connection reaping is DISABLED (0). Reaping a live-but-idle MCP
+            session is NOT client-invisible: the per-session stdio proxy exits on
+            socket close and Claude Code does not auto-respawn it, so B12 dropped
+            mid-session every ~30 min of no tool calls. Closed/killed proxies
+            already self-clean via socket EOF, so the reaper was net-harmful.
+            MAX_CONN is an emergency backstop only (it evicts via the same
+            client-visible cancel path) — kept well above realistic concurrency.
+            (2026-06-27; matches the daemon code default in b12_mcp_daemon.py.)
+        -->
+        <key>B12_MCP_IDLE_TIMEOUT</key>
+        <string>0</string>
+        <key>B12_MCP_MAX_CONN</key>
+        <string>256</string>
     </dict>
 
     <key>KeepAlive</key>
