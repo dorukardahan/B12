@@ -2651,8 +2651,15 @@ async def _run_as_proxy(sock_path: str) -> None:
     Shutdown semantics:
       - stdin EOF (host CLI exited): send EOF to daemon, drain any pending
         responses, then exit. This is the normal case.
-      - socket EOF (daemon crashed or shut down): stop reading stdin and exit.
-        The host CLI will see proxy exit and may respawn it (Claude Code does).
+      - socket EOF (daemon crashed, shut down, or dropped this connection):
+        stop reading stdin and exit. NOTE: Claude Code does NOT transparently
+        respawn an exited stdio MCP server — it shows B12 "disconnected" until a
+        manual /mcp reconnect. So any daemon-side socket close is user-visible.
+        The daemon avoids this for the common case by NOT idle-reaping live
+        connections (see b12_mcp_daemon.py IDLE_TIMEOUT, disabled by default);
+        the remaining triggers (daemon restart by launchd/RSS-guard, redeploy,
+        MAX_CONNECTIONS eviction) still surface as a one-time drop. A future
+        reconnect-with-initialize-replay proxy (Fix C) would absorb those too.
     """
     import sys as _sys
     sock_reader, sock_writer = await asyncio.open_unix_connection(sock_path)
@@ -2701,12 +2708,13 @@ async def _run_as_proxy(sock_path: str) -> None:
 
     # Wait for whichever side closes first:
     #   - stdin EOF (host CLI exited): normal shutdown — drain the socket briefly.
-    #   - socket EOF (daemon shut down OR idle-reaped this connection): exit
-    #     IMMEDIATELY rather than staying blocked on `await stdin_task` until the
-    #     next host request — that request would be written to the now-dead socket
-    #     and lost. Exiting promptly lets the host observe the proxy exit and
-    #     respawn it, so the next tool call reconnects to a fresh daemon session
-    #     with no lost request. (PR #108 review r3441627771.)
+    #   - socket EOF (daemon shut down / restarted / dropped this connection):
+    #     exit IMMEDIATELY rather than staying blocked on `await stdin_task` until
+    #     the next host request — that request would be written to the now-dead
+    #     socket and lost. NB: exiting does NOT yield a transparent reconnect on
+    #     Claude Code (it shows B12 disconnected until manual /mcp); the daemon
+    #     therefore no longer idle-reaps live connections so this path stays rare.
+    #     (PR #108 review r3441627771; reaper disabled 2026-06-27.)
     done, _pending = await asyncio.wait(
         {stdin_task, socket_task}, return_when=asyncio.FIRST_COMPLETED
     )
