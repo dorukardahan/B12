@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## [v11.80.3] — 2026-06-27
 
 Fix B12 MCP repeatedly disconnecting mid-session in Claude Code. The shared MCP daemon's idle-connection reaper cancelled any client connection idle beyond `B12_MCP_IDLE_TIMEOUT` (default 1800s = 30 min); during a normal coding stretch with no B12 tool call the connection legitimately sat idle and was reaped. The per-session stdio proxy exits on the resulting socket EOF, and Claude Code does **not** auto-respawn an exited stdio MCP server — it shows B12 "disconnected" until a manual `/mcp` reconnect, which only reset the 30-min clock so it dropped again. Root cause independently confirmed by GPT-5.5, GLM-5.2, and Grok review.
 
@@ -9,7 +9,7 @@ Fix B12 MCP repeatedly disconnecting mid-session in Claude Code. The shared MCP 
 
 ### Changed
 - **`B12_MCP_MAX_CONN` default `64` → `256`.** With the reaper off, the connection-cap evictor is the remaining intentional drop path (it cancels via the same client-visible code path), so the cap is raised well above realistic concurrency and documented as an emergency backstop only.
-- Corrected the now-false "reaping is client-invisible / Claude Code respawns the proxy" comments in `b12_mcp_daemon.py`, `b12_mcp_server.py:_run_as_proxy`, and `docs/architecture.md`. The remaining socket-close triggers (cap eviction, RSS self-guard `os._exit`, launchd restart, daemon redeploy) are documented as still surfacing a one-time drop, to be addressed by a future reconnect-with-`initialize`-replay proxy (Fix C).
+- Corrected the now-false "reaping is client-invisible / Claude Code respawns the proxy" comments in `b12_mcp_daemon.py`, `b12_mcp_server.py:_run_as_proxy`, and `docs/architecture.md`, and synced the README env-var table. The remaining socket-close triggers (cap eviction, RSS self-guard `os._exit`, launchd restart, daemon redeploy) are documented as still surfacing a one-time drop, to be addressed by a future reconnect-with-`initialize`-replay proxy (Fix C).
 
 ## [v11.80.2] — 2026-06-24
 
