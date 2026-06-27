@@ -558,6 +558,10 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 
 ## Changelog (recent)
 
+### v11.81.0 (2026-06-27)
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ### v11.80.3 (2026-06-27)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full notes.

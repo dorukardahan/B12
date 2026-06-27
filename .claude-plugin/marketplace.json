@@ -4,7 +4,7 @@
     "name": "Doruk Ardahan"
   },
   "metadata": {
-    "description": "B12 — persistent cross-session memory for AI coding assistants",
+    "description": "B12 \u2014 persistent cross-session memory for AI coding assistants",
     "version": "1.0.0"
   },
   "plugins": [
@@ -12,10 +12,22 @@
       "name": "b12-memory",
       "source": "./",
       "description": "Persistent cross-session memory with automatic extraction, semantic search, spaced repetition, and contradiction detection. Supports Claude Code, Codex, Gemini, VS Code, Cursor, and 5+ more platforms.",
-      "version": "11.80.3",
+      "version": "11.81.0",
       "category": "memory",
-      "tags": ["memory", "persistent", "semantic-search", "cross-session", "multi-platform"],
-      "keywords": ["memory", "context", "recall", "spaced-repetition", "mcp"]
+      "tags": [
+        "memory",
+        "persistent",
+        "semantic-search",
+        "cross-session",
+        "multi-platform"
+      ],
+      "keywords": [
+        "memory",
+        "context",
+        "recall",
+        "spaced-repetition",
+        "mcp"
+      ]
     }
   ]
 }
