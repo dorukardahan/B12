@@ -83,13 +83,18 @@ def test_deadline_weekday_in_context_fires():
               # day-noun form "<weekday> gününe kadar" (Codex PR #140)
               "cuma gününe kadar hazır olsun",
               "pazar gününe kadar hazır olsun",
-              "cuma gunune kadar bitir"):
+              "cuma gunune kadar bitir",
+              # time-of-day form "<weekday> <akşam/sabah/...>(dative) kadar" (Codex)
+              "cuma akşamına kadar hazır olsun",
+              "pazartesi sabahına kadar bitir",
+              "pazar akşamına kadar sürecek"):
         assert score_with_breakdown(s).deadline_hit is True, s
 
 def test_deadline_tr_comparative_kadar_not_a_deadline():
     # audit #11: the COMPARATIVE "kadar" ("as ... as") must not mis-fire as a
     # deadline. The dative is enumerated, so "pazarlama" (≠ "pazar"+dative) is safe.
-    for s in ("pazarlama kadar önemli bir konu", "bu özellik test kadar kritik"):
+    for s in ("pazarlama kadar önemli bir konu", "bu özellik test kadar kritik",
+              "cuma kahve kadar güzel", "cuma günü kadar mutlu"):
         assert score_with_breakdown(s).deadline_hit is False, s
 
 def test_deadline_due_date_noun_fires():
@@ -171,6 +176,11 @@ def test_will_see_continuation_with_inner_modal_not_commitment():
         "we'll see how it goes. We must migrate.").commitment_hit is True
     assert score_with_breakdown(
         "we'll see about it, but we must decide").commitment_hit is True
+    # a colon or newline also bounds the hedge clause (Codex PR #140).
+    assert score_with_breakdown(
+        "we'll see how it goes: we must migrate").commitment_hit is True
+    assert score_with_breakdown(
+        "we'll see how it goes\nwe must migrate").commitment_hit is True
 
 def test_literal_will_see_object_is_still_commitment():
     # Codex PR #140: "see <object>" is literal, not a hedge — must stay DECISION.

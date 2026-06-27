@@ -193,7 +193,11 @@ _NEG_MODAL: re.Pattern[str] = re.compile(
 # the deferral — a rare, low-stakes band miss.) Audit #11 + Codex review.
 _HEDGE_FUTURE: re.Pattern[str] = re.compile(
     r"\b(?:i|we|you|they|he|she)(?:'ll|\s+will)\s+see\b"
-    r"(?:\s+(?:how|what|whether|if|about)\b[^.!?;,]*)?"
+    # Consume the deferral continuation up to the next clause separator. Besides
+    # sentence terminators and commas, a colon or a newline also bounds a clause —
+    # excluding them keeps a real commitment on the other side ("we'll see how it
+    # goes: we must migrate", or "must migrate" on the next line) out of the hedge.
+    r"(?:\s+(?:how|what|whether|if|about)\b[^.!?;,:\n\r]*)?"
     r"(?=\s*$|\s*[.,!?;:])"
 )
 
@@ -227,14 +231,19 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
     ),
     # Turkish weekday deadline: "<weekday>(dative) kadar" ("cumaya kadar" = by
-    # Friday) and the equally common day-noun form "<weekday> gününe kadar" ("cuma
-    # gününe kadar" / "pazar gününe kadar"). The dative suffix is enumerated (ye/ya/a,
-    # optional apostrophe for "cuma'ya") rather than a bare \w*, so the COMPARATIVE
-    # "kadar" ("pazarlama kadar önemli" = as important as marketing) does NOT mis-fire
-    # — "pazarlama" is neither "pazar"+dative nor "pazar gününe".
+    # Friday), the day-noun form "<weekday> gününe kadar", and the time-of-day form
+    # "<weekday> <akşam/sabah/öğle/gece>(dative) kadar" ("cuma akşamına kadar" = by
+    # Friday evening, "pazartesi sabahına kadar" = by Monday morning). The dative is
+    # enumerated (direct ye/ya/a; intervening noun = a known day/time stem + inflection
+    # ENDING in a dative a/e) — never a bare \w* — so the COMPARATIVE "kadar"
+    # ("pazarlama kadar önemli", "cuma kahve kadar güzel") does NOT mis-fire: neither
+    # "pazarlama" nor the non-time noun "kahve" matches the stem set.
     re.compile(
         r"\b(?:pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|"
-        r"cumartesi|pazar)(?:'?(?:ye|ya|a)|\s+g[üu]n[üu]ne)\s+kadar\b"
+        r"cumartesi|pazar)"
+        r"(?:'?(?:ye|ya|a)"
+        r"|\s+(?:g[üu]n|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae])"
+        r"\s+kadar\b"
     ),
 )
 _DEADLINE_TOKENS: tuple[str, ...] = (
