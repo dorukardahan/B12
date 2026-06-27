@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -28,6 +29,11 @@ def test_release_script_syncs_and_verifies_marketplace():
     assert 'mp["metadata"]["version"]' not in src, "release.sh must not touch the catalog metadata.version"
     # And verifies it post-write.
     assert ".claude-plugin/marketplace.json:" in src, "release.sh doesn't verify marketplace.json (#15)"
+    # And STAGES it for the release commit (else the sync is written but never
+    # committed → dirty tree + drift reappears; Codex PR #138 review).
+    add_region = re.search(r"git add CHANGELOG\.md.*?install\.sh", src, re.DOTALL)
+    assert add_region and ".claude-plugin/marketplace.json" in add_region.group(0), \
+        "release.sh syncs marketplace.json but doesn't `git add` it (#15)"
 
 
 def test_architecture_doc_opencode_scrub_corrected():
