@@ -203,12 +203,13 @@ _HEDGE_FUTURE: re.Pattern[str] = re.compile(
     # while a hyphen INSIDE a word ("re-deploy", "well-known") has no preceding
     # space and is consumed normally. Em/en dashes stop via the char class.
     r"(?:\s+(?:how|what|whether|if|about|when|where|who|whom|whose|which|why)\b"
-    r"(?:(?!\s-)[^.!?;,:\n\r–—])*)?"
+    r"(?:(?!\s-)[^.!?;,:\n\r–—()\[\]])*)?"
     # A newline directly after the deferral is itself a clause boundary (a multiline
     # memory whose next line is NOT a commitment, "we'll see how it goes\nmaybe
     # later", must still strip the hedge so the bare "we'll" doesn't score DECISION).
-    # A spaced ASCII hyphen also bounds the clause (added to the punctuation set).
-    r"(?=\s*$|[\n\r]|\s*[-.,!?;:–—])"
+    # A spaced ASCII hyphen and an opening parenthesis/bracket also bound the clause
+    # ("we'll see how it goes (we must migrate)" must surface the parenthesized must).
+    r"(?=\s*$|[\n\r]|\s*[-.,!?;:–—()\[\]])"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and

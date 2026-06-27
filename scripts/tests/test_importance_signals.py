@@ -210,8 +210,10 @@ def test_will_see_continuation_with_inner_modal_not_commitment():
         "we'll see about it, but we must decide").commitment_hit is True
     # a colon, newline, em/en dash, or spaced ASCII hyphen bounds the hedge clause
     # so the real commitment on the far side still fires (Codex PR #140).
-    for sep in (": ", "\n", " — ", " – ", " - ", " -- "):
-        s = f"we'll see how it goes{sep}we must migrate"
+    for sep in (": ", "\n", " — ", " – ", " - ", " -- ", " (", " ["):
+        tail = "we must migrate)" if sep == " (" else (
+            "we must migrate]" if sep == " [" else "we must migrate")
+        s = f"we'll see how it goes{sep}{tail}"
         assert score_with_breakdown(s).commitment_hit is True, s
     # an intra-word hyphen does NOT bound it (the whole thing stays a deferral).
     assert score_with_breakdown("we'll see how it re-deploys the service").commitment_hit is False
