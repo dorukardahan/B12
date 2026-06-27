@@ -431,9 +431,11 @@ git pull
 ```
 
 > **macOS MCP daemon:** if the shared MCP daemon (`com.b12.mcp.daemon`) is
-> running, `--all`/`--full` now restarts it automatically so freshly-pulled
-> daemon code (`b12_mcp_daemon.py` / `b12_mcp_server.py`) takes effect — the
-> long-lived launchd process otherwise keeps serving the old in-memory code.
+> running, the installer now restarts it automatically on any script-copying run
+> (`--all`/`--full`/`--codex`/bare/…) so freshly-pulled daemon code
+> (`b12_mcp_daemon.py` / `b12_mcp_server.py`) takes effect — the long-lived
+> launchd process otherwise keeps serving the old in-memory code. (`--daemon`
+> handles its own reload; `--daemon-uninstall` removes it.)
 > Active sessions see a brief socket drop during the reload (the stdio proxy
 > reconnects automatically; an in-flight memory call may fail — just retry).
 > To reload it manually: `launchctl unload ~/Library/LaunchAgents/com.b12.mcp.daemon.plist && launchctl load ~/Library/LaunchAgents/com.b12.mcp.daemon.plist`.

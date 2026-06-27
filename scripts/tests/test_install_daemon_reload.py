@@ -39,10 +39,15 @@ def test_reload_checks_running_daemon_and_reloads():
 
 def test_upgrade_path_calls_reload():
     src = _src()
-    # Called on --all/--full, but not when --daemon already (re)loads it.
-    m = re.search(r"\(\s*\$INSTALL_ALL\s*\|\|\s*\$FULL_SETUP\s*\).*?reload_daemon_if_running", src, re.DOTALL)
-    assert m, "reload_daemon_if_running not called on the --all/--full upgrade path"
-    assert "! $INSTALL_DAEMON" in m.group(0), "upgrade reload must be skipped when --daemon already handles it"
+    # copy_scripts runs for EVERY invocation, so the reload must fire for any
+    # script-copying install EXCEPT the explicit --daemon / --daemon-uninstall
+    # paths — not be restricted to --all/--full (Codex review on PR #129).
+    m = re.search(r"if ! \$INSTALL_DAEMON && ! \$UNINSTALL_DAEMON.*?\nfi", src, re.DOTALL)
+    assert m, "reload not invoked under `if ! $INSTALL_DAEMON && ! $UNINSTALL_DAEMON`"
+    block = m.group(0)
+    assert "reload_daemon_if_running" in block, "guard present but reload not called inside it"
+    # Must NOT be narrowed back to only --all/--full (would miss --codex/bare installs).
+    assert "$INSTALL_ALL || $FULL_SETUP" not in block, "reload gate wrongly restricted to --all/--full"
 
 
 def test_reload_called_after_copy_scripts():

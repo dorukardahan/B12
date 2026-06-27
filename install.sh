@@ -3564,12 +3564,16 @@ if $INSTALL_DAEMON; then
   echo ""
 fi
 
-# Upgrade path (audit #2): --all/--full must restart a RUNNING daemon so the code
-# copy_scripts just deployed actually takes effect. The dedicated --daemon block
-# above already (re)loads it, so only do this when --daemon was NOT passed.
-if ( $INSTALL_ALL || $FULL_SETUP ) && ! $INSTALL_DAEMON; then
+# Upgrade path (audit #2): restart a RUNNING daemon so the code copy_scripts just
+# deployed actually takes effect. copy_scripts runs for EVERY installer invocation
+# (bare/target-dir, --codex, --gemini, …), so ANY path can otherwise leave the
+# launchd process on stale code — not just --all/--full (Codex review on PR #129).
+# reload_daemon_if_running is a no-op when the daemon isn't loaded, so run it for
+# every script-copying install EXCEPT the explicit --daemon path (handles its own
+# (re)load above) and --daemon-uninstall (removing it).
+if ! $INSTALL_DAEMON && ! $UNINSTALL_DAEMON; then
   # || warn: a flaky reload (socket-wait timeout, transient launchctl error) must
-  # not abort the rest of the upgrade — scripts are already on disk and the daemon
+  # not abort the rest of the install — scripts are already on disk and the daemon
   # can be reloaded manually.
   reload_daemon_if_running || warn "MCP daemon reload failed — run './install.sh --daemon' to retry."
 fi
