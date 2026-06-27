@@ -182,14 +182,19 @@ _NEG_MODAL: re.Pattern[str] = re.compile(
 # see[.]") or a deferral continuation (see how/what/whether/if/about ...) — so a
 # LITERAL "see <object>" commitment is preserved ("I'll see you tomorrow", "I will
 # see Alice on Monday" stay DECISION). The continuation is consumed up to the next
-# clause boundary (terminator / coordinator / end) so that _detect_commitment's
-# rescan does NOT re-trigger on a modal INSIDE the deferral ("we'll see if we need
-# to migrate", "we will see how we will deploy" → not commitments), while a real
-# commitment in a SEPARATE clause still fires (audit #11 + Codex review).
+# CLAUSE punctuation (sentence terminator OR comma), which INCLUDES coordinated
+# alternatives inside the same clause ("we'll see whether we will deploy or we will
+# rollback") so _detect_commitment's rescan does not re-trigger on a modal INSIDE
+# the deferral. A commitment in a SEPARATE clause — after a sentence terminator
+# ("...how it goes. We must migrate.") or a comma ("...about it, but we must
+# decide") or BEFORE the hedge ("we'll deploy, then we'll see ...") — still fires.
+# (Accepted limitation: an UNPUNCTUATED run-on that coordinates a real commitment
+# onto a deferral, "we'll see how it goes and we must ship", is treated as part of
+# the deferral — a rare, low-stakes band miss.) Audit #11 + Codex review.
 _HEDGE_FUTURE: re.Pattern[str] = re.compile(
     r"\b(?:i|we|you|they|he|she)(?:'ll|\s+will)\s+see\b"
-    r"(?:\s+(?:how|what|whether|if|about)\b[^.!?;]*?)?"
-    r"(?=\s*$|\s*[.,!?;:]|\s+(?:and|but|so|then|or)\b)"
+    r"(?:\s+(?:how|what|whether|if|about)\b[^.!?;,]*)?"
+    r"(?=\s*$|\s*[.,!?;:])"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and

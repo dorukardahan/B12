@@ -160,11 +160,17 @@ def test_will_see_continuation_with_inner_modal_not_commitment():
               "we will see how we will deploy",
               "we'll see whether we should refactor"):
         assert score_with_breakdown(s).commitment_hit is False, s
-    # a real commitment in a SEPARATE clause still fires.
+    # coordinated alternatives INSIDE the deferral are part of the hedge.
+    for s in ("we'll see whether we will deploy or we will rollback",
+              "we'll see if we deploy and we rollback"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+    # a real commitment in a SEPARATE clause (sentence / comma / before) still fires.
     assert score_with_breakdown(
         "we'll deploy, then we'll see if we need to rollback").commitment_hit is True
     assert score_with_breakdown(
         "we'll see how it goes. We must migrate.").commitment_hit is True
+    assert score_with_breakdown(
+        "we'll see about it, but we must decide").commitment_hit is True
 
 def test_literal_will_see_object_is_still_commitment():
     # Codex PR #140: "see <object>" is literal, not a hedge — must stay DECISION.
