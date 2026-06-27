@@ -106,7 +106,17 @@ def test_deadline_tr_comparative_kadar_not_a_deadline():
     # audit #11: the COMPARATIVE "kadar" ("as ... as") must not mis-fire as a
     # deadline. The dative is enumerated, so "pazarlama" (≠ "pazar"+dative) is safe.
     for s in ("pazarlama kadar önemli bir konu", "bu özellik test kadar kritik",
-              "cuma kahve kadar güzel", "cuma günü kadar mutlu"):
+              "cuma kahve kadar güzel", "cuma günü kadar mutlu",
+              # "pazar" = market (not Sunday) without a day/time noun (Codex PR #140)
+              "pazara kadar yürüdük", "pazara kadar git"):
+        assert score_with_breakdown(s).deadline_hit is False, s
+
+def test_deadline_by_the_end_of_requires_temporal_target():
+    # Codex PR #140: "by (the) end of <weekday>" is a deadline, but "by the end of
+    # <non-temporal>" is not.
+    assert score_with_breakdown("finish by the end of Friday").deadline_hit is True
+    for s in ("I was bored by the end of the book",
+              "by the end of the meeting we understood the API"):
         assert score_with_breakdown(s).deadline_hit is False, s
 
 def test_deadline_due_date_noun_fires():
@@ -198,10 +208,15 @@ def test_will_see_continuation_with_inner_modal_not_commitment():
         "we'll see how it goes. We must migrate.").commitment_hit is True
     assert score_with_breakdown(
         "we'll see about it, but we must decide").commitment_hit is True
-    # a colon, newline, or em/en dash also bounds the hedge clause (Codex PR #140).
-    for sep in (": ", "\n", " — ", " – "):
+    # a colon, newline, em/en dash, or spaced ASCII hyphen bounds the hedge clause
+    # so the real commitment on the far side still fires (Codex PR #140).
+    for sep in (": ", "\n", " — ", " – ", " - ", " -- "):
         s = f"we'll see how it goes{sep}we must migrate"
         assert score_with_breakdown(s).commitment_hit is True, s
+    # an intra-word hyphen does NOT bound it (the whole thing stays a deferral).
+    assert score_with_breakdown("we'll see how it re-deploys the service").commitment_hit is False
+    # a multiline deferral with no commitment on the next line is still not a commit.
+    assert score_with_breakdown("we'll see how it goes\nmaybe later").commitment_hit is False
 
 def test_literal_will_see_object_is_still_commitment():
     # Codex PR #140: "see <object>" is literal, not a hedge — must stay DECISION.

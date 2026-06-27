@@ -198,9 +198,17 @@ _HEDGE_FUTURE: re.Pattern[str] = re.compile(
     # bounds a clause — excluding them keeps a real commitment on the other side
     # ("we'll see how it goes: we must migrate", "... — we must migrate", or
     # "must migrate" on the next line) out of the hedge.
+    # Consume the continuation but STOP before a spaced ASCII hyphen "<space>-"
+    # (a clause separator like "... - we must migrate") via the tempered (?!\s-),
+    # while a hyphen INSIDE a word ("re-deploy", "well-known") has no preceding
+    # space and is consumed normally. Em/en dashes stop via the char class.
     r"(?:\s+(?:how|what|whether|if|about|when|where|who|whom|whose|which|why)\b"
-    r"[^.!?;,:\n\r–—]*)?"
-    r"(?=\s*$|\s*[.,!?;:–—])"
+    r"(?:(?!\s-)[^.!?;,:\n\r–—])*)?"
+    # A newline directly after the deferral is itself a clause boundary (a multiline
+    # memory whose next line is NOT a commitment, "we'll see how it goes\nmaybe
+    # later", must still strip the hedge so the bare "we'll" doesn't score DECISION).
+    # A spaced ASCII hyphen also bounds the clause (added to the punctuation set).
+    r"(?=\s*$|[\n\r]|\s*[-.,!?;:–—])"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
@@ -234,6 +242,10 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # is intentionally excluded: it is as often past/scheduling as a deadline.)
     re.compile(
         r"\b(?:by|before|until|till|due|no later than)\s+"
+        # optional "(the) end of" so "by (the) end of Friday" matches via the weekday
+        # target — WITHOUT a bare "by the end of" token that fired on non-temporal
+        # objects ("by the end of the meeting/book", Codex PR #140).
+        r"(?:(?:the\s+)?end\s+of\s+)?"
         # optional time qualifier between the preposition and the weekday
         # ("by noon Friday", "before 5pm Friday", "by 9 Monday")
         r"(?:(?:noon|midnight|eod|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+)?"
@@ -249,12 +261,18 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # ("pazarlama kadar önemli", "cuma kahve kadar güzel") does NOT mis-fire: neither
     # "pazarlama" nor the non-time noun "kahve" matches the stem set.
     re.compile(
-        r"\b(?:pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|"
-        r"cumartesi|pazar)"
+        r"\b(?:"
+        # Unambiguous weekdays: direct dative, day/time noun, or numeric time.
+        r"(?:pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|cumartesi)"
         r"(?:'?(?:ye|ya|a)"
         r"|\s+(?:g[üu]n|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
         # numeric time after the weekday ("cuma 5'e kadar", "pazartesi 17:00'ye kadar")
         r"|\s+\d{1,2}(?::\d{2})?'?\w*)"
+        # "pazar" is ambiguous (Sunday vs "market"), so it requires an explicit
+        # day/time noun ("pazar gününe/akşamına kadar") — NOT the bare dative
+        # "pazara" (= "to the market", "pazara kadar yürüdük") — Codex PR #140.
+        r"|pazar\s+(?:g[üu]n|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
+        r")"
         # "dek" is a literary synonym of "kadar" (until) — same deadline sense.
         r"\s+(?:kadar|dek)\b"
     ),
@@ -264,10 +282,11 @@ _DEADLINE_TOKENS: tuple[str, ...] = (
     # never matches inside "still"); only the genuinely multi-word phrases below
     # are substring-matched. ("due" + weekdays are handled by patterns above so
     # the causal "due to" and bare/past weekday mentions don't mis-fire — #11.)
-    "deadline", "expires", "expiry", "by end of", "by the end of",
+    "deadline", "expires", "expiry", "by end of",
     "no later than", "until", "till",
-    # "due date(s)" is handled by the \bdue\s+dates?\b pattern above so the plural
-    # form also fires; "by the end of" complements the bare "by end of" (Codex #140).
+    # "due date(s)" is handled by the \bdue\s+dates?\b pattern above (singular +
+    # plural); "by (the) end of <weekday>" is handled by the weekday pattern above
+    # (NOT a bare "by the end of" token — that over-fired on non-temporal objects).
     # Weekdays are NOT bare tokens — a weekday only signals a deadline inside the
     # deadline-context patterns above ("by Friday" / "cumaya kadar"), audit #11.
     # Turkish explicit deadline words.
