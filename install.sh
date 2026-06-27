@@ -3255,6 +3255,45 @@ uninstall_mcp_daemon() {
   rm -f "/tmp/b12-mcp-$(id -u).sock" "/tmp/b12-mcp-$(id -u).pid" 2>/dev/null || true
 }
 
+# Reload the long-lived launchd daemon IFF it is already running, so an upgrade
+# (`git pull && ./install.sh --all`/`--full`) actually activates freshly-copied
+# daemon code. copy_scripts only writes new code to disk; the launchd process
+# keeps serving the OLD in-memory code until it is restarted. Without this, every
+# daemon-code fix (e.g. the #127 idle-reaper fix) silently did NOT reach existing
+# installs until a manual `launchctl` reload (2026-06-27 audit #2). No-op when the
+# daemon isn't loaded — a fresh install is the explicit `--daemon` opt-in.
+reload_daemon_if_running() {
+  if [ "$(uname)" != "Darwin" ]; then
+    return 0
+  fi
+  # Exact label check (no pipe, no regex-dot wildcards): `launchctl list <label>`
+  # exits 0 only if that job is loaded. No-op when the daemon isn't loaded — a
+  # fresh install is the explicit `--daemon` opt-in, not an `--all` side effect.
+  if ! launchctl list com.b12.mcp.daemon >/dev/null 2>&1; then
+    return 0
+  fi
+  echo ""
+  echo "── B12 MCP Daemon Reload (upgrade) ─────"
+  info "Daemon is running — reloading so the freshly-copied daemon code takes effect."
+  # Preserve a custom B12_DATA_DIR already baked into the loaded plist: a bare
+  # upgrade (B12_DATA_DIR not re-exported) must NOT let install_mcp_daemon
+  # re-render the plist with the default ~/.B12 and silently re-point the daemon
+  # off the user's custom memory DB (Codex review PR #129 P1).
+  if [ -z "${B12_DATA_DIR:-}" ]; then
+    local _plist="$HOME/Library/LaunchAgents/com.b12.mcp.daemon.plist"
+    local _existing_dd
+    _existing_dd=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:B12_DATA_DIR" "$_plist" 2>/dev/null || true)
+    if [ -n "$_existing_dd" ]; then
+      export B12_DATA_DIR="$_existing_dd"
+      info "Preserving existing daemon B12_DATA_DIR: $_existing_dd"
+    fi
+  fi
+  install_mcp_daemon   # re-renders the plist + unload/load + waits for the socket
+  local _rc=$?         # capture BEFORE the echo, which would otherwise mask it
+  echo ""
+  return $_rc          # propagate failure so the caller's `|| warn` fires (PR #129 P2)
+}
+
 # ═════════════════════════════════════════════
 # Main
 # ═════════════════════════════════════════════
@@ -3538,6 +3577,20 @@ if $INSTALL_DAEMON; then
   echo "── B12 MCP Daemon Setup ─────────"
   install_mcp_daemon
   echo ""
+fi
+
+# Upgrade path (audit #2): restart a RUNNING daemon so the code copy_scripts just
+# deployed actually takes effect. copy_scripts runs for EVERY installer invocation
+# (bare/target-dir, --codex, --gemini, …), so ANY path can otherwise leave the
+# launchd process on stale code — not just --all/--full (Codex review on PR #129).
+# reload_daemon_if_running is a no-op when the daemon isn't loaded, so run it for
+# every script-copying install EXCEPT the explicit --daemon path (handles its own
+# (re)load above) and --daemon-uninstall (removing it).
+if ! $INSTALL_DAEMON && ! $UNINSTALL_DAEMON; then
+  # || warn: a flaky reload (socket-wait timeout, transient launchctl error) must
+  # not abort the rest of the install — scripts are already on disk and the daemon
+  # can be reloaded manually.
+  reload_daemon_if_running || warn "MCP daemon reload failed — run './install.sh --daemon' to retry."
 fi
 
 # 24h smoke cron (Plan §C13) — explicit opt-in via --smoke-cron /
