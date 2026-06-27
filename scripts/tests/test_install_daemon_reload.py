@@ -35,6 +35,12 @@ def test_reload_checks_running_daemon_and_reloads():
     # macOS-only gate — CI is ubuntu so the body never runs there; a static test is
     # the only thing guarding the Darwin check from being silently deleted.
     assert "uname" in body and "Darwin" in body, "reload must early-return on non-macOS"
+    # PR #129 P1: must preserve a custom B12_DATA_DIR from the existing plist so a
+    # bare upgrade doesn't re-point the daemon to the default ~/.B12 DB.
+    assert "B12_DATA_DIR" in body and "PlistBuddy" in body, "reload must preserve a custom B12_DATA_DIR (PR #129 P1)"
+    # PR #129 P2: must propagate install_mcp_daemon's exit status (the trailing
+    # echo would otherwise mask it, so `|| warn` never fires).
+    assert "return $_rc" in body, "reload must propagate install_mcp_daemon's exit status (PR #129 P2)"
 
 
 def test_upgrade_path_calls_reload():

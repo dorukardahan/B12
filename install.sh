@@ -3275,8 +3275,23 @@ reload_daemon_if_running() {
   echo ""
   echo "── B12 MCP Daemon Reload (upgrade) ─────"
   info "Daemon is running — reloading so the freshly-copied daemon code takes effect."
+  # Preserve a custom B12_DATA_DIR already baked into the loaded plist: a bare
+  # upgrade (B12_DATA_DIR not re-exported) must NOT let install_mcp_daemon
+  # re-render the plist with the default ~/.B12 and silently re-point the daemon
+  # off the user's custom memory DB (Codex review PR #129 P1).
+  if [ -z "${B12_DATA_DIR:-}" ]; then
+    local _plist="$HOME/Library/LaunchAgents/com.b12.mcp.daemon.plist"
+    local _existing_dd
+    _existing_dd=$(/usr/libexec/PlistBuddy -c "Print :EnvironmentVariables:B12_DATA_DIR" "$_plist" 2>/dev/null || true)
+    if [ -n "$_existing_dd" ]; then
+      export B12_DATA_DIR="$_existing_dd"
+      info "Preserving existing daemon B12_DATA_DIR: $_existing_dd"
+    fi
+  fi
   install_mcp_daemon   # re-renders the plist + unload/load + waits for the socket
+  local _rc=$?         # capture BEFORE the echo, which would otherwise mask it
   echo ""
+  return $_rc          # propagate failure so the caller's `|| warn` fires (PR #129 P2)
 }
 
 # ═════════════════════════════════════════════
