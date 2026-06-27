@@ -288,6 +288,83 @@ def test_ret3_bm25_relevance_monotonic():
     assert rel(-100.0) == pytest.approx(0.40)
 
 
+# ── RET-3 / audit #4: importance dual-scale normalization in ORDER BY ──────────
+
+_CANON_SQL_NORM = """
+SELECT max(min(CASE WHEN json_valid(metadata) AND json_type(metadata, '$.importance_score') IN ('integer','real')
+                    THEN (CASE WHEN json_extract(metadata, '$.importance_score') >= 1.0
+                               THEN json_extract(metadata, '$.importance_score') / 2.0
+                               ELSE json_extract(metadata, '$.importance_score') END)
+                    ELSE 0.50 END, 1.0), 0.0) FROM t
+"""
+
+
+def _py_importance_norm(raw):
+    """Mirror of b12_mcp_server._unified_score's importance normalization."""
+    if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+        raw = 0.50
+    raw = float(raw)
+    norm = raw / 2.0 if raw >= 1.0 else raw
+    return max(0.0, min(norm, 1.0))
+
+
+def test_ret3_importance_sql_matches_scorer():
+    """audit #4: the ORDER BY importance normalization must equal the Python
+    scorer for every scale — fractional [0,0.95], level [1.0,2.0], and the
+    missing/bool/non-numeric → 0.50 baseline."""
+    import json
+    import pytest
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE t(metadata TEXT)")
+
+    def sql_norm(metadata_json):
+        db.execute("DELETE FROM t")
+        db.execute("INSERT INTO t VALUES(?)", (metadata_json,))
+        return db.execute(_CANON_SQL_NORM).fetchone()[0]
+
+    # (metadata JSON, raw importance input) — expected derived from the scorer.
+    cases = [
+        (json.dumps({"importance_score": 0.30}), 0.30),
+        (json.dumps({"importance_score": 0.90}), 0.90),
+        (json.dumps({"importance_score": 0.95}), 0.95),
+        (json.dumps({"importance_score": 1.0}), 1.0),    # level "normal" -> 0.5
+        (json.dumps({"importance_score": 1.5}), 1.5),    # "important" -> 0.75
+        (json.dumps({"importance_score": 2.0}), 2.0),    # "critical" -> 1.0
+        (json.dumps({"importance_score": -1.0}), -1.0),  # negative -> lower-clamp 0.0
+        (json.dumps({"importance_score": True}), True),  # bool rejected -> 0.5
+        (json.dumps({"importance_score": "x"}), "x"),    # non-numeric -> 0.5
+        (json.dumps({}), None),                          # missing key -> 0.5
+        ("not json", None),                              # invalid metadata -> 0.5
+    ]
+    for md, raw in cases:
+        assert sql_norm(md) == pytest.approx(_py_importance_norm(raw)), md
+    # The RET-3 bug: level 1.0 ("normal" -> 0.5) must rank BELOW a fractional 0.9.
+    assert sql_norm(json.dumps({"importance_score": 1.0})) < sql_norm(json.dumps({"importance_score": 0.90}))
+
+
+def test_ret3_order_by_normalized_in_all_surfaces():
+    """The raw `ORDER BY COALESCE(... importance_score ..., 1.0)` form is gone from
+    the session-start / MCP / opencode ranking ORDER BYs, replaced by the
+    json_type-guarded normalization. (b12_long_session.py's re-surface path has
+    the same raw form + a `>= 0.7` filter — a behavior change tracked as a
+    separate follow-up, not covered here.)"""
+    from pathlib import Path
+    root = Path(__file__).resolve().parents[2]
+    surfaces = {
+        "scripts/b12_mcp_server.py": 3,
+        "plugins/opencode/src/lib/db.ts": 3,
+        "hooks/memory-session-start.sh": 3,
+        # The plugin runs from the committed bundle — a stale/partial rebuild
+        # (e.g. 2/3) must fail this test, not silently ship old SQL.
+        "plugins/opencode/dist/index.js": 3,
+    }
+    for rel_path, n in surfaces.items():
+        src = (root / rel_path).read_text()
+        assert "ORDER BY COALESCE(CASE WHEN json_valid" not in src, f"{rel_path} still has a raw importance ORDER BY"
+        assert "ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0)" not in src, f"{rel_path} still has a raw importance ORDER BY"
+        assert src.count("IN ('integer','real')") >= n, f"{rel_path} missing normalized importance ORDER BY ({n} expected)"
+
+
 if __name__ == "__main__":
     rc = 0
     fns = [v for k, v in dict(globals()).items() if k.startswith("test_")]

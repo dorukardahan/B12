@@ -707,7 +707,7 @@ export class B12Database {
            AND ${activeValidUntilPredicate("valid_until")}
            AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
            AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
-         ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
+         ORDER BY max(min(CASE WHEN json_valid(metadata) AND json_type(metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(metadata, '$.importance_score') >= 1.0 THEN json_extract(metadata, '$.importance_score') / 2.0 ELSE json_extract(metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0)
                   * COALESCE(strength, 1.0) DESC
          LIMIT ?`,
       )
@@ -946,7 +946,7 @@ export class B12Database {
              AND ${activeValidUntilPredicate("valid_until")}
              AND ${tagPredicate("tags")}
              AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
-           ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
+           ORDER BY max(min(CASE WHEN json_valid(metadata) AND json_type(metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(metadata, '$.importance_score') >= 1.0 THEN json_extract(metadata, '$.importance_score') / 2.0 ELSE json_extract(metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0)
                     * COALESCE(strength, 1.0) DESC
            LIMIT 3`,
         )
@@ -974,7 +974,7 @@ export class B12Database {
            AND ${activeValidUntilPredicate("valid_until")}
            AND (tags NOT LIKE '%proj:%' OR tags IS NULL OR tags = '')
            AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'progress'))
-         ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '$.importance_score') END, 1.0)
+         ORDER BY max(min(CASE WHEN json_valid(metadata) AND json_type(metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(metadata, '$.importance_score') >= 1.0 THEN json_extract(metadata, '$.importance_score') / 2.0 ELSE json_extract(metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0)
                   * COALESCE(strength, 1.0) DESC
          LIMIT 2`,
       )

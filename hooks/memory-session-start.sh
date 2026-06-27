@@ -362,7 +362,7 @@ if $IS_CONTENT && [ -f "$DB_PATH" ]; then
   CONTENT_GUARDRAILS=$(sqlite3 "$DB_PATH" "
     SELECT substr(content, 1, 200) FROM memories
     WHERE tags LIKE '%content-guardrail%' AND deleted_at IS NULL
-    ORDER BY COALESCE(CASE WHEN json_valid(metadata) THEN json_extract(metadata, '\$.importance_score') END, 1.0) DESC LIMIT 3
+    ORDER BY max(min(CASE WHEN json_valid(metadata) AND json_type(metadata, '\$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(metadata, '\$.importance_score') >= 1.0 THEN json_extract(metadata, '\$.importance_score') / 2.0 ELSE json_extract(metadata, '\$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) DESC LIMIT 3
   " 2>/dev/null)
 fi
 
@@ -417,7 +417,7 @@ if [ -f "$DB_PATH" ]; then
             WHERE ${FTS_COND}
           )
         )
-      ORDER BY COALESCE(CASE WHEN json_valid(m.metadata) THEN json_extract(m.metadata, '$.importance_score') END, 1.0) * COALESCE(m.strength, 1.0) DESC
+      ORDER BY max(min(CASE WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0 THEN json_extract(m.metadata, '$.importance_score') / 2.0 ELSE json_extract(m.metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) * COALESCE(m.strength, 1.0) DESC
       LIMIT 3
     " 2>/dev/null)
 
@@ -435,7 +435,7 @@ if [ -f "$DB_PATH" ]; then
     WHERE tags LIKE '%user:universal%'
       AND deleted_at IS NULL
       AND (valid_until IS NULL OR valid_until > datetime('now'))
-    ORDER BY COALESCE(json_extract(metadata, '$.importance_score'), 1.0) * COALESCE(strength, 1.0) DESC
+    ORDER BY max(min(CASE WHEN json_valid(metadata) AND json_type(metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(metadata, '$.importance_score') >= 1.0 THEN json_extract(metadata, '$.importance_score') / 2.0 ELSE json_extract(metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) * COALESCE(strength, 1.0) DESC
     LIMIT 2
   " 2>/dev/null)
 
