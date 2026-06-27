@@ -711,6 +711,27 @@ async def daemon_request_async(op: str, **kwargs) -> dict | None:
                     pass
 
 
+async def _run_locked_offthread(fn, *args, **kwargs):
+    """Offload a blocking embed-daemon helper to a worker thread UNDER _daemon_lock,
+    cancellation-safe. Same shape as daemon_request_async: shield the worker so a
+    caller cancellation (client disconnect mid-call) still waits for the in-flight
+    socket round-trip to finish BEFORE releasing _daemon_lock — otherwise the lock
+    frees while the worker keeps using the single-connection embed daemon, racing
+    the next request into its 5s client timeout (SPD-1). For handlers whose sync
+    helper does its own embed socket I/O (memory_refine -> encode_batch,
+    memory_surface -> _daemon_search)."""
+    async with _daemon_lock:
+        worker = asyncio.ensure_future(asyncio.to_thread(fn, *args, **kwargs))
+        try:
+            return await asyncio.shield(worker)
+        finally:
+            if not worker.done():
+                try:
+                    await worker
+                except BaseException:
+                    pass
+
+
 def compute_content_hash(content: str) -> str:
     """Content-only hash — matches upstream mcp-memory-service for backward compat."""
     return hashlib.sha256(content.strip().lower().encode()).hexdigest()
@@ -2114,7 +2135,12 @@ async def memory_refine(
     if not valid:
         return "Error: no valid candidates (each must have 'content' field)"
 
-    refined = _refine_candidates(valid, similarity_threshold)
+    # Offload off the FastMCP event loop (in daemon mode one loop serves every
+    # connected tab) under _daemon_lock: _refine_candidates does its own embed
+    # encode_batch round-trip, which must serialize with the main path's daemon
+    # I/O or it races the single-connection daemon (audit #5; completes the PR
+    # #110 sweep). Cancellation-safe (shields the worker — see the helper).
+    refined = await _run_locked_offthread(_refine_candidates, valid, similarity_threshold)
 
     # Format output
     lines = [f"Refined {len(valid)} candidates \u2192 {len(refined)} unique memories:\n"]
@@ -2164,7 +2190,10 @@ async def memory_surface(
     if trigger_type not in ("file", "error", "topic"):
         return "Error: trigger_type must be 'file', 'error', or 'topic'"
 
-    result = _surface(trigger_type=trigger_type, context=context)
+    # Offload off the loop + serialize the embed socket round-trip (_surface ->
+    # _daemon_search) under _daemon_lock so it can't freeze other tabs or race a
+    # concurrent encode (audit #7). Cancellation-safe (shields the worker).
+    result = await _run_locked_offthread(_surface, trigger_type=trigger_type, context=context)
 
     if not result.surfaced:
         return f"No relevant memories found. ({result.reason})"
@@ -2221,7 +2250,11 @@ async def memory_export(
         if not resolved.startswith(os.path.realpath(b12_exports)):
             return f"Error: output_path must be within {b12_exports}"
 
-    result = _export_memories(
+    # Offload the full-table fetchall + gzip off the loop so a large corpus
+    # doesn't freeze other connected tabs (audit #6). No embed socket here, so no
+    # _daemon_lock — mirrors the memory_import offload (it opens its own conn).
+    result = await asyncio.to_thread(
+        _export_memories,
         db_path=DB_PATH,
         output_path=output_path,
         project=project,

@@ -261,6 +261,150 @@ def test_memory_dashboard_stop_offloads_to_worker_thread():
     assert seen["thread"] != caller, "_stop ran on the event-loop thread (not offloaded)"
 
 
+# ── audit #5/#6/#7: complete the PR #110 sweep — refine/export/surface ────────
+
+def test_memory_export_offloads_to_thread():
+    """memory_export must run the full-table fetchall + gzip in a worker thread
+    (plain asyncio.to_thread; no _daemon_lock — no embed socket). audit #6."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP ({e})"); return
+    if M._export_memories is None:
+        print("SKIP (export_import unavailable)"); return
+
+    caller = threading.get_ident()
+    seen = {}
+
+    class _Res:
+        memories_exported = 1; edges_exported = 0
+        output_path = "/x/y.b12"; file_size_bytes = 10; duration_seconds = 0.0
+
+    def fake_export(**kwargs):
+        seen["thread"] = threading.get_ident(); seen["kwargs"] = set(kwargs)
+        seen["locked"] = M._daemon_lock.locked()
+        return _Res()
+
+    orig = M._export_memories
+    M._export_memories = fake_export
+    try:
+        out = asyncio.run(M.memory_export())
+    finally:
+        M._export_memories = orig
+    assert "Export complete" in out
+    assert seen.get("thread") is not None, "exporter never called"
+    assert seen["thread"] != caller, "export ran on the event-loop thread"
+    assert seen["kwargs"] == {"db_path", "output_path", "project", "tags", "after", "before"}
+    assert seen.get("locked") is False, "export must NOT hold _daemon_lock (it does no embed socket I/O)"
+
+
+def test_memory_refine_offloads_under_daemon_lock():
+    """memory_refine must offload _refine_candidates off the loop AND hold
+    _daemon_lock during the call (its embed round-trip must serialize). audit #5."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP ({e})"); return
+    if M._refine_candidates is None:
+        print("SKIP (memory_refine unavailable)"); return
+
+    caller = threading.get_ident()
+    seen = {}
+
+    def fake_refine(valid, threshold):
+        seen["thread"] = threading.get_ident()
+        seen["locked"] = M._daemon_lock.locked()
+        return [{"quality_score": 0.9, "memory_type": "general", "content": "x", "group_size": 1}]
+
+    orig = M._refine_candidates
+    M._refine_candidates = fake_refine
+    try:
+        out = asyncio.run(M.memory_refine(candidates='[{"content":"hello world fact"}]'))
+    finally:
+        M._refine_candidates = orig
+    assert "Refined" in out
+    assert seen.get("thread") is not None, "refiner never called"
+    assert seen["thread"] != caller, "refine ran on the event-loop thread"
+    assert seen.get("locked") is True, "refine did not hold _daemon_lock during its embed round-trip"
+
+
+def test_memory_surface_offloads_under_daemon_lock():
+    """memory_surface must offload _surface off the loop AND hold _daemon_lock
+    during the call (its _daemon_search socket round-trip). audit #7."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP ({e})"); return
+    if M._surface is None:
+        print("SKIP (surfacing_engine unavailable)"); return
+
+    caller = threading.get_ident()
+    seen = {}
+
+    class _R:
+        surfaced = False; reason = "test"
+
+    def fake_surface(trigger_type, context):
+        seen["thread"] = threading.get_ident()
+        seen["locked"] = M._daemon_lock.locked()
+        return _R()
+
+    orig = M._surface
+    M._surface = fake_surface
+    try:
+        out = asyncio.run(M.memory_surface(context="db migration", trigger_type="topic"))
+    finally:
+        M._surface = orig
+    assert "No relevant memories" in out
+    assert seen.get("thread") is not None, "surface never called"
+    assert seen["thread"] != caller, "surface ran on the event-loop thread"
+    assert seen.get("locked") is True, "surface did not hold _daemon_lock during its socket round-trip"
+
+
+def test_memory_refine_finishes_worker_on_cancellation():
+    """If the caller is cancelled mid-refine, the shielded worker (its embed
+    round-trip) must still complete before _daemon_lock releases — else the next
+    request races the single-connection daemon (SPD-1). audit #5."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP ({e})"); return
+    if M._refine_candidates is None:
+        print("SKIP (memory_refine unavailable)"); return
+    import time
+    completed = []
+
+    def slow_refine(valid, threshold):
+        time.sleep(0.1)
+        completed.append(True)
+        return [{"quality_score": 0.9, "memory_type": "general", "content": "x", "group_size": 1}]
+
+    orig = M._refine_candidates
+    M._refine_candidates = slow_refine
+    try:
+        async def run():
+            t = asyncio.ensure_future(M.memory_refine(candidates='[{"content":"hello world fact"}]'))
+            await asyncio.sleep(0.02)   # let it acquire the lock + start the worker
+            t.cancel()
+            t0 = time.monotonic()
+            try:
+                await t
+            except asyncio.CancelledError:
+                pass
+            elapsed = time.monotonic() - t0
+            # The distinguishing signal: with the shield + finally-await, awaiting
+            # the cancelled task BLOCKS until the worker drains (~the remaining
+            # sleep). The buggy bare `async with _daemon_lock: await to_thread`
+            # would propagate CancelledError immediately (lock freed mid-socket),
+            # returning near-instantly. So a fast return == the regression.
+            assert elapsed >= 0.05, f"cancelled refine returned in {elapsed:.3f}s — worker not awaited (lock freed mid-socket)"
+            assert not M._daemon_lock.locked(), "lock still held after worker finished"
+        asyncio.run(run())
+    finally:
+        M._refine_candidates = orig
+    assert completed, "refine worker was abandoned on cancellation (lock would free mid-socket)"
+
+
 if __name__ == "__main__":
     rc = 0
     fns = [v for k, v in dict(globals()).items() if k.startswith("test_")]
