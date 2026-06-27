@@ -117,12 +117,22 @@ def test_deadline_tr_comparative_kadar_not_a_deadline():
         assert score_with_breakdown(s).deadline_hit is False, s
 
 def test_deadline_by_the_end_of_requires_temporal_target():
-    # Codex PR #140: "by (the) end of <weekday>" is a deadline, but "by the end of
-    # <non-temporal>" is not.
-    assert score_with_breakdown("finish by the end of Friday").deadline_hit is True
-    for s in ("I was bored by the end of the book",
+    # Codex PR #140/#141: "by (the) end of <weekday|temporal>" is a deadline, but
+    # "by [the] end of <non-temporal>" is not — for BOTH "by end of" and "by the
+    # end of" (the bare token over-fired on objects).
+    for s in ("finish by the end of Friday", "by end of day", "ship by the end of the week",
+              "wrap up by end of month"):
+        assert score_with_breakdown(s).deadline_hit is True, s
+    for s in ("I was bored by the end of the book", "I was bored by end of the book",
               "by the end of the meeting we understood the API"):
         assert score_with_breakdown(s).deadline_hit is False, s
+
+def test_deadline_tr_gunu_sonuna_and_dead_dative():
+    # Codex PR #141: the possessive day form "<weekday> günü sonuna kadar" fires;
+    # the comparative "<weekday> günü kadar" still does not.
+    for s in ("cuma günü sonuna kadar bitir", "pazar günü sonuna kadar"):
+        assert score_with_breakdown(s).deadline_hit is True, s
+    assert score_with_breakdown("cuma günü kadar mutlu").deadline_hit is False
 
 def test_deadline_due_date_noun_fires():
     # Codex PR #140: "due date is Friday"/"due date: ..." are explicit deadline
@@ -224,6 +234,23 @@ def test_will_see_continuation_with_inner_modal_not_commitment():
     assert score_with_breakdown("we'll see how it re-deploys the service").commitment_hit is False
     # a multiline deferral with no commitment on the next line is still not a commit.
     assert score_with_breakdown("we'll see how it goes\nmaybe later").commitment_hit is False
+    # an unpunctuated " but " contrast clause is a real commitment (Codex PR #141).
+    assert score_with_breakdown("we'll see how it goes but we must migrate").commitment_hit is True
+    # a comma/dash BEFORE the wh-word is still the deferral, not a commitment (#141).
+    for s in ("we'll see, if we need to migrate", "we'll see - how we should deploy"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+
+
+def test_bilingual_tr_neg_plus_hedge_not_commitment():
+    # Codex PR #141 P1: a TR-negated obligation AND the EN "will see" hedge in one
+    # sentence must NOT score DECISION — the subtractions chain so neither restores
+    # what the other removed.
+    for s in ("gerek yok, we will see how it goes",
+              "zorunda değiliz, we'll see how it goes",
+              "lazım değil, we will see"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+    # ...while a real affirmative obligation alongside a negated one still commits.
+    assert score_with_breakdown("gerek yok ama zorundayız").commitment_hit is True
 
 def test_literal_will_see_object_is_still_commitment():
     # Codex PR #140: "see <object>" is literal, not a hedge — must stay DECISION.
