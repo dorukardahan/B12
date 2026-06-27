@@ -58,7 +58,10 @@ SUCCESS_COUNT=0
 MISSING_COUNT=0
 for setup_raw in "$HOME"/.claude "$HOME"/.claude-*; do
   [ -d "$setup_raw" ] || continue
-  inode=$(stat -f %i "$setup_raw" 2>/dev/null || stat -c %i "$setup_raw" 2>/dev/null)
+  # GNU-first; on Linux `stat -f %i` is the FS id (--file-system), not the inode,
+  # so a BSD-first probe returns the wrong number → broken dedup (audit #8).
+  inode=$(stat -c %i "$setup_raw" 2>/dev/null || stat -f %i "$setup_raw" 2>/dev/null)
+  case "$inode" in ''|*[!0-9]*) inode="" ;; esac
   [ -z "$inode" ] && inode="$setup_raw"
   case " $SEEN_INODES " in *" $inode "*) continue ;; esac
   SEEN_INODES="$SEEN_INODES $inode"

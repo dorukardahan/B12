@@ -81,7 +81,9 @@ _b12_surface_lock_acquire() {
     if [ -d "$SURFACE_LOCK" ]; then
       local _now _mtime
       _now=$(date +%s 2>/dev/null)
-      _mtime=$(stat -f %m "$SURFACE_LOCK" 2>/dev/null || stat -c %Y "$SURFACE_LOCK" 2>/dev/null)
+      # GNU-first; on Linux `stat -f` is --file-system and poisons _mtime (audit #8).
+      _mtime=$(stat -c %Y "$SURFACE_LOCK" 2>/dev/null || stat -f %m "$SURFACE_LOCK" 2>/dev/null)
+      case "$_mtime" in ''|*[!0-9]*) _mtime="" ;; esac
       if [ -n "$_now" ] && [ -n "$_mtime" ] && [ $(( _now - _mtime )) -gt 5 ]; then
         rmdir "$SURFACE_LOCK" 2>/dev/null
         continue
@@ -145,6 +147,12 @@ LAST_AT=0
 TOOL_CALLS=0
 if _b12_surface_lock_acquire; then
   trap '_b12_surface_lock_release; kill "${_B12_WD_PID:-0}" 2>/dev/null; wait "${_B12_WD_PID:-0}" 2>/dev/null' EXIT
+else
+  # Lock held by a concurrent fire. Proceeding UNLOCKED here is exactly the race
+  # the lock exists to prevent: both fires read tool_calls=N, both bump to N+1,
+  # both surface (double inject + double token bill). Bail cleanly. (audit #18)
+  echo '{}'
+  exit 0
 fi
 if [ -f "$SURFACE_STATE" ]; then
   _STATE=$(cat "$SURFACE_STATE" 2>/dev/null)

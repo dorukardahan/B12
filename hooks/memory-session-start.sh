@@ -102,8 +102,10 @@ CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 # Central data directory — override with B12_DATA_DIR env var for custom setups
 B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 
-# Portable stat: macOS uses -f %m, Linux uses -c %Y
-file_mtime() { stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo "0"; }
+# Portable stat mtime, GNU-first. On Linux `stat -f` is --file-system and writes
+# an FS report to stdout (not a clean failure), so a BSD-first probe poisons the
+# mtime; the all-digits guard is belt-and-suspenders. (audit #8; matches _b12_common.sh)
+file_mtime() { local m; m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null); case "$m" in ''|*[!0-9]*) echo "0" ;; *) echo "$m" ;; esac; }
 
 # Configured per-phase pagerank budget (seconds): env, sanitized to a
 # non-negative int, clamped <15s watchdog. 0 = documented opt-out (no
