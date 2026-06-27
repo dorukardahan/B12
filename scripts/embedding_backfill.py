@@ -105,6 +105,38 @@ def find_missing(db_path):
         conn.close()
 
 
+def _find_missing_for_hashes(db_path, content_hashes):
+    """Like find_missing, but restricted to the given content_hashes — active rows
+    among them that still lack an embedding. Returns (id, content, tags) rows.
+    Chunked to stay under SQLite's bound-variable limit."""
+    hashes = list(content_hashes or [])
+    if not hashes:
+        return []
+    conn = sqlite3.connect(db_path)
+    conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.row_factory = sqlite3.Row
+    try:
+        out = []
+        for i in range(0, len(hashes), 400):
+            chunk = hashes[i:i + 400]
+            ph = ",".join("?" * len(chunk))
+            rows = conn.execute(
+                f"""SELECT m.id, m.content, m.tags
+                    FROM memories m
+                    WHERE m.content_hash IN ({ph})
+                      AND m.deleted_at IS NULL
+                      AND m.id NOT IN (SELECT rowid FROM memory_embeddings_rowids)""",
+                chunk,
+            ).fetchall()
+            out.extend(rows)
+        return out
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
 def store_embedding(db_path, memory_id, embedding_b64):
     """Store a single embedding in the vec0 virtual table."""
     blob = base64.b64decode(embedding_b64)
@@ -129,6 +161,56 @@ def store_embedding(db_path, memory_id, embedding_b64):
         return False
     finally:
         conn.close()
+
+
+def backfill(db_path, limit=None, missing=None, content_hashes=None):
+    """Embed memories in db_path that lack a vector, via the embed daemon's
+    encode_batch op. Returns (embedded, failed). No-op-safe: if the daemon is
+    down, daemon_request returns None and that batch counts as failed (nothing is
+    written). Quiet (no prints) so it's reusable — used by main() (CLI) and by
+    export_import after an import so freshly-imported memories become
+    vector-searchable instead of staying FTS-only (audit M1).
+
+    Scope:
+      - `content_hashes` set → embed ONLY those rows (import path: bounds the work
+        to this import's rows so it can't monopolize the single-connection daemon
+        and starve concurrent stores).
+      - else → every active memory missing an embedding (CLI / full backfill).
+    Pass a pre-fetched `missing` to skip the lookup (the CLI does)."""
+    if missing is None:
+        if content_hashes:
+            missing = _find_missing_for_hashes(db_path, content_hashes)
+        else:
+            missing = find_missing(db_path)
+    if limit:
+        missing = missing[:limit]
+    if not missing:
+        return (0, 0)
+
+    batch_size = 10
+    success = 0
+    failed = 0
+    for i in range(0, len(missing), batch_size):
+        batch = missing[i:i + batch_size]
+        texts = []
+        ids = []
+        for r in batch:
+            content = r[1] if isinstance(r[1], str) else r["content"]
+            texts.append(content[:1000])  # Truncate for embedding
+            ids.append(r[0])
+
+        embeddings = daemon_request(texts)
+        if not embeddings:
+            failed += len(batch)
+            continue
+
+        for mem_id, emb_b64 in zip(ids, embeddings):
+            if store_embedding(db_path, mem_id, emb_b64):
+                success += 1
+            else:
+                failed += 1
+
+    return (success, failed)
 
 
 def main():
@@ -168,33 +250,7 @@ def main():
         print("or run: ~/.local/b12-venv/bin/python3 scripts/embed_daemon.py &")
         sys.exit(1)
 
-    # Process in batches of 10
-    batch_size = 10
-    success = 0
-    failed = 0
-
-    for i in range(0, len(missing), batch_size):
-        batch = missing[i:i + batch_size]
-        texts = []
-        ids = []
-        for r in batch:
-            content = r[1] if isinstance(r[1], str) else r["content"]
-            texts.append(content[:1000])  # Truncate for embedding
-            ids.append(r[0])
-
-        embeddings = daemon_request(texts)
-        if not embeddings:
-            print(f"  Batch {i // batch_size + 1}: daemon returned no embeddings")
-            failed += len(batch)
-            continue
-
-        for mem_id, emb_b64 in zip(ids, embeddings):
-            if store_embedding(db_path, mem_id, emb_b64):
-                success += 1
-                print(f"  #{mem_id}: embedded")
-            else:
-                failed += 1
-
+    success, failed = backfill(db_path, missing=missing)   # reuse the fetch above
     print(f"\nDone: {success} embedded, {failed} failed")
 
 

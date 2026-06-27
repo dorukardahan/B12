@@ -23,7 +23,9 @@ def daemon_request(op: str, **kwargs) -> dict | None:
     Protocol matches b12_mcp_server.py: newline-delimited JSON."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        s.settimeout(5)
+        # 20s: encode_batch (BGE-M3) can run >10s; the former 5s timed out
+        # mid-encode and silently dropped refine's embeddings (audit #9).
+        s.settimeout(float(os.environ.get("B12_DAEMON_CLIENT_TIMEOUT", "20")))
         s.connect(SOCK_PATH)
         s.sendall((json.dumps({"op": op, **kwargs}) + "\n").encode())
         data = b""

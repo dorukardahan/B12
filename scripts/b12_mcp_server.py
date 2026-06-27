@@ -662,11 +662,25 @@ server = FastMCP("B12", lifespan=lifespan)
 
 # ── Helpers ──────────────────────────────────────────────────────
 
+# Client read timeout for embed-daemon round-trips. Must cover the daemon's own
+# encode budget (CONN_TIMEOUT=15; BGE-M3 batches can run >10s). The former 5s
+# timed out mid-encode and silently dropped the embedding — the memory was stored
+# but NOT vector-searchable (audit #9). The daemon serializes connections, so a
+# generous client timeout is safe. Tradeoff: semantic_search now waits up to this
+# long under daemon contention (was 5s) instead of failing fast to FTS — a correct
+# result beats a fast fallback. Env-overridable; parsed defensively so a malformed
+# value can't crash module import (which would take down every memory tool).
+try:
+    _DAEMON_CLIENT_TIMEOUT = float(os.environ.get("B12_DAEMON_CLIENT_TIMEOUT", "20"))
+except (TypeError, ValueError):
+    _DAEMON_CLIENT_TIMEOUT = 20.0
+
+
 def daemon_request(op: str, **kwargs) -> dict | None:
     """Send JSON to embed_daemon via Unix socket. Returns None on failure."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     try:
-        s.settimeout(5)
+        s.settimeout(_DAEMON_CLIENT_TIMEOUT)
         s.connect(SOCK_PATH)
         s.sendall((json.dumps({"op": op, **kwargs}) + "\n").encode())
         data = b""
@@ -1041,6 +1055,15 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
 
     # Embed via daemon (graceful degradation) — outside lock, daemon call is slow
     resp = await daemon_request_async("encode_batch", texts=[content])
+    if not (resp and resp.get("embeddings")):
+        # The memory IS stored (committed above) but has no vector embedding, so
+        # it's FTS-searchable but not semantic/find_neighbors-searchable. This was
+        # silent before the timeout fix (audit #9); surface it so a daemon outage
+        # or a too-short timeout is visible. (embedding_backfill.py can re-embed.)
+        _sys.stderr.write(
+            f"[b12_mcp_server] embedding skipped for id={mem_id} "
+            f"(daemon down or encode timed out) — memory stored but not vector-searchable\n"
+        )
     if resp and resp.get("embeddings"):
         emb_bytes = base64.b64decode(resp["embeddings"][0])
 
@@ -2314,8 +2337,9 @@ async def memory_import(
 
     # PLAIN to_thread — do NOT route through the BB1 single writer (_write/_write_raw).
     # import_memories opens its OWN connection (export_import.py:280) with its own
-    # BEGIN/commit/rollback (~:291) and an embedded ~5s blocking embedding-backfill
-    # socket call (~:341, _request_embedding_backfill). Nesting that inside the
+    # BEGIN/commit/rollback (~:291) and an embedded post-commit embedding-backfill
+    # (~:341, _request_embedding_backfill — scoped to the imported rows' hashes, so
+    # bounded encode_batch socket work). Nesting that inside the
     # writer's BEGIN IMMEDIATE would throw "cannot start a transaction within a
     # transaction", and holding the single writer across the socket wait would stall
     # every connected tab. The standalone CLI path (export_import.py __main__) also
