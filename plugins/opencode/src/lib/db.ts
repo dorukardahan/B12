@@ -450,7 +450,10 @@ export class B12Database {
             const words = query
               .split(/\s+/)
               .map((w) => w.trim())
-              .filter((w) => w.length > 1);
+              // Trigram FTS (memory_content_fts) yields no tokens for <3-char
+              // strings, so a 2-char OR term matches 0 rows; the stemmed table
+              // handles 2-char. Match the active table's minimum. (audit M3)
+              .filter((w) => w.length >= (stemmed ? 2 : 3));
             if (!words.length) break;
             ftsQuery = words
               .map((w) => '"' + w.replace(/"/g, '""') + '"')
@@ -577,7 +580,10 @@ export class B12Database {
             const words = query
               .split(/\s+/)
               .map((w) => w.trim())
-              .filter((w) => w.length > 1);
+              // Trigram FTS (memory_content_fts) yields no tokens for <3-char
+              // strings, so a 2-char OR term matches 0 rows; the stemmed table
+              // handles 2-char. Match the active table's minimum. (audit M3)
+              .filter((w) => w.length >= (stemmed ? 2 : 3));
             if (!words.length) break;
             ftsQuery = words
               .map((w) => '"' + w.replace(/"/g, '""') + '"')

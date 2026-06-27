@@ -366,7 +366,7 @@ class B12Database {
           if (ftsAttempt === "phrase") {
             ftsQuery = '"' + query.replace(/"/g, '""') + '"';
           } else {
-            const words = query.split(/\s+/).map((w) => w.trim()).filter((w) => w.length > 1);
+            const words = query.split(/\s+/).map((w) => w.trim()).filter((w) => w.length >= (stemmed ? 2 : 3));
             if (!words.length)
               break;
             ftsQuery = words.map((w) => '"' + w.replace(/"/g, '""') + '"').join(" OR ");
@@ -456,7 +456,7 @@ class B12Database {
           if (ftsAttempt === "phrase") {
             ftsQuery = '"' + query.replace(/"/g, '""') + '"';
           } else {
-            const words = query.split(/\s+/).map((w) => w.trim()).filter((w) => w.length > 1);
+            const words = query.split(/\s+/).map((w) => w.trim()).filter((w) => w.length >= (stemmed ? 2 : 3));
             if (!words.length)
               break;
             ftsQuery = words.map((w) => '"' + w.replace(/"/g, '""') + '"').join(" OR ");

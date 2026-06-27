@@ -131,9 +131,16 @@ def _ann_supported(conn):
     `use_ann` is True only when both gates pass: [recall.ann].enabled = true
     in ~/.B12/config.toml AND active memory_embeddings count >= threshold_count.
     """
-    enabled = bool(_b12_cfg_get("recall", "ann", "enabled", default=False))
-    raw_threshold = _b12_cfg_get("recall", "ann", "threshold_count", default=10000)
-    threshold = int(raw_threshold) if isinstance(raw_threshold, (int, float)) else 10000
+    # Default-ON to match the documented guarantee (README / architecture.md). ANN
+    # is safe by default: _ann_topk_rowids returns [] on any sqlite-vec error and
+    # the caller full-scans, and it only activates once count >= threshold. The
+    # former enabled=False/threshold=10000 code defaults meant every install
+    # WITHOUT the install.sh config seed (missing/custom B12_DATA_DIR, TOML parse
+    # error, Python<3.11) silently fell back to ORDER BY id DESC LIMIT — hiding
+    # most of a large corpus from semantic recall. (audit #10)
+    enabled = bool(_b12_cfg_get("recall", "ann", "enabled", default=True))
+    raw_threshold = _b12_cfg_get("recall", "ann", "threshold_count", default=500)
+    threshold = int(raw_threshold) if isinstance(raw_threshold, (int, float)) else 500
     # P5: clamp to a sane range so a config typo (0, negative, or absurd) can't
     # either force ANN on for a near-empty table or wedge it off forever.
     threshold = max(100, min(threshold, 1_000_000))
