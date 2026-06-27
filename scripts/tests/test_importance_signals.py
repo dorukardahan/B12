@@ -60,6 +60,76 @@ def test_deadline_bare_kadar_not_a_deadline():
     assert score_with_breakdown("ne kadar güzel bir gün").deadline_hit is False
     assert score_with_breakdown("bu kadar yeter").deadline_hit is False
 
+def test_deadline_bare_weekday_not_a_deadline():
+    # audit #11: a weekday alone (past / recurring / greeting / adjective) is NOT
+    # a deadline — only a weekday in a deadline context is.
+    for s in ("we met last Monday to discuss the API",
+              "standup is every Tuesday",
+              "Happy Friday everyone!",
+              "Monday morning sync notes",
+              "geçen cuma toplandık"):
+        assert score_with_breakdown(s).deadline_hit is False, s
+
+def test_deadline_weekday_in_context_fires():
+    # audit #11: a weekday WITH a deadline preposition (or TR dative + "kadar") is
+    # a real deadline.
+    for s in ("submit the report by Friday",
+              "this is due before Monday",
+              "finish it due Tuesday",
+              "ship until next Friday",
+              "raporu cumaya kadar bitir",
+              "pazartesiye kadar teslim et",
+              "Cuma'ya kadar yetiştir",
+              # day-noun form "<weekday> gününe kadar" (Codex PR #140)
+              "cuma gününe kadar hazır olsun",
+              "pazar gününe kadar hazır olsun",
+              "cuma gunune kadar bitir",
+              # time-of-day form "<weekday> <akşam/sabah/...>(dative) kadar" (Codex)
+              "cuma akşamına kadar hazır olsun",
+              "pazartesi sabahına kadar bitir",
+              "pazar akşamına kadar sürecek",
+              # EN time qualifier before the weekday, incl. "on" (Codex PR #140)
+              "deliver by noon Friday",
+              "finish before 5pm Friday",
+              "ship by 9 Monday",
+              "deliver by noon on Friday",
+              "finish before 5pm on Friday",
+              # TR "end of weekday" via sonu/sonuna (Codex PR #140)
+              "cuma sonuna kadar bitir",
+              "cuma gün sonuna kadar bitir",
+              # TR numeric time after the weekday (Codex PR #140)
+              "cuma 5'e kadar hazır olsun",
+              "pazartesi 17:00'ye kadar bitir",
+              # "by the end of" + weekday, plural due dates, TR "dek" (Codex PR #140)
+              "finish by the end of Friday",
+              "due dates: Friday and Monday",
+              "cumaya dek bitir",
+              "cuma gününe dek bitir"):
+        assert score_with_breakdown(s).deadline_hit is True, s
+
+def test_deadline_tr_comparative_kadar_not_a_deadline():
+    # audit #11: the COMPARATIVE "kadar" ("as ... as") must not mis-fire as a
+    # deadline. The dative is enumerated, so "pazarlama" (≠ "pazar"+dative) is safe.
+    for s in ("pazarlama kadar önemli bir konu", "bu özellik test kadar kritik",
+              "cuma kahve kadar güzel", "cuma günü kadar mutlu",
+              # "pazar" = market (not Sunday) without a day/time noun (Codex PR #140)
+              "pazara kadar yürüdük", "pazara kadar git"):
+        assert score_with_breakdown(s).deadline_hit is False, s
+
+def test_deadline_by_the_end_of_requires_temporal_target():
+    # Codex PR #140: "by (the) end of <weekday>" is a deadline, but "by the end of
+    # <non-temporal>" is not.
+    assert score_with_breakdown("finish by the end of Friday").deadline_hit is True
+    for s in ("I was bored by the end of the book",
+              "by the end of the meeting we understood the API"):
+        assert score_with_breakdown(s).deadline_hit is False, s
+
+def test_deadline_due_date_noun_fires():
+    # Codex PR #140: "due date is Friday"/"due date: ..." are explicit deadline
+    # contexts the "due <temporal>" pattern doesn't cover — keep the FACT floor.
+    for s in ("due date is Friday", "due date: 2026-07-01", "the due date hasn't been set"):
+        assert score_with_breakdown(s).deadline_hit is True, s
+
 
 # ── Task 3: commitment detector (DECISION 0.75, guarded + negation) ────────
 
@@ -103,6 +173,62 @@ def test_en_negated_future_not_commitment():
               "we will, however, not migrate"):
         assert score_with_breakdown(s).commitment_hit is False, s
     assert score_with_breakdown("we will migrate next week").commitment_hit is True
+
+def test_will_see_is_hedge_not_commitment():
+    # audit #11: the deferral idiom "<subj> will/'ll see" (clause-end or see
+    # how/what/whether/if/about) is not a commitment.
+    for s in ("we will see how it goes", "we'll see", "we'll see.",
+              "I will see what happens", "we will see if it works",
+              "we'll see about that"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+    # a real commitment alongside the hedge still fires.
+    assert score_with_breakdown("we'll deploy, then we'll see").commitment_hit is True
+    assert score_with_breakdown("we will deploy the fix tomorrow").commitment_hit is True
+
+def test_will_see_continuation_with_inner_modal_not_commitment():
+    # Codex PR #140: a modal INSIDE the deferral clause must not re-trigger commit —
+    # the whole hedge continuation is consumed up to the clause boundary, across all
+    # wh-continuations.
+    for s in ("we'll see if we need to migrate",
+              "we will see how we will deploy",
+              "we'll see whether we should refactor",
+              "we'll see when we need to migrate",
+              "we'll see where we will deploy",
+              "we'll see who will own it",
+              "we'll see which approach we should take",
+              "we'll see why it failed",
+              # bilingual: a Turkish obligation INSIDE the hedge is not a commitment
+              "we'll see if bunu yapmalı mıyız"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+    # ...but a Turkish obligation OUTSIDE the hedge still fires.
+    assert score_with_breakdown("yapmalıyız, then we'll see").commitment_hit is True
+    # coordinated alternatives INSIDE the deferral are part of the hedge.
+    for s in ("we'll see whether we will deploy or we will rollback",
+              "we'll see if we deploy and we rollback"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+    # a real commitment in a SEPARATE clause (sentence / comma / before) still fires.
+    assert score_with_breakdown(
+        "we'll deploy, then we'll see if we need to rollback").commitment_hit is True
+    assert score_with_breakdown(
+        "we'll see how it goes. We must migrate.").commitment_hit is True
+    assert score_with_breakdown(
+        "we'll see about it, but we must decide").commitment_hit is True
+    # a colon, newline, em/en dash, or spaced ASCII hyphen bounds the hedge clause
+    # so the real commitment on the far side still fires (Codex PR #140).
+    for sep in (": ", "\n", " — ", " – ", " - ", " -- ", " (", " ["):
+        tail = "we must migrate)" if sep == " (" else (
+            "we must migrate]" if sep == " [" else "we must migrate")
+        s = f"we'll see how it goes{sep}{tail}"
+        assert score_with_breakdown(s).commitment_hit is True, s
+    # an intra-word hyphen does NOT bound it (the whole thing stays a deferral).
+    assert score_with_breakdown("we'll see how it re-deploys the service").commitment_hit is False
+    # a multiline deferral with no commitment on the next line is still not a commit.
+    assert score_with_breakdown("we'll see how it goes\nmaybe later").commitment_hit is False
+
+def test_literal_will_see_object_is_still_commitment():
+    # Codex PR #140: "see <object>" is literal, not a hedge — must stay DECISION.
+    for s in ("I'll see you tomorrow", "I will see Alice on Monday", "we will see the doctor"):
+        assert score_with_breakdown(s).commitment_hit is True, s
 
 
 # ── Task 4: explicit memory-cue detector (MEMORABLE 0.90, guarded) ─────────

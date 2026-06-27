@@ -177,6 +177,40 @@ _NEG_MODAL: re.Pattern[str] = re.compile(
     # "we will, however, not").
     r"(?:will|'ll)(?:[\s,]+\w+){0,3}[\s,]+(?:not|never))\b"
 )
+# "<subject> will/'ll see" is a deferral idiom ("we'll see", "we'll see how it
+# goes"), NOT a commitment. Matches the deferral shape only — clause-end ("we'll
+# see[.]") or a deferral continuation (see how/what/whether/if/about ...) — so a
+# LITERAL "see <object>" commitment is preserved ("I'll see you tomorrow", "I will
+# see Alice on Monday" stay DECISION). The continuation is consumed up to the next
+# CLAUSE punctuation (sentence terminator OR comma), which INCLUDES coordinated
+# alternatives inside the same clause ("we'll see whether we will deploy or we will
+# rollback") so _detect_commitment's rescan does not re-trigger on a modal INSIDE
+# the deferral. A commitment in a SEPARATE clause — after a sentence terminator
+# ("...how it goes. We must migrate.") or a comma ("...about it, but we must
+# decide") or BEFORE the hedge ("we'll deploy, then we'll see ...") — still fires.
+# (Accepted limitation: an UNPUNCTUATED run-on that coordinates a real commitment
+# onto a deferral, "we'll see how it goes and we must ship", is treated as part of
+# the deferral — a rare, low-stakes band miss.) Audit #11 + Codex review.
+_HEDGE_FUTURE: re.Pattern[str] = re.compile(
+    r"\b(?:i|we|you|they|he|she)(?:'ll|\s+will)\s+see\b"
+    # Consume the deferral continuation up to the next clause separator. Besides
+    # sentence terminators and commas, a colon, a newline, or an em/en dash also
+    # bounds a clause — excluding them keeps a real commitment on the other side
+    # ("we'll see how it goes: we must migrate", "... — we must migrate", or
+    # "must migrate" on the next line) out of the hedge.
+    # Consume the continuation but STOP before a spaced ASCII hyphen "<space>-"
+    # (a clause separator like "... - we must migrate") via the tempered (?!\s-),
+    # while a hyphen INSIDE a word ("re-deploy", "well-known") has no preceding
+    # space and is consumed normally. Em/en dashes stop via the char class.
+    r"(?:\s+(?:how|what|whether|if|about|when|where|who|whom|whose|which|why)\b"
+    r"(?:(?!\s-)[^.!?;,:\n\r–—()\[\]])*)?"
+    # A newline directly after the deferral is itself a clause boundary (a multiline
+    # memory whose next line is NOT a commitment, "we'll see how it goes\nmaybe
+    # later", must still strip the hedge so the bare "we'll" doesn't score DECISION).
+    # A spaced ASCII hyphen and an opening parenthesis/bracket also bound the clause
+    # ("we'll see how it goes (we must migrate)" must surface the parenthesized must).
+    r"(?=\s*$|[\n\r]|\s*[-.,!?;:–—()\[\]])"
+)
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
 # numeric dates; this adds ISO dates and the *relative* deadline keyword
@@ -190,6 +224,10 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # and negated "not due" that bare "due" used to mis-fire on. ("due Friday"
     # is still caught by the weekday token.)
     re.compile(r"\bdue\s+(?:(?:on|by|before|today|tonight|tomorrow|next|this)\b|\d)"),
+    # "due date(s)" as an explicit deadline noun, singular or plural ("due date is
+    # Friday", "due dates: Friday and Monday") — the "due <temporal>" form doesn't
+    # cover the noun "date(s)" (Codex PR #140).
+    re.compile(r"\bdue\s+dates?\b"),
     # predicate "is/are due" only when "due" ends the clause (end / punctuation)
     # or is followed by a temporal word/number — so "the report is due[.]" /
     # "is due tomorrow" fire, but the idioms "is due diligence/process/credit"
@@ -198,25 +236,67 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\b(?:is|are|was|were|it'?s|they'?re)\s+due"
         r"(?=\s*$|\s*[.,!?;:)]|\s+(?:on|by|before|today|tonight|tomorrow|next|this)\b|\s+\d)"
     ),
+    # A weekday is a deadline ONLY in a deadline context — a deadline preposition
+    # before it ("by Friday", "before Monday", "due Tuesday", "until next Friday").
+    # A BARE weekday is not a deadline ("we met last Monday", "standup every
+    # Tuesday", "Happy Friday", "Monday morning sync") — audit #11. ("on Monday"
+    # is intentionally excluded: it is as often past/scheduling as a deadline.)
+    re.compile(
+        r"\b(?:by|before|until|till|due|no later than)\s+"
+        # optional "(the) end of" so "by (the) end of Friday" matches via the weekday
+        # target — WITHOUT a bare "by the end of" token that fired on non-temporal
+        # objects ("by the end of the meeting/book", Codex PR #140).
+        r"(?:(?:the\s+)?end\s+of\s+)?"
+        # optional time qualifier between the preposition and the weekday
+        # ("by noon Friday", "before 5pm Friday", "by 9 Monday")
+        r"(?:(?:noon|midnight|eod|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+)?"
+        # "on" is allowed here ONLY after the leading preposition ("by noon on
+        # Friday") — a BARE "on Friday" still doesn't match (no leading by/before/...).
+        r"(?:next\s+|this\s+|on\s+)?"
+        r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    ),
+    # Turkish weekday deadline: "<weekday>(dative) kadar" ("cumaya kadar" = by
+    # Friday), the day-noun form "<weekday> gününe kadar", and the time-of-day form
+    # "<weekday> <akşam/sabah/öğle/gece>(dative) kadar" ("cuma akşamına kadar" = by
+    # Friday evening, "pazartesi sabahına kadar" = by Monday morning). The dative is
+    # enumerated (direct ye/ya/a; intervening noun = a known day/time stem + inflection
+    # ENDING in a dative a/e) — never a bare \w* — so the COMPARATIVE "kadar"
+    # ("pazarlama kadar önemli", "cuma kahve kadar güzel") does NOT mis-fire: neither
+    # "pazarlama" nor the non-time noun "kahve" matches the stem set.
+    re.compile(
+        r"\b(?:"
+        # Unambiguous weekdays: direct dative, day/time noun, or numeric time.
+        r"(?:pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|cumartesi)"
+        r"(?:'?(?:ye|ya|a)"
+        r"|\s+(?:g[üu]n\s+)?(?:g[üu]n|son|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
+        # numeric time after the weekday ("cuma 5'e kadar", "pazartesi 17:00'ye kadar")
+        r"|\s+\d{1,2}(?::\d{2})?'?\w*)"
+        # "pazar" is ambiguous (Sunday vs "market"), so it requires an explicit
+        # day/time noun ("pazar gününe/akşamına kadar") — NOT the bare dative
+        # "pazara" (= "to the market", "pazara kadar yürüdük") — Codex PR #140.
+        r"|pazar\s+(?:g[üu]n\s+)?(?:g[üu]n|son|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
+        r")"
+        # "dek" is a literary synonym of "kadar" (until) — same deadline sense.
+        r"\s+(?:kadar|dek)\b"
+    ),
 )
 _DEADLINE_TOKENS: tuple[str, ...] = (
     # Single words are matched with word boundaries by _token_in (so "till"
     # never matches inside "still"); only the genuinely multi-word phrases below
-    # are substring-matched. ("due" is handled by a pattern above so the causal
-    # "due to" is excluded.)
+    # are substring-matched. ("due" + weekdays are handled by patterns above so
+    # the causal "due to" and bare/past weekday mentions don't mis-fire — #11.)
     "deadline", "expires", "expiry", "by end of",
     "no later than", "until", "till",
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-    # Turkish
+    # "due date(s)" is handled by the \bdue\s+dates?\b pattern above (singular +
+    # plural); "by (the) end of <weekday>" is handled by the weekday pattern above
+    # (NOT a bare "by the end of" token — that over-fired on non-temporal objects).
+    # Weekdays are NOT bare tokens — a weekday only signals a deadline inside the
+    # deadline-context patterns above ("by Friday" / "cumaya kadar"), audit #11.
+    # Turkish explicit deadline words.
     # NB: bare "kadar" is intentionally NOT a deadline token — it is far more
     # common outside deadlines ("ne kadar güzel", "bu kadar yeter"). The
-    # "<date>'e kadar" deadline sense is carried by the co-occurring date /
-    # weekday tokens instead.
+    # "<weekday>(dative) kadar" deadline sense is carried by the pattern above.
     "son tarih", "vade", "teslim", "bitiş tarihi", "bitis tarihi",
-    # NB: bare "pazar" is omitted — it is also the common noun "market"
-    # ("pazar araştırması"). Use the unambiguous "pazar günü" (Sunday) instead.
-    "pazartesi", "salı", "sali", "çarşamba", "carsamba", "perşembe", "persembe",
-    "cuma", "cumartesi", "pazar günü", "pazar gunu",
 )
 
 # Person mention — @handle or email local-part ONLY in Phase 2. The noisy
@@ -593,6 +673,20 @@ def _detect_commitment(lower: str) -> bool:
         residual = _TR_NEG_OBLIGATION.sub(" ", lower)
         residual_hit = (any(_token_in(residual, tok) for tok in _COMMIT_TOKENS)
                         or bool(_COMMIT_TR_WORDS.search(residual)))
+        if not residual_hit:
+            return False
+    # "<subj> will see" is a deferral idiom, not a commitment. Subtract it; commit
+    # only if another (non-hedge) signal remains ("we'll deploy, then we'll see").
+    # ALL signals are recomputed on the residual — including the Turkish -malı/-meli
+    # suffix — so a bilingual deferral whose obligation lives INSIDE the hedge
+    # ("we'll see if bunu yapmalı mıyız") is not boosted, while a real obligation
+    # OUTSIDE it still fires.
+    if _HEDGE_FUTURE.search(lower):
+        residual = _HEDGE_FUTURE.sub(" ", lower)
+        residual_hit = (any(_token_in(residual, tok) for tok in _COMMIT_TOKENS)
+                        or bool(_COMMIT_TR_WORDS.search(residual))
+                        or (bool(_COMMIT_TR_SUFFIX.search(residual))
+                            and not _TR_NEG_SUFFIX.search(residual)))
         if not residual_hit:
             return False
     return True
