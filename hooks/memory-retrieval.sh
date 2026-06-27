@@ -372,7 +372,12 @@ RESULTS=$(sqlite3 "$DB_PATH" "
            (
              0.25 * max(1.0 / (1.0 + age_days / (9.0 * COALESCE(strength, 1.0) * (1.0 + 4.0 * imp_norm))), 0.01)
              + 0.25 * imp_norm
-             + 0.40 * (1.0 / (1.0 + abs(rank)))
+             -- BM25 relevance: FTS5 rank is negative (more-negative = better match),
+             -- so relevance must INCREASE with abs(rank). The old 1/(1+abs(rank))
+             -- DECREASED with match strength (best matches scored lowest) — the same
+             -- inversion fixed in the MCP _unified_score (v11.0.0) but never in this
+             -- hook SQL. Parity with b12_mcp_server.py: min(abs(rank)/20, 1.0). (audit #3)
+             + 0.40 * min(abs(rank) / 20.0, 1.0)
              + 0.10 * min(COALESCE(strength, 1.0) / 5.0, 1.0)
            ) as score
     FROM base

@@ -261,6 +261,33 @@ def test_aging_hook_sql_matches_unified_score():
         assert abs(py_s - sql_s) < 1e-4, (age, imp, st, py_s, sql_s)
 
 
+def test_ret3_hook_bm25_not_inverted():
+    """audit #3: the UserPromptSubmit recall hook's BM25 term must INCREASE with
+    match strength. FTS5 rank is negative (more-negative = better), so the old
+    `1/(1+abs(rank))` ranked the best matches lowest. Parity with the MCP path:
+    min(abs(rank)/20, 1.0)."""
+    import re
+    from pathlib import Path
+    hook = Path(__file__).resolve().parents[2] / "hooks" / "memory-retrieval.sh"
+    src = hook.read_text()
+    # Whitespace-robust: tolerate future reformatting of the SQL expression.
+    assert re.search(r"min\(\s*abs\(rank\)\s*/\s*20\.0\s*,\s*1\.0\s*\)", src), "hook BM25 term not corrected to the parity formula"
+    assert not re.search(r"1\.0\s*/\s*\(\s*1\.0\s*\+\s*abs\(rank\)\s*\)", src), "hook still carries the inverted BM25 term"
+
+
+def test_ret3_bm25_relevance_monotonic():
+    """The corrected term must score a strong match (rank -18) above a weak one
+    (rank -3)."""
+    import pytest
+    db = sqlite3.connect(":memory:")
+    def rel(rank):
+        return db.execute("SELECT 0.40 * min(abs(?) / 20.0, 1.0)", (rank,)).fetchone()[0]
+    strong, weak = rel(-18.0), rel(-3.0)
+    assert strong > weak, f"BM25 relevance still inverted: strong({strong}) !> weak({weak})"
+    # And it saturates at the cap, never exceeding the 0.40 weight.
+    assert rel(-100.0) == pytest.approx(0.40)
+
+
 if __name__ == "__main__":
     rc = 0
     fns = [v for k, v in dict(globals()).items() if k.startswith("test_")]
