@@ -177,6 +177,12 @@ _NEG_MODAL: re.Pattern[str] = re.compile(
     # "we will, however, not").
     r"(?:will|'ll)(?:[\s,]+\w+){0,3}[\s,]+(?:not|never))\b"
 )
+# "<subject> will/'ll see" is a deferral idiom ("we'll see", "I will see how it
+# goes"), NOT a commitment. It is subtracted in _detect_commitment, so a real
+# commitment elsewhere in the same content still fires (audit #11).
+_HEDGE_FUTURE: re.Pattern[str] = re.compile(
+    r"\b(?:i|we|you|they|he|she)(?:'ll|\s+will)\s+see\b"
+)
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
 # numeric dates; this adds ISO dates and the *relative* deadline keyword
@@ -198,25 +204,39 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\b(?:is|are|was|were|it'?s|they'?re)\s+due"
         r"(?=\s*$|\s*[.,!?;:)]|\s+(?:on|by|before|today|tonight|tomorrow|next|this)\b|\s+\d)"
     ),
+    # A weekday is a deadline ONLY in a deadline context — a deadline preposition
+    # before it ("by Friday", "before Monday", "due Tuesday", "until next Friday").
+    # A BARE weekday is not a deadline ("we met last Monday", "standup every
+    # Tuesday", "Happy Friday", "Monday morning sync") — audit #11. ("on Monday"
+    # is intentionally excluded: it is as often past/scheduling as a deadline.)
+    re.compile(
+        r"\b(?:by|before|until|till|due|no later than)\s+(?:next\s+|this\s+)?"
+        r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
+    ),
+    # Turkish weekday deadline: "<weekday>(dative) kadar" ("cumaya kadar" = by
+    # Friday, "pazartesiye kadar" = by Monday). The dative suffix is enumerated
+    # (ye/ya/a, optional apostrophe for "cuma'ya") rather than a bare \w*, so the
+    # COMPARATIVE "kadar" ("pazarlama kadar önemli" = as important as marketing)
+    # does NOT mis-fire — "pazarlama" is not "pazar" + a dative vowel.
+    re.compile(
+        r"\b(?:pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|"
+        r"cumartesi|pazar)'?(?:ye|ya|a)\s+kadar\b"
+    ),
 )
 _DEADLINE_TOKENS: tuple[str, ...] = (
     # Single words are matched with word boundaries by _token_in (so "till"
     # never matches inside "still"); only the genuinely multi-word phrases below
-    # are substring-matched. ("due" is handled by a pattern above so the causal
-    # "due to" is excluded.)
+    # are substring-matched. ("due" + weekdays are handled by patterns above so
+    # the causal "due to" and bare/past weekday mentions don't mis-fire — #11.)
     "deadline", "expires", "expiry", "by end of",
     "no later than", "until", "till",
-    "monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday",
-    # Turkish
+    # Weekdays are NOT bare tokens — a weekday only signals a deadline inside the
+    # deadline-context patterns above ("by Friday" / "cumaya kadar"), audit #11.
+    # Turkish explicit deadline words.
     # NB: bare "kadar" is intentionally NOT a deadline token — it is far more
     # common outside deadlines ("ne kadar güzel", "bu kadar yeter"). The
-    # "<date>'e kadar" deadline sense is carried by the co-occurring date /
-    # weekday tokens instead.
+    # "<weekday>(dative) kadar" deadline sense is carried by the pattern above.
     "son tarih", "vade", "teslim", "bitiş tarihi", "bitis tarihi",
-    # NB: bare "pazar" is omitted — it is also the common noun "market"
-    # ("pazar araştırması"). Use the unambiguous "pazar günü" (Sunday) instead.
-    "pazartesi", "salı", "sali", "çarşamba", "carsamba", "perşembe", "persembe",
-    "cuma", "cumartesi", "pazar günü", "pazar gunu",
 )
 
 # Person mention — @handle or email local-part ONLY in Phase 2. The noisy
@@ -594,6 +614,14 @@ def _detect_commitment(lower: str) -> bool:
         residual_hit = (any(_token_in(residual, tok) for tok in _COMMIT_TOKENS)
                         or bool(_COMMIT_TR_WORDS.search(residual)))
         if not residual_hit:
+            return False
+    # "<subj> will see" is a deferral idiom, not a commitment. Subtract it; commit
+    # only if another (non-hedge) signal remains ("we'll deploy, then we'll see").
+    if _HEDGE_FUTURE.search(lower):
+        residual = _HEDGE_FUTURE.sub(" ", lower)
+        residual_hit = (any(_token_in(residual, tok) for tok in _COMMIT_TOKENS)
+                        or bool(_COMMIT_TR_WORDS.search(residual)))
+        if not (residual_hit or suffix_hit):
             return False
     return True
 

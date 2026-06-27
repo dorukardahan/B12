@@ -60,6 +60,34 @@ def test_deadline_bare_kadar_not_a_deadline():
     assert score_with_breakdown("ne kadar güzel bir gün").deadline_hit is False
     assert score_with_breakdown("bu kadar yeter").deadline_hit is False
 
+def test_deadline_bare_weekday_not_a_deadline():
+    # audit #11: a weekday alone (past / recurring / greeting / adjective) is NOT
+    # a deadline — only a weekday in a deadline context is.
+    for s in ("we met last Monday to discuss the API",
+              "standup is every Tuesday",
+              "Happy Friday everyone!",
+              "Monday morning sync notes",
+              "geçen cuma toplandık"):
+        assert score_with_breakdown(s).deadline_hit is False, s
+
+def test_deadline_weekday_in_context_fires():
+    # audit #11: a weekday WITH a deadline preposition (or TR dative + "kadar") is
+    # a real deadline.
+    for s in ("submit the report by Friday",
+              "this is due before Monday",
+              "finish it due Tuesday",
+              "ship until next Friday",
+              "raporu cumaya kadar bitir",
+              "pazartesiye kadar teslim et",
+              "Cuma'ya kadar yetiştir"):
+        assert score_with_breakdown(s).deadline_hit is True, s
+
+def test_deadline_tr_comparative_kadar_not_a_deadline():
+    # audit #11: the COMPARATIVE "kadar" ("as ... as") must not mis-fire as a
+    # deadline. The dative is enumerated, so "pazarlama" (≠ "pazar"+dative) is safe.
+    for s in ("pazarlama kadar önemli bir konu", "bu özellik test kadar kritik"):
+        assert score_with_breakdown(s).deadline_hit is False, s
+
 
 # ── Task 3: commitment detector (DECISION 0.75, guarded + negation) ────────
 
@@ -103,6 +131,14 @@ def test_en_negated_future_not_commitment():
               "we will, however, not migrate"):
         assert score_with_breakdown(s).commitment_hit is False, s
     assert score_with_breakdown("we will migrate next week").commitment_hit is True
+
+def test_will_see_is_hedge_not_commitment():
+    # audit #11: "<subj> will/'ll see" is a deferral idiom, not a commitment.
+    for s in ("we will see how it goes", "we'll see", "I will see what happens"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+    # a real commitment alongside the hedge still fires.
+    assert score_with_breakdown("we'll deploy, then we'll see").commitment_hit is True
+    assert score_with_breakdown("we will deploy the fix tomorrow").commitment_hit is True
 
 
 # ── Task 4: explicit memory-cue detector (MEMORABLE 0.90, guarded) ─────────
