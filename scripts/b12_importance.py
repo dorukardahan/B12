@@ -215,6 +215,10 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # and negated "not due" that bare "due" used to mis-fire on. ("due Friday"
     # is still caught by the weekday token.)
     re.compile(r"\bdue\s+(?:(?:on|by|before|today|tonight|tomorrow|next|this)\b|\d)"),
+    # "due date(s)" as an explicit deadline noun, singular or plural ("due date is
+    # Friday", "due dates: Friday and Monday") — the "due <temporal>" form doesn't
+    # cover the noun "date(s)" (Codex PR #140).
+    re.compile(r"\bdue\s+dates?\b"),
     # predicate "is/are due" only when "due" ends the clause (end / punctuation)
     # or is followed by a temporal word/number — so "the report is due[.]" /
     # "is due tomorrow" fire, but the idioms "is due diligence/process/credit"
@@ -251,7 +255,8 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"|\s+(?:g[üu]n|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
         # numeric time after the weekday ("cuma 5'e kadar", "pazartesi 17:00'ye kadar")
         r"|\s+\d{1,2}(?::\d{2})?'?\w*)"
-        r"\s+kadar\b"
+        # "dek" is a literary synonym of "kadar" (until) — same deadline sense.
+        r"\s+(?:kadar|dek)\b"
     ),
 )
 _DEADLINE_TOKENS: tuple[str, ...] = (
@@ -259,11 +264,10 @@ _DEADLINE_TOKENS: tuple[str, ...] = (
     # never matches inside "still"); only the genuinely multi-word phrases below
     # are substring-matched. ("due" + weekdays are handled by patterns above so
     # the causal "due to" and bare/past weekday mentions don't mis-fire — #11.)
-    "deadline", "due date", "expires", "expiry", "by end of",
+    "deadline", "expires", "expiry", "by end of", "by the end of",
     "no later than", "until", "till",
-    # "due date" is an explicit deadline noun ("due date is Friday", "due date:
-    # 7/1") that the "due <temporal>" pattern doesn't cover — keep it a token so
-    # such memories retain the FACT floor (Codex PR #140 review).
+    # "due date(s)" is handled by the \bdue\s+dates?\b pattern above so the plural
+    # form also fires; "by the end of" complements the bare "by end of" (Codex #140).
     # Weekdays are NOT bare tokens — a weekday only signals a deadline inside the
     # deadline-context patterns above ("by Friday" / "cumaya kadar"), audit #11.
     # Turkish explicit deadline words.

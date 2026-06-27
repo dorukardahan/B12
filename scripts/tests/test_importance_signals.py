@@ -94,7 +94,12 @@ def test_deadline_weekday_in_context_fires():
               "ship by 9 Monday",
               # TR numeric time after the weekday (Codex PR #140)
               "cuma 5'e kadar hazır olsun",
-              "pazartesi 17:00'ye kadar bitir"):
+              "pazartesi 17:00'ye kadar bitir",
+              # "by the end of" + weekday, plural due dates, TR "dek" (Codex PR #140)
+              "finish by the end of Friday",
+              "due dates: Friday and Monday",
+              "cumaya dek bitir",
+              "cuma gününe dek bitir"):
         assert score_with_breakdown(s).deadline_hit is True, s
 
 def test_deadline_tr_comparative_kadar_not_a_deadline():
