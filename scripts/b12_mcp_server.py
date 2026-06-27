@@ -2775,14 +2775,17 @@ def _init_responses_compatible(new_resp, cached_resp) -> bool:
     """True if a reconnect's `initialize` response negotiates the same protocol
     version + capability surface the client already saw. A material difference
     (protocol/capability drift after a redeploy) means we must NOT silently splice
-    the new session onto the old client — fall back to manual reconnect instead."""
+    the new session onto the old client — fall back to manual reconnect instead.
+    Capabilities are compared by VALUE (canonical JSON), not just top-level keys, so
+    a nested change (e.g. tools.listChanged flipping) is caught too (Codex PR #141)."""
     if not isinstance(new_resp, dict) or not isinstance(cached_resp, dict):
         return True  # can't compare → don't block the reconnect
     rn = new_resp.get("result") or {}
     rc = cached_resp.get("result") or {}
     if rn.get("protocolVersion") != rc.get("protocolVersion"):
         return False
-    return sorted((rn.get("capabilities") or {}).keys()) == sorted((rc.get("capabilities") or {}).keys())
+    return (json.dumps(rn.get("capabilities") or {}, sort_keys=True)
+            == json.dumps(rc.get("capabilities") or {}, sort_keys=True))
 
 
 async def _run_as_proxy(sock_path: str) -> None:
@@ -2824,6 +2827,7 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
     """Core reconnect-capable JSON-RPC pipe, parameterized on `stdin_reader` (an
     asyncio.StreamReader) and `write_stdout` (a bytes->None sink) so tests can drive
     it against a mock daemon socket. See _run_as_proxy for the wire/reconnect contract."""
+    import sys as _sys  # local: the drift-exit branch logs to stderr (Codex PR #141 retro)
     loop = asyncio.get_running_loop()
 
     sock_reader, sock_writer = await asyncio.open_unix_connection(sock_path)
@@ -2847,11 +2851,15 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
             pass
         deadline = loop.time() + budget
         backoff = 0.1
-        while budget > 0 and loop.time() < deadline and not stdin_closed.is_set():
+
+        def _remaining() -> float:
+            return deadline - loop.time()
+
+        while budget > 0 and _remaining() > 0 and not stdin_closed.is_set():
             try:
                 new_r, new_w = await asyncio.open_unix_connection(sock_path)
             except (ConnectionRefusedError, FileNotFoundError, OSError):
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(min(backoff, max(0.0, _remaining())))
                 backoff = min(backoff * 2, 2.0)
                 continue
             try:
@@ -2861,7 +2869,12 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
                     new_resp = None
                     new_resp_line = None
                     while True:
-                        rline = await asyncio.wait_for(new_r.readline(), timeout=5.0)
+                        # clamp the per-read wait to the remaining budget so a daemon
+                        # that accepts but never answers can't overshoot the cap.
+                        _to = min(5.0, _remaining())
+                        if _to <= 0:
+                            raise asyncio.TimeoutError
+                        rline = await asyncio.wait_for(new_r.readline(), timeout=_to)
                         if not rline:
                             raise ConnectionError("eof during initialize replay")
                         m = _json_or_none(rline)
@@ -2898,15 +2911,27 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
                     new_w.close()
                 except Exception:
                     pass
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(min(backoff, max(0.0, _remaining())))
                 backoff = min(backoff * 2, 2.0)
                 continue
             # Success: answer the orphaned in-flight requests so the host fails fast
-            # (retryable) instead of hanging until MCP_TIMEOUT.
-            for rid in list(state["outstanding"]):
-                err = {"jsonrpc": "2.0", "id": rid,
-                       "error": {"code": -32001, "message": "B12 reconnected; please retry"}}
-                write_stdout((json.dumps(err) + "\n").encode())
+            # (retryable) instead of hanging until MCP_TIMEOUT. NB: a response the
+            # daemon wrote into the socket buffer just before the drop is unobserved,
+            # so its id is still outstanding and gets -32001 instead of the real
+            # result — recoverable (host retries), inherent to any reconnect proxy.
+            # Guard the write: if the host already closed stdout, give up cleanly
+            # rather than raising an unretrieved task exception.
+            try:
+                for rid in list(state["outstanding"]):
+                    err = {"jsonrpc": "2.0", "id": rid,
+                           "error": {"code": -32001, "message": "B12 reconnected; please retry"}}
+                    write_stdout((json.dumps(err) + "\n").encode())
+            except (BrokenPipeError, OSError):
+                try:
+                    new_w.close()
+                except Exception:
+                    pass
+                return False
             state["outstanding"].clear()
             conn["reader"], conn["writer"] = new_r, new_w
             connected.set()
@@ -2925,9 +2950,10 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
                     await connected.wait()
                     if give_up.is_set():
                         return
+                    w = conn["writer"]
                     try:
-                        conn["writer"].write(line)
-                        await conn["writer"].drain()
+                        w.write(line)
+                        await w.drain()
                         # Track as outstanding ONLY now that it actually reached the
                         # daemon — so a request queued while connected was cleared
                         # (and thus re-sent to the NEW daemon) is never both
@@ -2936,7 +2962,12 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
                             state["outstanding"].add(req_id)
                         break
                     except (ConnectionResetError, BrokenPipeError, OSError):
-                        connected.clear()  # socket_to_stdout will see EOF and reconnect
+                        # Clear `connected` ONLY if the writer we failed on is still
+                        # current. If _reconnect already swapped in a fresh writer (and
+                        # set `connected`), clearing here would wedge stdin waiting for
+                        # a set that never comes; instead just retry on the new writer.
+                        if conn["writer"] is w:
+                            connected.clear()  # socket_to_stdout will see EOF + reconnect
                         try:
                             await asyncio.wait_for(connected.wait(), timeout=budget + 2.0)
                         except asyncio.TimeoutError:
