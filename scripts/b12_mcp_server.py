@@ -1189,8 +1189,14 @@ async def memory_search(
                     if fts_attempt == "phrase":
                         fts_query = '"' + query.replace('"', '""') + '"'
                     else:
-                        # Split into words, join with OR for broader matching
-                        words = [w.strip() for w in query.split() if len(w.strip()) > 1]
+                        # Split into words, join with OR for broader matching.
+                        # Trigram FTS (memory_content_fts) produces NO tokens for
+                        # <3-char strings, so a 2-char OR term matches 0 rows; only
+                        # the stemmed/unicode table handles 2-char. Drop sub-min
+                        # tokens for the active table so a pure-2-char query skips a
+                        # guaranteed-empty FTS query and relies on semantic. (audit #19)
+                        _min_tok = 2 if stemmed else 3
+                        words = [w.strip() for w in query.split() if len(w.strip()) >= _min_tok]
                         if not words:
                             break
                         fts_query = " OR ".join(
