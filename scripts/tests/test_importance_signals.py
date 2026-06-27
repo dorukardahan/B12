@@ -88,10 +88,15 @@ def test_deadline_weekday_in_context_fires():
               "cuma akşamına kadar hazır olsun",
               "pazartesi sabahına kadar bitir",
               "pazar akşamına kadar sürecek",
-              # EN time qualifier before the weekday (Codex PR #140)
+              # EN time qualifier before the weekday, incl. "on" (Codex PR #140)
               "deliver by noon Friday",
               "finish before 5pm Friday",
               "ship by 9 Monday",
+              "deliver by noon on Friday",
+              "finish before 5pm on Friday",
+              # TR "end of weekday" via sonu/sonuna (Codex PR #140)
+              "cuma sonuna kadar bitir",
+              "cuma gün sonuna kadar bitir",
               # TR numeric time after the weekday (Codex PR #140)
               "cuma 5'e kadar hazır olsun",
               "pazartesi 17:00'ye kadar bitir",

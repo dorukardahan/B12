@@ -250,7 +250,9 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
         # optional time qualifier between the preposition and the weekday
         # ("by noon Friday", "before 5pm Friday", "by 9 Monday")
         r"(?:(?:noon|midnight|eod|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+)?"
-        r"(?:next\s+|this\s+)?"
+        # "on" is allowed here ONLY after the leading preposition ("by noon on
+        # Friday") — a BARE "on Friday" still doesn't match (no leading by/before/...).
+        r"(?:next\s+|this\s+|on\s+)?"
         r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
     ),
     # Turkish weekday deadline: "<weekday>(dative) kadar" ("cumaya kadar" = by
@@ -266,13 +268,13 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
         # Unambiguous weekdays: direct dative, day/time noun, or numeric time.
         r"(?:pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|cumartesi)"
         r"(?:'?(?:ye|ya|a)"
-        r"|\s+(?:g[üu]n|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
+        r"|\s+(?:g[üu]n\s+)?(?:g[üu]n|son|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
         # numeric time after the weekday ("cuma 5'e kadar", "pazartesi 17:00'ye kadar")
         r"|\s+\d{1,2}(?::\d{2})?'?\w*)"
         # "pazar" is ambiguous (Sunday vs "market"), so it requires an explicit
         # day/time noun ("pazar gününe/akşamına kadar") — NOT the bare dative
         # "pazara" (= "to the market", "pazara kadar yürüdük") — Codex PR #140.
-        r"|pazar\s+(?:g[üu]n|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
+        r"|pazar\s+(?:g[üu]n\s+)?(?:g[üu]n|son|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
         r")"
         # "dek" is a literary synonym of "kadar" (until) — same deadline sense.
         r"\s+(?:kadar|dek)\b"
