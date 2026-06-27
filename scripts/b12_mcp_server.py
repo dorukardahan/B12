@@ -704,9 +704,12 @@ async def daemon_request_async(op: str, **kwargs) -> dict | None:
         try:
             return await asyncio.shield(worker)
         finally:
-            if not worker.done():
+            # Drain the worker even across REPEATED cancellations: a second
+            # cancellation while awaiting would otherwise free _daemon_lock with the
+            # thread still using the single-connection embed daemon (Codex review).
+            while not worker.done():
                 try:
-                    await worker
+                    await asyncio.shield(worker)
                 except BaseException:
                     pass
 
@@ -725,9 +728,12 @@ async def _run_locked_offthread(fn, *args, **kwargs):
         try:
             return await asyncio.shield(worker)
         finally:
-            if not worker.done():
+            # Drain the worker even across REPEATED cancellations: a second
+            # cancellation while awaiting would otherwise free _daemon_lock with the
+            # thread still using the single-connection embed daemon (Codex review).
+            while not worker.done():
                 try:
-                    await worker
+                    await asyncio.shield(worker)
                 except BaseException:
                     pass
 
