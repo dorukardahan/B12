@@ -111,8 +111,13 @@ fi
 # ── Pattern matching via Python ──────────────────────────────
 B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.B12/hooks}/scripts"
 
-# Detect project name from CWD
-PROJECT_NAME=$(basename "${PWD:-/tmp}")
+# Detect project name from the session CWD (stdin .cwd), matching session-end /
+# retrieval hooks — NOT the hook's own $PWD, which can differ from the session
+# directory and write a proj: tag that disagrees with every other hook,
+# fragmenting project-scoped recall (2026-06-27 audit #17). Falls back to $PWD
+# then "unknown".
+CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
+PROJECT_NAME=$(basename "${CWD:-${PWD:-/tmp}}" 2>/dev/null || echo "unknown")
 
 # S1 (P-SPEED): run the regex + classifier + DB write entirely in
 # background. This hook fires on EVERY PostToolUse and emits no
@@ -173,7 +178,7 @@ _q5_log_path = sys.argv[7] if len(sys.argv) > 7 else ""
 _q5_sid12 = sys.argv[8] if len(sys.argv) > 8 else ""
 _q5_tool = sys.argv[9] if len(sys.argv) > 9 else ""
 
-def _q5_log(phase, captured=0, dropped_dedup=0, inserted=0, error=None):
+def _q5_log(phase, captured=0, dropped_dedup=0, inserted=0, dropped_constraint=0, error=None):
     if not _q5_log_path:
         return
     import json as _json
@@ -185,6 +190,7 @@ def _q5_log(phase, captured=0, dropped_dedup=0, inserted=0, error=None):
         "captured": int(captured),
         "dropped_dedup": int(dropped_dedup),
         "inserted": int(inserted),
+        "dropped_constraint": int(dropped_constraint),
     }
     if error:
         rec["error"] = str(error)[:120]
@@ -346,6 +352,11 @@ import sqlite3
 if not os.path.exists(DB_PATH):
     sys.exit(0)
 
+# Cleared to True only after a clean flush; gates buffer removal so a transient
+# DB error retains the buffer for retry instead of silently dropping captures
+# (2026-06-27 audit M2).
+_q5_flush_ok = False
+
 try:
     conn = sqlite3.connect(DB_PATH, timeout=5)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -383,8 +394,12 @@ try:
     except Exception:
         pass
 
+    import datetime as _dt
+    now_iso = _dt.datetime.fromtimestamp(now, _dt.timezone.utc).isoformat()
     inserted = 0
     dropped_dedup = 0
+    dropped_constraint = 0
+    _q5_constraint_err = None
     for item in buffer_items:
         if item["hash"] in existing_hashes:
             dropped_dedup += 1
@@ -411,39 +426,100 @@ try:
             "content_hash": item["hash"],
         })
 
+        # 2026-06-27 audit P0 (#1 + #21): the prior INSERT omitted content_hash,
+        # but the live schema is `content_hash TEXT UNIQUE NOT NULL` (upstream
+        # mcp-memory-service), so EVERY insert raised IntegrityError and was
+        # swallowed as a dedup drop — the checkpoint feature stored nothing for
+        # 40+ days. Fix: supply content_hash + memory_type + NUMERIC epoch
+        # timestamps (datetime('now') is TEXT into REAL columns and NULLs the
+        # unixepoch recency score), INSERT OR IGNORE so a genuine concurrent dup
+        # is a silent no-op (rowcount 0), and treat any remaining IntegrityError
+        # as a REAL constraint error (logged, never mislabeled as dedup) so a
+        # dead-insert regression can't hide silently again.
         try:
-            conn.execute(
-                """INSERT INTO memories (content, metadata, tags, created_at, updated_at)
-                   VALUES (?, ?, ?, datetime('now'), datetime('now'))""",
-                (_pii_scrub(item["content"]), metadata, tags)
+            # ON CONFLICT(content_hash) DO NOTHING — NOT `INSERT OR IGNORE`.
+            # OR IGNORE suppresses EVERY constraint class (NOT NULL / CHECK /
+            # trigger-RAISE), so it would silently bucket a real failure as a
+            # dedup (rowcount 0) — reincarnating the very hide-error-as-dedup bug
+            # this PR kills. The targeted ON CONFLICT makes rowcount 0 mean ONLY
+            # a content_hash dup; any other violation raises IntegrityError.
+            cur = conn.execute(
+                """INSERT INTO memories
+                   (content_hash, content, memory_type, metadata, tags,
+                    strength, created_at, created_at_iso, updated_at, updated_at_iso)
+                   VALUES (?, ?, ?, ?, ?, 1.0, ?, ?, ?, ?)
+                   ON CONFLICT(content_hash) DO NOTHING""",
+                (item["hash"], _pii_scrub(item["content"]), item["category"],
+                 metadata, tags, now, now_iso, now, now_iso)
             )
-            inserted += 1
+            if cur.rowcount > 0:
+                inserted += 1
+            else:
+                # rowcount 0 == content_hash already present == genuine dedup.
+                dropped_dedup += 1
             existing_hashes.add(item["hash"])
-        except sqlite3.IntegrityError:
-            dropped_dedup += 1
+        except sqlite3.IntegrityError as _ie:
+            # Scoped ON CONFLICT means this is a REAL constraint failure (schema
+            # drift / NOT NULL / CHECK / metadata JSON trigger), never a dup.
+            # Surface count + message; do NOT call it dedup.
+            dropped_constraint += 1
+            _q5_constraint_err = str(_ie)
 
     if inserted > 0:
         conn.commit()
 
     conn.close()
-    _q5_log("flush", captured=len(buffer_items),
-            dropped_dedup=dropped_dedup, inserted=inserted)
+    # A constraint error means a real schema/validation bug, not dedup — flag the
+    # phase so it can't hide (the P0 hid for 40 days behind a dedup label). The
+    # flush still counts as "ok" (DB reachable; retrying a constraint-failing item
+    # won't help and would spam), so the buffer is cleared below.
+    _flush_phase = "flush_constraint_error" if dropped_constraint else "flush"
+    _q5_log(_flush_phase, captured=len(buffer_items),
+            dropped_dedup=dropped_dedup, inserted=inserted,
+            dropped_constraint=dropped_constraint, error=_q5_constraint_err)
     _q5_final_phase = "logged"
+    _q5_flush_ok = True
 except (sqlite3.OperationalError, sqlite3.DatabaseError) as _q5_err:
-    # DB locked or unavailable — skip silently
-    _q5_log("db_error", captured=len(buffer_items), error=_q5_err)
+    # DB locked/unavailable. A TRANSIENT error (locked) should retain the buffer
+    # for retry (M2). But a PERMANENT one (no such column / readonly / malformed)
+    # would otherwise retry every fire forever and grow the buffer; a
+    # consecutive-failure counter quarantines after 5 tries so it can't spin
+    # (audit review #3/#7). (The buffer glob is also swept after 1 day.)
+    _fail_file = buffer_file + ".fails"
+    try:
+        with open(_fail_file) as _ff:
+            _fails = int(_ff.read().strip() or "0")
+    except (OSError, ValueError):
+        _fails = 0
+    _fails += 1
+    if _fails >= 5:
+        _q5_log("flush_giveup", captured=len(buffer_items),
+                error=f"gave up after {_fails} failed flushes: {_q5_err}")
+        _q5_flush_ok = True  # quarantine: clear the poison buffer below
+        try:
+            os.remove(_fail_file)
+        except OSError:
+            pass
+    else:
+        try:
+            with open(_fail_file, "w") as _ff:
+                _ff.write(str(_fails))
+        except OSError:
+            pass
+        _q5_log("db_error", captured=len(buffer_items), error=_q5_err)
     _q5_final_phase = "logged"
-    pass
 
-# Clear buffer after flush
-try:
-    os.remove(buffer_file)
-except OSError:
-    pass
-
-# Update last flush timestamp
-with open(last_flush_file, "w") as f:
-    f.write(str(now))
+# Clear buffer + advance flush ONLY on a clean flush (or a quarantine give-up).
+# A transient DB error keeps the buffer (and the old last-flush time) so the next
+# checkpoint retries; a clean flush also resets the failure counter.
+if _q5_flush_ok:
+    for _stale in (buffer_file, buffer_file + ".fails"):
+        try:
+            os.remove(_stale)
+        except OSError:
+            pass
+    with open(last_flush_file, "w") as f:
+        f.write(str(now))
 
 PYEOF
 } >/dev/null 2>&1 &
