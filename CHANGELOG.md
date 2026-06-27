@@ -1,5 +1,23 @@
 # Changelog
 
+## [v11.81.1] — 2026-06-27
+
+Post-release hotfixes from a retroactive **GPT-5.5 + GLM-5.2** review of the v11.81.0 changes (the headless review CLIs had timed out during original development, so those PRs had landed on empirical verification plus the in-PR bot). The fresh two-model pass caught real bugs the bot missed — including a P1 regression and a NameError.
+
+### Fixed
+- **Bilingual deferral regression (P1).** A sentence combining a Turkish-negated obligation with the English "will see" hedge — e.g. `gerek yok, we will see how it goes` — scored DECISION instead of baseline. The negation and hedge subtractions ran independently on the original text, so the hedge subtraction re-introduced the Turkish-negated token (`gerek`) into its own residual. The subtractions now chain through a single working string, so neither restores what the other removed (a real obligation alongside a negated one still commits).
+- **Capability-drift path crashed instead of exiting.** Fix C's capability-drift branch logged via `_sys.stderr`, but `_sys` was only bound in `_run_as_proxy`, not the extracted `_proxy_session` — so a reconnect that negotiated a different protocol/capability set raised `NameError` instead of exiting cleanly. The import is now in scope, and a drift-exit integration test exercises the path.
+- **Reconnect write/clear race.** The proxy's write-failure path could clear the `connected` event *after* a successful reconnect had already set it, wedging stdin forwarding until timeout (and dropping the very session Fix C exists to preserve). It now clears `connected` only if the writer it failed on is still the current one.
+- **Reconnect budget is now a hard cap.** A daemon that accepted a connection but never answered the replayed `initialize` could overshoot `B12_MCP_RECONNECT_BUDGET` (fixed 5s readline + uncapped backoff sleeps). All waits are clamped to the remaining deadline.
+- **`-32001` synthesis write is guarded.** If the host closed stdout while the proxy was synthesizing retryable errors for in-flight requests, the write raised an unretrieved task exception; it now degrades cleanly.
+- **Deadline / commitment heuristic edge cases.** `by end of` is no longer a bare token that fired on non-temporal objects (`by end of the book`) — replaced by a `by (the) end of <temporal>` pattern covering day/week/month/year/quarter, **month names, Q1–Q4, H1/H2**, and next/this, while `by end of day` still fires; the "will see" hedge no longer swallows a real commitment after an unpunctuated ` but ` (`…goes but we must migrate`) and no longer misfires when a comma or dash precedes the wh-continuation (`we'll see, if we need to migrate`); the Turkish possessive deadline `<weekday> günü sonuna kadar` is recognized; and the dead bare-`a` direct-dative alternative was removed.
+
+### Changed
+- **The reconnect capability-drift check compares full capabilities, not just top-level keys** — a nested change (e.g. `tools.listChanged` flipping) is now caught via canonical-JSON comparison instead of silently splicing a divergent session onto the host.
+
+### Internal
+- New regression tests: bilingual TR-neg + hedge, `by end of` temporal-vs-object (incl. month/quarter), the ` but ` contrast clause, comma/dash before a wh-continuation, `günü sonuna kadar`, and proxy capability-drift clean-exit + nested-drift compatibility. Both models stress-tested the new regexes for ReDoS (clean). Full suite 343 passed.
+
 ## [v11.81.0] — 2026-06-27
 
 A "reaper-class" regression audit (a multi-agent sweep for hardening/perf features that quietly break a core path) surfaced 22 confirmed defects; this release ships fixes for all of them plus **Fix C**, the resilient MCP proxy that closes the whole "B12 drops mid-session" class. Each change went through a three-model ceremony (implementation + headless GPT-5.5 / GLM-5.2 review where available + the Codex GitHub App bot as the live review gate).
