@@ -113,11 +113,28 @@ def cleanup():
             pass
 
 
+# Connections opened during the CURRENT request, closed by handle_request
+# regardless of how the handler exits (audit #13). The daemon processes one
+# request at a time (single accept loop), so this needs no lock.
+_open_conns = []
+
+
+def _close_open_conns():
+    """Close + drop every conn opened during the current request (idempotent)."""
+    for _c in _open_conns:
+        try:
+            _c.close()
+        except Exception:
+            pass
+    _open_conns.clear()
+
+
 def _open_db(db_path):
     """Open SQLite DB with sqlite-vec extension loaded.
     Uses WAL mode + busy_timeout to avoid blocking MCP server writes."""
     import sqlite_vec
     conn = sqlite3.connect(db_path, timeout=10)
+    _open_conns.append(conn)   # track BEFORE setup so a load/PRAGMA failure still gets closed (#13)
     conn.enable_load_extension(True)
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
@@ -1030,6 +1047,13 @@ def handle_request(model, data, start_time, requests_served):
     if model is None:
         return {'ok': False, 'error': 'model_not_loaded'}
 
+    # audit #13: handlers open their own SQLite conn via _open_db and close it on
+    # normal paths, but an exception mid-handler skipped the close, leaking the
+    # connection until GC. Close every conn opened during this request here,
+    # regardless of how the handler exits (return OR raise). Handler-side
+    # conn.close() calls stay (sqlite3 close is idempotent). Defensively close (not
+    # just clear) any straggler from a prior aborted request before starting.
+    _close_open_conns()
     try:
         if op == 'semantic_search':
             return _semantic_search(model, data)
@@ -1051,6 +1075,8 @@ def handle_request(model, data, start_time, requests_served):
             return {'ok': False, 'error': f'unknown_op: {op}'}
     except Exception as e:
         return {'ok': False, 'error': str(e)}
+    finally:
+        _close_open_conns()
 
 
 def main():

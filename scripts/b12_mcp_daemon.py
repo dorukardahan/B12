@@ -309,6 +309,18 @@ async def _rss_self_guard_timer() -> None:
             if over:
                 log(f"RSS {over}MB > ceiling {MCP_MAX_RSS_MB}MB "
                     f"(B12_MCP_MAX_RSS_MB) — exiting to protect host; launchd respawns")
+                # os._exit skips atexit + the lifespan finally, so flush the
+                # (global) session tracker best-effort first — otherwise an
+                # MCP-only-platform session summary is lost on this emergency exit
+                # (audit #12). _atexit_flush resolves the active tracker via the
+                # contextvar (set by lifespan, inherited by this task), so it
+                # persists the daemon's real session summary. Best-effort: bounded
+                # by the flush conn's 5s busy_timeout (can delay this emergency exit
+                # up to ~5s under lock contention), never raises.
+                try:
+                    srv._atexit_flush()
+                except Exception:
+                    pass
                 cleanup_socket_files()
                 os._exit(1)
         except asyncio.CancelledError:
