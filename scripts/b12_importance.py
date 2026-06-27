@@ -178,14 +178,18 @@ _NEG_MODAL: re.Pattern[str] = re.compile(
     r"(?:will|'ll)(?:[\s,]+\w+){0,3}[\s,]+(?:not|never))\b"
 )
 # "<subject> will/'ll see" is a deferral idiom ("we'll see", "we'll see how it
-# goes"), NOT a commitment. Restricted to the deferral shape — clause-end ("we'll
-# see[.]") or a deferral continuation (see how/what/whether/if/about) — so a LITERAL
-# "see <object>" commitment is preserved ("I'll see you tomorrow", "I will see Alice
-# on Monday" still classify as DECISION). It is subtracted in _detect_commitment, so
-# a real commitment elsewhere in the same content also still fires (audit #11).
+# goes"), NOT a commitment. Matches the deferral shape only — clause-end ("we'll
+# see[.]") or a deferral continuation (see how/what/whether/if/about ...) — so a
+# LITERAL "see <object>" commitment is preserved ("I'll see you tomorrow", "I will
+# see Alice on Monday" stay DECISION). The continuation is consumed up to the next
+# clause boundary (terminator / coordinator / end) so that _detect_commitment's
+# rescan does NOT re-trigger on a modal INSIDE the deferral ("we'll see if we need
+# to migrate", "we will see how we will deploy" → not commitments), while a real
+# commitment in a SEPARATE clause still fires (audit #11 + Codex review).
 _HEDGE_FUTURE: re.Pattern[str] = re.compile(
     r"\b(?:i|we|you|they|he|she)(?:'ll|\s+will)\s+see\b"
-    r"(?=\s*$|\s*[.,!?;:]|\s+(?:how|what|whether|if|about)\b)"
+    r"(?:\s+(?:how|what|whether|if|about)\b[^.!?;]*?)?"
+    r"(?=\s*$|\s*[.,!?;:]|\s+(?:and|but|so|then|or)\b)"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
@@ -218,13 +222,14 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
     ),
     # Turkish weekday deadline: "<weekday>(dative) kadar" ("cumaya kadar" = by
-    # Friday, "pazartesiye kadar" = by Monday). The dative suffix is enumerated
-    # (ye/ya/a, optional apostrophe for "cuma'ya") rather than a bare \w*, so the
-    # COMPARATIVE "kadar" ("pazarlama kadar önemli" = as important as marketing)
-    # does NOT mis-fire — "pazarlama" is not "pazar" + a dative vowel.
+    # Friday) and the equally common day-noun form "<weekday> gününe kadar" ("cuma
+    # gününe kadar" / "pazar gününe kadar"). The dative suffix is enumerated (ye/ya/a,
+    # optional apostrophe for "cuma'ya") rather than a bare \w*, so the COMPARATIVE
+    # "kadar" ("pazarlama kadar önemli" = as important as marketing) does NOT mis-fire
+    # — "pazarlama" is neither "pazar"+dative nor "pazar gününe".
     re.compile(
         r"\b(?:pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|"
-        r"cumartesi|pazar)'?(?:ye|ya|a)\s+kadar\b"
+        r"cumartesi|pazar)(?:'?(?:ye|ya|a)|\s+g[üu]n[üu]ne)\s+kadar\b"
     ),
 )
 _DEADLINE_TOKENS: tuple[str, ...] = (

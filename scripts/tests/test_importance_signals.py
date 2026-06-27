@@ -79,7 +79,11 @@ def test_deadline_weekday_in_context_fires():
               "ship until next Friday",
               "raporu cumaya kadar bitir",
               "pazartesiye kadar teslim et",
-              "Cuma'ya kadar yetiştir"):
+              "Cuma'ya kadar yetiştir",
+              # day-noun form "<weekday> gününe kadar" (Codex PR #140)
+              "cuma gününe kadar hazır olsun",
+              "pazar gününe kadar hazır olsun",
+              "cuma gunune kadar bitir"):
         assert score_with_breakdown(s).deadline_hit is True, s
 
 def test_deadline_tr_comparative_kadar_not_a_deadline():
@@ -148,6 +152,19 @@ def test_will_see_is_hedge_not_commitment():
     # a real commitment alongside the hedge still fires.
     assert score_with_breakdown("we'll deploy, then we'll see").commitment_hit is True
     assert score_with_breakdown("we will deploy the fix tomorrow").commitment_hit is True
+
+def test_will_see_continuation_with_inner_modal_not_commitment():
+    # Codex PR #140: a modal INSIDE the deferral clause must not re-trigger commit —
+    # the whole hedge continuation is consumed up to the clause boundary.
+    for s in ("we'll see if we need to migrate",
+              "we will see how we will deploy",
+              "we'll see whether we should refactor"):
+        assert score_with_breakdown(s).commitment_hit is False, s
+    # a real commitment in a SEPARATE clause still fires.
+    assert score_with_breakdown(
+        "we'll deploy, then we'll see if we need to rollback").commitment_hit is True
+    assert score_with_breakdown(
+        "we'll see how it goes. We must migrate.").commitment_hit is True
 
 def test_literal_will_see_object_is_still_commitment():
     # Codex PR #140: "see <object>" is literal, not a hedge — must stay DECISION.
