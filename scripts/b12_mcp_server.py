@@ -2732,8 +2732,10 @@ def _json_or_none(line: bytes):
 
 def _observe_client_line(line: bytes, state: dict) -> None:
     """Capture the MCP handshake (the `initialize` request line + its id, and the
-    `notifications/initialized` line) and record outstanding request ids, so the
-    proxy can replay the handshake and fail in-flight requests fast on reconnect."""
+    `notifications/initialized` line) so the proxy can replay it on reconnect.
+    Request-id tracking is done by the caller AFTER a successful write (see
+    _client_request_id) — recording an id here would orphan requests queued
+    mid-reconnect that never reached the dead daemon and double-answer them."""
     msg = _json_or_none(line)
     if not isinstance(msg, dict):
         return
@@ -2743,10 +2745,16 @@ def _observe_client_line(line: bytes, state: dict) -> None:
         state["init_id"] = msg.get("id")
     elif method == "notifications/initialized":
         state["initialized_line"] = line
-    # Requests carry BOTH a method and an id; notifications have no id, responses
-    # have no method. Track request ids so reconnect can answer the orphaned ones.
-    if method is not None and msg.get("id") is not None:
-        state["outstanding"].add(msg["id"])
+
+
+def _client_request_id(line: bytes):
+    """The JSON-RPC id of a client->daemon REQUEST (has both a method and an id),
+    or None for notifications/responses/non-JSON. Recorded as outstanding ONLY once
+    the request has actually been written to the daemon."""
+    msg = _json_or_none(line)
+    if isinstance(msg, dict) and msg.get("method") is not None and msg.get("id") is not None:
+        return msg["id"]
+    return None
 
 
 def _observe_server_line(line: bytes, state: dict) -> None:
@@ -2851,6 +2859,7 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
                     new_w.write(state["init_line"])
                     await new_w.drain()
                     new_resp = None
+                    new_resp_line = None
                     while True:
                         rline = await asyncio.wait_for(new_r.readline(), timeout=5.0)
                         if not rline:
@@ -2858,9 +2867,20 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
                         m = _json_or_none(rline)
                         if isinstance(m, dict) and m.get("id") == state["init_id"] and "result" in m:
                             new_resp = m
-                            break  # consume (do NOT forward) the replayed init response
-                    if (state["init_response"] is not None
-                            and not _init_responses_compatible(new_resp, state["init_response"])):
+                            new_resp_line = rline
+                            break
+                    if state["init_response"] is None:
+                        # The drop happened DURING the initial handshake — the host
+                        # never got an initialize response. FORWARD this one (and
+                        # capture it + clear its outstanding id) so startup completes,
+                        # rather than swallowing it and hanging the client. No drift
+                        # baseline exists yet to compare against.
+                        state["init_response"] = new_resp
+                        write_stdout(new_resp_line)
+                        state["outstanding"].discard(state["init_id"])
+                    elif not _init_responses_compatible(new_resp, state["init_response"]):
+                        # Host already has an init response — a materially different
+                        # one means a divergent session; bail to manual reconnect.
                         _sys.stderr.write("B12 proxy: capability drift on reconnect; exiting\n")
                         _sys.stderr.flush()
                         try:
@@ -2868,6 +2888,7 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
                         except Exception:
                             pass
                         return False
+                    # else: host already has an equivalent init response — swallow this one.
                 if state["initialized_line"]:
                     new_w.write(state["initialized_line"])
                     await new_w.drain()
@@ -2899,6 +2920,7 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
                 if not line:
                     return  # stdin EOF — host CLI closed
                 _observe_client_line(line, state)
+                req_id = _client_request_id(line)
                 while True:  # write, retrying across a reconnect if the socket is down
                     await connected.wait()
                     if give_up.is_set():
@@ -2906,6 +2928,12 @@ async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
                     try:
                         conn["writer"].write(line)
                         await conn["writer"].drain()
+                        # Track as outstanding ONLY now that it actually reached the
+                        # daemon — so a request queued while connected was cleared
+                        # (and thus re-sent to the NEW daemon) is never both
+                        # synthesized-errored AND answered for the same id.
+                        if req_id is not None:
+                            state["outstanding"].add(req_id)
                         break
                     except (ConnectionResetError, BrokenPipeError, OSError):
                         connected.clear()  # socket_to_stdout will see EOF and reconnect

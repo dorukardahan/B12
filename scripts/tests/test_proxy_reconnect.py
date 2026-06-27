@@ -52,24 +52,32 @@ def _fresh_state():
             "init_response": None, "outstanding": set()}
 
 
-def test_observe_client_captures_handshake_and_tracks_ids():
+def test_observe_client_captures_handshake_only():
     st = _fresh_state()
     init = _init_req()
     srv._observe_client_line(init, st)
     assert st["init_line"] == init and st["init_id"] == INIT_ID
-    assert INIT_ID in st["outstanding"]
+    # handshake capture does NOT add ids to outstanding (that happens post-write).
+    assert st["outstanding"] == set()
     srv._observe_client_line(_initialized(), st)            # notification: no id
     assert st["initialized_line"] is not None
-    srv._observe_client_line(_line({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                                    "params": {}}), st)
-    assert 7 in st["outstanding"]
+
+
+def test_client_request_id():
+    assert srv._client_request_id(_init_req()) == INIT_ID
+    assert srv._client_request_id(_line({"jsonrpc": "2.0", "id": 7,
+                                         "method": "tools/call", "params": {}})) == 7
+    assert srv._client_request_id(_initialized()) is None       # notification
+    assert srv._client_request_id(_line({"jsonrpc": "2.0", "id": 7,
+                                         "result": {}})) is None  # response
+    assert srv._client_request_id(b"not json\n") is None
 
 
 def test_observe_server_captures_init_response_and_clears_ids():
     st = _fresh_state()
     srv._observe_client_line(_init_req(), st)
-    srv._observe_client_line(_line({"jsonrpc": "2.0", "id": 7, "method": "tools/call",
-                                    "params": {}}), st)
+    # simulate the caller recording ids as outstanding after writing them
+    st["outstanding"].update({INIT_ID, 7})
     srv._observe_server_line(_line(_init_resp()), st)
     assert st["init_response"] is not None
     assert INIT_ID not in st["outstanding"]                 # init response cleared its id
@@ -98,6 +106,8 @@ class _MockDaemon:
     per-connection behaviors (extra connections default to 'serve'):
       - 'serve': handshake, then answer every request with a result.
       - 'drop' : handshake, then close the connection.
+      - 'drop_pre_init': read the initialize request, then close WITHOUT responding
+        (simulates a drop during the very first handshake).
       - 'silent': handshake, then read requests but never answer (orphans them).
     stop() force-closes any live connection so a blocked-on-read handler can't
     wedge wait_closed()."""
@@ -134,6 +144,8 @@ class _MockDaemon:
         self._writers.add(writer)
         try:
             init = json.loads(await reader.readline())
+            if behavior == "drop_pre_init":
+                return  # close after reading initialize, before responding
             writer.write(_line(_init_resp() | {"id": init.get("id")}))
             await writer.drain()
             await reader.readline()  # notifications/initialized
@@ -255,6 +267,76 @@ def test_inflight_request_gets_synthesized_error(tmp_path):
     errs = [m for m in msgs if m.get("id") == 99 and "error" in m]
     assert errs, f"no synthesized error for in-flight request: {msgs}"
     assert errs[0]["error"]["code"] == -32001
+
+
+def test_startup_drop_forwards_replayed_init_response(tmp_path):
+    """Codex PR #141: if the daemon drops AFTER reading initialize but BEFORE the
+    host got an init response, the reconnect must FORWARD the replayed init response
+    (not swallow it) so startup completes instead of hanging / erroring."""
+    sock = _short_sock("d4")
+
+    async def scenario():
+        daemon = _MockDaemon(sock, ["drop_pre_init", "serve"])
+        await daemon.start()
+        stdin = asyncio.StreamReader()
+        out: list[bytes] = []
+        task = asyncio.create_task(srv._proxy_session(stdin, out.append, sock))
+        try:
+            stdin.feed_data(_init_req())       # conn #1 reads it, closes w/o responding
+            await asyncio.sleep(0.8)           # proxy reconnects to conn #2, forwards init
+            stdin.feed_data(_initialized())
+            stdin.feed_data(_line({"jsonrpc": "2.0", "id": 5, "method": "tools/call",
+                                   "params": {}}))
+            await asyncio.sleep(0.5)
+            stdin.feed_eof()
+            await asyncio.wait_for(task, timeout=5.0)
+        finally:
+            await daemon.stop()
+        return out
+
+    out = _responses(_with_budget(5.0, scenario))
+    init_resps = [m for m in out if m.get("id") == INIT_ID and isinstance(m.get("result"), dict)
+                  and "protocolVersion" in m["result"]]
+    assert len(init_resps) == 1, f"startup init response not forwarded exactly once: {out}"
+    # no spurious -32001 for the init id, and the post-startup tool call succeeded
+    assert not [m for m in out if m.get("id") == INIT_ID and "error" in m]
+    assert [m for m in out if m.get("id") == 5 and "result" in m], f"session not usable: {out}"
+
+
+def test_request_queued_during_reconnect_not_double_answered(tmp_path):
+    """Codex PR #141: a request the host sends WHILE reconnect is in progress must
+    not be both synthesized-errored AND answered. Its id is recorded outstanding only
+    after it actually reaches a daemon."""
+    sock = _short_sock("d5")
+
+    async def scenario():
+        daemon = _MockDaemon(sock, ["serve", "serve"])
+        await daemon.start()
+        stdin = asyncio.StreamReader()
+        out: list[bytes] = []
+        task = asyncio.create_task(srv._proxy_session(stdin, out.append, sock))
+        try:
+            stdin.feed_data(_init_req())
+            stdin.feed_data(_initialized())
+            await asyncio.sleep(0.4)           # handshake on conn #1 (init id cleared)
+            await daemon.stop()                # conn #1 dropped → proxy reconnect retrying
+            await asyncio.sleep(0.15)
+            stdin.feed_data(_line({"jsonrpc": "2.0", "id": 55, "method": "tools/call",
+                                   "params": {}}))   # queued while connected is cleared
+            await asyncio.sleep(0.15)
+            await daemon.start()               # reconnect succeeds → id 55 sent to conn #2
+            await asyncio.sleep(0.8)
+            stdin.feed_eof()
+            await asyncio.wait_for(task, timeout=6.0)
+        finally:
+            await daemon.stop()
+        return out
+
+    out = _responses(_with_budget(5.0, scenario))
+    results = [m for m in out if m.get("id") == 55 and "result" in m]
+    errors = [m for m in out if m.get("id") == 55 and "error" in m]
+    assert results, f"queued request never answered: {out}"
+    assert not errors, f"queued request was double-answered with an error too: {out}"
 
 
 def test_budget_exhaustion_exits_without_busyloop(tmp_path):
