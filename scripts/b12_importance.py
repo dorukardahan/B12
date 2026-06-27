@@ -202,14 +202,21 @@ _HEDGE_FUTURE: re.Pattern[str] = re.compile(
     # (a clause separator like "... - we must migrate") via the tempered (?!\s-),
     # while a hyphen INSIDE a word ("re-deploy", "well-known") has no preceding
     # space and is consumed normally. Em/en dashes stop via the char class.
-    r"(?:\s+(?:how|what|whether|if|about|when|where|who|whom|whose|which|why)\b"
-    r"(?:(?!\s-)[^.!?;,:\n\r–—()\[\]])*)?"
+    # A comma or spaced dash may precede the wh-word and it's still the deferral
+    # ("we'll see, if we need to migrate", "we'll see - how it goes" — Codex PR #140).
+    r"(?:[\s,]+(?:[-–—]\s*)?(?:how|what|whether|if|about|when|where|who|whom|whose|which|why)\b"
+    # Consume to the next clause boundary, STOPPING before a spaced ASCII hyphen
+    # (tempered `(?!\s-)`; an intra-word hyphen like "re-deploy" is consumed) and
+    # before a " but " contrast clause (a real commitment, "...goes but we must X",
+    # Codex PR #140). Em/en dashes, comma, colon, terminators, parens stop via the
+    # char class.
+    r"(?:(?!\s-|\s+but\b)[^.!?;,:\n\r–—()\[\]])*)?"
     # A newline directly after the deferral is itself a clause boundary (a multiline
     # memory whose next line is NOT a commitment, "we'll see how it goes\nmaybe
     # later", must still strip the hedge so the bare "we'll" doesn't score DECISION).
-    # A spaced ASCII hyphen and an opening parenthesis/bracket also bound the clause
-    # ("we'll see how it goes (we must migrate)" must surface the parenthesized must).
-    r"(?=\s*$|[\n\r]|\s*[-.,!?;:–—()\[\]])"
+    # A spaced ASCII hyphen, " but ", and an opening parenthesis/bracket also bound
+    # the clause ("we'll see how it goes (we must migrate)" surfaces the must).
+    r"(?=\s*$|[\n\r]|\s+but\b|\s*[-.,!?;:–—()\[\]])"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
@@ -228,6 +235,17 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Friday", "due dates: Friday and Monday") — the "due <temporal>" form doesn't
     # cover the noun "date(s)" (Codex PR #140).
     re.compile(r"\bdue\s+dates?\b"),
+    # "by (the) end of <temporal>" with a real temporal target ("by end of day",
+    # "by the end of the week/month/quarter"). A bare "by end of" token over-fired
+    # on non-temporal objects ("by end of the book/meeting"), so it's gone — the
+    # weekday form is handled by the weekday-context pattern below (Codex PR #140).
+    re.compile(
+        r"\bby\s+(?:the\s+)?end\s+of\s+(?:the\s+|next\s+|this\s+)?"
+        r"(?:day|week|month|year|quarter|sprint|today|tomorrow|business\s+day|eod|cob"
+        r"|q[1-4]|h[12]"  # Q1–Q4 quarters, H1/H2 halves (Codex PR #142)
+        r"|january|february|march|april|may|june|july|august|september|october"
+        r"|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b"
+    ),
     # predicate "is/are due" only when "due" ends the clause (end / punctuation)
     # or is followed by a temporal word/number — so "the report is due[.]" /
     # "is due tomorrow" fire, but the idioms "is due diligence/process/credit"
@@ -267,14 +285,14 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\b(?:"
         # Unambiguous weekdays: direct dative, day/time noun, or numeric time.
         r"(?:pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|cumartesi)"
-        r"(?:'?(?:ye|ya|a)"
-        r"|\s+(?:g[üu]n\s+)?(?:g[üu]n|son|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
+        r"(?:'?(?:ye|ya)"
+        r"|\s+(?:g[üu]n[üu]?\s+)?(?:g[üu]n|son|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
         # numeric time after the weekday ("cuma 5'e kadar", "pazartesi 17:00'ye kadar")
         r"|\s+\d{1,2}(?::\d{2})?'?\w*)"
         # "pazar" is ambiguous (Sunday vs "market"), so it requires an explicit
         # day/time noun ("pazar gününe/akşamına kadar") — NOT the bare dative
         # "pazara" (= "to the market", "pazara kadar yürüdük") — Codex PR #140.
-        r"|pazar\s+(?:g[üu]n\s+)?(?:g[üu]n|son|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
+        r"|pazar\s+(?:g[üu]n[üu]?\s+)?(?:g[üu]n|son|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
         r")"
         # "dek" is a literary synonym of "kadar" (until) — same deadline sense.
         r"\s+(?:kadar|dek)\b"
@@ -285,11 +303,12 @@ _DEADLINE_TOKENS: tuple[str, ...] = (
     # never matches inside "still"); only the genuinely multi-word phrases below
     # are substring-matched. ("due" + weekdays are handled by patterns above so
     # the causal "due to" and bare/past weekday mentions don't mis-fire — #11.)
-    "deadline", "expires", "expiry", "by end of",
+    "deadline", "expires", "expiry",
     "no later than", "until", "till",
-    # "due date(s)" is handled by the \bdue\s+dates?\b pattern above (singular +
-    # plural); "by (the) end of <weekday>" is handled by the weekday pattern above
-    # (NOT a bare "by the end of" token — that over-fired on non-temporal objects).
+    # "due date(s)" → \bdue\s+dates?\b pattern; "by (the) end of <temporal>" and
+    # "<weekday>" → the patterns above. There is NO bare "by end of" / "by the end
+    # of" token: both over-fired on non-temporal objects ("by end of the book",
+    # "by the end of the meeting") — Codex PR #140 / #141 retro.
     # Weekdays are NOT bare tokens — a weekday only signals a deadline inside the
     # deadline-context patterns above ("by Friday" / "cumaya kadar"), audit #11.
     # Turkish explicit deadline words.
@@ -665,28 +684,33 @@ def _detect_commitment(lower: str) -> bool:
     suffix_hit = bool(_COMMIT_TR_SUFFIX.search(lower)) and not _TR_NEG_SUFFIX.search(lower)
     if not (tok_hit or suffix_hit):
         return False
+    # Subtract the negation/deferral phrases CUMULATIVELY through one `working`
+    # string, so a bilingual sentence that combines them ("gerek yok, we will see
+    # how it goes") doesn't have one subtraction restore what the other removed
+    # (Codex PR #141 retro: independent subs on the original `lower` re-introduced
+    # the TR-negated "gerek" into the hedge residual → false DECISION).
+    working = lower
     # A locally-negated TR obligation cancels its OWN word-token, but a separate
     # affirmative obligation in the same sentence still stands. Subtract the
     # negated phrase(s); if a -malı/-meli obligation or another obligation token
     # remains, it commits ("gerek yok ama zorundayız" → commit).
-    if _TR_NEG_OBLIGATION.search(lower) and not suffix_hit:
-        residual = _TR_NEG_OBLIGATION.sub(" ", lower)
-        residual_hit = (any(_token_in(residual, tok) for tok in _COMMIT_TOKENS)
-                        or bool(_COMMIT_TR_WORDS.search(residual)))
+    if _TR_NEG_OBLIGATION.search(working) and not suffix_hit:
+        working = _TR_NEG_OBLIGATION.sub(" ", working)
+        residual_hit = (any(_token_in(working, tok) for tok in _COMMIT_TOKENS)
+                        or bool(_COMMIT_TR_WORDS.search(working)))
         if not residual_hit:
             return False
-    # "<subj> will see" is a deferral idiom, not a commitment. Subtract it; commit
-    # only if another (non-hedge) signal remains ("we'll deploy, then we'll see").
-    # ALL signals are recomputed on the residual — including the Turkish -malı/-meli
-    # suffix — so a bilingual deferral whose obligation lives INSIDE the hedge
-    # ("we'll see if bunu yapmalı mıyız") is not boosted, while a real obligation
-    # OUTSIDE it still fires.
-    if _HEDGE_FUTURE.search(lower):
-        residual = _HEDGE_FUTURE.sub(" ", lower)
-        residual_hit = (any(_token_in(residual, tok) for tok in _COMMIT_TOKENS)
-                        or bool(_COMMIT_TR_WORDS.search(residual))
-                        or (bool(_COMMIT_TR_SUFFIX.search(residual))
-                            and not _TR_NEG_SUFFIX.search(residual)))
+    # "<subj> will see" is a deferral idiom, not a commitment. Subtract it (from the
+    # already-negation-subtracted `working`); commit only if another non-hedge signal
+    # remains ("we'll deploy, then we'll see"). ALL signals are recomputed — incl. the
+    # Turkish -malı/-meli suffix — so a bilingual deferral whose obligation lives
+    # INSIDE the hedge ("we'll see if bunu yapmalı mıyız") is not boosted.
+    if _HEDGE_FUTURE.search(working):
+        working = _HEDGE_FUTURE.sub(" ", working)
+        residual_hit = (any(_token_in(working, tok) for tok in _COMMIT_TOKENS)
+                        or bool(_COMMIT_TR_WORDS.search(working))
+                        or (bool(_COMMIT_TR_SUFFIX.search(working))
+                            and not _TR_NEG_SUFFIX.search(working)))
         if not residual_hit:
             return False
     return True

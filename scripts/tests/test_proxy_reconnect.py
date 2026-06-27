@@ -95,6 +95,11 @@ def test_init_responses_compatible():
     # different capability surface → incompatible
     capdrift = _init_resp(caps={"tools": {}, "prompts": {}})
     assert srv._init_responses_compatible(capdrift, base) is False
+    # NESTED capability drift (same top-level keys) → incompatible (Codex PR #141)
+    nested_base = _init_resp(caps={"tools": {"listChanged": True}})
+    nested_drift = _init_resp(caps={"tools": {"listChanged": False}})
+    assert srv._init_responses_compatible(nested_drift, nested_base) is False
+    assert srv._init_responses_compatible(nested_base, nested_base) is True
     # missing data → don't block
     assert srv._init_responses_compatible(None, base) is True
 
@@ -112,9 +117,10 @@ class _MockDaemon:
     stop() force-closes any live connection so a blocked-on-read handler can't
     wedge wait_closed()."""
 
-    def __init__(self, sock_path, script):
+    def __init__(self, sock_path, script, drift=False):
         self.sock_path = sock_path
         self.script = script
+        self.drift = drift          # if True, conn #1+ negotiates DIFFERENT capabilities
         self.conns = 0
         self.server = None
         self._writers: set = set()
@@ -146,7 +152,8 @@ class _MockDaemon:
             init = json.loads(await reader.readline())
             if behavior == "drop_pre_init":
                 return  # close after reading initialize, before responding
-            writer.write(_line(_init_resp() | {"id": init.get("id")}))
+            caps = {"tools": {}, "prompts": {}} if (self.drift and idx >= 1) else None
+            writer.write(_line(_init_resp(caps=caps) | {"id": init.get("id")}))
             await writer.drain()
             await reader.readline()  # notifications/initialized
             if behavior == "drop":
@@ -337,6 +344,36 @@ def test_request_queued_during_reconnect_not_double_answered(tmp_path):
     errors = [m for m in out if m.get("id") == 55 and "error" in m]
     assert results, f"queued request never answered: {out}"
     assert not errors, f"queued request was double-answered with an error too: {out}"
+
+
+def test_capability_drift_on_reconnect_exits_cleanly(tmp_path):
+    """Codex PR #141: when a reconnect negotiates DIFFERENT capabilities, the proxy
+    must log + exit cleanly (not splice a divergent session, and not NameError on the
+    stderr log — _proxy_session must have `_sys` in scope)."""
+    sock = _short_sock("d6")
+
+    async def scenario():
+        daemon = _MockDaemon(sock, ["drop", "serve"], drift=True)
+        await daemon.start()
+        stdin = asyncio.StreamReader()
+        out: list[bytes] = []
+        task = asyncio.create_task(srv._proxy_session(stdin, out.append, sock))
+        try:
+            stdin.feed_data(_init_req())          # conn #1 handshake (caps A) then drops
+            stdin.feed_data(_initialized())
+            await asyncio.sleep(0.8)              # reconnect to conn #2 → caps B → drift → exit
+            # task should have exited on drift (no NameError, no hang)
+            await asyncio.wait_for(task, timeout=5.0)
+        finally:
+            await daemon.stop()
+        return out, daemon.conns, task
+
+    out, conns, task = _with_budget(5.0, scenario)
+    assert conns >= 2, "proxy did not reach the reconnect/drift path"
+    assert task.exception() is None, f"proxy crashed instead of exiting cleanly: {task.exception()!r}"
+    # only conn #1's init response (caps A) was forwarded; the drifted one was not spliced
+    init_resps = [m for m in _responses(out) if m.get("id") == INIT_ID and "result" in m]
+    assert len(init_resps) == 1, f"a divergent init response leaked: {_responses(out)}"
 
 
 def test_budget_exhaustion_exits_without_busyloop(tmp_path):
