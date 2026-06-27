@@ -46,7 +46,10 @@ LEGACY = {
         END""",
 }
 LEGACY_NAMES = set(LEGACY)
-B12_NAMES = {"memory_fts_insert", "memory_fts_delete", "memory_fts_update", "memory_fts_softdel"}
+B12_NAMES = {
+    "memory_fts_insert", "memory_fts_delete", "memory_fts_update",
+    "memory_fts_softdel", "memory_fts_restore",
+}
 
 
 def _triggers(db):
@@ -114,3 +117,56 @@ def test_search_works_after_dedup(tmp_path):
         "WHERE memory_fts MATCH 'alpha'")}
     assert "h1" in rows, "active row not searchable after dedup"
     assert "h2" not in rows, "soft-deleted-at-insert row leaked into the index (legacy fts_insert not dropped?)"
+
+
+def test_restore_soft_deleted_does_not_corrupt_index(tmp_path):
+    """Restoring a soft-deleted row (deleted_at NOT NULL → NULL) must NOT issue an
+    FTS5 'delete' for the already-absent row — that corrupts external-content FTS5
+    ('database disk image is malformed'). Reachable via B12's undelete path.
+    (Codex GitHub App review of audit #20.)"""
+    db = sqlite3.connect(str(tmp_path / "restore.db"))
+    srv._ensure_schema(db)
+    db.execute("INSERT INTO memories(content, content_hash) VALUES ('alpha beta gamma', 'h1')")
+    db.commit()
+    rid = db.execute("SELECT id FROM memories WHERE content_hash='h1'").fetchone()[0]
+    db.execute("UPDATE memories SET deleted_at=123.0 WHERE id=?", (rid,))   # soft-delete
+    db.commit()
+    db.execute("UPDATE memories SET deleted_at=NULL WHERE id=?", (rid,))     # restore
+    db.commit()
+    # 'integrity-check' raises sqlite3.DatabaseError if the index is corrupt. ALL THREE
+    # external-content FTS indexes shared the same restore bug, so verify each.
+    for t in ("memory_fts", "memory_fts_stemmed", "memory_content_fts"):
+        db.execute(f"INSERT INTO {t}({t}) VALUES('integrity-check')")
+    rows = {r[0] for r in db.execute(
+        "SELECT m.content_hash FROM memory_fts f JOIN memories m ON m.id=f.rowid "
+        "WHERE memory_fts MATCH 'alpha'")}
+    assert rows == {"h1"}, f"restored row not searchable exactly once: {rows}"
+
+
+def test_stale_update_trigger_is_migrated(tmp_path):
+    """A DB carrying the OLD memory_fts_update (WHEN tests only new.deleted_at, no
+    restore trigger) must be migrated to the guarded trio so restores stop corrupting
+    the index."""
+    db = sqlite3.connect(str(tmp_path / "stale.db"))
+    srv._ensure_schema(db)
+    # Downgrade to the buggy update trigger + remove the restore trigger.
+    db.execute("DROP TRIGGER memory_fts_update")
+    db.execute("DROP TRIGGER IF EXISTS memory_fts_restore")
+    db.execute("""
+        CREATE TRIGGER memory_fts_update AFTER UPDATE ON memories
+        WHEN new.deleted_at IS NULL BEGIN
+            INSERT INTO memory_fts(memory_fts, rowid, content, tags)
+            VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
+            INSERT INTO memory_fts(rowid, content, tags)
+            VALUES (new.id, new.content, COALESCE(new.tags, ''));
+        END
+    """)
+    db.commit()
+    assert "memory_fts_restore" not in _triggers(db)
+    srv._ensure_schema(db)               # should detect the stale guard + migrate
+    trigs = _triggers(db)
+    assert "memory_fts_restore" in trigs, "stale DB was not migrated to add the restore trigger"
+    upd = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name='memory_fts_update'"
+    ).fetchone()[0]
+    assert "old.deleted_at IS NULL" in upd, "memory_fts_update was not migrated to the guarded form"

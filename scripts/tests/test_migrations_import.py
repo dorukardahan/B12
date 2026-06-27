@@ -625,12 +625,14 @@ def test_mcp_schema_supersedes_legacy_fts_triggers(monkeypatch):
     # Legacy upstream set is dropped — B12's set now owns memory_fts.
     assert "fts_insert" not in trigger_names
     assert not {"fts_update", "fts_softdel", "fts_hardel"} & trigger_names
-    # B12's soft-delete-aware set is present.
+    # B12's soft-delete-aware set is present (incl. the restore trigger that guards
+    # against corrupting the index when a soft-deleted row is restored).
     assert {
         "memory_fts_insert",
         "memory_fts_delete",
         "memory_fts_update",
         "memory_fts_softdel",
+        "memory_fts_restore",
     } <= trigger_names
 
 
