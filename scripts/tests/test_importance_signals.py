@@ -88,6 +88,12 @@ def test_deadline_tr_comparative_kadar_not_a_deadline():
     for s in ("pazarlama kadar önemli bir konu", "bu özellik test kadar kritik"):
         assert score_with_breakdown(s).deadline_hit is False, s
 
+def test_deadline_due_date_noun_fires():
+    # Codex PR #140: "due date is Friday"/"due date: ..." are explicit deadline
+    # contexts the "due <temporal>" pattern doesn't cover — keep the FACT floor.
+    for s in ("due date is Friday", "due date: 2026-07-01", "the due date hasn't been set"):
+        assert score_with_breakdown(s).deadline_hit is True, s
+
 
 # ── Task 3: commitment detector (DECISION 0.75, guarded + negation) ────────
 
@@ -133,12 +139,20 @@ def test_en_negated_future_not_commitment():
     assert score_with_breakdown("we will migrate next week").commitment_hit is True
 
 def test_will_see_is_hedge_not_commitment():
-    # audit #11: "<subj> will/'ll see" is a deferral idiom, not a commitment.
-    for s in ("we will see how it goes", "we'll see", "I will see what happens"):
+    # audit #11: the deferral idiom "<subj> will/'ll see" (clause-end or see
+    # how/what/whether/if/about) is not a commitment.
+    for s in ("we will see how it goes", "we'll see", "we'll see.",
+              "I will see what happens", "we will see if it works",
+              "we'll see about that"):
         assert score_with_breakdown(s).commitment_hit is False, s
     # a real commitment alongside the hedge still fires.
     assert score_with_breakdown("we'll deploy, then we'll see").commitment_hit is True
     assert score_with_breakdown("we will deploy the fix tomorrow").commitment_hit is True
+
+def test_literal_will_see_object_is_still_commitment():
+    # Codex PR #140: "see <object>" is literal, not a hedge — must stay DECISION.
+    for s in ("I'll see you tomorrow", "I will see Alice on Monday", "we will see the doctor"):
+        assert score_with_breakdown(s).commitment_hit is True, s
 
 
 # ── Task 4: explicit memory-cue detector (MEMORABLE 0.90, guarded) ─────────

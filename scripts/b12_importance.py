@@ -177,11 +177,15 @@ _NEG_MODAL: re.Pattern[str] = re.compile(
     # "we will, however, not").
     r"(?:will|'ll)(?:[\s,]+\w+){0,3}[\s,]+(?:not|never))\b"
 )
-# "<subject> will/'ll see" is a deferral idiom ("we'll see", "I will see how it
-# goes"), NOT a commitment. It is subtracted in _detect_commitment, so a real
-# commitment elsewhere in the same content still fires (audit #11).
+# "<subject> will/'ll see" is a deferral idiom ("we'll see", "we'll see how it
+# goes"), NOT a commitment. Restricted to the deferral shape — clause-end ("we'll
+# see[.]") or a deferral continuation (see how/what/whether/if/about) — so a LITERAL
+# "see <object>" commitment is preserved ("I'll see you tomorrow", "I will see Alice
+# on Monday" still classify as DECISION). It is subtracted in _detect_commitment, so
+# a real commitment elsewhere in the same content also still fires (audit #11).
 _HEDGE_FUTURE: re.Pattern[str] = re.compile(
     r"\b(?:i|we|you|they|he|she)(?:'ll|\s+will)\s+see\b"
+    r"(?=\s*$|\s*[.,!?;:]|\s+(?:how|what|whether|if|about)\b)"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
@@ -228,8 +232,11 @@ _DEADLINE_TOKENS: tuple[str, ...] = (
     # never matches inside "still"); only the genuinely multi-word phrases below
     # are substring-matched. ("due" + weekdays are handled by patterns above so
     # the causal "due to" and bare/past weekday mentions don't mis-fire — #11.)
-    "deadline", "expires", "expiry", "by end of",
+    "deadline", "due date", "expires", "expiry", "by end of",
     "no later than", "until", "till",
+    # "due date" is an explicit deadline noun ("due date is Friday", "due date:
+    # 7/1") that the "due <temporal>" pattern doesn't cover — keep it a token so
+    # such memories retain the FACT floor (Codex PR #140 review).
     # Weekdays are NOT bare tokens — a weekday only signals a deadline inside the
     # deadline-context patterns above ("by Friday" / "cumaya kadar"), audit #11.
     # Turkish explicit deadline words.
