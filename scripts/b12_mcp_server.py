@@ -115,6 +115,75 @@ def _reset_session_tracker(tracker: dict | None = None) -> None:
     target.update(_new_session_tracker())
 
 
+def _ensure_fts_sync_triggers(db, table, cols, names):
+    """Install/repair the soft-delete-aware sync triggers for external-content FTS5
+    `table`.
+
+    `cols` is the ordered FTS column tuple (mapped content→new.content,
+    tags→COALESCE(new.tags, '')); `names` maps insert/delete/update/softdel/restore to
+    trigger names. insert/delete are idempotent (`CREATE TRIGGER IF NOT EXISTS`).
+
+    The UPDATE logic is SPLIT by deleted_at transition into three guarded triggers —
+    active→active (re-index), active→deleted (remove), deleted→active (re-insert). The
+    restore case must INSERT ONLY: issuing an FTS5 'delete' for a row already absent
+    from an external-content index corrupts it ('database disk image is malformed').
+    An older B12 build shipped a single `update` trigger guarded only on
+    `new.deleted_at IS NULL`, which DID issue that fatal delete on restore. We recreate
+    the trio whenever the corrected update guard (`old.deleted_at IS NULL`) or the
+    restore trigger is missing, so such DBs self-heal on the next start. (Audit #20 +
+    Codex review.)
+    """
+    def _src(prefix):
+        return ", ".join(
+            f"COALESCE({prefix}.tags, '')" if c == "tags" else f"{prefix}.{c}"
+            for c in cols
+        )
+    col_csv = ", ".join(cols)
+    ins, dele = names["insert"], names["delete"]
+    upd, sdl, res = names["update"], names["softdel"], names["restore"]
+    db.execute(f"""
+        CREATE TRIGGER IF NOT EXISTS {ins} AFTER INSERT ON memories
+        WHEN new.deleted_at IS NULL BEGIN
+            INSERT INTO {table}(rowid, {col_csv}) VALUES (new.id, {_src('new')});
+        END
+    """)
+    db.execute(f"""
+        CREATE TRIGGER IF NOT EXISTS {dele} AFTER DELETE ON memories BEGIN
+            INSERT INTO {table}({table}, rowid, {col_csv})
+            VALUES('delete', old.id, {_src('old')});
+        END
+    """)
+    _have = {r[0] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
+    _u = db.execute(
+        "SELECT sql FROM sqlite_master WHERE type='trigger' AND name=?", (upd,)
+    ).fetchone()
+    if res not in _have or not _u or "old.deleted_at IS NULL" not in (_u[0] or ""):
+        for _t in (upd, sdl, res):
+            db.execute(f"DROP TRIGGER IF EXISTS {_t}")
+        db.execute(f"""
+            CREATE TRIGGER {upd} AFTER UPDATE ON memories
+            WHEN new.deleted_at IS NULL AND old.deleted_at IS NULL BEGIN
+                INSERT INTO {table}({table}, rowid, {col_csv})
+                VALUES('delete', old.id, {_src('old')});
+                INSERT INTO {table}(rowid, {col_csv}) VALUES (new.id, {_src('new')});
+            END
+        """)
+        db.execute(f"""
+            CREATE TRIGGER {sdl} AFTER UPDATE ON memories
+            WHEN new.deleted_at IS NOT NULL AND old.deleted_at IS NULL BEGIN
+                INSERT INTO {table}({table}, rowid, {col_csv})
+                VALUES('delete', old.id, {_src('old')});
+            END
+        """)
+        db.execute(f"""
+            CREATE TRIGGER {res} AFTER UPDATE ON memories
+            WHEN new.deleted_at IS NULL AND old.deleted_at IS NOT NULL BEGIN
+                INSERT INTO {table}(rowid, {col_csv}) VALUES (new.id, {_src('new')});
+            END
+        """)
+
+
 def _ensure_schema(db: sqlite3.Connection) -> None:
     """Create all required tables if they don't exist. Safe on existing DBs."""
     db.execute("""
@@ -154,47 +223,38 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
             tokenize='unicode61'
         )
     """)
-    # FTS5 sync triggers for memory_fts
-    # NOTE: We do NOT create triggers here if they already exist from mcp-memory-service
-    # (fts_insert, fts_update, fts_softdel, fts_hardel). Check before creating to avoid
-    # duplicate trigger firing which corrupts the FTS index.
-    _existing_triggers = {r[0] for r in db.execute(
-        """SELECT name FROM sqlite_master
-           WHERE type='trigger'
-             AND (name LIKE 'memory_fts_%'
-                  OR name IN ('fts_insert', 'fts_update', 'fts_softdel', 'fts_hardel'))"""
-    ).fetchall()}
-    if not _existing_triggers:
-        # Fresh install — create B12 triggers with soft-delete awareness
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memory_fts_insert AFTER INSERT ON memories
-            WHEN new.deleted_at IS NULL BEGIN
-                INSERT INTO memory_fts(rowid, content, tags)
-                VALUES (new.id, new.content, COALESCE(new.tags, ''));
-            END
-        """)
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memory_fts_delete AFTER DELETE ON memories BEGIN
-                INSERT INTO memory_fts(memory_fts, rowid, content, tags)
-                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
-            END
-        """)
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memory_fts_update AFTER UPDATE ON memories
-            WHEN new.deleted_at IS NULL BEGIN
-                INSERT INTO memory_fts(memory_fts, rowid, content, tags)
-                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
-                INSERT INTO memory_fts(rowid, content, tags)
-                VALUES (new.id, new.content, COALESCE(new.tags, ''));
-            END
-        """)
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memory_fts_softdel AFTER UPDATE ON memories
-            WHEN new.deleted_at IS NOT NULL AND old.deleted_at IS NULL BEGIN
-                INSERT INTO memory_fts(memory_fts, rowid, content, tags)
-                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
-            END
-        """)
+    # FTS5 sync triggers for memory_fts.
+    # B12's memory_fts_* set (soft-delete aware) OWNS memory_fts. The legacy upstream
+    # mcp-memory-service set (fts_insert/update/softdel/hardel) targets the SAME table
+    # but is NOT soft-delete aware, so when both exist every write fires twice (audit
+    # #20): redundant write work, and the guard-less legacy fts_insert indexes rows that
+    # are soft-deleted at insert time (the search JOIN filters them by deleted_at, so
+    # results stay correct, but the index carries entries B12's WHEN-clause deliberately
+    # excludes). The former guard skipped creating B12's set whenever ANY of those names
+    # existed — exactly how a DB ended up carrying BOTH across upgrades.
+    #
+    # Fix: (a) ensure the FULL B12 set unconditionally (every statement is CREATE
+    # TRIGGER IF NOT EXISTS, so this is idempotent AND heals a DB that somehow has only
+    # a partial B12 set), then (b) drop the legacy set, so a dual-trigger DB self-heals
+    # on the next start. `_trig_names` is captured BEFORE (a) so the drop loop still sees
+    # the pre-existing legacy triggers.
+    #
+    # No FTS5 'rebuild' is issued: a bare rebuild re-indexes soft-deleted rows (undoing
+    # the softdel trigger's invariant), and — verified empirically — FTS5 collapses the
+    # duplicate-rowid inserts the two trigger sets produced, so there is no accumulated
+    # term-frequency inflation to clean up; only the redundant writes, which stop here.
+    # _ensure_fts_sync_triggers also SPLITS the update logic so restoring a soft-deleted
+    # row never corrupts the index (see its docstring); `_trig_names` is captured BEFORE
+    # it so the legacy-drop loop still sees the pre-existing legacy triggers.
+    _trig_names = {r[0] for r in db.execute(
+        "SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()}
+    _ensure_fts_sync_triggers(db, "memory_fts", ("content", "tags"), {
+        "insert": "memory_fts_insert", "delete": "memory_fts_delete",
+        "update": "memory_fts_update", "softdel": "memory_fts_softdel",
+        "restore": "memory_fts_restore"})
+    for _legacy in ("fts_insert", "fts_update", "fts_softdel", "fts_hardel"):
+        if _legacy in _trig_names:
+            db.execute(f"DROP TRIGGER IF EXISTS {_legacy}")
     # B12 FTS5 stemmed table (porter unicode61 tokenizer, for morphological matching)
     # "running" matches "run", "configured" matches "config", etc.
     db.execute("""
@@ -206,40 +266,12 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
             tokenize='porter unicode61'
         )
     """)
-    # FTS5 sync triggers for memory_fts_stemmed
-    _existing_stemmed_triggers = {r[0] for r in db.execute(
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND name LIKE 'memory_fts_stemmed_%'"
-    ).fetchall()}
-    if not _existing_stemmed_triggers:
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memory_fts_stemmed_insert AFTER INSERT ON memories
-            WHEN new.deleted_at IS NULL BEGIN
-                INSERT INTO memory_fts_stemmed(rowid, content, tags)
-                VALUES (new.id, new.content, COALESCE(new.tags, ''));
-            END
-        """)
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memory_fts_stemmed_delete AFTER DELETE ON memories BEGIN
-                INSERT INTO memory_fts_stemmed(memory_fts_stemmed, rowid, content, tags)
-                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
-            END
-        """)
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memory_fts_stemmed_update AFTER UPDATE ON memories
-            WHEN new.deleted_at IS NULL BEGIN
-                INSERT INTO memory_fts_stemmed(memory_fts_stemmed, rowid, content, tags)
-                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
-                INSERT INTO memory_fts_stemmed(rowid, content, tags)
-                VALUES (new.id, new.content, COALESCE(new.tags, ''));
-            END
-        """)
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memory_fts_stemmed_softdel AFTER UPDATE ON memories
-            WHEN new.deleted_at IS NOT NULL AND old.deleted_at IS NULL BEGIN
-                INSERT INTO memory_fts_stemmed(memory_fts_stemmed, rowid, content, tags)
-                VALUES('delete', old.id, old.content, COALESCE(old.tags, ''));
-            END
-        """)
+    # FTS5 sync triggers for memory_fts_stemmed — same split-by-transition contract as
+    # memory_fts (the former single-guard update corrupted this index on restore too).
+    _ensure_fts_sync_triggers(db, "memory_fts_stemmed", ("content", "tags"), {
+        "insert": "memory_fts_stemmed_insert", "delete": "memory_fts_stemmed_delete",
+        "update": "memory_fts_stemmed_update", "softdel": "memory_fts_stemmed_softdel",
+        "restore": "memory_fts_stemmed_restore"})
 
     # Native FTS5 table (trigram tokenizer, used by MCP server search)
     db.execute("""
@@ -259,47 +291,12 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
     for _trigger_name, _trigger_sql in _content_trigger_rows:
         if "delete from memory_content_fts" in ((_trigger_sql or "").lower()):
             db.execute(f"DROP TRIGGER IF EXISTS {_trigger_name}")
-    _existing_content_triggers = {r[0] for r in db.execute(
-        "SELECT name FROM sqlite_master WHERE type='trigger' AND sql LIKE '%memory_content_fts%'"
-    ).fetchall()}
-    _required_content_triggers = {
-        "memories_fts_ai",
-        "memories_fts_au",
-        "memories_fts_softdel",
-        "memories_fts_ad",
-    }
-    if not _required_content_triggers.issubset(_existing_content_triggers):
-        db.execute("DROP TRIGGER IF EXISTS memories_fts_ai")
-        db.execute("DROP TRIGGER IF EXISTS memories_fts_au")
-        db.execute("DROP TRIGGER IF EXISTS memories_fts_softdel")
-        db.execute("DROP TRIGGER IF EXISTS memories_fts_ad")
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memories_fts_ai AFTER INSERT ON memories
-            WHEN new.deleted_at IS NULL BEGIN
-                INSERT INTO memory_content_fts(rowid, content) VALUES (new.id, new.content);
-            END
-        """)
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memories_fts_au AFTER UPDATE ON memories
-            WHEN new.deleted_at IS NULL BEGIN
-                INSERT INTO memory_content_fts(memory_content_fts, rowid, content)
-                VALUES('delete', old.id, old.content);
-                INSERT INTO memory_content_fts(rowid, content) VALUES (new.id, new.content);
-            END
-        """)
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memories_fts_softdel AFTER UPDATE ON memories
-            WHEN new.deleted_at IS NOT NULL AND old.deleted_at IS NULL BEGIN
-                INSERT INTO memory_content_fts(memory_content_fts, rowid, content)
-                VALUES('delete', old.id, old.content);
-            END
-        """)
-        db.execute("""
-            CREATE TRIGGER IF NOT EXISTS memories_fts_ad AFTER DELETE ON memories BEGIN
-                INSERT INTO memory_content_fts(memory_content_fts, rowid, content)
-                VALUES('delete', old.id, old.content);
-            END
-        """)
+    # Single-column (content only) FTS; same split-by-transition contract — the former
+    # memories_fts_au also corrupted this index when restoring a soft-deleted row.
+    _ensure_fts_sync_triggers(db, "memory_content_fts", ("content",), {
+        "insert": "memories_fts_ai", "delete": "memories_fts_ad",
+        "update": "memories_fts_au", "softdel": "memories_fts_softdel",
+        "restore": "memories_fts_ar"})
 
     # Memory graph (edges between memories)
     # Uses composite PK matching existing DB from mcp-memory-service.

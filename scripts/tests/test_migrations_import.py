@@ -587,7 +587,11 @@ def test_stemmed_fts_migration_clears_stale_rows_when_no_active_memories(tmp_pat
     assert rowids == set()
 
 
-def test_mcp_schema_respects_legacy_fts_trigger_names(monkeypatch):
+def test_mcp_schema_supersedes_legacy_fts_triggers(monkeypatch):
+    """Audit #20: B12's memory_fts_* set must SUPERSEDE the legacy upstream fts_*
+    triggers, not coexist with them. The former behavior preserved the legacy set
+    (and skipped creating B12's), but when a DB carried both they double-indexed
+    memory_fts. _ensure_schema now creates B12's set and drops the legacy one."""
     b12_mcp_server = _load_b12_mcp_server_with_fake_mcp(monkeypatch)
     conn = sqlite3.connect(":memory:")
     conn.executescript(
@@ -618,13 +622,18 @@ def test_mcp_schema_respects_legacy_fts_trigger_names(monkeypatch):
         row[0]
         for row in conn.execute("SELECT name FROM sqlite_master WHERE type='trigger'").fetchall()
     }
-    assert "fts_insert" in trigger_names
-    assert not {
+    # Legacy upstream set is dropped — B12's set now owns memory_fts.
+    assert "fts_insert" not in trigger_names
+    assert not {"fts_update", "fts_softdel", "fts_hardel"} & trigger_names
+    # B12's soft-delete-aware set is present (incl. the restore trigger that guards
+    # against corrupting the index when a soft-deleted row is restored).
+    assert {
         "memory_fts_insert",
         "memory_fts_delete",
         "memory_fts_update",
         "memory_fts_softdel",
-    } & trigger_names
+        "memory_fts_restore",
+    } <= trigger_names
 
 
 def test_mcp_session_tracker_resets_after_flush(monkeypatch):
