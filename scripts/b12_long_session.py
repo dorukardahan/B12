@@ -26,9 +26,9 @@ State file: ``$B12_DATA_DIR/state/session-turn-counter-<sid[:12]>.txt``
 
 Selection rule for re-surface candidates:
     metadata.source_session == current_session[:12]
-        AND metadata.importance_score >= 0.7
+        AND normalized importance >= 0.7  (dual-scale importance_score normalized to [0,1])
         AND created_at within the current session
-    ORDER BY importance_score DESC, created_at ASC
+    ORDER BY normalized importance DESC, created_at ASC
     LIMIT N (default 3)
 
 We require source_session match instead of "any high-importance memory" so
@@ -174,7 +174,7 @@ def pick_resurface_ids(
             """
             SELECT m.id,
                    m.content_hash,
-                   COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) AS importance,
+                   max(min(CASE WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0 THEN json_extract(m.metadata, '$.importance_score') / 2.0 ELSE json_extract(m.metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) AS importance,
                    COALESCE(json_extract(m.metadata, '$.project'), '') AS project,
                    COALESCE(SUBSTR(json_extract(m.metadata, '$.source_session'), 1, 12), '') AS source_session,
                    m.memory_type,
@@ -184,7 +184,7 @@ def pick_resurface_ids(
               AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
               AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
               AND COALESCE(json_extract(m.metadata, '$.source_session'), '') = ?
-              AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?
+              AND max(min(CASE WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0 THEN json_extract(m.metadata, '$.importance_score') / 2.0 ELSE json_extract(m.metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) >= ?
             ORDER BY importance DESC, m.created_at ASC
             LIMIT 50
             """,
@@ -254,7 +254,8 @@ def pick_topic_shift_ids(
 
     Stricter than ``pick_resurface_ids``:
       - same source_session (this session captured the fact)
-      - importance_score >= 0.8 (only the genuinely-anchoring facts)
+      - normalized importance >= 0.8 (critical tier + high-fractional only; stricter
+        than the 0.7 resurface gate, which also admits the 'important' tier)
       - created_at < session-midpoint (older than half the elapsed session,
         so we re-surface facts the model captured *early* — the ones most
         likely to have slid out of effective working context)
@@ -302,7 +303,7 @@ def pick_topic_shift_ids(
                 """
                 SELECT m.id,
                        m.content_hash,
-                       COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) AS importance,
+                       max(min(CASE WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0 THEN json_extract(m.metadata, '$.importance_score') / 2.0 ELSE json_extract(m.metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) AS importance,
                        COALESCE(json_extract(m.metadata, '$.project'), '') AS project,
                        COALESCE(SUBSTR(json_extract(m.metadata, '$.source_session'), 1, 12), '') AS source_session,
                        m.memory_type,
@@ -312,7 +313,7 @@ def pick_topic_shift_ids(
                   AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
                   AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
                   AND COALESCE(json_extract(m.metadata, '$.source_session'), '') = ?
-                  AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?
+                  AND max(min(CASE WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0 THEN json_extract(m.metadata, '$.importance_score') / 2.0 ELSE json_extract(m.metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) >= ?
                   AND m.created_at < ?
                 ORDER BY importance DESC, m.created_at ASC
                 LIMIT 50
@@ -324,7 +325,7 @@ def pick_topic_shift_ids(
                 """
                 SELECT m.id,
                        m.content_hash,
-                       COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) AS importance,
+                       max(min(CASE WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0 THEN json_extract(m.metadata, '$.importance_score') / 2.0 ELSE json_extract(m.metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) AS importance,
                        COALESCE(json_extract(m.metadata, '$.project'), '') AS project,
                        COALESCE(SUBSTR(json_extract(m.metadata, '$.source_session'), 1, 12), '') AS source_session,
                        m.memory_type,
@@ -334,7 +335,7 @@ def pick_topic_shift_ids(
                   AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
                   AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
                   AND COALESCE(json_extract(m.metadata, '$.source_session'), '') = ?
-                  AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?
+                  AND max(min(CASE WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0 THEN json_extract(m.metadata, '$.importance_score') / 2.0 ELSE json_extract(m.metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) >= ?
                 ORDER BY importance DESC, m.created_at ASC
                 LIMIT 50
                 """,
@@ -453,7 +454,7 @@ def pick_cross_session_ids(
 
     Selection rule:
       - source_session != current (cross-session — that's the point)
-      - importance_score >= 0.8
+      - normalized importance >= 0.8 (critical tier + high-fractional only)
       - created_at older than ``min_age_days`` ago (so we re-surface
         durable knowledge, not yesterday's in-flight notes)
       - project == current project (scope discipline — don't pollute
@@ -481,7 +482,7 @@ def pick_cross_session_ids(
             """
             SELECT m.id,
                    m.content_hash,
-                   COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) AS importance,
+                   max(min(CASE WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0 THEN json_extract(m.metadata, '$.importance_score') / 2.0 ELSE json_extract(m.metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) AS importance,
                    COALESCE(json_extract(m.metadata, '$.project'), '') AS project,
                    COALESCE(SUBSTR(json_extract(m.metadata, '$.source_session'), 1, 12), '') AS source_session,
                    m.memory_type,
@@ -492,7 +493,7 @@ def pick_cross_session_ids(
               AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
               AND COALESCE(json_extract(m.metadata, '$.project'), '') = ?
               AND COALESCE(SUBSTR(json_extract(m.metadata, '$.source_session'), 1, 12), '') != ?
-              AND COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) >= ?
+              AND max(min(CASE WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real') THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0 THEN json_extract(m.metadata, '$.importance_score') / 2.0 ELSE json_extract(m.metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0) >= ?
               AND m.created_at < ?
             ORDER BY importance DESC, m.created_at DESC
             LIMIT 50

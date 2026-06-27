@@ -585,3 +585,50 @@ def test_long_session_turn_counter_serializes_concurrent_updates(tmp_path, monke
             future.result()
 
     assert b12_long_session.read_turn(session_id) == 25
+
+
+# ── audit M4: b12_long_session re-surface importance normalization ────────────
+
+# The EXACT normalized expression used at all 8 ranking/filter sites in
+# b12_long_session.py — kept character-identical so the source guard below asserts
+# string parity (not just a count of a fuzzy substring), catching partial drift.
+_LS_IMPORTANCE_NORM = (
+    "max(min(CASE WHEN json_valid(m.metadata) AND json_type(m.metadata, '$.importance_score') IN ('integer','real') "
+    "THEN (CASE WHEN json_extract(m.metadata, '$.importance_score') >= 1.0 "
+    "THEN json_extract(m.metadata, '$.importance_score') / 2.0 "
+    "ELSE json_extract(m.metadata, '$.importance_score') END) ELSE 0.50 END, 1.0), 0.0)"
+)
+
+
+def _ls_query_keys(threshold):
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE memories(id INTEGER PRIMARY KEY, metadata TEXT)")
+    rows = {"normal": 1.0, "important": 1.5, "critical": 2.0, "frac": 0.90, "low": 0.40}
+    for i, (k, v) in enumerate(rows.items(), 1):
+        db.execute("INSERT INTO memories(id, metadata) VALUES(?, ?)",
+                   (i, json.dumps({"importance_score": v, "k": k})))
+    q = (f"SELECT json_extract(m.metadata, '$.k') FROM memories m "
+         f"WHERE {_LS_IMPORTANCE_NORM} >= {threshold} ORDER BY {_LS_IMPORTANCE_NORM} DESC")
+    return [r[0] for r in db.execute(q).fetchall()]
+
+
+def test_long_session_resurface_gate_07_admits_important():
+    """The 0.7 resurface gate: normal (1.0->0.5) and low (0.4) are excluded;
+    important (1.5->0.75), critical (2.0->1.0), and fractional 0.90 anchor, ordered
+    critical > frac > important."""
+    assert _ls_query_keys(0.7) == ["critical", "frac", "important"]
+
+
+def test_long_session_topicshift_gate_08_is_stricter_excludes_important():
+    """The 0.8 topic-shift / cross-session gate is intentionally STRICTER: it drops
+    the 'important' tier (1.5->0.75 < 0.8), admitting only critical (->1.0) and
+    high-fractional (>=0.8) — the documented 'only the genuinely-anchoring facts'."""
+    assert _ls_query_keys(0.8) == ["critical", "frac"]
+
+
+def test_long_session_no_raw_importance_ranking():
+    """Source guard: b12_long_session.py uses the EXACT normalized form at all 8
+    ranking + filter sites, not the raw COALESCE(json_extract(...), 0.5)."""
+    src = (Path(__file__).resolve().parents[1] / "b12_long_session.py").read_text()
+    assert "COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5)" not in src, "raw importance expr still present"
+    assert src.count(_LS_IMPORTANCE_NORM) == 8, "expected 8 EXACT normalized importance sites (string-parity guard)"
