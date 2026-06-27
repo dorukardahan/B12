@@ -426,9 +426,17 @@ If you were using the old `mcp-memory-service` (pipx) system:
 ```bash
 cd /path/to/B12
 git pull
-./install.sh --all    # Re-deploys hooks and scripts
+./install.sh --all    # Re-deploys hooks + scripts, and reloads the MCP daemon if running
 # Restart Claude Code to pick up changes
 ```
+
+> **macOS MCP daemon:** if the shared MCP daemon (`com.b12.mcp.daemon`) is
+> running, `--all`/`--full` now restarts it automatically so freshly-pulled
+> daemon code (`b12_mcp_daemon.py` / `b12_mcp_server.py`) takes effect — the
+> long-lived launchd process otherwise keeps serving the old in-memory code.
+> Active sessions see a brief socket drop during the reload (the stdio proxy
+> reconnects automatically; an in-flight memory call may fail — just retry).
+> To reload it manually: `launchctl unload ~/Library/LaunchAgents/com.b12.mcp.daemon.plist && launchctl load ~/Library/LaunchAgents/com.b12.mcp.daemon.plist`.
 
 ## Codex CLI Setup
 
