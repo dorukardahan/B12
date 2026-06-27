@@ -91,7 +91,10 @@ def test_deadline_weekday_in_context_fires():
               # EN time qualifier before the weekday (Codex PR #140)
               "deliver by noon Friday",
               "finish before 5pm Friday",
-              "ship by 9 Monday"):
+              "ship by 9 Monday",
+              # TR numeric time after the weekday (Codex PR #140)
+              "cuma 5'e kadar hazır olsun",
+              "pazartesi 17:00'ye kadar bitir"):
         assert score_with_breakdown(s).deadline_hit is True, s
 
 def test_deadline_tr_comparative_kadar_not_a_deadline():
@@ -164,11 +167,21 @@ def test_will_see_is_hedge_not_commitment():
 
 def test_will_see_continuation_with_inner_modal_not_commitment():
     # Codex PR #140: a modal INSIDE the deferral clause must not re-trigger commit —
-    # the whole hedge continuation is consumed up to the clause boundary.
+    # the whole hedge continuation is consumed up to the clause boundary, across all
+    # wh-continuations.
     for s in ("we'll see if we need to migrate",
               "we will see how we will deploy",
-              "we'll see whether we should refactor"):
+              "we'll see whether we should refactor",
+              "we'll see when we need to migrate",
+              "we'll see where we will deploy",
+              "we'll see who will own it",
+              "we'll see which approach we should take",
+              "we'll see why it failed",
+              # bilingual: a Turkish obligation INSIDE the hedge is not a commitment
+              "we'll see if bunu yapmalı mıyız"):
         assert score_with_breakdown(s).commitment_hit is False, s
+    # ...but a Turkish obligation OUTSIDE the hedge still fires.
+    assert score_with_breakdown("yapmalıyız, then we'll see").commitment_hit is True
     # coordinated alternatives INSIDE the deferral are part of the hedge.
     for s in ("we'll see whether we will deploy or we will rollback",
               "we'll see if we deploy and we rollback"):

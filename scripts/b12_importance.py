@@ -198,7 +198,8 @@ _HEDGE_FUTURE: re.Pattern[str] = re.compile(
     # bounds a clause — excluding them keeps a real commitment on the other side
     # ("we'll see how it goes: we must migrate", "... — we must migrate", or
     # "must migrate" on the next line) out of the hedge.
-    r"(?:\s+(?:how|what|whether|if|about)\b[^.!?;,:\n\r–—]*)?"
+    r"(?:\s+(?:how|what|whether|if|about|when|where|who|whom|whose|which|why)\b"
+    r"[^.!?;,:\n\r–—]*)?"
     r"(?=\s*$|\s*[.,!?;:–—])"
 )
 
@@ -247,7 +248,9 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
         r"\b(?:pazartesi|salı|sali|çarşamba|carsamba|perşembe|persembe|cuma|"
         r"cumartesi|pazar)"
         r"(?:'?(?:ye|ya|a)"
-        r"|\s+(?:g[üu]n|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae])"
+        r"|\s+(?:g[üu]n|akşam|aksam|sabah|öğle|ogle|öğlen|oglen|gece)\w*[ae]"
+        # numeric time after the weekday ("cuma 5'e kadar", "pazartesi 17:00'ye kadar")
+        r"|\s+\d{1,2}(?::\d{2})?'?\w*)"
         r"\s+kadar\b"
     ),
 )
@@ -648,11 +651,17 @@ def _detect_commitment(lower: str) -> bool:
             return False
     # "<subj> will see" is a deferral idiom, not a commitment. Subtract it; commit
     # only if another (non-hedge) signal remains ("we'll deploy, then we'll see").
+    # ALL signals are recomputed on the residual — including the Turkish -malı/-meli
+    # suffix — so a bilingual deferral whose obligation lives INSIDE the hedge
+    # ("we'll see if bunu yapmalı mıyız") is not boosted, while a real obligation
+    # OUTSIDE it still fires.
     if _HEDGE_FUTURE.search(lower):
         residual = _HEDGE_FUTURE.sub(" ", lower)
         residual_hit = (any(_token_in(residual, tok) for tok in _COMMIT_TOKENS)
-                        or bool(_COMMIT_TR_WORDS.search(residual)))
-        if not (residual_hit or suffix_hit):
+                        or bool(_COMMIT_TR_WORDS.search(residual))
+                        or (bool(_COMMIT_TR_SUFFIX.search(residual))
+                            and not _TR_NEG_SUFFIX.search(residual)))
+        if not residual_hit:
             return False
     return True
 
