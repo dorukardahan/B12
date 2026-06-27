@@ -506,13 +506,16 @@ def _close_read_conn(barrier=None) -> None:
 
 
 def _atexit_flush() -> None:
-    """Process-exit flush of the GLOBAL session tracker on a SHORT-LIVED own
-    connection — no event loop / pool reliance during interpreter shutdown.
+    """Flush the ACTIVE session tracker on a SHORT-LIVED own connection — no event
+    loop / pool reliance. Resolves the tracker via _current_session_tracker() so it
+    works from BOTH the daemon's RSS-guard task (the contextvar tracker is set by
+    lifespan and inherited by tasks — audit #12) AND the real atexit hook after the
+    loop is gone (contextvar unset → global, a no-op once lifespan already flushed).
     Best-effort; never raises."""
     try:
         conn = sqlite3.connect(DB_PATH, timeout=5, isolation_level="IMMEDIATE")
         try:
-            _flush_session_tracker(conn, _session_tracker)
+            _flush_session_tracker(conn, _current_session_tracker())
         finally:
             conn.close()
     except Exception:
