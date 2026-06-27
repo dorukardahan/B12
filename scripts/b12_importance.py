@@ -194,11 +194,12 @@ _NEG_MODAL: re.Pattern[str] = re.compile(
 _HEDGE_FUTURE: re.Pattern[str] = re.compile(
     r"\b(?:i|we|you|they|he|she)(?:'ll|\s+will)\s+see\b"
     # Consume the deferral continuation up to the next clause separator. Besides
-    # sentence terminators and commas, a colon or a newline also bounds a clause —
-    # excluding them keeps a real commitment on the other side ("we'll see how it
-    # goes: we must migrate", or "must migrate" on the next line) out of the hedge.
-    r"(?:\s+(?:how|what|whether|if|about)\b[^.!?;,:\n\r]*)?"
-    r"(?=\s*$|\s*[.,!?;:])"
+    # sentence terminators and commas, a colon, a newline, or an em/en dash also
+    # bounds a clause — excluding them keeps a real commitment on the other side
+    # ("we'll see how it goes: we must migrate", "... — we must migrate", or
+    # "must migrate" on the next line) out of the hedge.
+    r"(?:\s+(?:how|what|whether|if|about)\b[^.!?;,:\n\r–—]*)?"
+    r"(?=\s*$|\s*[.,!?;:–—])"
 )
 
 # Deadline / date. The legacy _FACT_PATTERNS already cover plain years and
@@ -227,7 +228,11 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # Tuesday", "Happy Friday", "Monday morning sync") — audit #11. ("on Monday"
     # is intentionally excluded: it is as often past/scheduling as a deadline.)
     re.compile(
-        r"\b(?:by|before|until|till|due|no later than)\s+(?:next\s+|this\s+)?"
+        r"\b(?:by|before|until|till|due|no later than)\s+"
+        # optional time qualifier between the preposition and the weekday
+        # ("by noon Friday", "before 5pm Friday", "by 9 Monday")
+        r"(?:(?:noon|midnight|eod|\d{1,2}(?::\d{2})?\s*(?:am|pm)?)\s+)?"
+        r"(?:next\s+|this\s+)?"
         r"(?:monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b"
     ),
     # Turkish weekday deadline: "<weekday>(dative) kadar" ("cumaya kadar" = by
