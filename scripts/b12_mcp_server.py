@@ -57,6 +57,17 @@ SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 MCP_DAEMON_SOCK = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
 B12_VERSION = "v11.80.3"
 
+# Fix C — resilient proxy reconnect. When the daemon-side socket closes while the
+# host CLI's stdin is still open (daemon restart by launchd/RSS-guard, redeploy,
+# MAX_CONNECTIONS eviction, or a crash), the proxy re-dials the daemon and replays
+# the cached MCP `initialize` + `notifications/initialized` so the host never sees
+# the break. Set B12_MCP_PROXY_RECONNECT=0 to disable (exit-on-EOF legacy behavior).
+_PROXY_RECONNECT = os.environ.get("B12_MCP_PROXY_RECONNECT", "1") != "0"
+try:
+    _RECONNECT_BUDGET_S = max(0.0, float(os.environ.get("B12_MCP_RECONNECT_BUDGET", "30")))
+except (TypeError, ValueError):
+    _RECONNECT_BUDGET_S = 30.0
+
 # ── SQLite access (BB1: per-connection, off the event loop) ──────
 # Reads run concurrently on a thread pool — WAL allows many concurrent readers —
 # each on a connection OWNED by its worker thread. ALL writes + SELECT→write
@@ -2710,80 +2721,235 @@ def _daemon_alive(sock_path: str, timeout: float = 0.5) -> bool:
         return False
 
 
+def _json_or_none(line: bytes):
+    """Parse a JSON-RPC wire line, or None if it isn't valid JSON (partial frame,
+    blank line). Observational only — callers still forward the raw bytes verbatim."""
+    try:
+        return json.loads(line)
+    except (ValueError, TypeError):
+        return None
+
+
+def _observe_client_line(line: bytes, state: dict) -> None:
+    """Capture the MCP handshake (the `initialize` request line + its id, and the
+    `notifications/initialized` line) and record outstanding request ids, so the
+    proxy can replay the handshake and fail in-flight requests fast on reconnect."""
+    msg = _json_or_none(line)
+    if not isinstance(msg, dict):
+        return
+    method = msg.get("method")
+    if method == "initialize":
+        state["init_line"] = line
+        state["init_id"] = msg.get("id")
+    elif method == "notifications/initialized":
+        state["initialized_line"] = line
+    # Requests carry BOTH a method and an id; notifications have no id, responses
+    # have no method. Track request ids so reconnect can answer the orphaned ones.
+    if method is not None and msg.get("id") is not None:
+        state["outstanding"].add(msg["id"])
+
+
+def _observe_server_line(line: bytes, state: dict) -> None:
+    """Capture the FIRST `initialize` response (for capability-drift comparison on
+    reconnect) and clear request ids as their responses come back."""
+    msg = _json_or_none(line)
+    if not isinstance(msg, dict):
+        return
+    if (state.get("init_response") is None and msg.get("id") == state.get("init_id")
+            and isinstance(msg.get("result"), dict)
+            and "protocolVersion" in msg["result"]):
+        state["init_response"] = msg
+    if msg.get("method") is None and "id" in msg:
+        state["outstanding"].discard(msg.get("id"))
+
+
+def _init_responses_compatible(new_resp, cached_resp) -> bool:
+    """True if a reconnect's `initialize` response negotiates the same protocol
+    version + capability surface the client already saw. A material difference
+    (protocol/capability drift after a redeploy) means we must NOT silently splice
+    the new session onto the old client — fall back to manual reconnect instead."""
+    if not isinstance(new_resp, dict) or not isinstance(cached_resp, dict):
+        return True  # can't compare → don't block the reconnect
+    rn = new_resp.get("result") or {}
+    rc = cached_resp.get("result") or {}
+    if rn.get("protocolVersion") != rc.get("protocolVersion"):
+        return False
+    return sorted((rn.get("capabilities") or {}).keys()) == sorted((rc.get("capabilities") or {}).keys())
+
+
 async def _run_as_proxy(sock_path: str) -> None:
-    """Thin bidirectional byte pipe: stdin <-> daemon socket <-> stdout.
+    """Bidirectional JSON-RPC pipe (stdin <-> daemon socket <-> stdout) that
+    transparently RECONNECTS to the daemon when the socket drops mid-session.
 
-    Both endpoints speak newline-delimited JSON-RPC (the MCP stdio wire format).
-    No MCP-aware parsing happens here — bytes go through verbatim, so any future
-    protocol updates carry over automatically.
+    Lines are forwarded verbatim; a thin observational parse captures the MCP
+    handshake and tracks outstanding request ids (see _observe_*).
 
-    Shutdown semantics:
-      - stdin EOF (host CLI exited): send EOF to daemon, drain any pending
-        responses, then exit. This is the normal case.
-      - socket EOF (daemon crashed, shut down, or dropped this connection):
-        stop reading stdin and exit. NOTE: Claude Code does NOT transparently
-        respawn an exited stdio MCP server — it shows B12 "disconnected" until a
-        manual /mcp reconnect. So any daemon-side socket close is user-visible.
-        The daemon avoids this for the common case by NOT idle-reaping live
-        connections (see b12_mcp_daemon.py IDLE_TIMEOUT, disabled by default);
-        the remaining triggers (daemon restart by launchd/RSS-guard, redeploy,
-        MAX_CONNECTIONS eviction) still surface as a one-time drop. A future
-        reconnect-with-initialize-replay proxy (Fix C) would absorb those too.
+    Shutdown / reconnect semantics:
+      - stdin EOF (host CLI exited): half-close the daemon, drain pending
+        responses, exit. Normal case.
+      - socket EOF while stdin is still open (daemon restart by launchd/RSS-guard,
+        redeploy, MAX_CONNECTIONS eviction, crash): Fix C re-dials the daemon with
+        backoff, replays the cached `initialize` (swallowing the new response),
+        replays `notifications/initialized`, synthesizes a retryable error for each
+        in-flight request, and resumes — so Claude Code never sees the break. If
+        reconnection can't succeed within B12_MCP_RECONNECT_BUDGET seconds (default
+        30, ~one launchd respawn), or the reconnect negotiates a different protocol/
+        capability set, the proxy exits (legacy behavior: B12 shows disconnected
+        until a manual /mcp). Set B12_MCP_PROXY_RECONNECT=0 to disable entirely.
     """
     import sys as _sys
-    sock_reader, sock_writer = await asyncio.open_unix_connection(sock_path)
     loop = asyncio.get_running_loop()
 
-    # Wrap stdin as a proper asyncio StreamReader so cancellation actually works
+    # Wrap stdin as a proper asyncio StreamReader so cancellation actually works.
     stdin_reader = asyncio.StreamReader()
     stdin_protocol = asyncio.StreamReaderProtocol(stdin_reader)
     await loop.connect_read_pipe(lambda: stdin_protocol, _sys.stdin)
 
-    socket_closed = asyncio.Event()
+    def _write_stdout_real(data: bytes) -> None:
+        _sys.stdout.buffer.write(data)
+        _sys.stdout.buffer.flush()
+
+    await _proxy_session(stdin_reader, _write_stdout_real, sock_path)
+
+
+async def _proxy_session(stdin_reader, write_stdout, sock_path: str) -> None:
+    """Core reconnect-capable JSON-RPC pipe, parameterized on `stdin_reader` (an
+    asyncio.StreamReader) and `write_stdout` (a bytes->None sink) so tests can drive
+    it against a mock daemon socket. See _run_as_proxy for the wire/reconnect contract."""
+    loop = asyncio.get_running_loop()
+
+    sock_reader, sock_writer = await asyncio.open_unix_connection(sock_path)
+    conn = {"reader": sock_reader, "writer": sock_writer}
+    state: dict = {"init_line": None, "init_id": None, "initialized_line": None,
+                   "init_response": None, "outstanding": set()}
+
+    stdin_closed = asyncio.Event()
+    give_up = asyncio.Event()
+    connected = asyncio.Event()
+    connected.set()
+    budget = _RECONNECT_BUDGET_S if _PROXY_RECONNECT else 0.0
+
+    async def _reconnect() -> bool:
+        """Re-dial + replay the handshake. Owned solely by socket_to_stdout (no
+        concurrent socket read). Returns True on success, False on budget/drift."""
+        connected.clear()
+        try:
+            conn["writer"].close()
+        except Exception:
+            pass
+        deadline = loop.time() + budget
+        backoff = 0.1
+        while budget > 0 and loop.time() < deadline and not stdin_closed.is_set():
+            try:
+                new_r, new_w = await asyncio.open_unix_connection(sock_path)
+            except (ConnectionRefusedError, FileNotFoundError, OSError):
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 2.0)
+                continue
+            try:
+                if state["init_line"]:
+                    new_w.write(state["init_line"])
+                    await new_w.drain()
+                    new_resp = None
+                    while True:
+                        rline = await asyncio.wait_for(new_r.readline(), timeout=5.0)
+                        if not rline:
+                            raise ConnectionError("eof during initialize replay")
+                        m = _json_or_none(rline)
+                        if isinstance(m, dict) and m.get("id") == state["init_id"] and "result" in m:
+                            new_resp = m
+                            break  # consume (do NOT forward) the replayed init response
+                    if (state["init_response"] is not None
+                            and not _init_responses_compatible(new_resp, state["init_response"])):
+                        _sys.stderr.write("B12 proxy: capability drift on reconnect; exiting\n")
+                        _sys.stderr.flush()
+                        try:
+                            new_w.close()
+                        except Exception:
+                            pass
+                        return False
+                if state["initialized_line"]:
+                    new_w.write(state["initialized_line"])
+                    await new_w.drain()
+            except (asyncio.TimeoutError, ConnectionError, ConnectionResetError,
+                    BrokenPipeError, OSError):
+                try:
+                    new_w.close()
+                except Exception:
+                    pass
+                await asyncio.sleep(backoff)
+                backoff = min(backoff * 2, 2.0)
+                continue
+            # Success: answer the orphaned in-flight requests so the host fails fast
+            # (retryable) instead of hanging until MCP_TIMEOUT.
+            for rid in list(state["outstanding"]):
+                err = {"jsonrpc": "2.0", "id": rid,
+                       "error": {"code": -32001, "message": "B12 reconnected; please retry"}}
+                write_stdout((json.dumps(err) + "\n").encode())
+            state["outstanding"].clear()
+            conn["reader"], conn["writer"] = new_r, new_w
+            connected.set()
+            return True
+        return False
 
     async def stdin_to_socket() -> None:
         try:
-            while not socket_closed.is_set():
+            while True:
                 line = await stdin_reader.readline()
                 if not line:
-                    break  # stdin EOF — host CLI closed
-                sock_writer.write(line)
-                await sock_writer.drain()
+                    return  # stdin EOF — host CLI closed
+                _observe_client_line(line, state)
+                while True:  # write, retrying across a reconnect if the socket is down
+                    await connected.wait()
+                    if give_up.is_set():
+                        return
+                    try:
+                        conn["writer"].write(line)
+                        await conn["writer"].drain()
+                        break
+                    except (ConnectionResetError, BrokenPipeError, OSError):
+                        connected.clear()  # socket_to_stdout will see EOF and reconnect
+                        try:
+                            await asyncio.wait_for(connected.wait(), timeout=budget + 2.0)
+                        except asyncio.TimeoutError:
+                            return
+                        if give_up.is_set():
+                            return
         except (BrokenPipeError, ConnectionResetError):
             pass
         finally:
-            # Tell daemon "no more requests"
+            stdin_closed.set()
             try:
-                if sock_writer.can_write_eof():
-                    sock_writer.write_eof()
+                if conn["writer"].can_write_eof():
+                    conn["writer"].write_eof()
             except Exception:
                 pass
 
     async def socket_to_stdout() -> None:
-        try:
-            while True:
-                line = await sock_reader.readline()
-                if not line:
-                    return  # daemon closed socket
-                _sys.stdout.buffer.write(line)
-                _sys.stdout.buffer.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            pass
-        finally:
-            socket_closed.set()
+        while True:
+            try:
+                line = await conn["reader"].readline()
+            except (ConnectionResetError, OSError):
+                line = b""
+            if line:
+                _observe_server_line(line, state)
+                try:
+                    write_stdout(line)
+                except (BrokenPipeError, OSError):
+                    return
+                continue
+            # Socket EOF.
+            if stdin_closed.is_set():
+                return  # normal shutdown — host already gone
+            if not await _reconnect():
+                give_up.set()
+                connected.set()  # unblock a stdin writer waiting on reconnect so it exits
+                return
+            # Reconnected — keep reading from the fresh conn["reader"].
 
     stdin_task = asyncio.create_task(stdin_to_socket())
     socket_task = asyncio.create_task(socket_to_stdout())
 
-    # Wait for whichever side closes first:
-    #   - stdin EOF (host CLI exited): normal shutdown — drain the socket briefly.
-    #   - socket EOF (daemon shut down / restarted / dropped this connection):
-    #     exit IMMEDIATELY rather than staying blocked on `await stdin_task` until
-    #     the next host request — that request would be written to the now-dead
-    #     socket and lost. NB: exiting does NOT yield a transparent reconnect on
-    #     Claude Code (it shows B12 disconnected until manual /mcp); the daemon
-    #     therefore no longer idle-reaps live connections so this path stays rare.
-    #     (PR #108 review r3441627771; reaper disabled 2026-06-27.)
     done, _pending = await asyncio.wait(
         {stdin_task, socket_task}, return_when=asyncio.FIRST_COMPLETED
     )
@@ -2800,8 +2966,10 @@ async def _run_as_proxy(sock_path: str) -> None:
                 except (asyncio.CancelledError, Exception):
                     pass
     else:
-        # Socket closed first (daemon shutdown / idle-reap): stop reading stdin
-        # and exit now instead of forwarding a doomed request to the dead socket.
+        # socket_to_stdout finished (reconnect gave up, or stdout closed): stop the
+        # stdin reader and exit. give_up unblocks any in-progress write retry.
+        give_up.set()
+        connected.set()
         stdin_task.cancel()
         try:
             await stdin_task
@@ -2809,8 +2977,8 @@ async def _run_as_proxy(sock_path: str) -> None:
             pass
 
     try:
-        sock_writer.close()
-        await sock_writer.wait_closed()
+        conn["writer"].close()
+        await conn["writer"].wait_closed()
     except Exception:
         pass
 
