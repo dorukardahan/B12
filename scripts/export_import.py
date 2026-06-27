@@ -286,6 +286,7 @@ def import_memories(
     manifest = None
     total = 0
     hash_remap: dict[str, str] = {}
+    imported_hashes: set[str] = set()   # stored content_hashes of THIS import's rows
 
     try:
         conn.execute("BEGIN")
@@ -311,6 +312,12 @@ def import_memories(
                 imported = _import_memory(conn, record, mode, source_name, hash_remap)
                 if imported:
                     result.memories_imported += 1
+                    # Track the stored content_hash (recomputed exactly as
+                    # _import_memory does) so the post-import embedding backfill can
+                    # target JUST these rows — not every pre-existing gap, which
+                    # would monopolize the single-connection embed daemon and make
+                    # concurrent stores lose their embeddings (GLM review on PR #134).
+                    imported_hashes.add(_content_hash(_scrub_pii(record.get("content", ""))))
                 else:
                     result.memories_skipped += 1
 
@@ -336,9 +343,9 @@ def import_memories(
     finally:
         conn.close()
 
-    # Request embedding backfill via daemon (batch)
-    if result.memories_imported > 0:
-        _request_embedding_backfill(db_path, result.memories_imported)
+    # Request embedding backfill via daemon (batch) — scoped to JUST this import's rows.
+    if imported_hashes:
+        _request_embedding_backfill(db_path, imported_hashes)
 
     result.duration_seconds = round(time.time() - start, 2)
     return result
@@ -527,32 +534,34 @@ def _import_edge(conn: sqlite3.Connection, record: dict, hash_remap: dict[str, s
         return False
 
 
-def _request_embedding_backfill(db_path: str, count: int):
-    """Request the embed daemon to backfill embeddings for imported memories."""
-    import socket
-    uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-    sock_path = f"/tmp/b12-embed-{uid}.sock"
+def _request_embedding_backfill(db_path: str, content_hashes):
+    """Backfill vector embeddings for the freshly-imported memories ONLY.
 
+    audit M1: this used to send `{"op": "backfill"}` to the embed daemon, but the
+    daemon has NO such op (it replies `unknown_op: backfill`, which was ignored),
+    so imported `.b12` memories stayed FTS-only — never vector/semantic-searchable
+    until someone manually ran embedding_backfill.py (no hook/cron runs it). Now
+    we call embedding_backfill.backfill() scoped to exactly this import's
+    `content_hashes`, which uses the daemon's real `encode_batch` op + writes the
+    vectors.
+
+    Scoping to the imported hashes (not a global, id-ASC limited backfill) is
+    deliberate: it guarantees the imported rows are covered WITHOUT encoding every
+    pre-existing gap, which would monopolize the single-connection embed daemon for
+    minutes and make concurrent stores lose their embeddings (GLM review on #134).
+    Best-effort: if the daemon is down it embeds nothing (run embedding_backfill.py
+    later). Runs in import's worker thread (memory_import is offloaded), off-loop.
+    Backfill uses embedding_backfill's own socket (not the MCP _daemon_lock path),
+    but the daemon serializes connections and the #9 client timeout (20s) covers a
+    concurrent encode, so this is safe."""
     try:
-        s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-        s.settimeout(5)
-        s.connect(sock_path)
-        request = json.dumps({
-            "op": "backfill",
-            "db_path": db_path,
-            "limit": min(count, 500),
-        })
-        s.sendall((request + "\n").encode())
-        data = b""
-        while b"\n" not in data:
-            chunk = s.recv(65536)
-            if not chunk:
-                break
-            data += chunk
-        s.close()
-    except Exception:
-        # Daemon not available — embeddings will be backfilled on next session
-        pass
+        import embedding_backfill
+        embedding_backfill.backfill(db_path, content_hashes=content_hashes)
+    except Exception as _e:
+        # Daemon down / import-path issue — non-fatal, but surface it (the import
+        # already succeeded; those memories are FTS-only until re-embedded via
+        # `python3 scripts/embedding_backfill.py`).
+        sys.stderr.write(f"[b12 export_import] embedding backfill failed: {_e}\n")
 
 
 # ── CLI ───────────────────────────────────────────────────────────
