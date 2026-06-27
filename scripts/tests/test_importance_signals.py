@@ -121,7 +121,10 @@ def test_deadline_by_the_end_of_requires_temporal_target():
     # "by [the] end of <non-temporal>" is not — for BOTH "by end of" and "by the
     # end of" (the bare token over-fired on objects).
     for s in ("finish by the end of Friday", "by end of day", "ship by the end of the week",
-              "wrap up by end of month"):
+              "wrap up by end of month",
+              # month names + quarter/half abbreviations (Codex PR #142)
+              "ship by end of June", "ship by end of Q3", "by the end of December",
+              "by end of next month", "by end of H2"):
         assert score_with_breakdown(s).deadline_hit is True, s
     for s in ("I was bored by the end of the book", "I was bored by end of the book",
               "by the end of the meeting we understood the API"):

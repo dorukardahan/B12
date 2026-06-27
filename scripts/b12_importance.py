@@ -240,8 +240,11 @@ _DEADLINE_PATTERNS: tuple[re.Pattern[str], ...] = (
     # on non-temporal objects ("by end of the book/meeting"), so it's gone — the
     # weekday form is handled by the weekday-context pattern below (Codex PR #140).
     re.compile(
-        r"\bby\s+(?:the\s+)?end\s+of\s+(?:the\s+)?"
-        r"(?:day|week|month|year|quarter|sprint|today|tomorrow|business\s+day|eod|cob)\b"
+        r"\bby\s+(?:the\s+)?end\s+of\s+(?:the\s+|next\s+|this\s+)?"
+        r"(?:day|week|month|year|quarter|sprint|today|tomorrow|business\s+day|eod|cob"
+        r"|q[1-4]|h[12]"  # Q1–Q4 quarters, H1/H2 halves (Codex PR #142)
+        r"|january|february|march|april|may|june|july|august|september|october"
+        r"|november|december|jan|feb|mar|apr|jun|jul|aug|sep|sept|oct|nov|dec)\b"
     ),
     # predicate "is/are due" only when "due" ends the clause (end / punctuation)
     # or is followed by a temporal word/number — so "the report is due[.]" /
