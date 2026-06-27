@@ -155,6 +155,18 @@ for jf in ("package.json", ".claude-plugin/plugin.json"):
     d = json.load(open(jf)); d["version"] = NEW
     json.dump(d, open(jf,"w"), indent=2); open(jf,"a").write("\n")
 
+# marketplace.json: bump the PLUGIN ENTRY version (what `/plugin marketplace add`
+# users see) — NOT the catalog metadata.version. Was never synced, so it drifted
+# ~62 releases behind (audit #15).
+try:
+    mp = json.load(open(".claude-plugin/marketplace.json"))
+    if mp.get("plugins"):
+        mp["plugins"][0]["version"] = NEW
+    json.dump(mp, open(".claude-plugin/marketplace.json","w"), indent=2)
+    open(".claude-plugin/marketplace.json","a").write("\n")
+except FileNotFoundError:
+    pass
+
 # package-lock.json carries the version in two places (top-level + the root
 # package entry). Sync it too if present, so the release commit doesn't leave a
 # stale lockfile / dirty `npm install --package-lock-only` diff.
@@ -191,6 +203,7 @@ for chk in \
   ".claude-plugin/plugin.json:\"version\": \"$NEW\"" \
   "scripts/b12_mcp_server.py:^B12_VERSION = \"v$NEW\"" \
   "scripts/b12_health.py:^VERSION = \"$NEW\"" \
+  ".claude-plugin/marketplace.json:\"version\": \"$NEW\"" \
   "install.sh:Installer [(]v$NEW"; do
   f="${chk%%:*}"; pat="${chk#*:}"
   grep -qE "$pat" "$f" || { echo "ERROR: touchpoint mismatch in $f" >&2; exit 1; }
