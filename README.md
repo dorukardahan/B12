@@ -9,9 +9,10 @@
 
 ![B12 demo](assets/demo.gif)
 
-> One SQLite database. One MCP server. Hook automation in Claude Code. Native
-> integration in 12 other tools. Memory you stored in one session shows up in
-> every other tool you open — same project, same DB.
+> One local SQLite database. One MCP server. Lifecycle hooks/plugins where the
+> host supports them. Memory you store in Claude Code, Codex, OpenCode, Cursor,
+> or any MCP-capable assistant is searchable from the next tool you open — same
+> project, same DB.
 
 - **Cross-tool memory** — the same DB powers Claude Code, Codex CLI, Grok CLI, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI
 - **Truly local** — SQLite + sqlite-vec on disk, no cloud calls, no API keys, no telemetry
@@ -19,7 +20,7 @@
 - **Automatic importance scoring** — at write time, content is scored into importance bands with no manual tagging via a language-agnostic signal taxonomy (save-cues, commitments, deadlines, people, numeric values, identifiers) plus native remember/decision/trivial lexicons in **11 languages** (en, tr, zh, hi, es, fr, ar, ru, pt, id, de) with script-aware matching. Credential-bearing content is held at baseline so secrets are never amplified
 - **Write-time merge + NLI contradiction detection** — duplicates collapse at storage time; conflicting memories flag for review
 - **Hook automation** — session-end micro-extraction, sprint handoffs, working-memory restore through compaction, classifier-driven tagging
-- **Comparison vs alternatives** — full matrix vs Mem0 / Letta / Cursor memory / Claude Projects / ChatGPT memory ships in PR #68 (`docs/comparison.md`).
+- **Comparison vs alternatives** — full matrix vs Mem0 / Letta / Cursor memory / Claude Projects / ChatGPT memory in [`docs/comparison.md`](docs/comparison.md)
 
 ### Install (one command)
 
@@ -29,26 +30,20 @@ git clone https://github.com/dorukardahan/B12.git && cd B12 && ./install.sh --fu
 
 Restart your AI tool, type `/mcp` (or the platform equivalent), and you
 should see `B12 · connected`. `--full` installs the venv, configures the
-MCP server in `~/.claude.json`, and deploys hooks. (Once PR #64 lands,
-plain `./install.sh` without flags will also work for fresh installs —
-`--minimal` will be the documented opt-out for hooks-only behavior.)
+MCP server, and deploys lifecycle hooks where the platform supports them.
+For a fresh install, plain `./install.sh` auto-promotes to full setup;
+use `--minimal` only when you want the legacy hooks without the venv or
+MCP server.
 
-**Jump to:** [Supported Platforms](#supported-platforms) · [Features](#features) · [Architecture](docs/architecture.md) · [Security](SECURITY.md)
-<!--
-  Codex review PR #65 P2: removed dead jump links (#benchmarks,
-  docs/comparison.md, CONTRIBUTING.md). #benchmarks lands in the
-  v1 sprint (PR14); the other two exist on sibling PR branches and
-  will be re-added once their PRs merge.
--->
-For a deeper walkthrough of the demo above see [`docs/demo.md`](docs/demo.md).
-The comparison-vs-alternatives matrix ships in a follow-up PR; the
-[LICENSE](LICENSE) and [SECURITY.md](SECURITY.md) links above are live now.
+**Jump to:** [Supported Platforms](#supported-platforms) · [Features](#features) · [Architecture](docs/architecture.md) · [Security](SECURITY.md) · [Comparison](docs/comparison.md) · [Releases](#releases)
+
+For a deeper walkthrough of the demo above, see [`docs/demo.md`](docs/demo.md).
 
 ---
 
 ## How It Works
 
-The hook-based automation below runs in Claude Code. Other platforms use the MCP server directly with static instruction files — see [Supported Platforms](#supported-platforms).
+The diagram below shows Claude Code, which has the richest lifecycle hook surface. Codex, Gemini, OpenCode, Grok, Cline, and other hosts use adapters/plugins where available; MCP-only platforms still share the same server and database — see [Supported Platforms](#supported-platforms).
 
 <details>
 <summary>Architecture (click to expand)</summary>
@@ -168,7 +163,7 @@ All platforms share the same SQLite database — memories stored in one session 
 
 ## Setup via AI Assistant
 
-If you're feeding this repo to Claude Code, Cursor, or another AI coding assistant to set it up for you, here's what the AI needs to do (v11.68+ — `./install.sh` no-flag detects first-run and auto-promotes to `--full --gc-cron --smoke-cron`; pass `--minimal` to opt out, or `--full` explicitly):
+If you're feeding this repo to Claude Code, Cursor, or another AI coding assistant to set it up for you, here's what the AI needs to do (v11.68+ — `./install.sh` no-flag detects first-run and auto-promotes to `--full --gc-cron --smoke-cron`; pass `--minimal` to skip venv/MCP setup and install legacy hooks only, or `--full` explicitly):
 
 ```bash
 # 1. Clone and run full installer (one command does everything)
@@ -289,8 +284,8 @@ If you prefer step-by-step control, see [docs/setup.md](docs/setup.md) for the f
 {
   "mcpServers": {
     "B12": {
-      "command": "/Users/yourname/.local/b12-venv/bin/python3",
-      "args": ["/Users/yourname/.B12/hooks/scripts/b12_mcp_server.py"],
+      "command": "<HOME>/.local/b12-venv/bin/python3",
+      "args": ["<HOME>/.B12/hooks/scripts/b12_mcp_server.py"],
       "env": {
         "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
         "MCP_MAX_RESPONSE_CHARS": "40000"
@@ -300,7 +295,7 @@ If you prefer step-by-step control, see [docs/setup.md](docs/setup.md) for the f
 }
 ```
 
-Replace `/Users/yourname` with your actual home directory (`echo $HOME`).
+Replace `<HOME>` with the absolute path printed by `echo $HOME`.
 
 ### Multi-Platform Support
 
@@ -413,8 +408,7 @@ B12/
 │   ├── migrate_stemmed_fts.py      #   Migration: backfill porter-stemmed FTS5 table
 │   └── migrate_v10_13.py           #   Migration: create native FTS5 table
 ├── skills/                         # Agent skills
-│   ├── b12-memory/SKILL.md         #   B12 behavioral skill (plugin, comprehensive)
-│   └── b12/SKILL.md               #   B12 Codex Skill (memory workflow)
+│   └── b12-memory/SKILL.md         #   B12 behavioral skill (plugin, comprehensive)
 ├── config/                         # Template configuration files
 │   ├── mcp-b12-template.json       #   MCP server config for ~/.claude.json
 │   ├── settings-template.json      #   Hook config for settings.json
@@ -550,11 +544,19 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 | Layer | What | Where | Best for |
 |-------|------|-------|----------|
 | **MEMORY.md** | Built-in auto-memory | `~/.claude/projects/*/memory/` | Stable project knowledge |
-| **B12 MCP Server** | Semantic search DB | `~/Library/Application Support/mcp-memory/` | Detailed learnings, decisions |
+| **B12 MCP Server** | Semantic search DB | Platform app-data `mcp-memory/sqlite_vec.db` (see note below) | Detailed learnings, decisions |
 | **Smart hooks** | Lifecycle automation | `~/.B12/hooks/` | Glue between all layers |
 | **Session summaries** | Per-project latest + history | `~/.B12/memory-summaries/` | Short-term continuity |
 | **User profile** | Persistent identity | `~/.claude/projects/*/memory/user-profile.md` | Personalization |
 | **Working Memory** | Conversation momentum | `~/.B12/memory-staging/working-memory.json` | Post-compaction recovery |
+
+> **Note:** The semantic SQLite DB is not controlled by `B12_DATA_DIR`; the MCP server uses the platform `mcp-memory/sqlite_vec.db` location (`~/Library/Application Support/mcp-memory/sqlite_vec.db` on macOS, `~/.local/share/mcp-memory/sqlite_vec.db` on Linux, `%USERPROFILE%/AppData/Local/mcp-memory/sqlite_vec.db` on Windows). `B12_DATA_DIR` controls summaries, staging, and logs.
+
+## Releases
+
+B12 uses manual, owner-gated releases via [`scripts/release.sh`](scripts/release.sh) and hand-curated notes in [`CHANGELOG.md`](CHANGELOG.md). There is no `semantic-release`, `release-please`, `changesets`, or auto-publish release bot. Conventional-commit-style prefixes are kept for human triage only; see [`docs/releasing.md`](docs/releasing.md).
+
+Dependency update PRs are review-gated too: Dependabot can suggest updates, but nothing is auto-merged.
 
 ## Changelog (recent)
 
