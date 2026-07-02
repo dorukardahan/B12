@@ -235,7 +235,20 @@ def _semantic_search(model, data):
                 return {'ok': True, 'results': scores[:limit], 'path': 'ann'}
             # Too few filtered survivors — fall through to full-scan.
 
-    # TODO: migrate to sqlite-vec kNN (vec_distance_cosine) for O(log N) search
+    # DECISION (2026-07-02, issue #144): keep this as the numpy linear-scan
+    # fallback. The sqlite-vec vec0 MATCH kNN route is ALREADY the primary
+    # path above (see the `use_ann` block → `_ann_topk_rowids`). This block
+    # runs only when ANN is config-disabled, the table is below the activation
+    # threshold, or MATCH returned too few survivors after active-memory
+    # attrition — i.e. precisely the cases where a vec0 MATCH would also be
+    # empty/failing. Routing the fallback itself through MATCH would defeat
+    # its purpose as the safety net. Note sqlite-vec MATCH is EXACT brute-
+    # force KNN over normalized vectors (not approximate; see
+    # benchmarks/ann_ab_test.py), so the original "O(log N)" premise was
+    # inaccurate. The only real limitation left here is the ORDER BY id DESC
+    # LIMIT 500 recency cap, which the ANN path already eliminates; revisit
+    # only if a corpus large enough to make this scan slow coincides with ANN
+    # being routinely unavailable.
     rows = conn.execute("""
         SELECT m.id,
                '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' '),
@@ -749,8 +762,16 @@ def _find_neighbors(model, data):
                 'expected': EXPECTED_DIM, 'got': dim}
     target_emb = struct.unpack(f'{dim}f', target_bytes)
 
-    # Scan all active non-deleted memories
-    # TODO: migrate to sqlite-vec kNN (vec_distance_cosine) for O(log N) search
+    # DECISION (2026-07-02, issue #144): keep the linear scan here. Unlike
+    # _semantic_search/_recall, this explicit "find similar" op does not take
+    # the ANN fast path, by deliberate choice: it is a low-frequency, user-
+    # invoked operation (not the automatic recall hot-path), and sqlite-vec
+    # MATCH is EXACT brute-force KNN over normalized vectors — not approximate
+    # (see benchmarks/ann_ab_test.py) — so the original "O(log N)" premise was
+    # inaccurate and the only real win would be dropping the recency cap below.
+    # If profiling ever shows it missing true neighbors beyond the 500 newest
+    # rows, wire it to `_ann_topk_rowids` (oversample, exclude this memory_id,
+    # filter by min_sim) mirroring `_recall`. Tracked separately; not blocking.
     rows = conn.execute("""
         SELECT m.id, e.content_embedding
         FROM memories m
