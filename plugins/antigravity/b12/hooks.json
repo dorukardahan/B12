@@ -1,0 +1,13 @@
+{
+  "hooks": {
+    "PreInvocation": [
+      {"command": "python3 /path/to/B12/scripts/antigravity_hook_adapter.py PreInvocation"}
+    ],
+    "PostToolUse": [
+      {"command": "python3 /path/to/B12/scripts/antigravity_hook_adapter.py PostToolUse"}
+    ],
+    "Stop": [
+      {"command": "python3 /path/to/B12/scripts/antigravity_hook_adapter.py Stop"}
+    ]
+  }
+}

@@ -340,14 +340,29 @@ Hooks that interpolate user input into SQLite queries apply character-level sani
 - **Output**: Markdown or JSON to `~/.B12/memory-logs/health-report-YYYY-MM-DD.{md|json}`
 - **CLI**: `python3 scripts/b12_health_report.py --db-path DB --format md|json`
 
-## Gemini CLI hook integration
+## Antigravity and Gemini CLI integrations
 
-`hooks/gemini/` — adapter scripts that give Gemini CLI full B12 hook coverage:
+`plugins/antigravity/b12/` is the native Antigravity package template. `install.sh --antigravity` stages it to `~/.B12/antigravity-plugin/b12/` with runtime absolute paths, then registers B12's stdio MCP server in Antigravity's global `~/.gemini/config/mcp_config.json` shape:
+
+- **`plugin.json`**: plugin metadata.
+- **`mcp_config.json`**: `mcpServers.B12.command,args,env` for the local B12 stdio server.
+- **`hooks.json`**: Antigravity-native `PreInvocation`, `PostToolUse`, and `Stop` commands.
+- **`rules/`**: B12 memory-use guidance for Antigravity.
+
+`scripts/antigravity_hook_adapter.py` implements Antigravity's hook contracts directly, not by renaming Gemini adapters:
+
+- **PreInvocation** calls `memory-session-start.sh` and returns `{"injectSteps":[{"ephemeralMessage":"..."}]}`. A conversation/invocation guard avoids repeated full context injection in the same conversation.
+- **PostToolUse** consumes the documented payload safely, logs only a compact stderr receipt, and returns `{}` because Antigravity's documented fields do not reliably provide enough tool-result evidence for B12 retrieval/checkpoint semantics.
+- **Stop** runs session-end only when `fullyIdle=true`, adapts `conversationId`, `workspacePaths`, `transcriptPath`, and `terminationReason` into B12's session-end input, and returns a non-continuation decision.
+
+Provider detection outside Antigravity hooks is intentionally not guessed from undocumented environment variables; hook payload metadata is authoritative. Repository validation is limited to local schema/help/plugin checks until a real authenticated Antigravity run proves MCP tools and hooks end-to-end.
+
+`hooks/gemini/` remains the legacy Gemini CLI integration for Standard/Enterprise/Cloud or paid API-key users:
 
 - **`b12-gemini-session-start.sh`**: Converts Gemini `SessionStart` to Claude Code format, calls `memory-session-start.sh`
 - **`b12-gemini-session-end.sh`**: Converts Gemini session transcript (JSON → JSONL), calls `memory-session-end.sh` in background
 - **`b12-gemini-tool-call.sh`**: Triggers memory retrieval on built-in Gemini tool calls (read_file, search_files, run_shell_command)
-- **Installation**: `install.sh --gemini` registers hooks in `~/.gemini/settings.json`
+- **Installation**: `install.sh --gemini` registers hooks in `~/.gemini/settings.json`; it is not repointed to Antigravity.
 
 ## MCP resources
 

@@ -1,0 +1,7 @@
+{
+  "name": "b12",
+  "version": "11.81.2",
+  "description": "B12 persistent memory integration for Google Antigravity CLI",
+  "author": "B12",
+  "license": "MIT"
+}

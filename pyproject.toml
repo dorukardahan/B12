@@ -57,6 +57,8 @@ Issues = "https://github.com/dorukardahan/B12/issues"
 [tool.setuptools]
 package-dir = {"" = "scripts"}
 py-modules = [
+    "antigravity_hook_adapter",
+    "antigravity_install",
     "b12_cli",
     "b12_cli_provider",
     "b12_config",

@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "B12": {
+      "command": "python3",
+      "args": ["/path/to/B12/scripts/b12_mcp_server.py"],
+      "env": {
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
+        "MCP_MAX_RESPONSE_CHARS": "40000"
+      }
+    }
+  }
+}

@@ -130,7 +130,8 @@ B12's MCP server works with any tool that supports MCP stdio. The installer hand
 |----------|------|---------|--------------------|--------------------|
 | Claude Code | (default) | **Automatic** (full hooks) | ~/.claude.json | Built-in |
 | Codex CLI | `--codex` | **Automatic** (notify/Stop) | ~/.codex/config.toml | ~/.codex/AGENTS.md |
-| Gemini CLI | `--gemini` | **Automatic** (hook adapters) | ~/.gemini/settings.json | ~/.gemini/GEMINI.md |
+| Antigravity CLI | `--antigravity` | **Automatic** (native plugin: PreInvocation/PostToolUse/Stop) | ~/.gemini/config/mcp_config.json + staged plugin | AGENTS.md + plugin rules |
+| Gemini CLI | `--gemini` | **Automatic** (legacy Gemini CLI hook adapters; enterprise/paid API-key users) | ~/.gemini/settings.json | ~/.gemini/GEMINI.md |
 | Cline | `--cline` | **Automatic** (TaskStart/UserPromptSubmit/PreCompact) | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ |
 | Continue.dev | `--continue` | **Automatic** (hooks) | ~/.continue/mcpServers/b12.yaml | ~/.continue/rules/b12-memory.md |
 | OpenCode | `--opencode` | **Automatic** (TS plugin) | ~/.config/opencode/opencode.json | ~/.config/opencode/AGENTS.md + TypeScript plugin (auto-deployed) |
@@ -203,10 +204,11 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Health report** — comprehensive weekly report with health score, trends, and recommendations
 - **Porter stemming search** — `memory_fts_stemmed` table matches word variants ("running" → "run")
 - **MCP resources** — `b12://` URIs for protocol-standard context access (stats, profile, health)
-- **Gemini CLI hooks** — adapter scripts that give Gemini CLI full B12 hook integration
+- **Antigravity CLI plugin** — native plugin layout (`plugin.json`, `mcp_config.json`, `hooks.json`, `rules/`) with Antigravity-specific hook adapters for PreInvocation, PostToolUse, and Stop. Installer stages a runtime copy under `~/.B12/antigravity-plugin/b12/` so hook/MCP commands contain absolute executable paths without committing private paths.
+- **Gemini CLI hooks** — legacy Gemini CLI adapter scripts remain available for Standard/Enterprise/Cloud or paid API-key Gemini CLI users; `--gemini` is not repointed to Antigravity.
 - **LoCoMo benchmark** — retrieval quality evaluation with MRR, NDCG, and regression detection
 - **Multi-setup support** — works across `.claude`, `.claude-work`, etc. with shared database
-- **Multi-platform support** — Claude Code, Codex, Gemini, VS Code, Cursor, Kimi, Windsurf, Cline, OpenCode (with TypeScript plugin for full lifecycle automation)
+- **Multi-platform support** — Claude Code, Codex, Antigravity, Gemini, VS Code, Cursor, Kimi, Windsurf, Cline, OpenCode (with TypeScript plugin for full lifecycle automation)
 - **Zero config after install** — hooks handle everything silently in the background
 - **Fully local** — no cloud, no API calls, all data stays on your machine
 
@@ -244,7 +246,7 @@ cd B12
 chmod +x install.sh
 ./install.sh --full       # Creates venv, installs deps, deploys hooks, configures MCP
 # or: ./install.sh --full --all           # Same, but for all ~/.claude* setups
-# or: ./install.sh --full --gemini --cursor  # Setup + Gemini CLI + Cursor
+# or: ./install.sh --full --antigravity --cursor  # Setup + Antigravity CLI + Cursor
 ```
 
 This single command:
@@ -304,7 +306,8 @@ B12 works with any MCP-compatible coding assistant. The same MCP server and SQLi
 ```bash
 # Install B12 for additional platforms (requires existing venv)
 ./install.sh --codex         # OpenAI Codex CLI
-./install.sh --gemini        # Google Gemini CLI
+./install.sh --antigravity   # Google Antigravity CLI (current consumer successor)
+./install.sh --gemini        # Google Gemini CLI (legacy enterprise/API-key integration)
 ./install.sh --vscode        # VS Code / GitHub Copilot
 ./install.sh --cursor        # Cursor
 ./install.sh --kimi          # Kimi Code
@@ -316,7 +319,7 @@ B12 works with any MCP-compatible coding assistant. The same MCP server and SQLi
 ./install.sh --gc-cron       # Default ON since v11.63 (weekly soft-delete GC + VACUUM); --no-gc-cron to opt out, --gc-cron-uninstall to remove existing schedule
 
 # Or full setup from scratch with multiple platforms
-./install.sh --full --codex --gemini --cursor
+./install.sh --full --codex --antigravity --cursor
 ```
 
 Each flag configures the platform's MCP config and injects B12 memory instructions into the platform's instruction file. Restart the platform and check its MCP status to verify.
@@ -401,6 +404,8 @@ B12/
 │   ├── transcript_adapter.py       #   Unified transcript parser (Claude + Codex)
 │   ├── codex_session_end.py        #   Codex session-end memory extraction
 │   ├── hook_adapter.py             #   Codex CLI hook adapter (translates Codex events to B12)
+│   ├── antigravity_hook_adapter.py #   Antigravity hook adapter (PreInvocation/PostToolUse/Stop)
+│   ├── antigravity_install.py      #   Antigravity plugin staging/config helpers
 │   ├── embedding_backfill.py       #   Backfills embeddings for memories without vectors
 │   ├── heal_embedding_model.py     #   Self-heals MCP_EMBEDDING_MODEL drift across deployed configs (DB-dim driven)
 │   ├── query_aliases.json          #   Search query alias mappings
@@ -409,6 +414,8 @@ B12/
 │   └── migrate_v10_13.py           #   Migration: create native FTS5 table
 ├── skills/                         # Agent skills
 │   └── b12-memory/SKILL.md         #   B12 behavioral skill (plugin, comprehensive)
+├── plugins/
+│   └── antigravity/b12/            #   Antigravity native plugin template
 ├── config/                         # Template configuration files
 │   ├── mcp-b12-template.json       #   MCP server config for ~/.claude.json
 │   ├── settings-template.json      #   Hook config for settings.json
