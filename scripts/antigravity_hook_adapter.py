@@ -13,6 +13,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -131,6 +132,81 @@ def _run_b12_hook(script: str, payload: dict[str, Any], timeout_s: int) -> dict[
         return {}
 
 
+def _text_content(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, list):
+        return "\n".join(filter(None, (_text_content(item) for item in value)))
+    if isinstance(value, dict):
+        for key in ("text", "content"):
+            if key in value:
+                return _text_content(value[key])
+    return ""
+
+
+def _convert_antigravity_transcript(transcript: str) -> Path | None:
+    """Convert Antigravity trajectory JSONL into B12's Claude-shaped JSONL."""
+    source = Path(transcript)
+    if not transcript or not source.is_file():
+        _stderr("transcript unavailable; session-end will run without transcript evidence")
+        return None
+
+    staging = _b12_base() / "memory-staging"
+    staging.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="antigravity-transcript-", suffix=".jsonl", dir=staging)
+    converted = Path(name)
+    try:
+        with source.open() as src, os.fdopen(fd, "w") as dst:
+            for raw_line in src:
+                try:
+                    step = json.loads(raw_line)
+                except (json.JSONDecodeError, TypeError):
+                    continue
+                if not isinstance(step, dict):
+                    continue
+                step_type = step.get("type")
+                text = _text_content(step.get("content"))
+                if step_type == "USER_INPUT" and text.strip():
+                    record = {"type": "human", "message": {"content": text}}
+                elif step_type == "PLANNER_RESPONSE":
+                    blocks: list[dict[str, Any]] = []
+                    if text.strip():
+                        blocks.append({"type": "text", "text": text})
+                    tool_calls = step.get("tool_calls")
+                    if isinstance(tool_calls, list):
+                        for call in tool_calls:
+                            if not isinstance(call, dict):
+                                continue
+                            tool_name = call.get("name") or call.get("tool_name")
+                            arguments = call.get("args", call.get("arguments", {}))
+                            if isinstance(tool_name, str) and tool_name:
+                                blocks.append(
+                                    {
+                                        "type": "tool_use",
+                                        "name": tool_name,
+                                        "input": arguments if isinstance(arguments, dict) else {},
+                                    }
+                                )
+                    if not blocks:
+                        continue
+                    record = {"type": "assistant", "message": {"content": blocks}}
+                else:
+                    continue
+                dst.write(json.dumps(record, separators=(",", ":")) + "\n")
+            dst.flush()
+            os.fsync(dst.fileno())
+        converted.chmod(0o600)
+        return converted
+    except Exception as exc:
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        converted.unlink(missing_ok=True)
+        _stderr(f"transcript conversion failed safely: {type(exc).__name__}")
+        return None
+
+
 def pre_invocation() -> int:
     payload = _read_payload()
     if _already_injected(payload):
@@ -171,13 +247,18 @@ def stop() -> int:
     transcript = payload.get("transcriptPath")
     if not isinstance(transcript, str):
         transcript = ""
+    converted = _convert_antigravity_transcript(transcript)
     b12_input = {
         "session_id": _conversation_id(payload),
         "reason": str(payload.get("terminationReason") or "stop"),
         "cwd": _first_workspace(payload),
-        "transcript_path": transcript,
+        "transcript_path": str(converted) if converted else "",
     }
-    _run_b12_hook("memory-session-end.sh", b12_input, timeout_s=40)
+    try:
+        _run_b12_hook("memory-session-end.sh", b12_input, timeout_s=40)
+    finally:
+        if converted:
+            converted.unlink(missing_ok=True)
     return _emit({"decision": "stop"})
 
 

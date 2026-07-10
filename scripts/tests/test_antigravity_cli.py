@@ -35,7 +35,12 @@ def make_fake_hooks(tmp_path: Path) -> tuple[Path, Path]:
         "#!/bin/bash\ncat >/dev/null\nprintf '%s\\n' '{\"hookSpecificOutput\":{\"additionalContext\":\"B12 ctx\"}}'\n"
     )
     (hook_dir / "memory-session-end.sh").write_text(
-        "#!/bin/bash\ncat > \"$B12_DATA_DIR/stop-input.json\"\nprintf '%s\\n' '{}'\n"
+        "#!/bin/bash\n"
+        "payload=$(cat)\n"
+        "printf '%s' \"$payload\" > \"$B12_DATA_DIR/stop-input.json\"\n"
+        "transcript=$(printf '%s' \"$payload\" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"transcript_path\", \"\"))')\n"
+        "[ -z \"$transcript\" ] || cp \"$transcript\" \"$B12_DATA_DIR/converted-transcript.jsonl\"\n"
+        "printf '%s\\n' '{}'\n"
     )
     for p in hook_dir.glob("*.sh"):
         p.chmod(0o755)
@@ -90,10 +95,27 @@ def test_stop_requires_fully_idle_and_never_forces_continuation(tmp_path: Path):
     assert not_idle == {"decision": "stop"}
     assert not (state_dir / "stop-input.json").exists()
 
+    transcript = tmp_path / "transcript.jsonl"
+    transcript.write_text(
+        '\n'.join(
+            (
+                json.dumps({"type": "USER_INPUT", "content": "Remember this preference"}),
+                json.dumps(
+                    {
+                        "type": "PLANNER_RESPONSE",
+                        "content": "Decision: use the native plugin because hooks must load.",
+                        "tool_calls": [{"name": "view_file", "args": {"AbsolutePath": "/repo/a.py"}}],
+                    }
+                ),
+                json.dumps({"type": "TOOL_RESPONSE", "content": "private tool output must not be copied"}),
+            )
+        )
+        + "\n"
+    )
     idle = json.loads(
         run_adapter(
             "Stop",
-            {"conversationId": "c3", "fullyIdle": True, "terminationReason": "idle", "workspacePaths": ["/repo"], "transcriptPath": "/tmp/t.jsonl"},
+            {"conversationId": "c3", "fullyIdle": True, "terminationReason": "idle", "workspacePaths": ["/repo"], "transcriptPath": str(transcript)},
             env,
         ).stdout
     )
@@ -101,7 +123,14 @@ def test_stop_requires_fully_idle_and_never_forces_continuation(tmp_path: Path):
     captured = json.loads((state_dir / "stop-input.json").read_text())
     assert captured["session_id"] == "c3"
     assert captured["cwd"] == "/repo"
-    assert captured["transcript_path"] == "/tmp/t.jsonl"
+    assert captured["transcript_path"] != str(transcript)
+    assert not Path(captured["transcript_path"]).exists()
+    converted = [json.loads(line) for line in (state_dir / "converted-transcript.jsonl").read_text().splitlines()]
+    assert converted[0] == {"type": "human", "message": {"content": "Remember this preference"}}
+    assert converted[1]["type"] == "assistant"
+    assert converted[1]["message"]["content"][0]["type"] == "text"
+    assert converted[1]["message"]["content"][1]["name"] == "view_file"
+    assert "private tool output" not in (state_dir / "converted-transcript.jsonl").read_text()
 
 
 def test_invalid_input_and_missing_hooks_are_safe_json(tmp_path: Path):
