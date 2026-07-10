@@ -5,6 +5,8 @@
 
 set -e
 
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -123,6 +125,17 @@ if grep -rn "hashlib\.md5" scripts/*.py 2>/dev/null | grep -q .; then
   grep -rn "hashlib\.md5" scripts/*.py 2>/dev/null | head -5
 else
   pass "Hash algorithm consistent (SHA-256)"
+fi
+
+# MCP config template consistency across supported tools (#158)
+# Every MCP template in config/ must agree on model, response-char budget,
+# command and script reference. Catches per-tool drift (e.g. a template
+# silently missing MCP_EMBEDDING_MODEL) before release.
+if python3 "$SCRIPT_DIR/scripts/validate_mcp_templates.py" --quiet > /dev/null 2>&1; then
+  pass "MCP config templates consistent across tools"
+else
+  fail "MCP config template drift detected:"
+  python3 "$SCRIPT_DIR/scripts/validate_mcp_templates.py" --quiet 2>&1 | grep -i 'FAIL' | head -10
 fi
 
 echo ""

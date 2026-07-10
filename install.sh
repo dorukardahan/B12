@@ -3122,6 +3122,8 @@ tool_timeout_sec = 180
 
 [mcp_servers.B12.env]
 B12_DATA_DIR = "{os.path.expanduser('~/.B12')}"
+MCP_EMBEDDING_MODEL = "BAAI/bge-m3"
+MCP_MAX_RESPONSE_CHARS = "40000"
 '''
 
 content += b12_block
