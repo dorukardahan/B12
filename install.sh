@@ -7,7 +7,8 @@
 #   ./install.sh --full             # Full setup: venv + deps + hooks + MCP config
 #   ./install.sh --full --all       # Full setup for all setups
 #   ./install.sh --codex            # Install B12 MCP server to Codex CLI
-#   ./install.sh --gemini           # Install B12 MCP server to Gemini CLI
+#   ./install.sh --gemini           # Install B12 MCP server to Gemini CLI (legacy/paid API-key)
+#   ./install.sh --antigravity      # Install B12 plugin + MCP for Antigravity CLI
 #   ./install.sh --vscode           # Install B12 MCP server to VS Code / Copilot
 #   ./install.sh --cursor           # Install B12 MCP server to Cursor
 #   ./install.sh --kimi             # Install B12 MCP server to Kimi Code
@@ -15,7 +16,7 @@
 #   ./install.sh --cline            # Install B12 MCP server to Cline (VS Code ext)
 #   ./install.sh --opencode         # Install B12 MCP server to OpenCode
 #   ./install.sh --full --codex     # Full setup + Codex CLI support
-#   ./install.sh --full --gemini --cursor  # Full setup + Gemini + Cursor
+#   ./install.sh --full --antigravity --cursor  # Full setup + Antigravity + Cursor
 #   ./install.sh --health           # Run B12 health check diagnostics
 #   ./install.sh --all --fix-drift  # Auto-register B12 on any detected
 #                                   # non-Claude platform (Codex/Gemini/
@@ -116,6 +117,7 @@ INSTALL_ALL=false
 MINIMAL=false
 INSTALL_CODEX=false
 INSTALL_GEMINI=false
+INSTALL_ANTIGRAVITY=false
 INSTALL_VSCODE=false
 INSTALL_CURSOR=false
 INSTALL_KIMI=false
@@ -143,6 +145,7 @@ for arg in "$@"; do
     --all)       INSTALL_ALL=true ;;
     --codex)     INSTALL_CODEX=true ;;
     --gemini)    INSTALL_GEMINI=true ;;
+    --antigravity) INSTALL_ANTIGRAVITY=true ;;
     --vscode)    INSTALL_VSCODE=true ;;
     --cursor)    INSTALL_CURSOR=true ;;
     --kimi)      INSTALL_KIMI=true ;;
@@ -1437,6 +1440,112 @@ verify_gemini() {
   else
     warn "Verify: Gemini hook adapters NOT found"
     errors=$((errors + 1))
+  fi
+
+  return $errors
+}
+
+# ═════════════════════════════════════════════
+# Google Antigravity CLI
+# ═════════════════════════════════════════════
+
+install_antigravity() {
+  local AG_CONFIG_DIR="$HOME/.gemini/config"
+  local AG_MCP_CONFIG="$AG_CONFIG_DIR/mcp_config.json"
+  local SERVER_SCRIPT="$SCRIPT_DEST/b12_mcp_server.py"
+  local ADAPTER_SCRIPT="$SCRIPT_DEST/antigravity_hook_adapter.py"
+  local STAGE_DIR="$HOME/.B12/antigravity-plugin/b12"
+
+  if ! command -v agy >/dev/null 2>&1; then
+    warn "Antigravity CLI (agy) not found on PATH"
+    warn "Install Antigravity CLI first, then rerun: ./install.sh --antigravity"
+    return 1
+  fi
+
+  if [ ! -x "$VENV_PYTHON" ]; then
+    warn "Venv Python not found at $VENV_PYTHON"
+    warn "Run with --full to create the venv first: ./install.sh --full --antigravity"
+    return 1
+  fi
+  if [ ! -f "$SERVER_SCRIPT" ]; then
+    warn "MCP server script not found at $SERVER_SCRIPT — run standard install first"
+    return 1
+  fi
+  if [ ! -f "$ADAPTER_SCRIPT" ]; then
+    warn "Antigravity hook adapter not found at $ADAPTER_SCRIPT — run standard install first"
+    return 1
+  fi
+
+  mkdir -p "$AG_CONFIG_DIR"
+  if ! PYTHONPATH="$SCRIPT_DEST:$SCRIPT_SOURCE" python3 - "$AG_MCP_CONFIG" "$VENV_PYTHON" "$SERVER_SCRIPT" << 'PYEOF'
+import sys
+from pathlib import Path
+from antigravity_install import merge_global_mcp_config
+merge_global_mcp_config(Path(sys.argv[1]), sys.argv[2], sys.argv[3])
+PYEOF
+  then
+    error "Failed to update Antigravity MCP config at $AG_MCP_CONFIG"
+  fi
+  info "B12 MCP server configured for Antigravity in $AG_MCP_CONFIG"
+
+  if ! "$VENV_PYTHON" "$SCRIPT_DEST/antigravity_install.py" \
+    "$SCRIPT_DIR" "$STAGE_DIR" "$VENV_PYTHON" "$SERVER_SCRIPT" "$ADAPTER_SCRIPT"
+  then
+    error "Failed to stage Antigravity plugin"
+  fi
+  info "B12 Antigravity plugin staged at $STAGE_DIR"
+  if ! agy plugin install "$STAGE_DIR"; then
+    error "Antigravity rejected the staged B12 plugin"
+  fi
+  info "B12 Antigravity plugin installed and enabled"
+}
+
+verify_antigravity() {
+  local errors=0
+  local AG_MCP_CONFIG="$HOME/.gemini/config/mcp_config.json"
+  local STAGE_DIR="$HOME/.B12/antigravity-plugin/b12"
+
+  if python3 -c "import json; d=json.load(open('$AG_MCP_CONFIG')); assert 'B12' in d.get('mcpServers', {})" 2>/dev/null; then
+    info "Verify: B12 MCP server configured in $AG_MCP_CONFIG"
+  else
+    warn "Verify: B12 NOT found in $AG_MCP_CONFIG"
+    errors=$((errors + 1))
+  fi
+
+  if [ -f "$STAGE_DIR/plugin.json" ] && [ -f "$STAGE_DIR/mcp_config.json" ] && [ -f "$STAGE_DIR/hooks.json" ]; then
+    info "Verify: Antigravity plugin structure present at $STAGE_DIR"
+  else
+    warn "Verify: Antigravity plugin structure incomplete at $STAGE_DIR"
+    errors=$((errors + 1))
+  fi
+
+  if command -v agy >/dev/null 2>&1 && agy plugin list 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); assert any(x.get("name") == "b12" for x in d.get("imports", []))' 2>/dev/null; then
+    info "Verify: B12 Antigravity plugin is installed"
+  else
+    warn "Verify: B12 Antigravity plugin is not listed as installed"
+    errors=$((errors + 1))
+  fi
+
+  if command -v agy >/dev/null 2>&1; then
+    if _tmp_home="$(mktemp -d)" && HOME="$_tmp_home" agy plugin validate "$STAGE_DIR" >/dev/null 2>&1; then
+      rm -rf "$_tmp_home"
+      info "Verify: agy plugin validate passed"
+    else
+      [ -n "${_tmp_home:-}" ] && rm -rf "$_tmp_home"
+      warn "Verify: agy plugin validate failed for $STAGE_DIR"
+      errors=$((errors + 1))
+    fi
+  elif [ -x /tmp/agy-cli-research-1.1.1/antigravity ]; then
+    if _tmp_home="$(mktemp -d)" && HOME="$_tmp_home" /tmp/agy-cli-research-1.1.1/antigravity plugin validate "$STAGE_DIR" >/dev/null 2>&1; then
+      rm -rf "$_tmp_home"
+      info "Verify: local Antigravity plugin validate passed"
+    else
+      [ -n "${_tmp_home:-}" ] && rm -rf "$_tmp_home"
+      warn "Verify: local Antigravity plugin validate failed for $STAGE_DIR"
+      errors=$((errors + 1))
+    fi
+  else
+    warn "Verify: agy not found; skipping live plugin validation"
   fi
 
   return $errors
@@ -3463,6 +3572,14 @@ if $INSTALL_GEMINI; then
   echo ""
 fi
 
+# Antigravity CLI setup
+if $INSTALL_ANTIGRAVITY; then
+  echo ""
+  echo "── Antigravity CLI Setup ────────"
+  install_antigravity
+  echo ""
+fi
+
 # VS Code / Copilot setup
 if $INSTALL_VSCODE; then
   echo ""
@@ -3663,6 +3780,13 @@ if $INSTALL_GEMINI; then
   VERIFY_RESULT=$((VERIFY_RESULT + $?))
 fi
 
+if $INSTALL_ANTIGRAVITY; then
+  echo ""
+  echo "── Antigravity Verification ─────"
+  verify_antigravity
+  VERIFY_RESULT=$((VERIFY_RESULT + $?))
+fi
+
 if $INSTALL_VSCODE; then
   echo ""
   echo "── VS Code Verification ─────────"
@@ -3758,6 +3882,7 @@ echo "────────────────────────�
 PLATFORMS_INSTALLED=""
 $INSTALL_CODEX && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Codex"
 $INSTALL_GEMINI && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Gemini"
+$INSTALL_ANTIGRAVITY && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Antigravity"
 $INSTALL_VSCODE && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED VS-Code"
 $INSTALL_CURSOR && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Cursor"
 $INSTALL_ZED && PLATFORMS_INSTALLED="$PLATFORMS_INSTALLED Zed"
@@ -3780,12 +3905,12 @@ fi
 
 # Show helpful tips
 ANY_PLATFORM=false
-$INSTALL_CODEX || $INSTALL_GEMINI || $INSTALL_VSCODE || $INSTALL_CURSOR || $INSTALL_KIMI || $INSTALL_WINDSURF || $INSTALL_CLINE || $INSTALL_OPENCODE || $INSTALL_GROK || $INSTALL_CONTINUE || $INSTALL_ZED || $INSTALL_AMP && ANY_PLATFORM=true
+$INSTALL_CODEX || $INSTALL_GEMINI || $INSTALL_ANTIGRAVITY || $INSTALL_VSCODE || $INSTALL_CURSOR || $INSTALL_KIMI || $INSTALL_WINDSURF || $INSTALL_CLINE || $INSTALL_OPENCODE || $INSTALL_GROK || $INSTALL_CONTINUE || $INSTALL_ZED || $INSTALL_AMP && ANY_PLATFORM=true
 
 if ! $FULL_SETUP && ! $ANY_PLATFORM; then
   echo ""
   echo "Tip: Run './install.sh --full' for automatic venv + MCP config setup."
-  echo "     Flags: --codex --gemini --vscode --cursor --kimi --windsurf --cline --opencode --grok"
+  echo "     Flags: --codex --gemini --antigravity --vscode --cursor --kimi --windsurf --cline --opencode --grok"
 fi
 
 echo ""

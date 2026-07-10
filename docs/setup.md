@@ -536,6 +536,7 @@ Pick the flag matching your editor / CLI, run it once, restart the host.
 
 | Platform | Install flag | Config template | Verify |
 |----------|--------------|-----------------|--------|
+| Antigravity CLI | `./install.sh --antigravity` | `plugins/antigravity/b12/` native plugin template, installed through `agy plugin install` | `agy plugin list` and `agy plugin validate ~/.B12/antigravity-plugin/b12` |
 | Gemini CLI | `./install.sh --gemini` | `config/gemini-config-template.json` + `config/gemini-instructions-template.md` | `gemini /mcp` |
 | VS Code (GitHub Copilot Chat) | `./install.sh --vscode` | `config/mcp-b12-template.json` + `config/vscode-instructions-template.md` | Copilot Chat → "Show MCP servers" |
 | Cursor | `./install.sh --cursor` | `config/cursor-mcp-template.json` + `config/cursor-rules-template.md` | Cursor Settings → MCP → B12 row |
@@ -554,7 +555,8 @@ Pick the flag matching your editor / CLI, run it once, restart the host.
 Each platform-specific flag performs the same minimal contract:
 
 1. **Inject the B12 MCP server entry** into that platform's config file
-   (`~/.gemini/settings.json`, `~/.codex/config.toml`, `~/.cursor/mcp.json`,
+   (`~/.gemini/config/mcp_config.json` for Antigravity, `~/.gemini/settings.json`
+   for legacy Gemini CLI, `~/.codex/config.toml`, `~/.cursor/mcp.json`,
    `~/.vscode/settings.json`, `~/.windsurf/...`, etc.) using absolute paths
    (no `~` — Claude Code is not the only host that refuses tilde expansion).
 
@@ -563,10 +565,14 @@ Each platform-specific flag performs the same minimal contract:
    `<!-- B12-MEMORY-START -->` and `<!-- B12-MEMORY-END -->` markers so
    re-runs are idempotent and uninstall is a clean sed delete.
 
-3. **Wire up host-specific hooks** if the platform exposes a hook surface
-   (Cline `hooks/`, Codex `[hooks.events.*]` blocks). Hooks are
-   intentionally minimal on non-Claude-Code platforms — most retrieval
-   happens via MCP tool calls rather than implicit hooks.
+3. **Wire up host-specific hooks/plugins** if the platform exposes a hook surface
+   (Antigravity `hooks.json`, Cline `hooks/`, Codex `[hooks.events.*]` blocks).
+   Antigravity uses its native events: PreInvocation injects B12 context through
+   `injectSteps[].ephemeralMessage`, PostToolUse is a safe no-op unless documented
+   payload fields can support a behavior, and Stop runs session-end only when
+   `fullyIdle=true` without forcing continuation. Outside hooks, Antigravity
+   provider detection is not guessed from undocumented environment variables; hook
+   payload metadata is authoritative.
 
 ### What gets automated vs. manual per platform
 

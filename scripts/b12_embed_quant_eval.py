@@ -52,7 +52,7 @@ QUERIES = [
 
 def _anonymize_path(p: str) -> str:
     """Replace the running user's home prefix with ``~`` so the committed
-    eval markdown doesn't leak ``/Users/<name>`` or ``/home/<name>``."""
+    eval markdown doesn't leak a macOS or Linux home-directory prefix."""
     home = os.path.expanduser('~')
     if home and p.startswith(home):
         return '~' + p[len(home):]

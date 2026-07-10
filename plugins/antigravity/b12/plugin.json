@@ -1,0 +1,5 @@
+{
+  "$schema": "https://antigravity.google/schemas/v1/plugin.json",
+  "name": "b12",
+  "description": "B12 persistent memory integration for Google Antigravity CLI"
+}

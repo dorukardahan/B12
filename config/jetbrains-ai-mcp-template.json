@@ -1,5 +1,5 @@
 {
-  "_comment_path": "Replace <HOME> with your absolute home path. JetBrains AI does NOT expand ~ or $HOME. macOS: /Users/<you> | Linux: /home/<you> | Windows: C:/Users/<you>",
+  "_comment_path": "Replace <HOME> with your absolute home path. JetBrains AI does NOT expand ~ or $HOME. Use the platform home directory form for macOS, Linux, or Windows.",
   "_comment_windows": "On Windows the venv layout differs — replace `bin/python3` with `Scripts/python.exe` so the command becomes `<HOME>/.local/b12-venv/Scripts/python.exe`. Forward slashes work fine inside JSON on Windows.",
   "mcpServers": {
     "B12": {
