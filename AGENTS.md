@@ -16,7 +16,7 @@ Then restart Claude Code and run `/mcp` to verify `B12 · connected`.
 
 **Key facts:**
 - The MCP server (`b12_mcp_server.py`) creates all database tables automatically on first run
-- The embedding model (~90MB) downloads on first session — one-time only
+- The default BGE-M3 embedding model (~2.2GB FP32 weights) downloads on first session — one-time only; optional GGUF backends are ~250-500MB
 - `install.sh --full` handles everything including `~/.claude.json` MCP config
 - Claude Code does NOT expand `~` in MCP paths — the installer uses absolute paths
 
