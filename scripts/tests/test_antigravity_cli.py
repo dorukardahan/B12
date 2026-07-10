@@ -64,18 +64,23 @@ def test_preinvocation_duplicate_guard_skips_second_injection(tmp_path: Path):
     assert first["injectSteps"]
     assert second == {"injectSteps": []}
     assert later == {"injectSteps": []}
+    guard = state_dir / "memory-state" / "antigravity-preinvocation-guard.json"
+    assert "same" not in guard.read_text()
+    assert guard.stat().st_mode & 0o777 == 0o600
 
 
 def test_posttooluse_noop_json_and_stderr_logging(tmp_path: Path):
     hook_dir, state_dir = make_fake_hooks(tmp_path)
     proc = run_adapter(
         "PostToolUse",
-        {"conversationId": "c2", "toolName": "Read", "workspacePaths": ["/repo"], "transcriptPath": "/tmp/t.jsonl"},
+        {"conversationId": "c2", "stepIdx": 4, "error": "", "workspacePaths": ["/repo"], "transcriptPath": "/tmp/t.jsonl"},
         {"B12_HOOK_DIR": str(hook_dir), "B12_DATA_DIR": str(state_dir)},
     )
     assert proc.returncode == 0
     assert json.loads(proc.stdout) == {}
-    assert "PostToolUse observed" in proc.stderr
+    assert "step=4 error=False" in proc.stderr
+    assert "c2" not in proc.stderr
+    assert "/repo" not in proc.stderr
 
 
 def test_stop_requires_fully_idle_and_never_forces_continuation(tmp_path: Path):
@@ -123,8 +128,14 @@ def test_antigravity_plugin_template_structure_and_privacy_safe_paths():
     mcp = json.loads((plugin / "mcp_config.json").read_text())
     assert mcp["mcpServers"]["B12"]["command"] == "python3"
     assert "mcpServers" in mcp
-    hooks = json.loads((plugin / "hooks.json").read_text())["hooks"]
-    assert set(["PreInvocation", "PostToolUse", "Stop"]).issubset(hooks)
+    manifest = json.loads((plugin / "plugin.json").read_text())
+    assert manifest["$schema"] == "https://antigravity.google/schemas/v1/plugin.json"
+    assert set(manifest) == {"$schema", "name", "description"}
+    hooks = json.loads((plugin / "hooks.json").read_text())["b12-memory"]
+    assert {"PreInvocation", "PostToolUse", "Stop"}.issubset(hooks)
+    post = hooks["PostToolUse"][0]
+    assert post["matcher"] == "*"
+    assert post["hooks"][0]["command"].endswith(" PostToolUse")
     combined = "\n".join(p.read_text() for p in plugin.rglob("*.*"))
     assert "/home/" not in combined
     assert ("/" + "Users/") not in combined
@@ -145,9 +156,34 @@ def test_antigravity_config_merge_preserves_existing_servers(tmp_path: Path):
 
     dest = tmp_path / "plugin"
     stage_plugin(ROOT, dest, "/venv/bin/python3", "/repo/scripts/b12_mcp_server.py", "/repo/scripts/antigravity_hook_adapter.py")
-    staged_hooks = json.loads((dest / "hooks.json").read_text())["hooks"]
+    staged_hooks = json.loads((dest / "hooks.json").read_text())["b12-memory"]
     assert "PreInvocation" in staged_hooks
     assert "/venv/bin/python3" in staged_hooks["PreInvocation"][0]["command"]
+    assert staged_hooks["PostToolUse"][0]["matcher"] == "*"
+    assert staged_hooks["PostToolUse"][0]["hooks"][0]["command"].endswith(" PostToolUse")
+
+
+def test_antigravity_config_merge_refuses_invalid_or_wrong_shape(tmp_path: Path):
+    sys.path.insert(0, str(SCRIPTS))
+    from antigravity_install import merge_global_mcp_config
+
+    cases = (("invalid.json", "{broken"), ("wrong.json", json.dumps({"mcpServers": []})))
+    for name, original in cases:
+        cfg = tmp_path / name
+        cfg.write_text(original)
+        with pytest.raises(ValueError):
+            merge_global_mcp_config(cfg, "/venv/bin/python3", "/repo/server.py")
+        assert cfg.read_text() == original
+
+
+def test_staged_hook_commands_quote_paths(tmp_path: Path):
+    sys.path.insert(0, str(SCRIPTS))
+    from antigravity_install import stage_plugin
+
+    dest = tmp_path / "plugin"
+    stage_plugin(ROOT, dest, "/venv with space/python3", "/repo/server.py", "/repo with space/adapter.py")
+    hooks = json.loads((dest / "hooks.json").read_text())["b12-memory"]
+    assert hooks["PreInvocation"][0]["command"] == "'/venv with space/python3' '/repo with space/adapter.py' PreInvocation"
 
 
 def test_installer_exposes_antigravity_without_repointing_gemini():
@@ -157,3 +193,43 @@ def test_installer_exposes_antigravity_without_repointing_gemini():
     assert "--gemini)    INSTALL_GEMINI=true" in install
     assert "inject_gemini_mcp_config" in install
     assert "install_antigravity" in install
+    assert 'agy plugin install "$STAGE_DIR"' in install
+
+
+def test_installer_antigravity_flag_installs_plugin_in_isolated_home(tmp_path: Path):
+    home = tmp_path / "home"
+    deployed = home / ".B12" / "hooks" / "scripts"
+    venv_bin = home / ".local" / "b12-venv" / "bin"
+    fake_bin = tmp_path / "bin"
+    deployed.mkdir(parents=True)
+    venv_bin.mkdir(parents=True)
+    fake_bin.mkdir()
+    (venv_bin / "python3").symlink_to(sys.executable)
+    for name in ("b12_mcp_server.py", "antigravity_hook_adapter.py", "antigravity_install.py"):
+        (deployed / name).write_bytes((SCRIPTS / name).read_bytes())
+    agy = fake_bin / "agy"
+    agy.write_text(
+        "#!/bin/sh\n"
+        "case \"$1:$2\" in\n"
+        "  plugin:install|plugin:validate) exit 0 ;;\n"
+        "  plugin:list) printf '%s\\n' '{\"imports\":[{\"name\":\"b12\"}]}' ;;\n"
+        "  *) exit 2 ;;\n"
+        "esac\n"
+    )
+    agy.chmod(0o755)
+
+    proc = subprocess.run(
+        ["bash", str(ROOT / "install.sh"), "--antigravity", "--no-gc-cron"],
+        cwd=ROOT,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        env={**os.environ, "HOME": str(home), "PATH": f"{fake_bin}:{os.environ['PATH']}"},
+        timeout=30,
+        check=False,
+    )
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    config = json.loads((home / ".gemini" / "config" / "mcp_config.json").read_text())
+    assert "B12" in config["mcpServers"]
+    hooks = json.loads((home / ".B12" / "antigravity-plugin" / "b12" / "hooks.json").read_text())
+    assert hooks["b12-memory"]["PostToolUse"][0]["matcher"] == "*"

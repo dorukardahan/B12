@@ -1456,6 +1456,12 @@ install_antigravity() {
   local ADAPTER_SCRIPT="$SCRIPT_DEST/antigravity_hook_adapter.py"
   local STAGE_DIR="$HOME/.B12/antigravity-plugin/b12"
 
+  if ! command -v agy >/dev/null 2>&1; then
+    warn "Antigravity CLI (agy) not found on PATH"
+    warn "Install Antigravity CLI first, then rerun: ./install.sh --antigravity"
+    return 1
+  fi
+
   if [ ! -x "$VENV_PYTHON" ]; then
     warn "Venv Python not found at $VENV_PYTHON"
     warn "Run with --full to create the venv first: ./install.sh --full --antigravity"
@@ -1488,7 +1494,10 @@ PYEOF
     error "Failed to stage Antigravity plugin"
   fi
   info "B12 Antigravity plugin staged at $STAGE_DIR"
-  echo "     Install/enable with Antigravity CLI if needed: agy plugin install $STAGE_DIR"
+  if ! agy plugin install "$STAGE_DIR"; then
+    error "Antigravity rejected the staged B12 plugin"
+  fi
+  info "B12 Antigravity plugin installed and enabled"
 }
 
 verify_antigravity() {
@@ -1507,6 +1516,13 @@ verify_antigravity() {
     info "Verify: Antigravity plugin structure present at $STAGE_DIR"
   else
     warn "Verify: Antigravity plugin structure incomplete at $STAGE_DIR"
+    errors=$((errors + 1))
+  fi
+
+  if command -v agy >/dev/null 2>&1 && agy plugin list 2>/dev/null | python3 -c 'import json,sys; d=json.load(sys.stdin); assert any(x.get("name") == "b12" for x in d.get("imports", []))' 2>/dev/null; then
+    info "Verify: B12 Antigravity plugin is installed"
+  else
+    warn "Verify: B12 Antigravity plugin is not listed as installed"
     errors=$((errors + 1))
   fi
 

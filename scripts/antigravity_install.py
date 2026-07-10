@@ -3,9 +3,12 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import stat
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -17,14 +20,32 @@ def load_json(path: Path, default: dict[str, Any] | None = None) -> dict[str, An
         return {} if default is None else dict(default)
     try:
         data = json.loads(path.read_text())
-        return data if isinstance(data, dict) else ({} if default is None else dict(default))
-    except json.JSONDecodeError:
-        return {} if default is None else dict(default)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"refusing to overwrite invalid JSON config: {path}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(f"refusing to overwrite non-object JSON config: {path}")
+    return data
 
 
 def write_json(path: Path, data: dict[str, Any]) -> None:
+    """Atomically write JSON while preserving an existing file's permissions."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2) + "\n")
+    old_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+    fd, tmp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "w") as stream:
+            json.dump(data, stream, indent=2)
+            stream.write("\n")
+            stream.flush()
+            os.fsync(stream.fileno())
+        os.chmod(tmp_name, old_mode)
+        os.replace(tmp_name, path)
+    except BaseException:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+        raise
 
 
 def b12_mcp_server(venv_python: str, server_script: str) -> dict[str, Any]:
@@ -42,7 +63,7 @@ def merge_global_mcp_config(config_path: Path, venv_python: str, server_script: 
     cfg = load_json(config_path)
     servers = cfg.setdefault("mcpServers", {})
     if not isinstance(servers, dict):
-        cfg["mcpServers"] = servers = {}
+        raise ValueError(f"refusing to replace non-object mcpServers in: {config_path}")
     servers["B12"] = b12_mcp_server(venv_python, server_script)
     write_json(config_path, cfg)
 
@@ -56,13 +77,25 @@ def stage_plugin(repo_root: Path, dest: Path, venv_python: str, server_script: s
     shutil.copytree(src, dest)
 
     write_json(dest / "mcp_config.json", {"mcpServers": {"B12": b12_mcp_server(venv_python, server_script)}})
+    command = f"{shlex.quote(venv_python)} {shlex.quote(hook_adapter)}"
     write_json(
         dest / "hooks.json",
         {
-            "hooks": {
-                "PreInvocation": [{"command": f"{venv_python} {hook_adapter} PreInvocation"}],
-                "PostToolUse": [{"command": f"{venv_python} {hook_adapter} PostToolUse"}],
-                "Stop": [{"command": f"{venv_python} {hook_adapter} Stop"}],
+            "b12-memory": {
+                "PreInvocation": [
+                    {"type": "command", "command": f"{command} PreInvocation", "timeout": 25}
+                ],
+                "PostToolUse": [
+                    {
+                        "matcher": "*",
+                        "hooks": [
+                            {"type": "command", "command": f"{command} PostToolUse", "timeout": 10}
+                        ],
+                    }
+                ],
+                "Stop": [
+                    {"type": "command", "command": f"{command} Stop", "timeout": 45}
+                ],
             }
         },
     )

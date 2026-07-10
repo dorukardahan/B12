@@ -1,13 +1,18 @@
 {
-  "hooks": {
+  "b12-memory": {
     "PreInvocation": [
-      {"command": "python3 /path/to/B12/scripts/antigravity_hook_adapter.py PreInvocation"}
+      {"type": "command", "command": "python3 /path/to/B12/scripts/antigravity_hook_adapter.py PreInvocation", "timeout": 25}
     ],
     "PostToolUse": [
-      {"command": "python3 /path/to/B12/scripts/antigravity_hook_adapter.py PostToolUse"}
+      {
+        "matcher": "*",
+        "hooks": [
+          {"type": "command", "command": "python3 /path/to/B12/scripts/antigravity_hook_adapter.py PostToolUse", "timeout": 10}
+        ]
+      }
     ],
     "Stop": [
-      {"command": "python3 /path/to/B12/scripts/antigravity_hook_adapter.py Stop"}
+      {"type": "command", "command": "python3 /path/to/B12/scripts/antigravity_hook_adapter.py Stop", "timeout": 45}
     ]
   }
 }

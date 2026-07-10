@@ -130,7 +130,7 @@ B12's MCP server works with any tool that supports MCP stdio. The installer hand
 |----------|------|---------|--------------------|--------------------|
 | Claude Code | (default) | **Automatic** (full hooks) | ~/.claude.json | Built-in |
 | Codex CLI | `--codex` | **Automatic** (notify/Stop) | ~/.codex/config.toml | ~/.codex/AGENTS.md |
-| Antigravity CLI | `--antigravity` | **Automatic** (native plugin: PreInvocation/PostToolUse/Stop) | ~/.gemini/config/mcp_config.json + staged plugin | AGENTS.md + plugin rules |
+| Antigravity CLI | `--antigravity` | **Automatic** (installed native plugin: PreInvocation/PostToolUse/Stop) | ~/.gemini/config/mcp_config.json + Antigravity plugin profile | AGENTS.md + plugin rules |
 | Gemini CLI | `--gemini` | **Automatic** (legacy Gemini CLI hook adapters; enterprise/paid API-key users) | ~/.gemini/settings.json | ~/.gemini/GEMINI.md |
 | Cline | `--cline` | **Automatic** (TaskStart/UserPromptSubmit/PreCompact) | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ |
 | Continue.dev | `--continue` | **Automatic** (hooks) | ~/.continue/mcpServers/b12.yaml | ~/.continue/rules/b12-memory.md |
@@ -204,7 +204,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Health report** — comprehensive weekly report with health score, trends, and recommendations
 - **Porter stemming search** — `memory_fts_stemmed` table matches word variants ("running" → "run")
 - **MCP resources** — `b12://` URIs for protocol-standard context access (stats, profile, health)
-- **Antigravity CLI plugin** — native plugin layout (`plugin.json`, `mcp_config.json`, `hooks.json`, `rules/`) with Antigravity-specific hook adapters for PreInvocation, PostToolUse, and Stop. Installer stages a runtime copy under `~/.B12/antigravity-plugin/b12/` so hook/MCP commands contain absolute executable paths without committing private paths.
+- **Antigravity CLI plugin** — native plugin layout (`plugin.json`, `mcp_config.json`, `hooks.json`, `rules/`) with Antigravity-specific hook adapters for PreInvocation, PostToolUse, and Stop. Installer stages a runtime copy under `~/.B12/antigravity-plugin/b12/` so hook/MCP commands contain absolute executable paths without committing private paths, then installs it with `agy plugin install`.
 - **Gemini CLI hooks** — legacy Gemini CLI adapter scripts remain available for Standard/Enterprise/Cloud or paid API-key Gemini CLI users; `--gemini` is not repointed to Antigravity.
 - **LoCoMo benchmark** — retrieval quality evaluation with MRR, NDCG, and regression detection
 - **Multi-setup support** — works across `.claude`, `.claude-work`, etc. with shared database

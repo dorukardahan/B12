@@ -536,7 +536,7 @@ Pick the flag matching your editor / CLI, run it once, restart the host.
 
 | Platform | Install flag | Config template | Verify |
 |----------|--------------|-----------------|--------|
-| Antigravity CLI | `./install.sh --antigravity` | `plugins/antigravity/b12/` native plugin template | `agy plugin validate ~/.B12/antigravity-plugin/b12` |
+| Antigravity CLI | `./install.sh --antigravity` | `plugins/antigravity/b12/` native plugin template, installed through `agy plugin install` | `agy plugin list` and `agy plugin validate ~/.B12/antigravity-plugin/b12` |
 | Gemini CLI | `./install.sh --gemini` | `config/gemini-config-template.json` + `config/gemini-instructions-template.md` | `gemini /mcp` |
 | VS Code (GitHub Copilot Chat) | `./install.sh --vscode` | `config/mcp-b12-template.json` + `config/vscode-instructions-template.md` | Copilot Chat → "Show MCP servers" |
 | Cursor | `./install.sh --cursor` | `config/cursor-mcp-template.json` + `config/cursor-rules-template.md` | Cursor Settings → MCP → B12 row |

@@ -342,7 +342,7 @@ Hooks that interpolate user input into SQLite queries apply character-level sani
 
 ## Antigravity and Gemini CLI integrations
 
-`plugins/antigravity/b12/` is the native Antigravity package template. `install.sh --antigravity` stages it to `~/.B12/antigravity-plugin/b12/` with runtime absolute paths, then registers B12's stdio MCP server in Antigravity's global `~/.gemini/config/mcp_config.json` shape:
+`plugins/antigravity/b12/` is the native Antigravity package template. `install.sh --antigravity` stages it to `~/.B12/antigravity-plugin/b12/` with runtime absolute paths, installs that bundle through `agy plugin install`, and registers B12's stdio MCP server in Antigravity's global `~/.gemini/config/mcp_config.json` shape:
 
 - **`plugin.json`**: plugin metadata.
 - **`mcp_config.json`**: `mcpServers.B12.command,args,env` for the local B12 stdio server.

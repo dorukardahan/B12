@@ -49,22 +49,17 @@ def _hook_dir() -> Path:
 def _first_workspace(payload: dict[str, Any]) -> str:
     paths = payload.get("workspacePaths")
     if isinstance(paths, list):
-        for p in paths:
-            if isinstance(p, str) and p:
-                return p
-    for key in ("cwd", "workspacePath"):
-        val = payload.get(key)
-        if isinstance(val, str) and val:
-            return val
+        for path in paths:
+            if isinstance(path, str) and path:
+                return path
     return ""
 
 
 def _conversation_id(payload: dict[str, Any]) -> str:
-    for key in ("conversationId", "sessionId", "session_id"):
-        val = payload.get(key)
-        if isinstance(val, str) and val:
-            return val
-    # Stable, non-sensitive fallback: hash transcript + workspace metadata.
+    value = payload.get("conversationId")
+    if isinstance(value, str) and value:
+        return value
+    # Stable, non-sensitive fallback derived only from documented metadata.
     seed = json.dumps(
         {"transcriptPath": payload.get("transcriptPath"), "workspacePaths": payload.get("workspacePaths")},
         sort_keys=True,
@@ -74,12 +69,9 @@ def _conversation_id(payload: dict[str, Any]) -> str:
 
 
 def _invocation_num(payload: dict[str, Any]) -> int | None:
-    for key in ("invocationNum", "invocationNumber"):
-        val = payload.get(key)
-        if isinstance(val, int):
-            return val
-        if isinstance(val, str) and val.isdigit():
-            return int(val)
+    value = payload.get("invocationNum")
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
     return None
 
 
@@ -90,23 +82,25 @@ def _guard_path() -> Path:
 
 
 def _already_injected(payload: dict[str, Any]) -> bool:
-    inv = _invocation_num(payload)
-    if inv is not None and inv > 1:
+    invocation = _invocation_num(payload)
+    if invocation is not None and invocation > 0:
         return True
-    cid = _conversation_id(payload)
+    conversation_id = _conversation_id(payload)
+    guard_key = hashlib.sha256(conversation_id.encode("utf-8")).hexdigest()
     path = _guard_path()
     try:
         data = json.loads(path.read_text()) if path.exists() else {}
         seen = data.get("seen") if isinstance(data, dict) else []
         if not isinstance(seen, list):
             seen = []
-        if cid in seen:
+        if guard_key in seen:
             return True
-        seen = ([x for x in seen if isinstance(x, str)] + [cid])[-200:]
+        seen = ([item for item in seen if isinstance(item, str)] + [guard_key])[-200:]
         path.write_text(json.dumps({"seen": seen}, indent=2) + "\n")
+        path.chmod(0o600)
     except Exception as exc:
         _stderr(f"duplicate guard unavailable, continuing conservatively: {exc}")
-        return inv is not None and inv > 0
+        return invocation is not None and invocation > 0
     return False
 
 
@@ -125,8 +119,9 @@ def _run_b12_hook(script: str, payload: dict[str, Any], timeout_s: int) -> dict[
             timeout=timeout_s,
             check=False,
         )
-        if proc.stderr.strip():
-            _stderr(proc.stderr.strip()[-4000:])
+        if proc.returncode != 0:
+            _stderr(f"{script} exited {proc.returncode}; ignoring output")
+            return {}
         if not proc.stdout.strip():
             return {}
         parsed = json.loads(proc.stdout)
@@ -141,30 +136,29 @@ def pre_invocation() -> int:
     if _already_injected(payload):
         return _emit({"injectSteps": []})
 
-    source = "startup"
-    inv = _invocation_num(payload)
-    if inv is not None and inv > 0:
-        source = "resume"
-    b12_input = {"source": source, "cwd": _first_workspace(payload)}
+    b12_input = {
+        "source": "startup",
+        "cwd": _first_workspace(payload),
+        "session_id": _conversation_id(payload),
+    }
     result = _run_b12_hook("memory-session-start.sh", b12_input, timeout_s=22)
-    ctx = (
+    context = (
         result.get("hookSpecificOutput", {}).get("additionalContext")
         if isinstance(result.get("hookSpecificOutput"), dict)
         else None
     )
-    if isinstance(ctx, str) and ctx.strip():
-        return _emit({"injectSteps": [{"ephemeralMessage": ctx}]})
+    if isinstance(context, str) and context.strip():
+        return _emit({"injectSteps": [{"ephemeralMessage": context}]})
     return _emit({"injectSteps": []})
 
 
 def post_tool_use() -> int:
     payload = _read_payload()
-    # Antigravity PostToolUse does not guarantee enough tool result text for B12
-    # retrieval/checkpoint semantics. Consume and validate documented metadata,
-    # log a compact receipt only, and return the required no-op JSON.
-    tool = payload.get("toolName") or payload.get("tool_name") or "unknown"
-    cid = _conversation_id(payload)
-    _stderr(f"PostToolUse observed tool={tool!s} conversation={cid[:24]}; no context injection supported for this event")
+    # The documented payload has step/error metadata but no tool call or result.
+    # It cannot safely support B12 retrieval/checkpoint semantics.
+    step = payload.get("stepIdx")
+    step_receipt = step if isinstance(step, int) and not isinstance(step, bool) else "unknown"
+    _stderr(f"PostToolUse observed step={step_receipt} error={bool(payload.get('error'))}; no-op")
     return _emit({})
 
 
@@ -183,7 +177,6 @@ def stop() -> int:
         "cwd": _first_workspace(payload),
         "transcript_path": transcript,
     }
-    # Run synchronously but bounded; the underlying hook is also timeout guarded.
     _run_b12_hook("memory-session-end.sh", b12_input, timeout_s=40)
     return _emit({"decision": "stop"})
 
