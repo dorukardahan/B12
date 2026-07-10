@@ -25,7 +25,7 @@
 ### Install (one command)
 
 ```bash
-git clone https://github.com/dorukardahan/B12.git && cd B12 && ./install.sh --full
+git clone https://github.com/dorukardahan/B12.git && cd B12 && chmod +x install.sh && ./install.sh --full
 ```
 
 Restart your AI tool, type `/mcp` (or the platform equivalent), and you
@@ -226,7 +226,7 @@ This installs B12 as a Claude Code plugin with hooks, MCP server, skills, and sl
 
 ```bash
 git clone https://github.com/dorukardahan/B12.git
-cd B12 && ./install.sh --full  # Creates venv + deps only (hooks/MCP managed by plugin)
+cd B12 && chmod +x install.sh && ./install.sh --full  # Creates venv + deps only (hooks/MCP managed by plugin)
 ```
 
 After installation, you get:
