@@ -3298,7 +3298,7 @@ reload_daemon_if_running() {
 # Main
 # ═════════════════════════════════════════════
 
-echo "B12 Memory System Installer (v11.81.1 — multi-platform)"
+echo "B12 Memory System Installer (v11.81.2 — multi-platform)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first

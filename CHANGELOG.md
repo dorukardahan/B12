@@ -1,5 +1,20 @@
 # Changelog
 
+## [v11.81.2] — 2026-07-10
+
+A maintenance release that hardens OpenCode permission handling, expands regression coverage across the plugin, and aligns public setup guidance with current BGE-M3 and cross-agent behavior.
+
+### Changed
+- **Accurate BGE-M3 and GGUF setup guidance.** Documentation now identifies the default FP32 download as roughly 2.2 GB, records the published Q4_K_M (~438 MB) and Q8_0 (~635 MB) artifact sizes, and tells manual-install users to install the optional `gguf` dependency set before enabling the backend. (#155)
+- **Consistent installation and supported-tool documentation.** Quick-start examples now use the same executable installer step, the documented support list matches the integrations B12 ships, and setup examples use portable paths. (#143, #153, #154)
+
+### Fixed
+- **OpenCode permission pattern arrays now fail closed.** Automatic approval requires every supplied pattern to be a valid trusted B12 tool; mixed, blank, malformed, and runtime non-string entries are rejected instead of being blessed by one trusted value. (#156)
+
+### Internal
+- **OpenCode lifecycle and persistence coverage is substantially broader.** Automated checks now exercise memory capture, retrieval, tagging, database updates, FTS restore transitions, embeddings, graph neighbors, session context, working memory, guardrails, and permission allow/deny boundaries. (#148, #156)
+- **Embedding fallback behavior is documented in source.** sqlite-vec kNN remains the primary route, with bounded linear scans retained deliberately when ANN is unavailable, disabled, or below threshold; runtime behavior is unchanged. (#145)
+
 ## [v11.81.1] — 2026-06-27
 
 Post-release hotfixes from a retroactive **GPT-5.5 + GLM-5.2** review of the v11.81.0 changes (the headless review CLIs had timed out during original development, so those PRs had landed on empirical verification plus the in-PR bot). The fresh two-model pass caught real bugs the bot missed — including a P1 regression and a NameError.
