@@ -270,7 +270,7 @@ Start a new Claude Code session. Run `/mcp` — you should see `B12 · connected
 - `memory_import` — import memories from JSONL
 - `memory_dashboard` — aggregate stats + health snapshot
 
-**First run note:** The default embedding model (BGE-M3, ~2.2GB FP32 weights) downloads automatically on the first session. This is a one-time download — subsequent sessions start instantly. Set `B12_EMBED_BACKEND=gguf` + `B12_EMBED_GGUF_PATH=...` to use a Q8_0 / Q4_K_M GGUF (~250-500MB) via `llama-cpp-python` instead.
+**First run note:** The default embedding model (BGE-M3, ~2.2GB FP32 weights) downloads automatically on the first session. This is a one-time download — subsequent sessions start instantly. Set `B12_EMBED_BACKEND=gguf` + `B12_EMBED_GGUF_PATH=...` to use a Q4_K_M (~438MB) or Q8_0 (~635MB) GGUF via `llama-cpp-python` instead.
 
 The database and all tables are created automatically on first use. After your first session ends, check `~/.B12/memory-summaries/` for the generated summary.
 
