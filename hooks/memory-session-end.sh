@@ -24,9 +24,54 @@ SESSION_ID=$(echo "$INPUT" | jq -r '.session_id // "unknown"')
 REASON=$(echo "$INPUT" | jq -r '.reason // "other"')
 CWD=$(echo "$INPUT" | jq -r '.cwd // ""')
 TRANSCRIPT_PATH=$(echo "$INPUT" | jq -r '.transcript_path // ""')
+CLEANUP_TRANSCRIPT=$(echo "$INPUT" | jq -r '.cleanup_transcript // false')
 
 # Central data directory — override with B12_DATA_DIR env var for custom setups
 B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
+
+# Antigravity asks this shared hook to remove only the private transcript that
+# its adapter staged for this invocation. Treat the request as untrusted: a
+# normal SessionEnd caller controls stdin and must not be able to turn the hook
+# into an arbitrary-file deletion primitive.
+cleanup_antigravity_transcript() {
+  [ "$CLEANUP_TRANSCRIPT" = "true" ] || return 0
+  python3 - "$TRANSCRIPT_PATH" "$B12_BASE/memory-staging" << 'PYEOF' 2>/dev/null || true
+import os
+import re
+import stat
+import sys
+
+requested, staging = sys.argv[1:3]
+name = os.path.basename(requested)
+
+# The adapter passes an absolute, direct child path from mkstemp. Reject path
+# normalization tricks, unexpected names, missing files, and all link types.
+if not os.path.isabs(requested) or os.path.abspath(requested) != requested:
+    raise SystemExit(0)
+if not re.fullmatch(r"antigravity-transcript-[A-Za-z0-9_-]+\.jsonl", name):
+    raise SystemExit(0)
+
+staging_real = os.path.realpath(staging)
+if os.path.islink(staging):
+    raise SystemExit(0)
+if os.path.realpath(os.path.dirname(requested)) != staging_real:
+    raise SystemExit(0)
+if os.path.realpath(requested) != os.path.join(staging_real, name):
+    raise SystemExit(0)
+
+flags = os.O_RDONLY | getattr(os, "O_DIRECTORY", 0)
+directory_fd = os.open(staging_real, flags)
+try:
+    info = os.stat(name, dir_fd=directory_fd, follow_symlinks=False)
+    if not stat.S_ISREG(info.st_mode):
+        raise SystemExit(0)
+    if info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o600 or info.st_nlink != 1:
+        raise SystemExit(0)
+    os.unlink(name, dir_fd=directory_fd)
+finally:
+    os.close(directory_fd)
+PYEOF
+}
 
 PROJECT_NAME=$(basename "$CWD" 2>/dev/null || echo "unknown")
 SUMMARY_DIR="$B12_BASE/memory-summaries"
@@ -98,6 +143,7 @@ if [ "$_idle_skip" = "true" ]; then
       tail -500 "$LOG_DIR/sessions.jsonl" > "$LOG_DIR/sessions.jsonl.tmp" 2>/dev/null && mv "$LOG_DIR/sessions.jsonl.tmp" "$LOG_DIR/sessions.jsonl" 2>/dev/null
     fi
   fi
+  cleanup_antigravity_transcript
   echo '{}'
   exit 0
 fi
@@ -1107,6 +1153,7 @@ fi
 # extractor runs detached with its own timeout — the hook is already
 # exit-0 by the time the LLM call returns. See
 # the LLM-extraction design notes "Why SessionEnd only".
+_llm_extraction_started=false
 if [ "${B12_LLM_PROVIDER:-none}" != "none" ] && [ -f "$TRANSCRIPT_PATH" ]; then
   _B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
   LLM_EXTRACTOR="$_B12_HOOK_DIR/scripts/b12_llm_extractor.py"
@@ -1118,10 +1165,15 @@ if [ "${B12_LLM_PROVIDER:-none}" != "none" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         --project "$PROJECT_NAME" \
         --setup "$SETUP_CONTEXT" \
         --event session_end \
-        >> "$LOG_DIR/llm-extraction.log" 2>&1
+        >> "$LOG_DIR/llm-extraction.log" 2>&1 || true
+      cleanup_antigravity_transcript
     ) &
+    _llm_extraction_started=true
     disown 2>/dev/null
   fi
+fi
+if [ "$CLEANUP_TRANSCRIPT" = "true" ] && [ "$_llm_extraction_started" != "true" ]; then
+  cleanup_antigravity_transcript
 fi
 
 # Log session end

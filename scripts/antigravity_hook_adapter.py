@@ -153,6 +153,10 @@ def _convert_antigravity_transcript(transcript: str) -> Path | None:
 
     staging = _b12_base() / "memory-staging"
     staging.mkdir(parents=True, exist_ok=True)
+    if staging.is_symlink():
+        _stderr("private staging directory is a symlink; transcript conversion skipped")
+        return None
+    staging.chmod(0o700)
     fd, name = tempfile.mkstemp(prefix="antigravity-transcript-", suffix=".jsonl", dir=staging)
     converted = Path(name)
     try:
@@ -253,12 +257,9 @@ def stop() -> int:
         "reason": str(payload.get("terminationReason") or "stop"),
         "cwd": _first_workspace(payload),
         "transcript_path": str(converted) if converted else "",
+        "cleanup_transcript": converted is not None,
     }
-    try:
-        _run_b12_hook("memory-session-end.sh", b12_input, timeout_s=40)
-    finally:
-        if converted:
-            converted.unlink(missing_ok=True)
+    _run_b12_hook("memory-session-end.sh", b12_input, timeout_s=40)
     return _emit({"decision": "stop"})
 
 

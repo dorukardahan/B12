@@ -4,6 +4,8 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
+import time
 from pathlib import Path
 
 import pytest
@@ -40,6 +42,7 @@ def make_fake_hooks(tmp_path: Path) -> tuple[Path, Path]:
         "printf '%s' \"$payload\" > \"$B12_DATA_DIR/stop-input.json\"\n"
         "transcript=$(printf '%s' \"$payload\" | python3 -c 'import json,sys; print(json.load(sys.stdin).get(\"transcript_path\", \"\"))')\n"
         "[ -z \"$transcript\" ] || cp \"$transcript\" \"$B12_DATA_DIR/converted-transcript.jsonl\"\n"
+        "[ -z \"$transcript\" ] || rm -f \"$transcript\"\n"
         "printf '%s\\n' '{}'\n"
     )
     for p in hook_dir.glob("*.sh"):
@@ -123,8 +126,14 @@ def test_stop_requires_fully_idle_and_never_forces_continuation(tmp_path: Path):
     captured = json.loads((state_dir / "stop-input.json").read_text())
     assert captured["session_id"] == "c3"
     assert captured["cwd"] == "/repo"
+    assert captured["cleanup_transcript"] is True
     assert captured["transcript_path"] != str(transcript)
+    staged = Path(captured["transcript_path"])
+    assert staged.parent == state_dir / "memory-staging"
+    assert staged.name.startswith("antigravity-transcript-")
     assert not Path(captured["transcript_path"]).exists()
+    assert (state_dir / "memory-staging").stat().st_mode & 0o777 == 0o700
+    assert (state_dir / "converted-transcript.jsonl").stat().st_mode & 0o777 == 0o600
     converted = [json.loads(line) for line in (state_dir / "converted-transcript.jsonl").read_text().splitlines()]
     assert converted[0] == {"type": "human", "message": {"content": "Remember this preference"}}
     assert converted[1]["type"] == "assistant"
@@ -213,6 +222,157 @@ def test_staged_hook_commands_quote_paths(tmp_path: Path):
     stage_plugin(ROOT, dest, "/venv with space/python3", "/repo/server.py", "/repo with space/adapter.py")
     hooks = json.loads((dest / "hooks.json").read_text())["b12-memory"]
     assert hooks["PreInvocation"][0]["command"] == "'/venv with space/python3' '/repo with space/adapter.py' PreInvocation"
+
+
+def session_end_fixture(tmp_path: Path) -> tuple[Path, Path, Path, dict[str, str]]:
+    home = tmp_path / "home"
+    hook_dir = tmp_path / "hooks"
+    script_dir = hook_dir / "scripts"
+    data_dir = tmp_path / "data"
+    staging_dir = data_dir / "memory-staging"
+    script_dir.mkdir(parents=True)
+    staging_dir.mkdir(parents=True)
+    (script_dir / "shared_patterns.py").symlink_to(SCRIPTS / "shared_patterns.py")
+    return home, hook_dir, data_dir, {
+        **os.environ,
+        "HOME": str(home),
+        "B12_HOOK_DIR": str(hook_dir),
+        "B12_DATA_DIR": str(data_dir),
+        "B12_IDLE_TIMEOUT_SECONDS": "0",
+        "B12_LLM_PROVIDER": "none",
+    }
+
+
+def private_staged_transcript(data_dir: Path, name: str = "antigravity-transcript-test.jsonl") -> Path:
+    transcript = data_dir / "memory-staging" / name
+    transcript.write_text(json.dumps({"type": "human", "message": {"content": "hello"}}) + "\n")
+    transcript.chmod(0o600)
+    return transcript
+
+
+def run_session_end(transcript: Path, env: dict[str, str], **payload_overrides: object) -> subprocess.CompletedProcess[str]:
+    payload = {
+        "session_id": "agy-test",
+        "reason": "clear",
+        "cwd": str(ROOT),
+        "transcript_path": str(transcript),
+        "cleanup_transcript": True,
+        **payload_overrides,
+    }
+    # Detached hook workers inherit file descriptors. Capture stdout in a file
+    # so the test waits for the hook process, not for a background worker.
+    with tempfile.TemporaryFile(mode="w+") as stdout:
+        proc = subprocess.run(
+            ["bash", str(ROOT / "hooks" / "memory-session-end.sh")],
+            input=json.dumps(payload),
+            text=True,
+            stdout=stdout,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            timeout=35,
+            check=False,
+        )
+        stdout.seek(0)
+        proc.stdout = stdout.read()
+        proc.stderr = ""
+        return proc
+
+
+def test_session_end_cleans_private_transcript_synchronously(tmp_path: Path):
+    _home, _hook_dir, data_dir, env = session_end_fixture(tmp_path)
+    transcript = private_staged_transcript(data_dir)
+    proc = run_session_end(transcript, env)
+    assert proc.returncode == 0
+    assert proc.stdout in ("", "{}\n")
+    assert not transcript.exists()
+
+
+def test_session_end_defers_private_transcript_cleanup_until_llm_consumes_it(tmp_path: Path):
+    home, hook_dir, data_dir, env = session_end_fixture(tmp_path)
+    script_dir = hook_dir / "scripts"
+    venv_bin = home / ".local" / "b12-venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    (venv_bin / "python3").symlink_to(sys.executable)
+    (script_dir / "b12_llm_extractor.py").write_text(
+        "import argparse, os, time\n"
+        "from pathlib import Path\n"
+        "p=argparse.ArgumentParser(); p.add_argument('--transcript'); p.add_argument('--session'); "
+        "p.add_argument('--project'); p.add_argument('--setup'); p.add_argument('--event'); a=p.parse_args()\n"
+        "time.sleep(0.2)\n"
+        "Path(os.environ['B12_DATA_DIR'], 'llm-saw.txt').write_text(str(Path(a.transcript).exists()))\n"
+    )
+    transcript = private_staged_transcript(data_dir)
+    proc = run_session_end(transcript, {**env, "B12_LLM_PROVIDER": "test"})
+    assert proc.returncode == 0
+    marker = data_dir / "llm-saw.txt"
+    for _ in range(30):
+        if marker.exists() and not transcript.exists():
+            break
+        time.sleep(0.1)
+    assert marker.read_text() == "True"
+    assert not transcript.exists()
+
+
+def test_session_end_idle_skip_cleans_private_transcript(tmp_path: Path):
+    _home, _hook_dir, data_dir, env = session_end_fixture(tmp_path)
+    transcript = private_staged_transcript(data_dir)
+    old = time.time() - 120
+    os.utime(transcript, (old, old))
+    proc = run_session_end(transcript, {**env, "B12_IDLE_TIMEOUT_SECONDS": "1"}, reason="other")
+    assert proc.returncode == 0
+    assert proc.stdout in ("", "{}\n")
+    assert not transcript.exists()
+    assert '"idle_skip":true' in (data_dir / "memory-logs" / "sessions.jsonl").read_text()
+
+
+@pytest.mark.parametrize("kind", ["outside", "basename"])
+def test_session_end_rejects_out_of_scope_cleanup_requests(tmp_path: Path, kind: str):
+    _home, _hook_dir, data_dir, env = session_end_fixture(tmp_path)
+    if kind == "outside":
+        transcript = tmp_path / "antigravity-transcript-outside.jsonl"
+    else:
+        transcript = data_dir / "memory-staging" / "converted.jsonl"
+    transcript.write_text("\n")
+    transcript.chmod(0o600)
+    proc = run_session_end(transcript, env)
+    assert proc.returncode == 0
+    assert proc.stdout in ("", "{}\n")
+    assert transcript.exists()
+
+
+def test_session_end_rejects_symlink_cleanup_request(tmp_path: Path):
+    _home, _hook_dir, data_dir, env = session_end_fixture(tmp_path)
+    outside = tmp_path / "outside.jsonl"
+    outside.write_text("keep\n")
+    transcript = data_dir / "memory-staging" / "antigravity-transcript-link.jsonl"
+    transcript.symlink_to(outside)
+    proc = run_session_end(transcript, env)
+    assert proc.returncode == 0
+    assert proc.stdout in ("", "{}\n")
+    assert transcript.is_symlink()
+    assert outside.read_text() == "keep\n"
+
+
+def test_session_end_rejects_staging_directory_symlink_escape(tmp_path: Path):
+    _home, _hook_dir, data_dir, env = session_end_fixture(tmp_path)
+    staging = data_dir / "memory-staging"
+    staging.rmdir()
+    outside_staging = tmp_path / "outside-staging"
+    outside_staging.mkdir()
+    staging.symlink_to(outside_staging, target_is_directory=True)
+    transcript = private_staged_transcript(data_dir)
+    proc = run_session_end(transcript, env)
+    assert proc.returncode == 0
+    assert proc.stdout in ("", "{}\n")
+    assert transcript.exists()
+
+
+def test_session_end_without_cleanup_flag_preserves_normal_client_transcript(tmp_path: Path):
+    _home, _hook_dir, data_dir, env = session_end_fixture(tmp_path)
+    transcript = private_staged_transcript(data_dir)
+    proc = run_session_end(transcript, env, cleanup_transcript=False)
+    assert proc.returncode == 0
+    assert transcript.exists()
 
 
 def test_installer_exposes_antigravity_without_repointing_gemini():

@@ -353,7 +353,7 @@ Hooks that interpolate user input into SQLite queries apply character-level sani
 
 - **PreInvocation** calls `memory-session-start.sh` and returns `{"injectSteps":[{"ephemeralMessage":"..."}]}`. A conversation/invocation guard avoids repeated full context injection in the same conversation.
 - **PostToolUse** consumes the documented payload safely, logs only a compact stderr receipt, and returns `{}` because Antigravity's documented fields do not reliably provide enough tool-result evidence for B12 retrieval/checkpoint semantics.
-- **Stop** runs session-end only when `fullyIdle=true`, converts Antigravity's `USER_INPUT`/`PLANNER_RESPONSE` trajectory JSONL into B12's session-end transcript shape in a private temporary staging file, adapts `conversationId`, `workspacePaths`, `transcriptPath`, and `terminationReason`, and returns a non-continuation decision.
+- **Stop** runs session-end only when `fullyIdle=true`, converts Antigravity's `USER_INPUT`/`PLANNER_RESPONSE` trajectory JSONL into B12's session-end transcript shape in a private temporary staging file, adapts `conversationId`, `workspacePaths`, `transcriptPath`, and `terminationReason`, and returns a non-continuation decision. The shared session-end hook removes that temporary file after synchronous extraction, or after the optional background LLM extractor has consumed it.
 
 Provider detection outside Antigravity hooks is intentionally not guessed from undocumented environment variables; hook payload metadata is authoritative. Repository validation is limited to local schema/help/plugin checks until a real authenticated Antigravity run proves MCP tools and hooks end-to-end.
 
