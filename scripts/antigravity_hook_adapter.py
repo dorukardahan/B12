@@ -76,6 +76,24 @@ def _invocation_num(payload: dict[str, Any]) -> int | None:
     return None
 
 
+def _normalize_tool_call(tool_name: str, arguments: Any) -> tuple[str, dict[str, Any]]:
+    """Translate documented Antigravity file edits into B12's shared shape."""
+    normalized_input = dict(arguments) if isinstance(arguments, dict) else {}
+    edit_tools = {
+        "write_to_file": "Write",
+        "replace_file_content": "Edit",
+        "multi_replace_file_content": "Edit",
+    }
+    normalized_name = edit_tools.get(tool_name, tool_name)
+    if normalized_name in ("Edit", "Write") and "file_path" not in normalized_input:
+        for key in ("TargetFile", "target_file", "AbsolutePath", "absolute_path", "path"):
+            value = normalized_input.get(key)
+            if isinstance(value, str) and value:
+                normalized_input["file_path"] = value
+                break
+    return normalized_name, normalized_input
+
+
 def _guard_path() -> Path:
     state_dir = _b12_base() / "memory-state"
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -84,7 +102,7 @@ def _guard_path() -> Path:
 
 def _already_injected(payload: dict[str, Any]) -> bool:
     invocation = _invocation_num(payload)
-    if invocation is not None and invocation > 0:
+    if invocation is not None and invocation > 1:
         return True
     conversation_id = _conversation_id(payload)
     guard_key = hashlib.sha256(conversation_id.encode("utf-8")).hexdigest()
@@ -184,11 +202,12 @@ def _convert_antigravity_transcript(transcript: str) -> Path | None:
                             tool_name = call.get("name") or call.get("tool_name")
                             arguments = call.get("args", call.get("arguments", {}))
                             if isinstance(tool_name, str) and tool_name:
+                                tool_name, arguments = _normalize_tool_call(tool_name, arguments)
                                 blocks.append(
                                     {
                                         "type": "tool_use",
                                         "name": tool_name,
-                                        "input": arguments if isinstance(arguments, dict) else {},
+                                        "input": arguments,
                                     }
                                 )
                     if not blocks:

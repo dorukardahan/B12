@@ -54,7 +54,7 @@ def test_preinvocation_injects_ephemeral_message_and_stdout_json(tmp_path: Path)
     hook_dir, state_dir = make_fake_hooks(tmp_path)
     proc = run_adapter(
         "PreInvocation",
-        {"conversationId": "c1", "invocationNum": 0, "workspacePaths": ["/repo"], "transcriptPath": "/tmp/t.jsonl"},
+        {"conversationId": "c1", "invocationNum": 1, "workspacePaths": ["/repo"], "transcriptPath": "/tmp/t.jsonl"},
         {"B12_HOOK_DIR": str(hook_dir), "B12_DATA_DIR": str(state_dir)},
     )
     assert proc.returncode == 0
@@ -65,7 +65,7 @@ def test_preinvocation_injects_ephemeral_message_and_stdout_json(tmp_path: Path)
 def test_preinvocation_duplicate_guard_skips_second_injection(tmp_path: Path):
     hook_dir, state_dir = make_fake_hooks(tmp_path)
     env = {"B12_HOOK_DIR": str(hook_dir), "B12_DATA_DIR": str(state_dir)}
-    payload = {"conversationId": "same", "invocationNum": 0, "workspacePaths": ["/repo"]}
+    payload = {"conversationId": "same", "invocationNum": 1, "workspacePaths": ["/repo"]}
     first = json.loads(run_adapter("PreInvocation", payload, env).stdout)
     second = json.loads(run_adapter("PreInvocation", payload, env).stdout)
     later = json.loads(run_adapter("PreInvocation", {**payload, "conversationId": "new", "invocationNum": 2}, env).stdout)
@@ -107,7 +107,12 @@ def test_stop_requires_fully_idle_and_never_forces_continuation(tmp_path: Path):
                     {
                         "type": "PLANNER_RESPONSE",
                         "content": "Decision: use the native plugin because hooks must load.",
-                        "tool_calls": [{"name": "view_file", "args": {"AbsolutePath": "/repo/a.py"}}],
+                        "tool_calls": [
+                            {"name": "view_file", "args": {"AbsolutePath": "/repo/a.py"}},
+                            {"name": "write_to_file", "args": {"TargetFile": "/repo/new.py", "CodeContent": "x"}},
+                            {"name": "replace_file_content", "args": {"TargetFile": "/repo/edit.py"}},
+                            {"name": "multi_replace_file_content", "args": {"TargetFile": "/repo/multi.py"}},
+                        ],
                     }
                 ),
                 json.dumps({"type": "TOOL_RESPONSE", "content": "private tool output must not be copied"}),
@@ -139,6 +144,12 @@ def test_stop_requires_fully_idle_and_never_forces_continuation(tmp_path: Path):
     assert converted[1]["type"] == "assistant"
     assert converted[1]["message"]["content"][0]["type"] == "text"
     assert converted[1]["message"]["content"][1]["name"] == "view_file"
+    normalized = converted[1]["message"]["content"][2:]
+    assert [(block["name"], block["input"]["file_path"]) for block in normalized] == [
+        ("Write", "/repo/new.py"),
+        ("Edit", "/repo/edit.py"),
+        ("Edit", "/repo/multi.py"),
+    ]
     assert "private tool output" not in (state_dir / "converted-transcript.jsonl").read_text()
 
 
