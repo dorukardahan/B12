@@ -139,7 +139,7 @@ B12 · connected
   Tools: memory_store, memory_search, memory_update, memory_quality
 ```
 
-**First run note:** The embedding model (~90MB) downloads automatically on the first session start. This is a one-time download and may take 30-60 seconds. Subsequent sessions start instantly. The database and all tables are created automatically by the MCP server on first use.
+**First run note:** The default BGE-M3 embedding model (~2.2GB FP32 weights) downloads automatically on the first session start. This is a one-time download; subsequent sessions start instantly. For a smaller footprint, first install the optional backend from the repository with `~/.local/b12-venv/bin/pip install -e '.[gguf]'`, then set `B12_EMBED_BACKEND=gguf` with `B12_EMBED_GGUF_PATH=...` to use a Q4_K_M (~438MB) or Q8_0 (~635MB) GGUF. The database and all tables are created automatically by the MCP server on first use.
 
 If the server shows as disconnected, check:
 - Python path exists: `ls ~/.local/b12-venv/bin/python3`
