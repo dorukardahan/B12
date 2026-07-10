@@ -1,6 +1,6 @@
 # B12 Project Instructions
 
-This is a multi-platform persistent memory system for AI coding assistants (Claude Code, Codex, Gemini, VS Code, Cursor, Kimi, Windsurf, Cline, OpenCode).
+This is a multi-platform persistent memory system for AI coding assistants (Claude Code, Codex CLI, Grok CLI, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI).
 
 ## For AI assistants: Setting up B12 for a user
 
