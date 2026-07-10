@@ -868,35 +868,39 @@ function applyThinkingOption(provider, model, options) {
 // src/lib/permission.ts
 var TRUSTED_B12_TOOL_RE = /^(?:mcp__B12__|B12_)memory_(?:store|search|update|quality)$/;
 var B12_TOOL_NAME_RE = /^memory_(?:store|search|update|quality)$/;
-function stringValues(value) {
-  if (typeof value === "string")
-    return [value];
-  if (Array.isArray(value))
-    return value.flatMap(stringValues);
-  return [];
-}
 function isTrustedB12PermissionTool(input) {
   if (input.type && !["tool", "mcp_tool", "permission"].includes(input.type)) {
     return false;
   }
   const metadata = input.metadata || {};
+  const server = String(metadata.server || metadata.namespace || "").toLowerCase();
+  const isTrustedCandidate = (value) => TRUSTED_B12_TOOL_RE.test(value) || server === "b12" && B12_TOOL_NAME_RE.test(value);
+  const rawPattern = input.pattern;
+  let patterns = [];
+  if (rawPattern !== undefined) {
+    if (typeof rawPattern === "string") {
+      patterns = [rawPattern];
+    } else if (Array.isArray(rawPattern) && rawPattern.every((value) => typeof value === "string")) {
+      patterns = rawPattern;
+    } else {
+      return false;
+    }
+  }
+  patterns = patterns.map((value) => value.trim());
+  if (patterns.some((value) => !value) || patterns.length > 0 && !patterns.every(isTrustedCandidate))
+    return false;
   const canonical = [
     input.id,
-    ...stringValues(input.pattern),
     metadata.tool,
     metadata.toolName,
     metadata.name,
     metadata.command
   ].filter((value) => typeof value === "string").map((value) => value.trim());
-  if (canonical.some((value) => TRUSTED_B12_TOOL_RE.test(value)))
-    return true;
-  const server = String(metadata.server || metadata.namespace || "").toLowerCase();
-  if (server !== "b12")
-    return false;
   return [
     ...canonical,
+    ...patterns,
     typeof input.title === "string" ? input.title.trim() : ""
-  ].some((value) => B12_TOOL_NAME_RE.test(value) || TRUSTED_B12_TOOL_RE.test(value));
+  ].some(isTrustedCandidate);
 }
 
 // src/hooks/session-start.ts
