@@ -411,6 +411,7 @@ B12/
 │   ├── query_aliases.json          #   Search query alias mappings
 │   ├── migrate_ebbinghaus.py       #   Migration: add strength fields
 │   ├── migrate_stemmed_fts.py      #   Migration: backfill porter-stemmed FTS5 table
+│   ├── validate_mcp_templates.py   #   Cross-tool MCP config consistency guard
 │   └── migrate_v10_13.py           #   Migration: create native FTS5 table
 ├── skills/                         # Agent skills
 │   └── b12-memory/SKILL.md         #   B12 behavioral skill (plugin, comprehensive)
