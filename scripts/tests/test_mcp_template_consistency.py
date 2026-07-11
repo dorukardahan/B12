@@ -56,6 +56,7 @@ def test_all_mcp_templates_consistent(validator):
     )
     assert ".mcp.json" in results
     assert "plugins/antigravity/b12/mcp_config.json" in results
+    assert ".grok/plugins-available/b12/.mcp.json" in results
 
 
 def test_validator_detects_drift(validator):

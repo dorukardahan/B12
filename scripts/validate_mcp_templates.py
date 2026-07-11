@@ -107,6 +107,8 @@ TEMPLATES: list[dict[str, Any]] = [
      "keys": ["mcpServers", "B12"], "env": "env", "script": ("args", 0)},
     {"path": "plugins/antigravity/b12/mcp_config.json", "fmt": "json",
      "keys": ["mcpServers", "B12"], "env": "env", "script": ("args", 0)},
+    {"path": ".grok/plugins-available/b12/.mcp.json", "fmt": "json",
+     "keys": ["mcpServers", "B12"], "env": "env", "script": ("args", 0)},
 ]
 
 
@@ -363,6 +365,11 @@ def discover_mcp_template_paths(root: Path) -> set[str]:
         for path in plugins_dir.rglob("*.json"):
             if path.name in {".mcp.json", "mcp_config.json"}:
                 found.add(path.relative_to(root).as_posix())
+
+    grok_plugins_dir = root / ".grok" / "plugins-available"
+    if grok_plugins_dir.is_dir():
+        for path in grok_plugins_dir.rglob(".mcp.json"):
+            found.add(path.relative_to(root).as_posix())
     return found
 
 

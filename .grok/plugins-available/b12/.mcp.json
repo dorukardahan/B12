@@ -6,7 +6,9 @@
         "__SCRIPT_PATH__"
       ],
       "env": {
-        "B12_DATA_DIR": "__B12_DATA_DIR__"
+        "B12_DATA_DIR": "__B12_DATA_DIR__",
+        "MCP_EMBEDDING_MODEL": "BAAI/bge-m3",
+        "MCP_MAX_RESPONSE_CHARS": "40000"
       },
       "enabled": true,
       "startup_timeout_sec": 20,
