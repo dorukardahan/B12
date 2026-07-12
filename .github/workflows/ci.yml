@@ -23,6 +23,9 @@ jobs:
         with:
           python-version: "3.11"
 
+      - name: Package version sync check
+        run: python3 scripts/check_package_versions.py
+
       - name: Bash syntax check (hooks)
         run: |
           set -e
