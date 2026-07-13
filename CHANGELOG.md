@@ -1,5 +1,16 @@
 # Changelog
 
+## [v11.81.3] — 2026-07-13
+
+### Added
+
+- Google Antigravity CLI integration — B12 hooks now detect and support the Antigravity coding assistant as a host platform.
+- CI check for synchronized package versions across `pyproject.toml`, `package.json`, and `package-lock.json` (both top-level and root package fields), preventing silent drift during releases.
+
+### Fixed
+
+- MCP config template consistency validation — catches mismatches between platform config templates before they reach users.
+
 ## [v11.81.2] — 2026-07-10
 
 A maintenance release that hardens OpenCode permission handling, expands regression coverage across the plugin, and aligns public setup guidance with current BGE-M3 and cross-agent behavior.

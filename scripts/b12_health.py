@@ -27,7 +27,7 @@ from pathlib import Path
 
 # ── Constants ────────────────────────────────────────────────────────
 
-VERSION = "11.81.2"  # keep in sync with package.json / plugin.json / B12_VERSION (see docs/releasing.md)
+VERSION = "11.81.3"  # keep in sync with package.json / plugin.json / B12_VERSION (see docs/releasing.md)
 
 _HOME = Path.home()
 _B12_DIR = Path(os.environ.get("B12_DATA_DIR", _HOME / ".B12"))
