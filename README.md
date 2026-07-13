@@ -15,7 +15,7 @@
 > project, same DB.
 
 - **Cross-tool memory** — the same DB powers Claude Code, Codex CLI, Grok CLI, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI
-- **Truly local** — SQLite + sqlite-vec on disk, no cloud calls, no API keys, no telemetry
+- **Local at runtime** — memory data and BGE-M3 inference stay on-device with SQLite + sqlite-vec; there are no cloud API calls, API keys, or telemetry after setup. Installing dependencies and acquiring model artifacts still use the network (see the first-run note below)
 - **Hybrid retrieval** — FTS5 BM25 + 1024-dim BGE-M3 vector + importance- and reinforcement-weighted FSRS decay (important & frequently re-accessed memories rise, stale trivia fades)
 - **Automatic importance scoring** — at write time, content is scored into importance bands with no manual tagging via a language-agnostic signal taxonomy (save-cues, commitments, deadlines, people, numeric values, identifiers) plus native remember/decision/trivial lexicons in **11 languages** (en, tr, zh, hi, es, fr, ar, ru, pt, id, de) with script-aware matching. Credential-bearing content is held at baseline so secrets are never amplified
 - **Write-time merge + NLI contradiction detection** — duplicates collapse at storage time; conflicting memories flag for review
@@ -27,6 +27,14 @@
 ```bash
 git clone https://github.com/dorukardahan/B12.git && cd B12 && chmod +x install.sh && ./install.sh --full
 ```
+
+> **One-time model download:** `./install.sh --full` installs the Python
+> dependencies, but the default BGE-M3 weights are fetched on the first
+> `SessionStart`. Keep network access and approximately 2.2 GB of disk space
+> available for the model weights until this finishes. Memory data and
+> inference stay local afterward. For an offline first session or a smaller
+> download, prepare a GGUF model in advance; see the
+> [embedding model setup guide](docs/setup.md#one-time-embedding-model-download).
 
 Restart your AI tool, type `/mcp` (or the platform equivalent), and you
 should see `B12 · connected`. `--full` installs the venv, configures the
@@ -210,7 +218,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Multi-setup support** — works across `.claude`, `.claude-work`, etc. with shared database
 - **Multi-platform support** — Claude Code, Codex, Antigravity, Gemini, VS Code, Cursor, Kimi, Windsurf, Cline, OpenCode (with TypeScript plugin for full lifecycle automation)
 - **Zero config after install** — hooks handle everything silently in the background
-- **Fully local** — no cloud, no API calls, all data stays on your machine
+- **Fully local at runtime** — memory data and embedding inference stay on your machine; network access is only used to install dependencies and acquire model artifacts
 
 ## Quick Start
 
@@ -272,7 +280,7 @@ Start a new Claude Code session. Run `/mcp` — you should see `B12 · connected
 - `memory_import` — import memories from JSONL
 - `memory_dashboard` — aggregate stats + health snapshot
 
-**First run note:** The default embedding model (BGE-M3, ~2.2GB FP32 weights) downloads automatically on the first session. This is a one-time download — subsequent sessions start instantly. Set `B12_EMBED_BACKEND=gguf` + `B12_EMBED_GGUF_PATH=...` to use a Q4_K_M (~438MB) or Q8_0 (~635MB) GGUF via `llama-cpp-python` instead.
+**First run note:** If it is not already cached, the default BGE-M3 embedding model (~2.2 GB FP32 weights) downloads on the first `SessionStart`; later sessions reuse the local cache. Keep network access and enough disk space available until it finishes. For offline or smaller-footprint setup, prepare a Q4_K_M (~438 MB) or Q8_0 (~635 MB) GGUF in advance by following the [embedding model setup guide](docs/setup.md#one-time-embedding-model-download).
 
 The database and all tables are created automatically on first use. After your first session ends, check `~/.B12/memory-summaries/` for the generated summary.
 

@@ -18,6 +18,34 @@ chmod +x install.sh
 
 This single command creates the venv, installs dependencies, deploys hooks, and configures the MCP server with correct absolute paths.
 
+### One-time embedding model download
+
+`./install.sh --full` installs the Python dependencies, but it does not bundle
+the default BGE-M3 model. On the first `SessionStart`, the embedding daemon
+checks the local Hugging Face cache and, if the model is absent, downloads
+approximately 2.2 GB of FP32 weights. Keep network access and approximately
+2.2 GB of disk space available for the model weights, in addition to the space
+used by the Python environment. Embedding-backed features are not ready until
+the download and initial model load finish.
+
+After the model is cached, later sessions load it locally without downloading
+it again. Memory data and embedding inference stay on the machine and do not
+use cloud APIs; installing packages and acquiring model artifacts are the
+setup-time network operations.
+
+For a machine that must be offline on its first session, acquire the selected
+model artifacts before disconnecting. A smaller-footprint option is to install
+the optional backend while online:
+
+```bash
+~/.local/b12-venv/bin/pip install -e '.[gguf]'
+```
+
+Then download a BGE-M3 Q4_K_M (~438 MB) or Q8_0 (~635 MB) GGUF in advance and
+set `B12_EMBED_BACKEND=gguf` plus `B12_EMBED_GGUF_PATH=/absolute/path/to/model.gguf`
+in the AI tool's B12 environment. GGUF inference and memory storage remain
+local as well.
+
 For multiple Claude Code setups: `./install.sh --full --all`
 
 The installer:
@@ -139,7 +167,7 @@ B12 · connected
   Tools: memory_store, memory_search, memory_update, memory_quality
 ```
 
-**First run note:** The default BGE-M3 embedding model (~2.2GB FP32 weights) downloads automatically on the first session start. This is a one-time download; subsequent sessions start instantly. For a smaller footprint, first install the optional backend from the repository with `~/.local/b12-venv/bin/pip install -e '.[gguf]'`, then set `B12_EMBED_BACKEND=gguf` with `B12_EMBED_GGUF_PATH=...` to use a Q4_K_M (~438MB) or Q8_0 (~635MB) GGUF. The database and all tables are created automatically by the MCP server on first use.
+On a fresh install, `SessionStart` begins the [one-time embedding model download](#one-time-embedding-model-download) in the background, so `B12 · connected` may appear before embedding-backed features are ready. The database and all tables are created automatically by the MCP server on first use.
 
 If the server shows as disconnected, check:
 - Python path exists: `ls ~/.local/b12-venv/bin/python3`
