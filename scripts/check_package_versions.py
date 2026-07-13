@@ -13,39 +13,50 @@ import tomllib
 ROOT = Path(__file__).resolve().parents[1]
 PYPROJECT_FILE = "pyproject.toml"
 PACKAGE_FILE = "package.json"
+PACKAGE_LOCK_FILE = "package-lock.json"
 
 
-def read_versions(root: Path) -> tuple[str, str]:
-    """Return versions from pyproject.toml and package.json."""
+def read_versions(root: Path) -> tuple[str, str, str, str]:
+    """Return versions from Python, Node, and lockfile package metadata."""
     with (root / PYPROJECT_FILE).open("rb") as handle:
         pyproject = tomllib.load(handle)
     with (root / PACKAGE_FILE).open(encoding="utf-8") as handle:
         package = json.load(handle)
+    with (root / PACKAGE_LOCK_FILE).open(encoding="utf-8") as handle:
+        package_lock = json.load(handle)
 
-    return str(pyproject["project"]["version"]), str(package["version"])
+    return (
+        str(pyproject["project"]["version"]),
+        str(package["version"]),
+        str(package_lock["version"]),
+        str(package_lock["packages"][""]["version"]),
+    )
 
 
 def check_versions(root: Path) -> tuple[bool, str]:
     """Compare package versions and return a status plus an actionable message."""
     try:
-        python_version, node_version = read_versions(root)
+        python_version, node_version, lock_version, lock_root_version = read_versions(root)
     except (OSError, KeyError, TypeError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
         return False, (
-            f"ERROR: could not read package versions from {PYPROJECT_FILE} and "
-            f"{PACKAGE_FILE}: {exc}"
+            f"ERROR: could not read package versions from {PYPROJECT_FILE}, "
+            f"{PACKAGE_FILE}, and {PACKAGE_LOCK_FILE}: {exc}"
         )
 
-    if python_version != node_version:
+    versions = {python_version, node_version, lock_version, lock_root_version}
+    if len(versions) != 1:
         return False, (
             "ERROR: package versions are out of sync:\n"
             f"  {PYPROJECT_FILE} [project].version = {python_version!r}\n"
             f"  {PACKAGE_FILE} version = {node_version!r}\n"
-            "Update both files in the same version change."
+            f"  {PACKAGE_LOCK_FILE} version = {lock_version!r}\n"
+            f"  {PACKAGE_LOCK_FILE} packages[''].version = {lock_root_version!r}\n"
+            "Update all package version fields in the same version change."
         )
 
     return True, (
-        f"OK: {PYPROJECT_FILE} and {PACKAGE_FILE} versions match "
-        f"({python_version})."
+        f"OK: {PYPROJECT_FILE}, {PACKAGE_FILE}, and {PACKAGE_LOCK_FILE} "
+        f"versions match ({python_version})."
     )
 
 
