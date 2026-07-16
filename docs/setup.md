@@ -176,6 +176,37 @@ If the server shows as disconnected, check:
 - Script path exists: `ls ~/.B12/hooks/scripts/b12_mcp_server.py`
 - MCP package is installed: `~/.local/b12-venv/bin/python3 -c "import mcp"`
 
+#### Post-install verification by platform
+
+Fully restart or reload the host after installation so it rereads its MCP and
+hook configuration. In every row, the healthy MCP result is a server named
+`B12` in the host's server/tool view, shown as connected, running, or enabled,
+with B12 tools such as `memory_search` available. MCP health does not prove that
+the first-run embedding-model download has finished; that can continue in the
+background as described above.
+
+**Automatic** integrations need both the MCP check and the listed hook/plugin
+check. **MCP-only** integrations have no B12 lifecycle hooks to verify; memory is
+captured when the host calls `memory_store`.
+
+| Platform | Capture | Restart or reload | Where to inspect MCP status | Additional healthy-state check |
+|----------|---------|-------------------|-----------------------------|--------------------------------|
+| Claude Code | **Automatic** | Quit all Claude Code sessions and start a new one. | Run `/mcp`; the `B12` row must say `connected`. | Run `/hooks`; the B12 user hooks should be listed. |
+| Codex CLI | **Automatic** | Close every live Codex session and start a new one; live sessions do not reload edited hook files. | Run `/mcp`; `B12` must be enabled and connected. | `~/.codex/hooks.json` should contain B12 commands for `SessionStart`, `UserPromptSubmit`, `Stop`, `PreToolUse`, `PostToolUse`, and `PreCompact`. |
+| Antigravity CLI | **Automatic** | Start a new Antigravity session after plugin installation. | Open the session's MCP tools list and search for `memory_search`; it must be supplied by `B12`. | Run `agy plugin list` and confirm the `b12` plugin is enabled; `agy plugin validate ~/.B12/antigravity-plugin/b12` must succeed. |
+| Gemini CLI | **Automatic** | Exit Gemini CLI and start it again. | Run `/mcp`; `B12` must be connected and expose its tools. | Run `/hooks`; B12 `SessionStart`, `SessionEnd`, and `AfterTool` commands should be listed. |
+| Cline | **Automatic** | Run **Developer: Reload Window** in VS Code. | Open the Cline panel → **MCP Servers**; the `B12` server must be running and list its tools. | In Cline settings → **Feature Settings**, enable hooks and confirm `TaskStart`, `UserPromptSubmit`, and `PreCompact` exist under `~/Documents/Cline/Hooks/`. |
+| Continue.dev | **Automatic** | Reload the VS Code/JetBrains window that hosts Continue. | Open the Continue panel → **MCP**; `B12` must be enabled and list its tools. | `~/.continue/settings.json` should contain the B12 lifecycle hook commands. |
+| OpenCode | **Automatic** | Exit OpenCode and start a new session. | Run `/mcp`; `B12` must be connected and expose its tools. | `~/.config/opencode/opencode.json` should register `./plugins/b12`, and `~/.config/opencode/plugins/b12/index.js` should exist. |
+| Grok CLI | **Automatic** | Exit Grok and open a new session. | Run `grok mcp list`; `B12` must be connected. `grok inspect` should show the `B12__memory_*` tools. | `grok inspect` should also show the `b12` plugin, and `/skills` should show `b12-memory` (the plugin owns `PreCompact` and `SessionEnd`). |
+| VS Code / Copilot | MCP-only | Run **Developer: Reload Window**. | In Copilot Chat, choose **Show MCP servers**; `B12` must be running and list its tools. | No lifecycle hook check is expected. |
+| Cursor | MCP-only | Quit Cursor and reopen the workspace. | Open **Cursor Settings → MCP**; the `B12` row must be enabled/green and list its tools. | No lifecycle hook check is expected. |
+| Kimi Code | MCP-only | Exit Kimi and start a new session. | Run `/mcp`; `B12` must be connected and expose its tools. | No lifecycle hook check is expected. |
+| Windsurf | MCP-only | Quit Windsurf and reopen the workspace. | Open the Cascade **MCP Servers** panel; `B12` must be enabled and list its tools. | No lifecycle hook check is expected. |
+| Zed | MCP-only | Quit Zed and reopen the project. | Open **Settings → Context Servers**; `B12` must be active and list its tools. | No lifecycle hook check is expected. |
+| JetBrains AI (PyCharm/IDEA/etc.) | MCP-only | Restart the IDE after manually importing the template. | Open **Settings → Tools → AI Assistant → MCP**; `B12` must be running and list its tools. | No lifecycle hook check is expected. |
+| Amp | MCP-only | Exit Amp and start a new session. | Open **Amp Settings → MCP**; `B12` must be enabled and list its tools. | No lifecycle hook check is expected. |
+
 ### Step 6: Configure hooks (usually automatic)
 
 The installer merges hook configuration from `config/settings-template.json` into your `settings.json`. To verify hooks are active, start a Claude Code session and run `/hooks` — you should see `[User]` tagged hooks.

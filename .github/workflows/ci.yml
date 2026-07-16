@@ -103,14 +103,11 @@ jobs:
           python3 -m pip install --upgrade pip
           python3 -m pip install pytest
 
-      - name: Hook smoke tests (tests/hooks/)
+      - name: Hook and platform adapter tests (tests/)
         run: |
-          # Smoke suite: feed minimal JSON to each critical hook in an
-          # isolated $HOME with an empty ~/.B12/ skeleton; assert exit 0
-          # + valid JSON output + no crash signatures. Catches the
-          # common class of bugs that bash -n can't (runtime expansion,
-          # unguarded missing env vars, blocking on missing DB / socket).
-          python3 -m pytest tests/hooks/ -v --tb=short
+          # Run hook smoke tests plus isolated host-adapter and setup-doc
+          # regressions. Every runtime test uses a temporary HOME/data dir.
+          python3 -m pytest tests/ -v --tb=short
 
       - name: Python unit suite (scripts/tests/)
         run: |
