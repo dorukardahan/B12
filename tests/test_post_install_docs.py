@@ -55,6 +55,11 @@ def test_every_readme_platform_has_one_verification_row():
     setup_capture = {row[0]: row[1].replace("**", "") for row in setup_rows}
     assert setup_capture == readme_capture
 
+    continue_extra = next(row[4] for row in setup_rows if row[0] == "Continue.dev")
+    assert "~/.continue/settings.json" in continue_extra
+    claude_settings = "~/" + ".claude/settings.json"
+    assert claude_settings in continue_extra
+
     for platform, capture, _restart, status, extra in setup_rows:
         assert "B12" in status, f"{platform} does not identify the B12 status surface"
         if capture.replace("**", "") == "MCP-only":
