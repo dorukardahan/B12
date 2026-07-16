@@ -29,9 +29,11 @@ used by the Python environment. Embedding-backed features are not ready until
 the download and initial model load finish.
 
 After the model is cached, later sessions load it locally without downloading
-it again. Memory data and embedding inference stay on the machine and do not
-use cloud APIs; installing packages and acquiring model artifacts are the
-setup-time network operations.
+it again. With the default `B12_LLM_PROVIDER=none`, memory data and embedding
+inference stay on the machine and do not use cloud APIs; installing packages
+and acquiring model artifacts are the setup-time network operations. Enabling
+LLM extraction with a remote provider sends the configured transcript chunk to
+that provider.
 
 For a machine that must be offline on its first session, acquire the selected
 model artifacts before disconnecting. A smaller-footprint option is to install
