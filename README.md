@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/dorukardahan/B12?sort=semver)](https://github.com/dorukardahan/B12/releases)
 [![CI](https://img.shields.io/github/actions/workflow/status/dorukardahan/B12/ci.yml?branch=main&label=ci)](https://github.com/dorukardahan/B12/actions)
-[![Platforms](https://img.shields.io/badge/platforms-14-green)](#supported-platforms)
+[![Platforms](https://img.shields.io/badge/platforms-15-green)](#supported-platforms)
 
 ![B12 demo](assets/demo.gif)
 
@@ -37,9 +37,11 @@ git clone https://github.com/dorukardahan/B12.git && cd B12 && chmod +x install.
 > download, prepare a GGUF model in advance; see the
 > [embedding model setup guide](docs/setup.md#one-time-embedding-model-download).
 
-Restart your AI tool, type `/mcp` (or the platform equivalent), and you
-should see `B12 · connected`. `--full` installs the venv, configures the
-MCP server, and deploys lifecycle hooks where the platform supports them.
+Restart your AI tool, then follow the
+[post-install verification steps for your host](docs/setup.md#post-install-verification-by-platform).
+The `B12` server should be connected and expose its memory tools. `--full`
+installs the venv, configures the MCP server, and deploys lifecycle hooks
+where the platform supports them.
 For a fresh install, plain `./install.sh` auto-promotes to full setup;
 use `--minimal` only when you want the legacy hooks without the venv or
 MCP server.

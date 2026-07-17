@@ -28,9 +28,15 @@ def main():
         event = json.load(sys.stdin)
     except Exception:
         event = {}
+    if not isinstance(event, dict):
+        event = {}
 
     session_id = event.get("session_id", "")
+    if not isinstance(session_id, str):
+        session_id = ""
     cwd = event.get("cwd", os.getcwd())
+    if not isinstance(cwd, str) or not cwd:
+        cwd = os.getcwd()
     print(f"[b12-session-end] SessionEnd | session={session_id[:12]}", file=sys.stderr)
     if not session_id:
         sys.exit(0)
@@ -53,6 +59,8 @@ def main():
                 try:
                     entry = json.loads(line.strip())
                 except Exception:
+                    continue
+                if not isinstance(entry, dict):
                     continue
                 etype = entry.get("type")
                 if etype == "user":
