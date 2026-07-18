@@ -14,7 +14,7 @@
 > or any MCP-capable assistant is searchable from the next tool you open — same
 > project, same DB.
 
-- **Cross-tool memory** — the same DB powers Claude Code, Codex CLI, Grok CLI, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI
+- **Cross-tool memory** — the same DB powers Claude Code, Codex CLI, Grok CLI, Google Antigravity, Cursor, Cline, Zed, Continue, Gemini, Kimi, Windsurf, OpenCode, VS Code/Copilot, Amp, JetBrains AI
 - **Local by default at runtime** — memory data and BGE-M3 inference stay on-device with SQLite + sqlite-vec. With the default `B12_LLM_PROVIDER=none`, there are no cloud API calls, API keys, or telemetry after setup. Opt-in remote LLM extraction sends selected transcript content to the configured provider. Installing dependencies and acquiring model artifacts still use the network (see the first-run note below)
 - **Hybrid retrieval** — FTS5 BM25 + 1024-dim BGE-M3 vector + importance- and reinforcement-weighted FSRS decay (important & frequently re-accessed memories rise, stale trivia fades)
 - **Automatic importance scoring** — at write time, content is scored into importance bands with no manual tagging via a language-agnostic signal taxonomy (save-cues, commitments, deadlines, people, numeric values, identifiers) plus native remember/decision/trivial lexicons in **11 languages** (en, tr, zh, hi, es, fr, ar, ru, pt, id, de) with script-aware matching. Credential-bearing content is held at baseline so secrets are never amplified
