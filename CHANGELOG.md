@@ -1,5 +1,20 @@
 # Changelog
 
+## [v11.81.5] — 2026-07-20
+
+### Changed
+
+- Report Antigravity as a first-class host in `b12 health`, requiring its MCP configuration, staged native plugin files, and installed plugin state before marking it loadable.
+
+### Fixed
+
+- Keep the launchd daemon plist template strict-XML compatible so Python `plistlib` health checks no longer warn after a successful install, with regression coverage for every shipped plist template and the deployed health-check path.
+- Avoid treating Antigravity's shared `.gemini` directory as evidence that the legacy Gemini CLI is installed.
+
+### Internal
+
+- Synchronize contributor heredoc syntax-validation examples with the canonical CI probe so redirected Python heredocs are parsed correctly.
+
 ## [v11.81.4] — 2026-07-20
 
 ### Changed
