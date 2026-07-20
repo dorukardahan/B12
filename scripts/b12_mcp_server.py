@@ -55,7 +55,7 @@ SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 # falls back to legacy in-process stdio mode below — non-Claude-Code consumers
 # (Codex, Gemini, Kimi, OpenCode, Grok) see zero behaviour change either way.
 MCP_DAEMON_SOCK = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
-B12_VERSION = "v11.81.3"
+B12_VERSION = "v11.81.4"
 
 # Fix C — resilient proxy reconnect. When the daemon-side socket closes while the
 # host CLI's stdin is still open (daemon restart by launchd/RSS-guard, redeploy,
