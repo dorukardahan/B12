@@ -1,5 +1,16 @@
 # Changelog
 
+## [v11.81.4] — 2026-07-20
+
+### Changed
+
+- Clarify that the default BGE-M3 embedding model downloads once during setup, with practical size guidance for the default and optional GGUF backends.
+- List Google Antigravity consistently in the public supported-platform summary.
+
+### Internal
+
+- Add regression coverage for lifecycle hook adapters and setup documentation verification across supported hosts.
+
 ## [v11.81.3] — 2026-07-13
 
 ### Added
