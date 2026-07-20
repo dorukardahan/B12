@@ -338,6 +338,18 @@ def test_health_uses_hook_dir_for_hook_code_and_data_dir_for_state(monkeypatch, 
     importlib.reload(b12_health)
 
 
+def _stage_fake_antigravity_plugin(home: Path, tmp_path: Path, *, installed: bool = True) -> Path:
+    stage_dir = home / ".B12" / "antigravity-plugin" / "b12"
+    stage_dir.mkdir(parents=True)
+    for name in ("plugin.json", "mcp_config.json", "hooks.json"):
+        (stage_dir / name).write_text("{}\n")
+    payload = '{"imports":[{"name":"b12"}]}' if installed else '{"imports":[]}'
+    agy = tmp_path / "agy"
+    agy.write_text(f"#!/bin/sh\nprintf '%s\\n' '{payload}'\n")
+    agy.chmod(0o755)
+    return agy
+
+
 def test_mcp_host_probe_validates_configured_server_path(tmp_path, monkeypatch):
     home = tmp_path / "home"
     codex_dir = home / ".codex"
@@ -358,6 +370,152 @@ def test_mcp_host_probe_validates_configured_server_path(tmp_path, monkeypatch):
 
     assert result.status == b12_health.Status.FAIL
     assert "configured server missing" in result.detail
+
+
+def test_mcp_host_probe_reports_antigravity_without_gemini_false_warning(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    antigravity_config = home / ".gemini" / "config" / "mcp_config.json"
+    antigravity_config.parent.mkdir(parents=True)
+    script_dir = tmp_path / "scripts"
+    script_dir.mkdir()
+    server = script_dir / "b12_mcp_server.py"
+    server.write_text("# current server exists\n")
+    antigravity_config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "B12": {
+                        "command": sys.executable,
+                        "args": [str(server)],
+                    }
+                }
+            }
+        )
+    )
+    agy = _stage_fake_antigravity_plugin(home, tmp_path)
+    monkeypatch.setattr(b12_health, "_HOME", home)
+    monkeypatch.setattr(b12_health, "_SCRIPT_DIR", script_dir)
+    real_which = b12_health.shutil.which
+    monkeypatch.setattr(
+        b12_health.shutil,
+        "which",
+        lambda command: str(agy) if command == "agy" else (None if command == "gemini" else real_which(command)),
+    )
+
+    result = b12_health.check_mcp_hosts()
+
+    rows = [line.split() for line in result.detail.splitlines()]
+    assert result.status == b12_health.Status.OK
+    assert any(row[:2] == ["antigravity", "yes"] for row in rows)
+    assert not any(row and row[0] == "gemini" for row in rows)
+
+
+def test_mcp_host_probe_reports_gemini_and_antigravity_separately(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    script_dir = tmp_path / "scripts"
+    script_dir.mkdir()
+    server = script_dir / "b12_mcp_server.py"
+    server.write_text("# current server exists\n")
+    entry = {
+        "mcpServers": {
+            "B12": {
+                "command": sys.executable,
+                "args": [str(server)],
+            }
+        }
+    }
+    antigravity_config = home / ".gemini" / "config" / "mcp_config.json"
+    antigravity_config.parent.mkdir(parents=True)
+    antigravity_config.write_text(json.dumps(entry))
+    gemini_config = home / ".gemini" / "settings.json"
+    gemini_config.write_text(json.dumps(entry))
+    agy = _stage_fake_antigravity_plugin(home, tmp_path)
+    monkeypatch.setattr(b12_health, "_HOME", home)
+    monkeypatch.setattr(b12_health, "_SCRIPT_DIR", script_dir)
+    real_which = b12_health.shutil.which
+    monkeypatch.setattr(
+        b12_health.shutil,
+        "which",
+        lambda command: str(agy) if command == "agy" else real_which(command),
+    )
+
+    result = b12_health.check_mcp_hosts()
+
+    rows = [line.split() for line in result.detail.splitlines()]
+    assert result.status == b12_health.Status.OK
+    assert any(row[:2] == ["antigravity", "yes"] for row in rows)
+    assert any(row[:2] == ["gemini", "yes"] for row in rows)
+
+
+def test_mcp_host_probe_rejects_antigravity_with_missing_plugin(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    config = home / ".gemini" / "config" / "mcp_config.json"
+    config.parent.mkdir(parents=True)
+    script_dir = tmp_path / "scripts"
+    script_dir.mkdir()
+    server = script_dir / "b12_mcp_server.py"
+    server.write_text("# current server exists\n")
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "B12": {
+                        "command": sys.executable,
+                        "args": [str(server)],
+                    }
+                }
+            }
+        )
+    )
+    monkeypatch.setattr(b12_health, "_HOME", home)
+    monkeypatch.setattr(b12_health, "_SCRIPT_DIR", script_dir)
+    real_which = b12_health.shutil.which
+    monkeypatch.setattr(
+        b12_health.shutil,
+        "which",
+        lambda command: None if command in {"gemini", "agy"} else real_which(command),
+    )
+
+    result = b12_health.check_mcp_hosts()
+
+    assert result.status == b12_health.Status.FAIL
+    assert "plugin structure incomplete" in result.detail
+
+
+def test_mcp_host_probe_rejects_antigravity_not_listed_as_installed(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    config = home / ".gemini" / "config" / "mcp_config.json"
+    config.parent.mkdir(parents=True)
+    script_dir = tmp_path / "scripts"
+    script_dir.mkdir()
+    server = script_dir / "b12_mcp_server.py"
+    server.write_text("# current server exists\n")
+    config.write_text(
+        json.dumps(
+            {
+                "mcpServers": {
+                    "B12": {
+                        "command": sys.executable,
+                        "args": [str(server)],
+                    }
+                }
+            }
+        )
+    )
+    agy = _stage_fake_antigravity_plugin(home, tmp_path, installed=False)
+    monkeypatch.setattr(b12_health, "_HOME", home)
+    monkeypatch.setattr(b12_health, "_SCRIPT_DIR", script_dir)
+    real_which = b12_health.shutil.which
+    monkeypatch.setattr(
+        b12_health.shutil,
+        "which",
+        lambda command: str(agy) if command == "agy" else (None if command == "gemini" else real_which(command)),
+    )
+
+    result = b12_health.check_mcp_hosts()
+
+    assert result.status == b12_health.Status.FAIL
+    assert "not listed as installed" in result.detail
 
 
 def test_continue_parser_skips_system_messages(tmp_path):
