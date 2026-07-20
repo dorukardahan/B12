@@ -95,7 +95,8 @@ python3 -c "
 import ast, re, glob
 for path in glob.glob('hooks/memory-*.sh'):
     content = open(path).read()
-    for m in re.finditer(r\"<< 'PYEOF'(.*?)PYEOF\", content, re.DOTALL):
+    # Ignore arguments/redirections on the heredoc opening line.
+    for m in re.finditer(r\"<< 'PYEOF'[^\\n]*\\n(.*?)PYEOF\", content, re.DOTALL):
         try:
             ast.parse(m.group(1))
         except SyntaxError as e:
