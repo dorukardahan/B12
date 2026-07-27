@@ -31,7 +31,7 @@
     <array>
         <!--
             B12_HOME_PYTHON and B12_HOME_DAEMON are substituted by install.sh
-            during `./install.sh --daemon` so this plist works regardless of
+            during the install.sh daemon setup so this plist works regardless of
             where the user cloned B12 or where their venv lives.
         -->
         <string>B12_HOME_PYTHON</string>

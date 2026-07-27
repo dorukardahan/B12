@@ -18,6 +18,7 @@ import plistlib
 import shutil
 import socket
 import sqlite3
+import subprocess
 import sys
 try:
     import tomllib
@@ -27,7 +28,7 @@ from pathlib import Path
 
 # ── Constants ────────────────────────────────────────────────────────
 
-VERSION = "11.81.3"  # keep in sync with package.json / plugin.json / B12_VERSION (see docs/releasing.md)
+VERSION = "11.81.5"  # keep in sync with package.json / plugin.json / B12_VERSION (see docs/releasing.md)
 
 _HOME = Path.home()
 _B12_DIR = Path(os.environ.get("B12_DATA_DIR", _HOME / ".B12"))
@@ -572,6 +573,39 @@ def _opencode_plugin_loadable(opencode_dir: Path) -> tuple[bool, str]:
     return True, f"index.js {size} bytes"
 
 
+def _antigravity_plugin_loadable() -> tuple[bool, str]:
+    """Verify the staged Antigravity plugin is installed, not just its MCP entry."""
+    stage_dir = _HOME / ".B12" / "antigravity-plugin" / "b12"
+    required = ("plugin.json", "mcp_config.json", "hooks.json")
+    missing = [name for name in required if not (stage_dir / name).is_file()]
+    if missing:
+        return False, f"plugin structure incomplete: missing {', '.join(missing)}"
+
+    agy = shutil.which("agy")
+    if agy is None:
+        return False, "agy command not found on PATH"
+    try:
+        result = subprocess.run(
+            [agy, "plugin", "list"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return False, f"agy plugin list failed: {exc}"
+    if result.returncode != 0:
+        return False, f"agy plugin list exited {result.returncode}"
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError as exc:
+        return False, f"agy plugin list returned invalid JSON: {exc}"
+    imports = payload.get("imports", []) if isinstance(payload, dict) else []
+    if not any(isinstance(item, dict) and item.get("name") == "b12" for item in imports):
+        return False, "B12 Antigravity plugin is not listed as installed"
+    return True, f"plugin installed: {stage_dir}"
+
+
 def check_mcp_hosts() -> CheckResult:
     """Probe each known MCP host for B12 registration + plugin loadability.
 
@@ -589,14 +623,15 @@ def check_mcp_hosts() -> CheckResult:
     server_exists = server_path.is_file()
 
     hosts = [
-        ("claude",   _HOME / ".claude.json",                       _detect_b12_json),
-        ("codex",    _HOME / ".codex" / "config.toml",             _detect_b12_toml),
-        ("gemini",   _HOME / ".gemini" / "settings.json",          _detect_b12_json),
-        ("kimi",     _HOME / ".kimi" / "mcp.json",                 _detect_b12_json),
-        ("cursor",   _HOME / ".cursor" / "mcp.json",               _detect_b12_json),
-        ("windsurf", _HOME / ".codeium" / "windsurf" / "mcp_config.json", _detect_b12_json),
-        ("opencode", _HOME / ".config" / "opencode" / "opencode.json", _detect_b12_opencode),
-        ("grok",     _HOME / ".grok" / "config.toml",              _detect_b12_toml),
+        ("claude",       _HOME / ".claude.json",                             _detect_b12_json),
+        ("codex",        _HOME / ".codex" / "config.toml",                   _detect_b12_toml),
+        ("antigravity",  _HOME / ".gemini" / "config" / "mcp_config.json",   _detect_b12_json),
+        ("gemini",       _HOME / ".gemini" / "settings.json",                _detect_b12_json),
+        ("kimi",         _HOME / ".kimi" / "mcp.json",                       _detect_b12_json),
+        ("cursor",       _HOME / ".cursor" / "mcp.json",                     _detect_b12_json),
+        ("windsurf",     _HOME / ".codeium" / "windsurf" / "mcp_config.json", _detect_b12_json),
+        ("opencode",     _HOME / ".config" / "opencode" / "opencode.json", _detect_b12_opencode),
+        ("grok",         _HOME / ".grok" / "config.toml",                    _detect_b12_toml),
     ]
 
     rows: list[tuple[str, str, str, str]] = []
@@ -611,6 +646,14 @@ def check_mcp_hosts() -> CheckResult:
         # only when the config file itself exists.
         if name == "claude":
             if not cfg_path.is_file():
+                continue
+        elif name == "gemini":
+            # ~/.gemini is shared with Antigravity. Do not infer that the
+            # legacy Gemini CLI is installed from Antigravity's directory.
+            if not cfg_path.is_file() and shutil.which("gemini") is None:
+                continue
+        elif name == "antigravity":
+            if not cfg_path.is_file() and shutil.which("agy") is None:
                 continue
         else:
             parent = cfg_path.parent
@@ -648,7 +691,18 @@ def check_mcp_hosts() -> CheckResult:
             any_warn = True
 
         # Plugin/server loadability check
-        if name == "opencode":
+        if name == "antigravity":
+            server_ok, server_detail = _probe_registered_server_config(name, cfg, raw)
+            plugin_ok, plugin_detail = _antigravity_plugin_loadable()
+            loadable = server_ok and plugin_ok
+            plugin_loadable = "yes" if loadable else "no"
+            if not server_ok:
+                last_error = server_detail
+            elif not plugin_ok:
+                last_error = plugin_detail
+            if registered == "yes" and not loadable:
+                any_fail = True
+        elif name == "opencode":
             loadable, detail = _opencode_plugin_loadable(cfg_path.parent)
             plugin_loadable = "yes" if loadable else "no"
             if registered == "yes" and not loadable:
