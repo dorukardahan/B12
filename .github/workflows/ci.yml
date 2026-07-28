@@ -26,6 +26,9 @@ jobs:
       - name: Package version sync check
         run: python3 scripts/check_package_versions.py
 
+      - name: README platform count check
+        run: python3 scripts/check_readme_platforms.py
+
       - name: Bash syntax check (hooks)
         run: |
           set -e
