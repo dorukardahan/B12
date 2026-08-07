@@ -410,7 +410,7 @@ B12/
 │   ├── b12_health_report.py        #   Comprehensive health report generator
 │   ├── b12_health.py               #   CLI health check diagnostics (v12)
 │   ├── release.sh                  #   Release helper (--check + cut: sync version touchpoints, CHANGELOG, tag, GitHub release)
-│   ├── check_package_versions.py   #   CI guard for synchronized Python/Node/lockfile package versions
+│   ├── check_package_versions.py   #   CI guard for synchronized Python/Node/lockfile/OpenCode package versions
 │   ├── check_readme_platforms.py   #   CI guard for README platform badge/list count drift
 │   ├── compat.json                 #   Host version compatibility database (v12)
 │   ├── shared_patterns.py          #   Shared regex patterns + content hash (EN + TR)

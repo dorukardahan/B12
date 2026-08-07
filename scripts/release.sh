@@ -120,7 +120,7 @@ fi
 
 echo "Cutting release v$NEW (last: ${LAST_TAG:-none})  dry-run=$DRY"
 
-# 1) Sync the six version touchpoints + prepend the curated CHANGELOG section.
+# 1) Sync every version touchpoint + prepend the curated CHANGELOG section.
 python3 - "$NEW" "$NOTES" <<'PY'
 import sys, json, re, datetime
 NEW, NOTES = sys.argv[1], sys.argv[2]
@@ -151,7 +151,7 @@ sub("pyproject.toml", r'^version = ".*"', f'version = "{NEW}"')
 sub("scripts/b12_mcp_server.py", r'^B12_VERSION = ".*"', f'B12_VERSION = "v{NEW}"')
 sub("scripts/b12_health.py", r'^VERSION = "[0-9][^"]*"', f'VERSION = "{NEW}"')
 sub("install.sh", r'B12 Memory System Installer \(v[0-9.]*', f'B12 Memory System Installer (v{NEW}')
-for jf in ("package.json", ".claude-plugin/plugin.json"):
+for jf in ("package.json", ".claude-plugin/plugin.json", "plugins/opencode/package.json"):
     d = json.load(open(jf)); d["version"] = NEW
     json.dump(d, open(jf,"w"), indent=2); open(jf,"a").write("\n")
 
@@ -200,6 +200,7 @@ echo "  verifying touchpoints..."
 for chk in \
   "pyproject.toml:^version = \"$NEW\"" \
   "package.json:\"version\": \"$NEW\"" \
+  "plugins/opencode/package.json:\"version\": \"$NEW\"" \
   ".claude-plugin/plugin.json:\"version\": \"$NEW\"" \
   "scripts/b12_mcp_server.py:^B12_VERSION = \"v$NEW\"" \
   "scripts/b12_health.py:^VERSION = \"$NEW\"" \
@@ -223,6 +224,7 @@ fi
 # README.md is staged as a safety net in case the agent pre-edited a changelog
 # highlight there; `git add` of an unchanged tracked file is a no-op.
 git add CHANGELOG.md README.md pyproject.toml package.json \
+        plugins/opencode/package.json \
         .claude-plugin/plugin.json .claude-plugin/marketplace.json \
         scripts/b12_mcp_server.py scripts/b12_health.py install.sh
 if [ -f package-lock.json ]; then git add package-lock.json; fi

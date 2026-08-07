@@ -16,13 +16,13 @@ notes. See commit `c497c82` for the rationale.
 `scripts/release.sh` codifies the manual ritual below into one command (zero new
 dependencies — `git` + `python3` stdlib + `gh`). The AI agent working in the repo
 supplies the version and a hand-curated notes file; the script does the mechanical,
-error-prone parts (the six touchpoints, the CHANGELOG splice, commit/tag/release).
+error-prone parts (all version touchpoints, the CHANGELOG splice, commit/tag/release).
 
 ```bash
 # Is a release due? (commits since last tag, user-facing subset, suggested bump)
 scripts/release.sh --check
 
-# Cut it: sync the 6 touchpoints, prepend the CHANGELOG section, commit,
+# Cut it: sync every version touchpoint, prepend the CHANGELOG section, commit,
 # annotated-tag, create the GitHub release. <notes-file> is the agent's
 # hand-curated section body (### Added / ### Changed / ### Fixed / ### Internal).
 scripts/release.sh <X.Y.Z> path/to/notes.md
@@ -66,6 +66,9 @@ NEW=11.75.0  # without the 'v' prefix
 
 # package.json
 python3 -c "import json; d=json.load(open('package.json')); d['version']='$NEW'; json.dump(d, open('package.json','w'), indent=2); print(open('package.json').read())"
+
+# plugins/opencode/package.json — shipped OpenCode integration manifest
+python3 -c "import json; d=json.load(open('plugins/opencode/package.json')); d['version']='$NEW'; json.dump(d, open('plugins/opencode/package.json','w'), indent=2); print(open('plugins/opencode/package.json').read())"
 
 # scripts/b12_mcp_server.py — B12_VERSION constant (note the 'v' prefix)
 sed -i '' "s/^B12_VERSION = \".*\"/B12_VERSION = \"v$NEW\"/" scripts/b12_mcp_server.py
@@ -114,7 +117,7 @@ unless it's user-facing.
 ### 4. Commit + tag + push
 
 ```bash
-git add CHANGELOG.md package.json scripts/b12_mcp_server.py scripts/b12_health.py pyproject.toml install.sh .claude-plugin/plugin.json
+git add CHANGELOG.md package.json plugins/opencode/package.json scripts/b12_mcp_server.py scripts/b12_health.py pyproject.toml install.sh .claude-plugin/plugin.json
 git commit -m "chore(release): v$NEW"
 git tag -a "v$NEW" -m "v$NEW: <one-line summary matching CHANGELOG section title>"
 git push origin main --tags
@@ -156,7 +159,7 @@ actually are:
 
 ```bash
 # All version touchpoints match? (scripts/release.sh does + verifies these for you)
-grep -E '"version"' package.json .claude-plugin/plugin.json package-lock.json
+grep -E '"version"' package.json plugins/opencode/package.json .claude-plugin/plugin.json package-lock.json
 grep -E '^version = ' pyproject.toml
 grep -E '^B12_VERSION' scripts/b12_mcp_server.py
 grep -E '^VERSION' scripts/b12_health.py

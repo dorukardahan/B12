@@ -1,6 +1,6 @@
 {
   "name": "b12-opencode-plugin",
-  "version": "11.74.0",
+  "version": "11.81.5",
   "description": "B12 Memory System - OpenCode Plugin",
   "type": "module",
   "main": "./dist/index.js",
