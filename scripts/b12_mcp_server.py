@@ -223,6 +223,18 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE memories ADD COLUMN difficulty REAL DEFAULT 5.0")
     if "due_date" not in existing_cols:
         db.execute("ALTER TABLE memories ADD COLUMN due_date TEXT")
+    # Non-unique on purpose: existing installs may already contain duplicate
+    # session summaries, and cleanup is a separate operator-controlled migration.
+    # Some legacy/test schemas predate the metadata columns; keep schema repair safe.
+    if {"memory_type", "metadata", "deleted_at"}.issubset(existing_cols):
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memories_session_summary_session_id
+            ON memories(
+                CASE WHEN json_valid(metadata)
+                     THEN json_extract(metadata, '$.session_id') END
+            )
+            WHERE memory_type = 'session_summary' AND deleted_at IS NULL
+        """)
     # B12 FTS5 table (unicode61 tokenizer, used by hooks)
     # Includes tags column to match existing DB schema from mcp-memory-service
     db.execute("""
@@ -1997,7 +2009,7 @@ async def memory_session_context(
                 WHERE memory_type = 'session_summary'
                   AND deleted_at IS NULL
                   AND tags LIKE ?
-                ORDER BY created_at DESC LIMIT 1
+                ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 1
             """, (f"%proj:{project_name}%",)).fetchone()
             if last_summary:
                 ts = _short_iso(
@@ -2554,7 +2566,7 @@ async def resource_project_context(name: str) -> str:
             WHERE memory_type = 'session_summary'
               AND deleted_at IS NULL
               AND tags LIKE ?
-            ORDER BY created_at DESC LIMIT 1
+            ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 1
         """, (f"%proj:{name}%",)).fetchone()
         if last_summary:
             sections.append("## Last Session Summary")

@@ -11,9 +11,14 @@ itself is covered by test_b12_pii_scrubber.
 import json
 import os
 import sqlite3
+import subprocess
 import sys
+import time
+from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+
+ROOT = Path(__file__).resolve().parents[2]
 
 import b12_importance as imp  # noqa: E402
 import codex_session_end as cse  # noqa: E402
@@ -91,6 +96,81 @@ def test_codex_store_preserves_legacy_metadata_nonsecret(tmp_path):
     )
     assert mid is not None
     assert _stored_importance(db, mid) == 0.8
+
+
+def test_codex_session_summary_fires_upsert_latest_content(tmp_path, monkeypatch):
+    db = str(tmp_path / "codex.db")
+    _make_db(db)
+    ticks = iter((100.0, 200.0, 300.0, 400.0))
+    monkeypatch.setattr(cse.time, "time", lambda: next(ticks))
+    ids = [
+        cse.store_memory(
+            db,
+            f"session summary version {version}",
+            json.dumps({"session_id": "codex-session-123", "platform": "codex"}),
+            "proj:test,session-summary",
+            embedding=None,
+            memory_type="session_summary",
+        )
+        for version in range(1, 5)
+    ]
+
+    conn = sqlite3.connect(db)
+    rows = conn.execute(
+        "SELECT id, content, created_at, updated_at FROM memories"
+    ).fetchall()
+    conn.close()
+    assert len(set(ids)) == 1
+    assert rows == [(ids[0], "session summary version 4", 100.0, 400.0)]
+
+
+def test_codex_session_end_hook_detaches_and_forwards_transcript(tmp_path):
+    home = tmp_path / "home"
+    fake_python = home / ".local/b12-venv/bin/python3"
+    fake_python.parent.mkdir(parents=True)
+    called = home / "called.txt"
+    fake_python.write_text(
+        "#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$HOME/called.txt\"\n"
+    )
+    fake_python.chmod(0o755)
+    rollout = tmp_path / "rollout-session.jsonl"
+    rollout.write_text("{}\n")
+    env = os.environ | {
+        "HOME": str(home),
+        "B12_DATA_DIR": str(home / ".B12"),
+    }
+    started = time.monotonic()
+    result = subprocess.run(
+        ["bash", str(ROOT / "hooks/memory-codex-session-end.sh")],
+        input=json.dumps({"session_id": "session-full-id", "transcript_path": str(rollout)}),
+        text=True,
+        capture_output=True,
+        env=env,
+        timeout=3,
+        check=False,
+    )
+    assert result.returncode == 0
+    assert time.monotonic() - started < 3
+    for _ in range(50):
+        if called.exists():
+            break
+        time.sleep(0.02)
+    assert called.read_text().splitlines()[-1] == str(rollout)
+
+
+def test_codex_installer_splits_turn_and_session_end_responsibilities():
+    install = (ROOT / "install.sh").read_text()
+    stop_hook = (ROOT / "hooks" / "memory-codex-stop.sh").read_text()
+    session_hook = (ROOT / "hooks" / "memory-codex-session-end.sh").read_text()
+
+    assert "('SessionEnd'," in install
+    assert "'memory-codex-session-end.sh'" in install
+    assert "('Stop',             'memory-codex-stop.sh'" in install
+    assert "codex_session_end.py" not in stop_hook
+    assert "codex_session_end.py" in session_hook
+    assert "sleep 120" not in session_hook
+    assert not (ROOT / "hooks" / "b12-codex-notify.sh").exists()
+    assert "explicitly disabled" in install
 
 
 if __name__ == "__main__":

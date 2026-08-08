@@ -192,7 +192,7 @@ captured when the host calls `memory_store`.
 | Platform | Capture | Restart or reload | Where to inspect MCP status | Additional healthy-state check |
 |----------|---------|-------------------|-----------------------------|--------------------------------|
 | Claude Code | **Automatic** | Quit all Claude Code sessions and start a new one. | Run `/mcp`; the `B12` row must say `connected`. | Run `/hooks`; the B12 user hooks should be listed. |
-| Codex CLI | **Automatic** | Close every live Codex session and start a new one; live sessions do not reload edited hook files. | Run `/mcp`; `B12` must be enabled and connected. | `~/.codex/hooks.json` should contain B12 commands for `SessionStart`, `UserPromptSubmit`, `Stop`, `PreToolUse`, `PostToolUse`, and `PreCompact`. |
+| Codex CLI | **Automatic** | Close every live Codex session and start a new one; live sessions do not reload edited hook files. | Run `/mcp`; `B12` must be enabled and connected. | Run `/hooks`; B12 commands for `SessionStart`, `SessionEnd`, `UserPromptSubmit`, turn-scoped `Stop`, `PreToolUse`, `PostToolUse`, and `PreCompact` must be installed and enabled. |
 | Antigravity CLI | **Automatic** | Start a new Antigravity session after plugin installation. | Open the session's MCP tools list and search for `memory_search`; it must be supplied by `B12`. | Run `agy plugin list` and confirm the `b12` plugin is enabled; `agy plugin validate ~/.B12/antigravity-plugin/b12` must succeed. |
 | Gemini CLI | **Automatic** | Exit Gemini CLI and start it again. | Run `/mcp`; `B12` must be connected and expose its tools. | Run `/hooks`; B12 `SessionStart`, `SessionEnd`, and `AfterTool` commands should be listed. |
 | Cline | **Automatic** | Run **Developer: Reload Window** in VS Code. | Open the Cline panel → **MCP Servers**; the `B12` server must be running and list its tools. | In Cline settings → **Feature Settings**, enable hooks and confirm `TaskStart`, `UserPromptSubmit`, and `PreCompact` exist under `~/Documents/Cline/Hooks/`. |
@@ -206,6 +206,11 @@ captured when the host calls `memory_store`.
 | Zed | MCP-only | Quit Zed and reopen the project. | Open **Settings → Context Servers**; `B12` must be active and list its tools. | No lifecycle hook check is expected. |
 | JetBrains AI (PyCharm/IDEA/etc.) | MCP-only | Restart the IDE after manually importing the template. | Open **Settings → Tools → AI Assistant → MCP**; `B12` must be running and list its tools. | No lifecycle hook check is expected. |
 | Amp | MCP-only | Exit Amp and start a new session. | Open **Amp Settings → MCP**; `B12` must be enabled and list its tools. | No lifecycle hook check is expected. |
+
+For a Codex upgrade, re-run `./install.sh --codex`. The installer removes only
+B12's retired notify command (other notify argv are preserved), installs the
+`SessionEnd` adapter, and fails verification if Codex's trust state explicitly
+disables a B12 hook. Enable any reported entry in `/hooks`, then restart Codex.
 
 ### Step 6: Configure hooks (usually automatic)
 
