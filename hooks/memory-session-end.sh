@@ -861,11 +861,6 @@ try:
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
 
-    # Skip if already stored (duplicate hash)
-    if conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (content_hash,)).fetchone():
-        conn.close()
-        sys.exit(0)
-
     from datetime import datetime, timezone, timedelta
     import numpy as np
 
@@ -901,24 +896,24 @@ try:
         "setup": setup_context,
         "scope": "project",
         "type": "session-summary",
-        "session_id": session_id[:12],
+        "session_id": session_id,
         "importance_score": importance,
         "extraction_method": "regex_v2"
     })
 
-    conn.execute("""
-        INSERT INTO memories (content, content_hash, tags, memory_type, metadata,
-                              created_at, updated_at, created_at_iso, updated_at_iso)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (content, content_hash, tags, 'session_summary', metadata,
-          now.timestamp(), now.timestamp(), now.isoformat(), now.isoformat()))
-
-    row_id = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (content_hash,)).fetchone()[0]
-
-    conn.execute("""
-        INSERT INTO memory_embeddings (rowid, content_embedding)
-        VALUES (?, ?)
-    """, (row_id, embedding_bytes))
+    from write_time_merge import upsert_session_summary
+    row_id = upsert_session_summary(
+        conn,
+        session_id=session_id,
+        content=content,
+        tags=tags,
+        metadata=metadata,
+        embedding_bytes=embedding_bytes,
+        now=now,
+    )
+    content_hash = conn.execute(
+        "SELECT content_hash FROM memories WHERE id = ?", (row_id,)
+    ).fetchone()[0]
 
     # Link to previous session summary for this project (temporal chain)
     prev = conn.execute("""
@@ -926,7 +921,7 @@ try:
         WHERE memory_type = 'session_summary'
           AND tags LIKE ?
           AND content_hash != ?
-        ORDER BY created_at DESC LIMIT 1
+        ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 1
     """, (f'%proj:{project_name}%', content_hash)).fetchone()
 
     if prev:
@@ -1119,7 +1114,7 @@ try:
                 WHERE memory_type = 'session_summary'
                   AND deleted_at IS NULL
                   AND tags LIKE ?
-                ORDER BY created_at DESC LIMIT 5
+                ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 5
               )
         """, (f'%proj:{project_name}%', f'%proj:{project_name}%'))
     except Exception as e:

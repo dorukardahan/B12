@@ -31,7 +31,7 @@
 # What --codex does:
 #   1. Injects B12 MCP server into ~/.codex/config.toml
 #   2. Appends B12 memory instructions to ~/.codex/AGENTS.md
-#   3. Configures notify hook for session-end processing
+#   3. Registers turn/session lifecycle hooks in ~/.codex/hooks.json
 #   4. Installs B12 skill to ~/.codex/skills/b12-memory/
 #   (Requires venv — use with --full on first run)
 #
@@ -405,12 +405,6 @@ copy_hooks() {
   if [ -f "$HOOK_SOURCE/_b12_common.sh" ]; then
     cp "$HOOK_SOURCE/_b12_common.sh" "$HOOK_DEST/"
     chmod +x "$HOOK_DEST/_b12_common.sh"
-    count=$((count + 1))
-  fi
-  # Copy Codex notify hook if present
-  if [ -f "$HOOK_SOURCE/b12-codex-notify.sh" ]; then
-    cp "$HOOK_SOURCE/b12-codex-notify.sh" "$HOOK_DEST/"
-    chmod +x "$HOOK_DEST/b12-codex-notify.sh"
     count=$((count + 1))
   fi
   # Codex spillover helper sourced by memory-codex-session-start.sh.
@@ -834,51 +828,6 @@ PYEOF
   echo "     command: $VENV_PYTHON"
   echo "     script:  $SERVER_SCRIPT"
 
-  # Inject notify hook for session-end processing
-  local NOTIFY_HOOK="$HOOK_DEST/b12-codex-notify.sh"
-  if [ -f "$NOTIFY_HOOK" ]; then
-    if ! python3 - "$CONFIG_TOML" "$NOTIFY_HOOK" << 'PYEOF'
-import sys
-
-config_path = sys.argv[1]
-notify_hook = sys.argv[2]
-
-with open(config_path, 'r') as f:
-    lines = f.readlines()
-
-# Check if notify line already exists
-has_notify = False
-for i, line in enumerate(lines):
-    stripped = line.strip()
-    if stripped.startswith('notify'):
-        has_notify = True
-        # Update existing notify line to include B12 hook
-        if notify_hook not in stripped:
-            lines[i] = f'notify = ["{notify_hook}"]\n'
-        break
-
-if not has_notify:
-    # Insert notify at top of file (root-level config, before any sections)
-    insert_at = 0
-    for i, line in enumerate(lines):
-        stripped = line.strip()
-        if stripped.startswith('['):
-            insert_at = i
-            break
-    else:
-        insert_at = len(lines)
-    lines.insert(insert_at, f'notify = ["{notify_hook}"]\n')
-
-with open(config_path, 'w') as f:
-    f.writelines(lines)
-
-PYEOF
-    then
-      warn "Failed to inject notify hook into $CONFIG_TOML"
-    else
-      info "Notify hook configured in $CONFIG_TOML"
-    fi
-  fi
 }
 
 # ─────────────────────────────────────────────
@@ -942,8 +891,7 @@ inject_codex_hooks_state() {
 
 # ─────────────────────────────────────────────
 # Codex CLI: merge memory-codex-*.sh into ~/.codex/hooks.json.
-# CX1 — registers SessionStart, UserPromptSubmit, Stop. CX2 will extend
-# this block with PreToolUse / PostToolUse / PreCompact entries.
+# SessionEnd owns summary extraction; Stop remains turn-scoped.
 #
 # Idempotent: any existing B12-managed entry (identifiable by the
 # memory-codex- substring in the command) is removed before re-insert.
@@ -960,9 +908,10 @@ register_codex_hooks_json() {
   # CX2 expands the required set to include PreToolUse/PostToolUse/
   # PreCompact scripts.
   local missing=0
-  for h in memory-codex-session-start.sh memory-codex-prompt-submit.sh \
-           memory-codex-stop.sh memory-codex-pre-tool.sh \
-           memory-codex-post-tool.sh memory-codex-pre-compact.sh; do
+  for h in memory-codex-session-start.sh memory-codex-session-end.sh \
+           memory-codex-prompt-submit.sh memory-codex-stop.sh \
+           memory-codex-pre-tool.sh memory-codex-post-tool.sh \
+           memory-codex-pre-compact.sh; do
     if [ ! -x "$HOOK_DEST/$h" ]; then
       warn "Codex hook missing at $HOOK_DEST/$h — run copy_hooks first"
       missing=$((missing + 1))
@@ -994,6 +943,7 @@ data.setdefault('hooks', {})
 # added PreToolUse/PostToolUse/PreCompact entries.
 #
 # Timeout policy (CLAUDE.md "hook timeout >= watchdog + 5s"):
+#   - SessionEnd → 3s (upstream hard maximum; adapter detaches immediately).
 #   - SessionStart, UserPromptSubmit, Stop, PreToolUse, PostToolUse →
 #     20s; their work is bounded (DB read, prompt regex, telemetry log).
 #   - PreCompact → 30s; the delegated memory-precompact.sh runs a 25s
@@ -1002,6 +952,7 @@ data.setdefault('hooks', {})
 #     (Codex review PR #42 round 2 P1).
 plan = [
     ('SessionStart',     'memory-codex-session-start.sh', None,                              20),
+    ('SessionEnd',       'memory-codex-session-end.sh',   None,                               3),
     ('UserPromptSubmit', 'memory-codex-prompt-submit.sh', None,                              20),
     ('Stop',             'memory-codex-stop.sh',          None,                              20),
     # PreToolUse matcher targets B12's MCP store tool. mcp_* handlers
@@ -1029,8 +980,11 @@ for event_name, script, matcher, timeout_sec in plan:
     arr = data['hooks'].get(event_name, [])
     if not isinstance(arr, list):
         arr = []
-    # Drop any prior B12 entry; preserve everything else verbatim.
-    arr = [e for e in arr if not is_b12_entry(e)]
+    # Replace prior B12 entries in place so Codex's index-based hooks.state
+    # keys keep referring to the same handler; preserve every non-B12 entry.
+    b12_slots = [i for i, entry in enumerate(arr) if is_b12_entry(entry)]
+    insert_at = b12_slots[0] if b12_slots else len(arr)
+    arr = [entry for entry in arr if not is_b12_entry(entry)]
     entry = {
         'hooks': [
             {
@@ -1050,7 +1004,7 @@ for event_name, script, matcher, timeout_sec in plan:
     # MATCHERS (codex-rs/hooks/src/lib.rs:34).
     if matcher is not None:
         entry['matcher'] = matcher
-    arr.append(entry)
+    arr.insert(min(insert_at, len(arr)), entry)
     data['hooks'][event_name] = arr
 
 with open(hooks_path, 'w') as fh:
@@ -1058,7 +1012,53 @@ with open(hooks_path, 'w') as fh:
     fh.write('\n')
 PYEOF
 
-  info "Registered 3 B12 hook(s) in $HOOKS_JSON (SessionStart, UserPromptSubmit, Stop)"
+  info "Registered 7 B12 hooks in $HOOKS_JSON (SessionEnd owns summaries; Stop is turn-scoped)"
+}
+
+retire_codex_legacy_notify() {
+  if python3 - "$HOME/.codex/config.toml" "$HOME/.codex/hooks.json" "$HOOK_DEST/b12-codex-notify.sh" "$HOOK_DEST/memory-codex-session-end.sh" << 'PYEOF'
+import json, os, re, stat, sys, tempfile, tomllib
+config_path, hooks_path, legacy_path, replacement_path = sys.argv[1:]
+try:
+    hooks = json.load(open(hooks_path))
+    groups = hooks.get('hooks', {}).get('SessionEnd', [])
+except (AttributeError, OSError, ValueError): raise SystemExit(1)
+replacement = any(
+    str(hook.get('command', '')) == replacement_path
+    for group in groups if isinstance(group, dict)
+    for hook in group.get('hooks', []) if isinstance(hook, dict))
+if not replacement:
+    raise SystemExit(1)
+try:
+    lines = open(config_path).readlines()
+    notify = tomllib.loads(''.join(lines)).get('notify', [])
+except (OSError, tomllib.TOMLDecodeError): raise SystemExit(1)
+if not isinstance(notify, list) or not all(isinstance(arg, str) for arg in notify):
+    raise SystemExit(1)
+kept = [arg for arg in notify if arg != legacy_path]
+if kept != notify:
+    root_end = next((i for i, line in enumerate(lines) if line.strip().startswith('[')), len(lines))
+    start = next((i for i, line in enumerate(lines[:root_end]) if re.match(r'^\s*notify\s*=', line)), None)
+    if start is None:
+        raise SystemExit(1)
+    for end in range(start, root_end):
+        try: parsed = tomllib.loads(''.join(lines[start:end + 1]))
+        except tomllib.TOMLDecodeError: continue
+        if 'notify' in parsed: break
+    else: raise SystemExit(1)
+    lines[start:end + 1] = [f"notify = {json.dumps(kept)}\n"] if kept else []
+    with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(config_path), delete=False) as fh:
+        fh.writelines(lines)
+        tmp = fh.name
+    os.chmod(tmp, stat.S_IMODE(os.stat(config_path).st_mode))
+    os.replace(tmp, config_path)
+PYEOF
+  then
+    rm -f "$HOOK_DEST/b12-codex-notify.sh"
+    info "Retired legacy B12 Codex notify adapter after SessionEnd migration"
+  else
+    warn "Keeping legacy B12 Codex notify adapter: SessionEnd migration is incomplete"
+  fi
 }
 
 # ─────────────────────────────────────────────
@@ -1176,16 +1176,8 @@ verify_codex() {
     errors=$((errors + 1))
   fi
 
-  # Check notify hook configured
-  if grep -q 'notify' "$CONFIG_TOML" 2>/dev/null; then
-    info "Verify: Notify hook configured in $CONFIG_TOML"
-  else
-    warn "Verify: Notify hook NOT found in $CONFIG_TOML"
-    errors=$((errors + 1))
-  fi
-
-  # CX1+CX2 hooks registered? Expected 6: SessionStart, UserPromptSubmit,
-  # Stop, PreToolUse, PostToolUse, PreCompact.
+  # B12 lifecycle hooks registered? Expected 7: SessionStart, SessionEnd,
+  # UserPromptSubmit, Stop, PreToolUse, PostToolUse, PreCompact.
   local HOOKS_JSON="$HOME/.codex/hooks.json"
   if [ -f "$HOOKS_JSON" ]; then
     local registered
@@ -1196,7 +1188,8 @@ try:
 except Exception:
     print(0); sys.exit(0)
 count = 0
-for evt in ('SessionStart', 'UserPromptSubmit', 'Stop', 'PreToolUse', 'PostToolUse', 'PreCompact'):
+for evt in ('SessionStart', 'SessionEnd', 'UserPromptSubmit', 'Stop',
+            'PreToolUse', 'PostToolUse', 'PreCompact'):
     for entry in data.get('hooks', {}).get(evt, []):
         for sub in entry.get('hooks', []):
             if 'memory-codex-' in str(sub.get('command', '')):
@@ -1205,11 +1198,49 @@ for evt in ('SessionStart', 'UserPromptSubmit', 'Stop', 'PreToolUse', 'PostToolU
 print(count)
 PYEOF
 )
-    if [ "$registered" = "6" ]; then
-      info "Verify: 6 B12 Codex hooks registered in $HOOKS_JSON"
+    if [ "$registered" = "7" ]; then
+      info "Verify: 7 B12 Codex hooks registered in $HOOKS_JSON"
     else
-      warn "Verify: expected 6 Codex hook entries in $HOOKS_JSON, found ${registered:-0}"
+      warn "Verify: expected 7 Codex hook entries in $HOOKS_JSON, found ${registered:-0}"
       errors=$((errors + 1))
+    fi
+  fi
+
+  # Codex owns [hooks.state]. Do not overwrite trust decisions, but fail
+  # verification when a B12 entry was explicitly disabled in the /hooks UI.
+  if [ -f "$HOOKS_JSON" ] && [ -f "$CONFIG_TOML" ]; then
+    local disabled
+    disabled=$(python3 - "$HOOKS_JSON" "$CONFIG_TOML" << 'PYEOF' 2>/dev/null
+import json, re, sys
+try:
+    import tomllib
+    hooks = json.load(open(sys.argv[1]))
+    config = tomllib.load(open(sys.argv[2], 'rb'))
+except Exception:
+    print(''); sys.exit(0)
+state = config.get('hooks', {}).get('state', {})
+disabled = []
+for event, groups in hooks.get('hooks', {}).items():
+    label = re.sub(r'(?<!^)(?=[A-Z])', '_', event).lower()
+    for group_i, group in enumerate(groups if isinstance(groups, list) else []):
+        for hook_i, hook in enumerate(group.get('hooks', [])):
+            if 'memory-codex-' not in str(hook.get('command', '')):
+                continue
+            suffix = f'{label}:{group_i}:{hook_i}'
+            values = [value for key, value in state.items()
+                      if key == suffix or key.endswith(':' + suffix)]
+            if any(isinstance(value, dict) and value.get('enabled') is False
+                   for value in values):
+                disabled.append(event)
+print(','.join(sorted(disabled)))
+PYEOF
+)
+    if [ -n "$disabled" ]; then
+      warn "Verify: B12 Codex hooks explicitly disabled: $disabled"
+      warn "  Open Codex /hooks and enable them; installer does not override trust state."
+      errors=$((errors + 1))
+    else
+      info "Verify: no B12 Codex hook is explicitly disabled"
     fi
   fi
 
@@ -3560,6 +3591,7 @@ if $INSTALL_CODEX; then
   inject_codex_agents
   install_codex_skill
   register_codex_hooks_json
+  retire_codex_legacy_notify
   inject_codex_hooks_state
   echo ""
 fi

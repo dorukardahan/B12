@@ -140,7 +140,7 @@ B12's MCP server works with any tool that supports MCP stdio. The installer hand
 | Platform | Flag | Capture | MCP Config Location | Instructions File |
 |----------|------|---------|--------------------|--------------------|
 | Claude Code | (default) | **Automatic** (full hooks) | ~/.claude.json | Built-in |
-| Codex CLI | `--codex` | **Automatic** (notify/Stop) | ~/.codex/config.toml | ~/.codex/AGENTS.md |
+| Codex CLI | `--codex` | **Automatic** (`SessionEnd` + turn-scoped `Stop`) | ~/.codex/config.toml | ~/.codex/AGENTS.md |
 | Antigravity CLI | `--antigravity` | **Automatic** (installed native plugin: PreInvocation/PostToolUse/Stop) | ~/.gemini/config/mcp_config.json + Antigravity plugin profile | AGENTS.md + plugin rules |
 | Gemini CLI | `--gemini` | **Automatic** (legacy Gemini CLI hook adapters; enterprise/paid API-key users) | ~/.gemini/settings.json | ~/.gemini/GEMINI.md |
 | Cline | `--cline` | **Automatic** (TaskStart/UserPromptSubmit/PreCompact) | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ |
@@ -335,7 +335,7 @@ B12 works with any MCP-compatible coding assistant. The same MCP server and SQLi
 
 Each flag configures the platform's MCP config and injects B12 memory instructions into the platform's instruction file. Restart the platform and check its MCP status to verify.
 
-**Codex CLI specifics:** The `notify` hook fires after each agent turn. A 2-minute debounce detects session end, then processes the rollout JSONL to extract session summaries, decisions, errors, and learnings. The B12 Codex Skill also instructs the model to proactively search/store memory.
+**Codex CLI specifics:** Codex's `SessionEnd` event owns summary extraction after the rollout is flushed; the adapter detaches immediately to stay inside Codex's teardown timeout. `Stop` remains installed only for cheap turn-scoped progress capture. Re-running `./install.sh --codex` removes B12's legacy notify adapter while preserving any other notify argv, then reports B12 hooks that Codex's `/hooks` trust screen has explicitly disabled.
 
 ### 4. Optional — Automated tasks
 
@@ -372,6 +372,8 @@ B12/
 │   ├── memory-working-context.sh   #   PostToolUse — track active files
 │   ├── memory-precompact.sh        #   PreCompact — stage transcript summary
 │   ├── memory-session-end.sh       #   SessionEnd — extract & persist memories
+│   ├── memory-codex-session-end.sh #   Codex SessionEnd — detached summary extraction
+│   ├── memory-codex-stop.sh        #   Codex Stop — turn-scoped goal progress only
 │   ├── memory-proactive-surface.sh #   PostToolUse — proactive memory surfacing
 │   ├── memory-checkpoint.sh        #   PostToolUse — mid-session memory capture (rate-limited)
 │   ├── memory-instructions-loaded.sh # InstructionsLoaded — CLAUDE.md / rules load telemetry
@@ -385,7 +387,6 @@ B12/
 │   ├── memory-quality-audit.sh     #   Scheduled — weekly health score
 │   ├── memory-feedback-digest.sh   #   Scheduled — weekly usage digest
 │   ├── memory-browse.sh            #   Manual — CLI memory browser
-│   ├── b12-codex-notify.sh         #   Codex — notify hook (session-end debounce)
 │   └── gemini/                     #   Gemini CLI hook adapters
 │       ├── b12-gemini-session-start.sh  # SessionStart adapter
 │       ├── b12-gemini-session-end.sh    # SessionEnd adapter (transcript conversion)

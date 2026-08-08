@@ -206,6 +206,28 @@ Process:
 
 **Write-time merge**: Imports `merge_or_insert` from `scripts/write_time_merge.py`. Falls back to direct INSERT if the script is unavailable (graceful degradation).
 
+**Session-summary identity**: `metadata.session_id` identifies a
+`session_summary`. `upsert_session_summary()` takes `BEGIN IMMEDIATE`, updates the
+newest active row in place while preserving `created_at` and refreshing
+`updated_at`, and inserts only when none exists. An intentionally non-unique JSON
+index supports legacy databases that already contain duplicates. Session-salted
+content hashes, graph endpoints, external-content FTS tables, and sqlite-vec are
+updated in the same transaction; existing duplicates and summaries without a
+session ID are untouched.
+
+A later operator-controlled cleanup must snapshot and dry-run active session-ID
+groups; retain the oldest row, apply the newest content/metadata, preserve minimum
+`created_at` and maximum `updated_at`, rewrite graph hashes, re-embed, remove
+redundant vec rows, then soft-delete redundant memories. Before commit, verify
+counts, FTS, graph, vec coverage, and `PRAGMA integrity_check`. No-ID summaries,
+synthetic IDs, hard deletes, and `VACUUM` stay out of that migration.
+
+**Codex lifecycle split**: `Stop` captures only cheap per-turn goal progress.
+`SessionEnd` owns detached summary extraction after rollout flush because upstream
+caps teardown hooks at three seconds. The retired legacy `notify` path was a
+turn-complete callback with a 120-second debounce, not a session-end signal.
+Claude Code keeps the equivalent turn/session split.
+
 **Write-side importance scoring** (`scripts/b12_importance.py`): before a row is stored, content is scored into a fractional `[0, 0.95]` importance band with **no manual tagging**. Five bands (trivial 0.30 / baseline 0.50 / fact 0.70 / decision 0.75 / memorable 0.90, max-wins) are floored by a language-agnostic **signal taxonomy** layered on the original remember/decision/fact tokens: explicit save-cues, commitment/obligation verbs (negation-aware), deadlines/dates, `@handle`/email person mentions, numeric-with-context values, and identifiers (PR#/git-SHA/host-path). Detectors cover **11 languages** (en, tr, zh, hi, es, fr, ar, ru, pt, id, de): the
 six signal detectors plus native remember/decision/trivial lexicons per language,
 matched script-aware — word-boundary for spaced scripts, NFKC-normalized substring

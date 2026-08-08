@@ -1,5 +1,16 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Codex session extraction now runs from the true `SessionEnd` event; `Stop` is turn-scoped, and the legacy delayed notify adapter is removed on upgrade without replacing user-owned notify commands.
+
+### Fixed
+
+- Repeated session-end fires now update one `session_summary` row per `metadata.session_id` while preserving its original creation time and keeping FTS, vector, and graph indexes synchronized.
+- Codex install verification now reports B12 hooks explicitly disabled in Codex's trust state instead of accepting a silently broken hook installation.
+
 ## [v11.81.5] — 2026-07-20
 
 ### Changed
