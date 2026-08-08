@@ -171,10 +171,10 @@ def test_legacy_notify_is_retired_only_after_codex_migration(tmp_path):
                       'notify_backup = ["keep"]\n')
     (codex / "hooks.json").write_text('{"hooks": {}}\n')
     env = os.environ | {"HOME": str(home), "B12_DATA_DIR": str(home / ".B12")}
-    def install(flag):
+    def install(flag, check=True):
         subprocess.run(
             ["bash", str(ROOT / "install.sh"), flag, "--no-gc-cron"], env=env,
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=True,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=check,
         )
 
     install("--minimal")
@@ -182,6 +182,11 @@ def test_legacy_notify_is_retired_only_after_codex_migration(tmp_path):
     python = home / ".local/b12-venv/bin/python3"
     python.parent.mkdir(parents=True)
     python.symlink_to(sys.executable)
+    (codex / "hooks.json").write_text('{"hooks": []}\n')
+    install("--codex", check=False)
+    assert legacy.exists()
+    assert str(legacy) in tomllib.loads(config.read_text())["notify"]
+    (codex / "hooks.json").write_text('{"hooks": {}}\n')
     install("--codex")
     assert not legacy.exists()
     parsed = tomllib.loads(config.read_text())

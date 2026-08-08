@@ -828,38 +828,6 @@ PYEOF
   echo "     command: $VENV_PYTHON"
   echo "     script:  $SERVER_SCRIPT"
 
-  # Retire only B12's legacy notify argv. Preserve any other root-level
-  # user-owned notify command instead of replacing the whole array.
-  if python3 - "$CONFIG_TOML" << 'PYEOF'
-import json, os, re, sys, tomllib
-
-path = sys.argv[1]
-lines = open(path).readlines()
-notify = tomllib.loads(''.join(lines)).get('notify')
-if isinstance(notify, list) and all(isinstance(arg, str) for arg in notify):
-    kept = [arg for arg in notify if os.path.basename(arg) != 'b12-codex-notify.sh']
-    if kept != notify:
-        root_end = next((i for i, line in enumerate(lines) if line.strip().startswith('[')), len(lines))
-        start = next((i for i, line in enumerate(lines[:root_end]) if re.match(r'^\s*notify\s*=', line)), None)
-        if start is None:
-            raise SystemExit(1)
-        for end in range(start, root_end):
-            try:
-                parsed = tomllib.loads(''.join(lines[start:end + 1]))
-            except tomllib.TOMLDecodeError:
-                continue
-            if 'notify' in parsed:
-                break
-        else:
-            raise SystemExit(1)
-        lines[start:end + 1] = [f"notify = {json.dumps(kept)}\n"] if kept else []
-        open(path, 'w').writelines(lines)
-PYEOF
-  then
-    info "Legacy B12 Codex notify hook removed (other notify argv preserved)"
-  else
-    warn "Failed to remove legacy B12 notify hook from $CONFIG_TOML"
-  fi
 }
 
 # ─────────────────────────────────────────────
@@ -1049,19 +1017,41 @@ PYEOF
 
 retire_codex_legacy_notify() {
   if python3 - "$HOME/.codex/config.toml" "$HOME/.codex/hooks.json" << 'PYEOF'
-import json, os, sys, tomllib
+import json, os, re, stat, sys, tempfile, tomllib
+config_path, hooks_path = sys.argv[1:]
 try:
-    config = tomllib.load(open(sys.argv[1], 'rb'))
-    hooks = json.load(open(sys.argv[2]))
-except Exception: raise SystemExit(1)
-notify = config.get('notify', [])
-legacy_active = any(os.path.basename(arg) == 'b12-codex-notify.sh'
-                    for arg in notify if isinstance(arg, str)) if isinstance(notify, list) else False
+    hooks = json.load(open(hooks_path))
+    groups = hooks.get('hooks', {}).get('SessionEnd', [])
+except (AttributeError, OSError, ValueError): raise SystemExit(1)
 replacement = any(
     os.path.basename(str(hook.get('command', ''))) == 'memory-codex-session-end.sh'
-    for group in hooks.get('hooks', {}).get('SessionEnd', []) if isinstance(group, dict)
+    for group in groups if isinstance(group, dict)
     for hook in group.get('hooks', []) if isinstance(hook, dict))
-raise SystemExit(0 if replacement and not legacy_active else 1)
+if not replacement:
+    raise SystemExit(1)
+try:
+    lines = open(config_path).readlines()
+    notify = tomllib.loads(''.join(lines)).get('notify', [])
+except (OSError, tomllib.TOMLDecodeError): raise SystemExit(1)
+if not isinstance(notify, list) or not all(isinstance(arg, str) for arg in notify):
+    raise SystemExit(1)
+kept = [arg for arg in notify if os.path.basename(arg) != 'b12-codex-notify.sh']
+if kept != notify:
+    root_end = next((i for i, line in enumerate(lines) if line.strip().startswith('[')), len(lines))
+    start = next((i for i, line in enumerate(lines[:root_end]) if re.match(r'^\s*notify\s*=', line)), None)
+    if start is None:
+        raise SystemExit(1)
+    for end in range(start, root_end):
+        try: parsed = tomllib.loads(''.join(lines[start:end + 1]))
+        except tomllib.TOMLDecodeError: continue
+        if 'notify' in parsed: break
+    else: raise SystemExit(1)
+    lines[start:end + 1] = [f"notify = {json.dumps(kept)}\n"] if kept else []
+    with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(config_path), delete=False) as fh:
+        fh.writelines(lines)
+        tmp = fh.name
+    os.chmod(tmp, stat.S_IMODE(os.stat(config_path).st_mode))
+    os.replace(tmp, config_path)
 PYEOF
   then
     rm -f "$HOOK_DEST/b12-codex-notify.sh"
