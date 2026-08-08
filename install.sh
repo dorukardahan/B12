@@ -1016,15 +1016,15 @@ PYEOF
 }
 
 retire_codex_legacy_notify() {
-  if python3 - "$HOME/.codex/config.toml" "$HOME/.codex/hooks.json" "$HOOK_DEST/b12-codex-notify.sh" << 'PYEOF'
+  if python3 - "$HOME/.codex/config.toml" "$HOME/.codex/hooks.json" "$HOOK_DEST/b12-codex-notify.sh" "$HOOK_DEST/memory-codex-session-end.sh" << 'PYEOF'
 import json, os, re, stat, sys, tempfile, tomllib
-config_path, hooks_path, legacy_path = sys.argv[1:]
+config_path, hooks_path, legacy_path, replacement_path = sys.argv[1:]
 try:
     hooks = json.load(open(hooks_path))
     groups = hooks.get('hooks', {}).get('SessionEnd', [])
 except (AttributeError, OSError, ValueError): raise SystemExit(1)
 replacement = any(
-    os.path.basename(str(hook.get('command', ''))) == 'memory-codex-session-end.sh'
+    str(hook.get('command', '')) == replacement_path
     for group in groups if isinstance(group, dict)
     for hook in group.get('hooks', []) if isinstance(hook, dict))
 if not replacement:

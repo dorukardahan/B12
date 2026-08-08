@@ -166,6 +166,7 @@ def test_legacy_notify_is_retired_only_after_codex_migration(tmp_path):
     codex.mkdir()
     legacy = hooks / "b12-codex-notify.sh"
     user_named = home / "custom/b12-codex-notify.sh"
+    user_session_end = home / "custom/memory-codex-session-end.sh"
     legacy.write_text("#!/bin/sh\n")
     config = codex / "config.toml"
     config.write_text(f'notify = [\n  "/custom-notify",\n  "{user_named}",\n  "{legacy}",\n]\n'
@@ -183,10 +184,13 @@ def test_legacy_notify_is_retired_only_after_codex_migration(tmp_path):
     python = home / ".local/b12-venv/bin/python3"
     python.parent.mkdir(parents=True)
     python.symlink_to(sys.executable)
-    (codex / "hooks.json").write_text('{"hooks": []}\n')
+    broken = {"hooks": {"SessionEnd": [{"hooks": [{"command": str(user_session_end)}]}]}}
+    (codex / "hooks.json").write_text(json.dumps(broken))
+    (codex / "hooks.json").chmod(0o400)
     install("--codex", check=False)
     assert legacy.exists()
     assert str(legacy) in tomllib.loads(config.read_text())["notify"]
+    (codex / "hooks.json").chmod(0o600)
     (codex / "hooks.json").write_text('{"hooks": {}}\n')
     install("--codex")
     assert not legacy.exists()
