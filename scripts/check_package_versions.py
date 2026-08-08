@@ -23,10 +23,11 @@ CHANGELOG_RELEASE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 FENCE_PATTERN = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})")
+HTML_COMMENT_OPEN_PATTERN = re.compile(r"^[ ]{0,3}<!--")
 
 
 def _strip_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
-    """Return visible Markdown text while tracking multiline HTML comments."""
+    """Remove block-style HTML comments while preserving inline literals."""
     visible: list[str] = []
     cursor = 0
     while cursor < len(line):
@@ -38,12 +39,12 @@ def _strip_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
             in_comment = False
             continue
 
-        start = line.find("<!--", cursor)
-        if start == -1:
-            visible.append(line[cursor:])
+        remaining = line[cursor:]
+        opener = HTML_COMMENT_OPEN_PATTERN.match(remaining)
+        if opener is None:
+            visible.append(remaining)
             break
-        visible.append(line[cursor:start])
-        cursor = start + 4
+        cursor += opener.end()
         in_comment = True
     return "".join(visible), in_comment
 

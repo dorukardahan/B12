@@ -112,6 +112,8 @@ def test_check_ignores_non_release_markdown_version_examples(tmp_path):
 ## [v7.7.7] — commented example
 -->
 
+- Document the literal `<!--` marker in inline code.
+
 ### v6.6.6 compatibility
 - This is an Unreleased subsection, not a release.
 
