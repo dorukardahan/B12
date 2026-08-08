@@ -158,6 +158,41 @@ def test_existing_duplicates_are_not_cleaned_and_newest_row_is_updated(tmp_path)
     conn.close()
 
 
+def test_soft_deleted_matching_summary_is_resurrected_without_hash_collision(tmp_path):
+    conn = _db(tmp_path / "resurrect.db")
+    sid = "soft-deleted-session-full-id"
+    row_id = _store(conn, sid, "same canonical summary", 100.0, b"old-vector")
+    original = conn.execute(
+        "SELECT created_at, content_hash FROM memories WHERE id = ?", (row_id,)
+    ).fetchone()
+    conn.execute("UPDATE memories SET deleted_at = 150.0 WHERE id = ?", (row_id,))
+    legacy_id = conn.execute(
+        "INSERT INTO memories(content,content_hash,memory_type,metadata,created_at,updated_at) "
+        "VALUES ('legacy active', 'legacy-active-hash', 'session_summary', ?, 125.0, 125.0)",
+        (json.dumps({"session_id": sid[:12]}),),
+    ).lastrowid
+    conn.commit()
+
+    revived_id = _store(conn, sid, "same canonical summary", 200.0, b"new-vector")
+
+    assert revived_id == row_id
+    assert conn.execute(
+        "SELECT COUNT(*) FROM memories WHERE memory_type='session_summary'"
+    ).fetchone()[0] == 2
+    assert conn.execute(
+        "SELECT content FROM memories WHERE id = ?", (legacy_id,)
+    ).fetchone()[0] == "legacy active"
+    revived = conn.execute(
+        "SELECT created_at, updated_at, content_hash, deleted_at FROM memories WHERE id = ?",
+        (row_id,),
+    ).fetchone()
+    assert revived == (100.0, 200.0, original[1], None)
+    assert conn.execute(
+        "SELECT content_embedding FROM memory_embeddings WHERE rowid = ?", (row_id,)
+    ).fetchone()[0] == b"new-vector"
+    conn.close()
+
+
 def test_concurrent_first_fires_still_create_one_row(tmp_path):
     path = tmp_path / "concurrent.db"
     _db(path).close()

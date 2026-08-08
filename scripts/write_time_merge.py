@@ -515,24 +515,31 @@ def upsert_session_summary(
         conn.execute("BEGIN IMMEDIATE")
     try:
         row = conn.execute(
-            """SELECT id, content_hash FROM memories
+            """SELECT id, content_hash, deleted_at FROM memories
                WHERE memory_type = 'session_summary'
-                 AND deleted_at IS NULL
-                 AND (CASE WHEN json_valid(metadata)
-                           THEN json_extract(metadata, '$.session_id') END) IN (?, ?)
+                 AND (
+                   (deleted_at IS NULL AND
+                    (CASE WHEN json_valid(metadata)
+                          THEN json_extract(metadata, '$.session_id') END) IN (?, ?))
+                   OR
+                   (deleted_at IS NOT NULL AND content_hash = ? AND
+                    (CASE WHEN json_valid(metadata)
+                          THEN json_extract(metadata, '$.session_id') END) = ?)
+                 )
                ORDER BY
                  ((CASE WHEN json_valid(metadata)
                          THEN json_extract(metadata, '$.session_id') END) = ?) DESC,
+                 (deleted_at IS NULL) DESC,
                  COALESCE(updated_at, created_at, 0) DESC, id DESC
                LIMIT 1""",
-            (sid, legacy_sid, sid),
+            (sid, legacy_sid, content_hash, sid, sid),
         ).fetchone()
         if row:
             memory_id, old_hash = int(row[0]), str(row[1])
             conn.execute(
                 """UPDATE memories
                    SET content = ?, content_hash = ?, tags = ?, metadata = ?,
-                       updated_at = ?, updated_at_iso = ?
+                       updated_at = ?, updated_at_iso = ?, deleted_at = NULL
                    WHERE id = ?""",
                 (content, content_hash, tags_str, metadata_str,
                  now_ts, now_iso, memory_id),

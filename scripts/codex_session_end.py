@@ -418,7 +418,9 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         save_processed_session(info.session_id)
         return {"status": "skip", "reason": "imported_from_claude"}
 
-    # Check if already processed
+    # scan_recent dedupes completed imports here. A real SessionEnd invocation
+    # enters through __main__ with force=True so retries always rebuild/upsert
+    # the canonical summary while hash-based ancillary writes stay idempotent.
     if not force and info.session_id in load_processed_sessions():
         return {"status": "skip", "reason": "already processed"}
 

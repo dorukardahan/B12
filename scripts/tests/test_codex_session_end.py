@@ -199,8 +199,62 @@ def test_legacy_notify_is_retired_only_after_codex_migration(tmp_path):
     assert "SessionEnd" in json.loads((codex / "hooks.json").read_text())["hooks"]
 
 
+def test_codex_installer_preserves_symlink_and_mixed_hook_siblings(tmp_path):
+    home = tmp_path / "home"
+    hooks, codex = home / ".B12/hooks", home / ".codex"
+    hooks.mkdir(parents=True)
+    codex.mkdir()
+    legacy = hooks / "b12-codex-notify.sh"
+    legacy.mkdir()  # os.unlink must fail so config retirement has to roll back.
+    config_target = home / "dotfiles/codex-config.toml"
+    config_target.parent.mkdir()
+    config_target.write_text(f'notify = ["/custom-notify", "{legacy}"]\n')
+    config = codex / "config.toml"
+    config.symlink_to(config_target)
+    hooks_json = codex / "hooks.json"
+    hooks_json.write_text('{"hooks": {}}\n')
+    python = home / ".local/b12-venv/bin/python3"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    env = os.environ | {"HOME": str(home), "B12_DATA_DIR": str(home / ".B12")}
+
+    def install(check=True):
+        subprocess.run(
+            ["bash", str(ROOT / "install.sh"), "--codex", "--no-gc-cron"], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=check,
+        )
+
+    install(check=False)
+    assert config.is_symlink()
+    assert str(legacy) in tomllib.loads(config.read_text())["notify"]
+    assert legacy.is_dir()
+
+    legacy.rmdir()
+    legacy.write_text("#!/bin/sh\n")
+    install()
+    assert config.is_symlink()
+    assert not legacy.exists()
+    assert tomllib.loads(config.read_text())["notify"] == ["/custom-notify"]
+
+    registered = json.loads(hooks_json.read_text())
+    mixed = registered["hooks"]["Stop"][0]
+    mixed["owner"] = "user-metadata"
+    mixed["hooks"].append({
+        "type": "command", "command": "/user/sibling-handler.sh", "timeout": 7,
+    })
+    hooks_json.write_text(json.dumps(registered))
+    install()
+
+    rerun = json.loads(hooks_json.read_text())["hooks"]["Stop"]
+    assert rerun[0]["owner"] == "user-metadata"
+    assert rerun[0]["hooks"][1] == {
+        "type": "command", "command": "/user/sibling-handler.sh", "timeout": 7,
+    }
+
+
 def test_codex_installer_splits_turn_and_session_end_responsibilities():
     install = (ROOT / "install.sh").read_text()
+    processor = (ROOT / "scripts" / "codex_session_end.py").read_text()
     stop_hook = (ROOT / "hooks" / "memory-codex-stop.sh").read_text()
     session_hook = (ROOT / "hooks" / "memory-codex-session-end.sh").read_text()
 
@@ -210,6 +264,7 @@ def test_codex_installer_splits_turn_and_session_end_responsibilities():
     assert "codex_session_end.py" not in stop_hook
     assert "codex_session_end.py" in session_hook
     assert "sleep 120" not in session_hook
+    assert "process_rollout(path, force=True)" in processor
     assert not (ROOT / "hooks" / "b12-codex-notify.sh").exists()
     assert "explicitly disabled" in install
 

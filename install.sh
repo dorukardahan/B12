@@ -893,10 +893,9 @@ inject_codex_hooks_state() {
 # Codex CLI: merge memory-codex-*.sh into ~/.codex/hooks.json.
 # SessionEnd owns summary extraction; Stop remains turn-scoped.
 #
-# Idempotent: any existing B12-managed entry (identifiable by the
-# memory-codex- substring in the command) is removed before re-insert.
-# Non-B12 entries (e.g., user's own Superset notify hook) are preserved
-# verbatim. Plan §2 / CX-C4.
+# Idempotent: an existing exact-path B12 handler is replaced at its nested
+# handler index. The containing group, non-B12 sibling handlers, group order,
+# and index-based trust keys remain intact. Plan §2 / CX-C4.
 # ─────────────────────────────────────────────
 register_codex_hooks_json() {
   local CODEX_DIR="$HOME/.codex"
@@ -967,44 +966,54 @@ plan = [
     ('PreCompact',       'memory-codex-pre-compact.sh',   None,                              30),
 ]
 
-def is_b12_entry(entry):
-    """Identify a hook entry that B12 previously inserted."""
-    if not isinstance(entry, dict):
-        return False
-    for sub in entry.get('hooks', []):
-        if isinstance(sub, dict) and 'memory-codex-' in str(sub.get('command', '')):
-            return True
-    return False
-
 for event_name, script, matcher, timeout_sec in plan:
     arr = data['hooks'].get(event_name, [])
     if not isinstance(arr, list):
         arr = []
-    # Replace prior B12 entries in place so Codex's index-based hooks.state
-    # keys keep referring to the same handler; preserve every non-B12 entry.
-    b12_slots = [i for i, entry in enumerate(arr) if is_b12_entry(entry)]
-    insert_at = b12_slots[0] if b12_slots else len(arr)
-    arr = [entry for entry in arr if not is_b12_entry(entry)]
-    entry = {
-        'hooks': [
-            {
-                'type': 'command',
-                # Codex hook timeouts are in SECONDS (Codex review on PR
-                # #41 round 1, 2026-05-18 — initial value 20000 turned
-                # into a ~5.5h hang per stuck hook). Claude Code uses
-                # milliseconds for the same field name; do not copy a
-                # value across without a unit check.
-                'command': os.path.join(hook_dest, script),
-                'timeout': timeout_sec,
-            }
-        ]
+    command = os.path.join(hook_dest, script)
+    handler = {
+        'type': 'command',
+        # Codex hook timeouts are in SECONDS (Codex review on PR
+        # #41 round 1, 2026-05-18 — initial value 20000 turned
+        # into a ~5.5h hang per stuck hook). Claude Code uses
+        # milliseconds for the same field name; do not copy a
+        # value across without a unit check.
+        'command': command,
+        'timeout': timeout_sec,
     }
+    replaced = False
+    for group_index, group in enumerate(arr):
+        if not isinstance(group, dict) or not isinstance(group.get('hooks'), list):
+            continue
+        nested = list(group['hooks'])
+        matching = [
+            i for i, sub in enumerate(nested)
+            if isinstance(sub, dict)
+            and os.path.normpath(str(sub.get('command', ''))) == os.path.normpath(command)
+        ]
+        if not matching:
+            continue
+        updated = dict(group)
+        for handler_index in matching:
+            nested[handler_index] = dict(handler)
+        updated['hooks'] = nested
+        # A matcher applies to the whole group. Only normalize it when the
+        # group contains no user sibling handlers.
+        if len(nested) == 1:
+            if matcher is None:
+                updated.pop('matcher', None)
+            else:
+                updated['matcher'] = matcher
+        arr[group_index] = updated
+        replaced = True
+    entry = {'hooks': [handler]}
     # Matcher syntax is per Codex docs: top-level "matcher" key on the
     # group object, only meaningful for events in HOOK_EVENT_NAMES_WITH_
     # MATCHERS (codex-rs/hooks/src/lib.rs:34).
     if matcher is not None:
         entry['matcher'] = matcher
-    arr.insert(min(insert_at, len(arr)), entry)
+    if not replaced:
+        arr.append(entry)
     data['hooks'][event_name] = arr
 
 with open(hooks_path, 'w') as fh:
@@ -1019,6 +1028,7 @@ retire_codex_legacy_notify() {
   if python3 - "$HOME/.codex/config.toml" "$HOME/.codex/hooks.json" "$HOOK_DEST/b12-codex-notify.sh" "$HOOK_DEST/memory-codex-session-end.sh" << 'PYEOF'
 import json, os, re, stat, sys, tempfile, tomllib
 config_path, hooks_path, legacy_path, replacement_path = sys.argv[1:]
+target_path = os.path.realpath(config_path) if os.path.islink(config_path) else config_path
 try:
     hooks = json.load(open(hooks_path))
     groups = hooks.get('hooks', {}).get('SessionEnd', [])
@@ -1036,6 +1046,24 @@ except (OSError, tomllib.TOMLDecodeError): raise SystemExit(1)
 if not isinstance(notify, list) or not all(isinstance(arg, str) for arg in notify):
     raise SystemExit(1)
 kept = [arg for arg in notify if arg != legacy_path]
+original = ''.join(lines)
+mode = stat.S_IMODE(os.stat(config_path).st_mode)
+
+def atomic_write(text):
+    tmp = None
+    try:
+        with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(target_path), delete=False) as fh:
+            fh.write(text)
+            tmp = fh.name
+        os.chmod(tmp, mode)
+        os.replace(tmp, target_path)
+        tmp = None
+    finally:
+        if tmp is not None:
+            try: os.unlink(tmp)
+            except OSError: pass
+
+changed = kept != notify
 if kept != notify:
     root_end = next((i for i, line in enumerate(lines) if line.strip().startswith('[')), len(lines))
     start = next((i for i, line in enumerate(lines[:root_end]) if re.match(r'^\s*notify\s*=', line)), None)
@@ -1047,14 +1075,17 @@ if kept != notify:
         if 'notify' in parsed: break
     else: raise SystemExit(1)
     lines[start:end + 1] = [f"notify = {json.dumps(kept)}\n"] if kept else []
-    with tempfile.NamedTemporaryFile('w', dir=os.path.dirname(config_path), delete=False) as fh:
-        fh.writelines(lines)
-        tmp = fh.name
-    os.chmod(tmp, stat.S_IMODE(os.stat(config_path).st_mode))
-    os.replace(tmp, config_path)
+    atomic_write(''.join(lines))
+try:
+    os.unlink(legacy_path)
+except FileNotFoundError:
+    pass
+except OSError:
+    if changed:
+        atomic_write(original)
+    raise SystemExit(1)
 PYEOF
   then
-    rm -f "$HOOK_DEST/b12-codex-notify.sh"
     info "Retired legacy B12 Codex notify adapter after SessionEnd migration"
   else
     warn "Keeping legacy B12 Codex notify adapter: SessionEnd migration is incomplete"
