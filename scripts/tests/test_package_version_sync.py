@@ -95,7 +95,7 @@ def test_check_fails_when_latest_changelog_version_drifts(tmp_path):
     assert "pyproject.toml [project].version = '1.2.3'" in result.stderr
 
 
-def test_check_ignores_release_like_headings_in_markdown_code_and_comments(tmp_path):
+def test_check_ignores_non_release_markdown_version_examples(tmp_path):
     _write_metadata(tmp_path, "1.2.3", "1.2.3")
     (tmp_path / "CHANGELOG.md").write_text(
         """# Changelog
@@ -111,6 +111,9 @@ def test_check_ignores_release_like_headings_in_markdown_code_and_comments(tmp_p
 <!--
 ## [v7.7.7] — commented example
 -->
+
+### v6.6.6 compatibility
+- This is an Unreleased subsection, not a release.
 
 ## [v1.2.3] — 2026-08-08
 

@@ -19,7 +19,7 @@ OPENCODE_PACKAGE_FILE = "plugins/opencode/package.json"
 CHANGELOG_FILE = "CHANGELOG.md"
 SEMVER = r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 CHANGELOG_RELEASE_PATTERN = re.compile(
-    rf"^[ ]{{0,3}}#{{1,6}}\s+(?:\[v?(?P<bracket>{SEMVER})\]|v?(?P<plain>{SEMVER})(?:\s|$))",
+    rf"^[ ]{{0,3}}##\s+(?:\[v?(?P<bracket>{SEMVER})\]|v?(?P<plain>{SEMVER})(?:\s|$))",
     re.IGNORECASE,
 )
 FENCE_PATTERN = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})")
