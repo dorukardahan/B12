@@ -2005,17 +2005,17 @@ async def memory_session_context(
         # 3. Last session summary for this project
         if project_name:
             last_summary = db.execute("""
-                SELECT content, created_at, created_at_iso FROM memories
+                SELECT content,
+                       COALESCE(updated_at, created_at) AS summary_at,
+                       COALESCE(updated_at_iso, created_at_iso) AS summary_at_iso
+                FROM memories
                 WHERE memory_type = 'session_summary'
                   AND deleted_at IS NULL
                   AND tags LIKE ?
                 ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 1
             """, (f"%proj:{project_name}%",)).fetchone()
             if last_summary:
-                ts = _short_iso(
-                    last_summary["created_at"] if "created_at" in last_summary.keys() else None,
-                    last_summary["created_at_iso"] if "created_at_iso" in last_summary.keys() else None,
-                )
+                ts = _short_iso(last_summary["summary_at"], last_summary["summary_at_iso"])
                 ts_suffix = f"  _({ts})_" if ts else ""
                 sections.append(f"## Last Session Summary{ts_suffix}")
                 sections.append(_trim(last_summary['content'], cap=800))

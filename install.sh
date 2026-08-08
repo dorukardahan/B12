@@ -1016,9 +1016,9 @@ PYEOF
 }
 
 retire_codex_legacy_notify() {
-  if python3 - "$HOME/.codex/config.toml" "$HOME/.codex/hooks.json" << 'PYEOF'
+  if python3 - "$HOME/.codex/config.toml" "$HOME/.codex/hooks.json" "$HOOK_DEST/b12-codex-notify.sh" << 'PYEOF'
 import json, os, re, stat, sys, tempfile, tomllib
-config_path, hooks_path = sys.argv[1:]
+config_path, hooks_path, legacy_path = sys.argv[1:]
 try:
     hooks = json.load(open(hooks_path))
     groups = hooks.get('hooks', {}).get('SessionEnd', [])
@@ -1035,7 +1035,7 @@ try:
 except (OSError, tomllib.TOMLDecodeError): raise SystemExit(1)
 if not isinstance(notify, list) or not all(isinstance(arg, str) for arg in notify):
     raise SystemExit(1)
-kept = [arg for arg in notify if os.path.basename(arg) != 'b12-codex-notify.sh']
+kept = [arg for arg in notify if arg != legacy_path]
 if kept != notify:
     root_end = next((i for i, line in enumerate(lines) if line.strip().startswith('[')), len(lines))
     start = next((i for i, line in enumerate(lines[:root_end]) if re.match(r'^\s*notify\s*=', line)), None)

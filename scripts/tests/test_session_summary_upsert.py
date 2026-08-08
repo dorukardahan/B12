@@ -99,6 +99,9 @@ def test_repeated_fires_update_one_row_and_all_indexes(tmp_path):
     assert conn.execute(
         "SELECT 1 FROM memory_embeddings WHERE rowid = ?", (first_id,)
     ).fetchone() is None
+    source = (SCRIPTS / "b12_mcp_server.py").read_text()
+    assert "COALESCE(updated_at, created_at) AS summary_at" in source
+    assert 'last_summary["summary_at"]' in source
     conn.close()
 
 
