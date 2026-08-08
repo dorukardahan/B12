@@ -19,15 +19,68 @@ OPENCODE_PACKAGE_FILE = "plugins/opencode/package.json"
 CHANGELOG_FILE = "CHANGELOG.md"
 SEMVER = r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
 CHANGELOG_RELEASE_PATTERN = re.compile(
-    rf"^\s*#{{1,6}}\s+(?:\[v?(?P<bracket>{SEMVER})\]|v?(?P<plain>{SEMVER})(?:\s|$))",
+    rf"^[ ]{{0,3}}#{{1,6}}\s+(?:\[v?(?P<bracket>{SEMVER})\]|v?(?P<plain>{SEMVER})(?:\s|$))",
     re.IGNORECASE,
 )
+FENCE_PATTERN = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})")
+
+
+def _strip_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
+    """Return visible Markdown text while tracking multiline HTML comments."""
+    visible: list[str] = []
+    cursor = 0
+    while cursor < len(line):
+        if in_comment:
+            end = line.find("-->", cursor)
+            if end == -1:
+                return "".join(visible), True
+            cursor = end + 3
+            in_comment = False
+            continue
+
+        start = line.find("<!--", cursor)
+        if start == -1:
+            visible.append(line[cursor:])
+            break
+        visible.append(line[cursor:start])
+        cursor = start + 4
+        in_comment = True
+    return "".join(visible), in_comment
 
 
 def read_changelog_version(root: Path) -> str:
     """Return the first semantic-version release heading from the changelog."""
     changelog = (root / CHANGELOG_FILE).read_text(encoding="utf-8")
-    for line in changelog.splitlines():
+    fence_char: str | None = None
+    fence_length = 0
+    in_html_comment = False
+
+    for raw_line in changelog.splitlines():
+        if fence_char is not None:
+            closing_fence = re.compile(
+                rf"^[ ]{{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*$"
+            )
+            if closing_fence.fullmatch(raw_line):
+                fence_char = None
+                fence_length = 0
+            continue
+
+        if not in_html_comment and (
+            raw_line.startswith("    ") or raw_line.startswith("\t")
+        ):
+            continue
+
+        line, in_html_comment = _strip_html_comments(raw_line, in_html_comment)
+        if line.startswith("    ") or line.startswith("\t"):
+            continue
+
+        fence_match = FENCE_PATTERN.match(line)
+        if fence_match:
+            fence = fence_match.group("fence")
+            fence_char = fence[0]
+            fence_length = len(fence)
+            continue
+
         match = CHANGELOG_RELEASE_PATTERN.match(line)
         if match:
             return str(match.group("bracket") or match.group("plain"))

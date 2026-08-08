@@ -95,6 +95,37 @@ def test_check_fails_when_latest_changelog_version_drifts(tmp_path):
     assert "pyproject.toml [project].version = '1.2.3'" in result.stderr
 
 
+def test_check_ignores_release_like_headings_in_markdown_code_and_comments(tmp_path):
+    _write_metadata(tmp_path, "1.2.3", "1.2.3")
+    (tmp_path / "CHANGELOG.md").write_text(
+        """# Changelog
+
+## Unreleased
+
+```markdown
+## [v9.9.9] — fenced example
+```
+
+    ## [v8.8.8] — indented example
+
+<!--
+## [v7.7.7] — commented example
+-->
+
+## [v1.2.3] — 2026-08-08
+
+### Fixed
+- Fixture.
+""",
+        encoding="utf-8",
+    )
+
+    result = _run_check(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "versions match (1.2.3)" in result.stdout
+
+
 def test_check_succeeds_without_optional_package_lock(tmp_path):
     _write_metadata(tmp_path, "1.2.3", "1.2.3", include_lockfile=False)
 
