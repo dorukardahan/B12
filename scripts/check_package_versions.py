@@ -34,22 +34,27 @@ def read_changelog_version(root: Path) -> str:
     raise ValueError("no semantic-version release heading found")
 
 
-def read_versions(root: Path) -> tuple[str, str, str, str, str, str]:
+def read_versions(root: Path) -> tuple[str, str, str | None, str | None, str, str]:
     """Return versions from package metadata and the first changelog release."""
     with (root / PYPROJECT_FILE).open("rb") as handle:
         pyproject = tomllib.load(handle)
     with (root / PACKAGE_FILE).open(encoding="utf-8") as handle:
         package = json.load(handle)
-    with (root / PACKAGE_LOCK_FILE).open(encoding="utf-8") as handle:
-        package_lock = json.load(handle)
+    try:
+        with (root / PACKAGE_LOCK_FILE).open(encoding="utf-8") as handle:
+            package_lock = json.load(handle)
+    except FileNotFoundError:
+        package_lock = None
     with (root / OPENCODE_PACKAGE_FILE).open(encoding="utf-8") as handle:
         opencode_package = json.load(handle)
 
     return (
         str(pyproject["project"]["version"]),
         str(package["version"]),
-        str(package_lock["version"]),
-        str(package_lock["packages"][""]["version"]),
+        str(package_lock["version"]) if package_lock is not None else None,
+        str(package_lock["packages"][""]["version"])
+        if package_lock is not None
+        else None,
         str(opencode_package["version"]),
         read_changelog_version(root),
     )
@@ -74,29 +79,40 @@ def check_versions(root: Path) -> tuple[bool, str]:
         )
 
     versions = {
-        python_version,
-        node_version,
-        lock_version,
-        lock_root_version,
-        opencode_version,
-        changelog_version,
+        version
+        for version in (
+            python_version,
+            node_version,
+            lock_version,
+            lock_root_version,
+            opencode_version,
+            changelog_version,
+        )
+        if version is not None
     }
     if len(versions) != 1:
+        package_lock_lines = ""
+        if lock_version is not None:
+            package_lock_lines = (
+                f"  {PACKAGE_LOCK_FILE} version = {lock_version!r}\n"
+                f"  {PACKAGE_LOCK_FILE} packages[''].version = {lock_root_version!r}\n"
+            )
         return False, (
             "ERROR: package versions are out of sync:\n"
             f"  {PYPROJECT_FILE} [project].version = {python_version!r}\n"
             f"  {PACKAGE_FILE} version = {node_version!r}\n"
-            f"  {PACKAGE_LOCK_FILE} version = {lock_version!r}\n"
-            f"  {PACKAGE_LOCK_FILE} packages[''].version = {lock_root_version!r}\n"
+            f"{package_lock_lines}"
             f"  {OPENCODE_PACKAGE_FILE} version = {opencode_version!r}\n"
             f"  {CHANGELOG_FILE} first release version = {changelog_version!r}\n"
             "Update all package version fields and the changelog release header in the same version change."
         )
 
+    surfaces = [PYPROJECT_FILE, PACKAGE_FILE]
+    if lock_version is not None:
+        surfaces.append(PACKAGE_LOCK_FILE)
+    surfaces.extend([OPENCODE_PACKAGE_FILE, CHANGELOG_FILE])
     return True, (
-        f"OK: {PYPROJECT_FILE}, {PACKAGE_FILE}, {PACKAGE_LOCK_FILE}, {OPENCODE_PACKAGE_FILE}, "
-        f"and {CHANGELOG_FILE} "
-        f"versions match ({python_version})."
+        f"OK: {', '.join(surfaces[:-1])}, and {surfaces[-1]} versions match ({python_version})."
     )
 
 

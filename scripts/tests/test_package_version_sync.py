@@ -29,6 +29,7 @@ def _write_metadata(
     lock_root_version: str | None = None,
     opencode_version: str | None = None,
     changelog_version: str | None = None,
+    include_lockfile: bool = True,
 ) -> None:
     lock_version = lock_version or node_version
     lock_root_version = lock_root_version or node_version
@@ -42,15 +43,16 @@ def _write_metadata(
         json.dumps({"name": "fixture", "version": node_version}),
         encoding="utf-8",
     )
-    (root / "package-lock.json").write_text(
-        json.dumps({
-            "name": "fixture",
-            "version": lock_version,
-            "lockfileVersion": 3,
-            "packages": {"": {"name": "fixture", "version": lock_root_version}},
-        }),
-        encoding="utf-8",
-    )
+    if include_lockfile:
+        (root / "package-lock.json").write_text(
+            json.dumps({
+                "name": "fixture",
+                "version": lock_version,
+                "lockfileVersion": 3,
+                "packages": {"": {"name": "fixture", "version": lock_root_version}},
+            }),
+            encoding="utf-8",
+        )
     (root / "plugins" / "opencode").mkdir(parents=True)
     (root / "plugins" / "opencode" / "package.json").write_text(
         json.dumps({"name": "fixture-opencode", "version": opencode_version}),
@@ -91,6 +93,17 @@ def test_check_fails_when_latest_changelog_version_drifts(tmp_path):
     assert "package versions are out of sync" in result.stderr
     assert "CHANGELOG.md first release version = '1.2.2'" in result.stderr
     assert "pyproject.toml [project].version = '1.2.3'" in result.stderr
+
+
+def test_check_succeeds_without_optional_package_lock(tmp_path):
+    _write_metadata(tmp_path, "1.2.3", "1.2.3", include_lockfile=False)
+
+    result = _run_check(tmp_path)
+
+    assert result.returncode == 0, result.stderr
+    assert "CHANGELOG.md" in result.stdout
+    assert "package-lock.json" not in result.stdout
+    assert "versions match (1.2.3)" in result.stdout
 
 
 def test_check_fails_with_all_version_touchpoints_on_package_drift(tmp_path):
