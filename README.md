@@ -387,7 +387,6 @@ B12/
 │   ├── memory-quality-audit.sh     #   Scheduled — weekly health score
 │   ├── memory-feedback-digest.sh   #   Scheduled — weekly usage digest
 │   ├── memory-browse.sh            #   Manual — CLI memory browser
-│   ├── b12-codex-notify.sh         #   Codex — notify hook (session-end debounce)
 │   └── gemini/                     #   Gemini CLI hook adapters
 │       ├── b12-gemini-session-start.sh  # SessionStart adapter
 │       ├── b12-gemini-session-end.sh    # SessionEnd adapter (transcript conversion)

@@ -831,30 +831,29 @@ PYEOF
   # Retire only B12's legacy notify argv. Preserve any other root-level
   # user-owned notify command instead of replacing the whole array.
   if python3 - "$CONFIG_TOML" << 'PYEOF'
-import json, re, sys, tomllib
+import json, os, re, sys, tomllib
 
 path = sys.argv[1]
 lines = open(path).readlines()
-out = []
-in_root = True
-for line in lines:
-    stripped = line.strip()
-    if stripped.startswith('['):
-        in_root = False
-    if in_root and re.match(r'^notify\s*=', stripped) and 'b12-codex-notify.sh' in stripped:
-        try:
-            notify = tomllib.loads(line).get('notify', [])
-        except tomllib.TOMLDecodeError:
-            notify = None
-        if isinstance(notify, list):
-            kept = [arg for arg in notify
-                    if not (isinstance(arg, str)
-                            and arg.endswith('/b12-codex-notify.sh'))]
-            if kept:
-                out.append(f"notify = {json.dumps(kept)}\n")
-            continue
-    out.append(line)
-open(path, 'w').writelines(out)
+notify = tomllib.loads(''.join(lines)).get('notify')
+if isinstance(notify, list) and all(isinstance(arg, str) for arg in notify):
+    kept = [arg for arg in notify if os.path.basename(arg) != 'b12-codex-notify.sh']
+    if kept != notify:
+        root_end = next((i for i, line in enumerate(lines) if line.strip().startswith('[')), len(lines))
+        start = next((i for i, line in enumerate(lines[:root_end]) if re.match(r'^\s*notify\s*=', line)), None)
+        if start is None:
+            raise SystemExit(1)
+        for end in range(start, root_end):
+            try:
+                parsed = tomllib.loads(''.join(lines[start:end + 1]))
+            except tomllib.TOMLDecodeError:
+                continue
+            if 'notify' in parsed:
+                break
+        else:
+            raise SystemExit(1)
+        lines[start:end + 1] = [f"notify = {json.dumps(kept)}\n"] if kept else []
+        open(path, 'w').writelines(lines)
 PYEOF
   then
     info "Legacy B12 Codex notify hook removed (other notify argv preserved)"
