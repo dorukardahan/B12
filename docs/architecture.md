@@ -206,35 +206,27 @@ Process:
 
 **Write-time merge**: Imports `merge_or_insert` from `scripts/write_time_merge.py`. Falls back to direct INSERT if the script is unavailable (graceful degradation).
 
-**Session-summary identity**: `session_summary` is the exception to semantic
-merge: `metadata.session_id` is its identity. `upsert_session_summary()` takes a
-`BEGIN IMMEDIATE` writer lock, updates the newest active row for that session in
-place (preserving `created_at`, refreshing `updated_at`), and inserts only when
-none exists. A non-unique JSON expression index accelerates the lookup; it is
-intentionally not unique because upgraded databases may already contain legacy
-duplicates. Content hashes remain content-derived but are salted by session ID;
-graph hashes, all external-content FTS tables, and the sqlite-vec row are updated
-in the same transaction. Existing duplicate rows and summaries without a
-session ID are not rewritten or assigned synthetic identities by this migration.
+**Session-summary identity**: `metadata.session_id` identifies a
+`session_summary`. `upsert_session_summary()` takes `BEGIN IMMEDIATE`, updates the
+newest active row in place while preserving `created_at` and refreshing
+`updated_at`, and inserts only when none exists. An intentionally non-unique JSON
+index supports legacy databases that already contain duplicates. Session-salted
+content hashes, graph endpoints, external-content FTS tables, and sqlite-vec are
+updated in the same transaction; existing duplicates and summaries without a
+session ID are untouched.
 
-A later operator-controlled cleanup should first snapshot the DB and dry-run each
-active `session_id` group. For each duplicate group, keep the oldest row as the
-identity anchor, copy the newest row's content/metadata into it, preserve the
-minimum `created_at`, set the maximum `updated_at`, rewrite every duplicate graph
-hash to the canonical salted hash, re-embed that row, and remove redundant vec
-rows. Only then soft-delete the redundant memory rows and verify live counts,
-FTS results, graph endpoints, vec coverage, and `PRAGMA integrity_check` before
-commit. Summaries without a real session ID stay outside that cleanup; no
-synthetic IDs, hard deletes, or `VACUUM` are part of the migration.
+A later operator-controlled cleanup must snapshot and dry-run active session-ID
+groups; retain the oldest row, apply the newest content/metadata, preserve minimum
+`created_at` and maximum `updated_at`, rewrite graph hashes, re-embed, remove
+redundant vec rows, then soft-delete redundant memories. Before commit, verify
+counts, FTS, graph, vec coverage, and `PRAGMA integrity_check`. No-ID summaries,
+synthetic IDs, hard deletes, and `VACUUM` stay out of that migration.
 
-**Codex lifecycle split**: Codex `Stop` is a per-turn event, so
-`memory-codex-stop.sh` performs only cheap turn-scoped goal progress capture.
-Codex `SessionEnd` runs after the rollout is flushed and owns summary extraction
-through `memory-codex-session-end.sh`; the adapter detaches immediately because
-upstream caps teardown hooks at three seconds. The legacy `notify` adapter was an
-`agent-turn-complete` callback plus a 120-second B12 debounce, not a real
-session-end signal, and is retired on upgrade. Claude Code keeps the equivalent
-split between its own `Stop`/turn hook and `SessionEnd`/summary hook.
+**Codex lifecycle split**: `Stop` captures only cheap per-turn goal progress.
+`SessionEnd` owns detached summary extraction after rollout flush because upstream
+caps teardown hooks at three seconds. The retired legacy `notify` path was a
+turn-complete callback with a 120-second debounce, not a session-end signal.
+Claude Code keeps the equivalent turn/session split.
 
 **Write-side importance scoring** (`scripts/b12_importance.py`): before a row is stored, content is scored into a fractional `[0, 0.95]` importance band with **no manual tagging**. Five bands (trivial 0.30 / baseline 0.50 / fact 0.70 / decision 0.75 / memorable 0.90, max-wins) are floored by a language-agnostic **signal taxonomy** layered on the original remember/decision/fact tokens: explicit save-cues, commitment/obligation verbs (negation-aware), deadlines/dates, `@handle`/email person mentions, numeric-with-context values, and identifiers (PR#/git-SHA/host-path). Detectors cover **11 languages** (en, tr, zh, hi, es, fr, ar, ru, pt, id, de): the
 six signal detectors plus native remember/decision/trivial lexicons per language,

@@ -207,10 +207,9 @@ captured when the host calls `memory_store`.
 | JetBrains AI (PyCharm/IDEA/etc.) | MCP-only | Restart the IDE after manually importing the template. | Open **Settings → Tools → AI Assistant → MCP**; `B12` must be running and list its tools. | No lifecycle hook check is expected. |
 | Amp | MCP-only | Exit Amp and start a new session. | Open **Amp Settings → MCP**; `B12` must be enabled and list its tools. | No lifecycle hook check is expected. |
 
-For a Codex upgrade, re-run `./install.sh --codex`. The installer removes only
-B12's retired notify command (other notify argv are preserved), installs the
-`SessionEnd` adapter, and fails verification if Codex's trust state explicitly
-disables a B12 hook. Enable any reported entry in `/hooks`, then restart Codex.
+For a Codex upgrade, re-run `./install.sh --codex`; it preserves non-B12 notify
+argv, migrates summary capture to `SessionEnd`, and reports disabled B12 hooks.
+Enable reported entries in `/hooks`, then restart Codex.
 
 ### Step 6: Configure hooks (usually automatic)
 

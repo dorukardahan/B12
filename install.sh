@@ -407,9 +407,6 @@ copy_hooks() {
     chmod +x "$HOOK_DEST/_b12_common.sh"
     count=$((count + 1))
   fi
-  # Retire the B12-owned legacy notify adapter. User-owned notify commands are
-  # preserved in config.toml by inject_codex_mcp_config().
-  rm -f "$HOOK_DEST/b12-codex-notify.sh"
   # Codex spillover helper sourced by memory-codex-session-start.sh.
   # Codex review on PR #41 round 3 caught: the memory-*.sh glob above
   # does not match _b12_codex_spillover.sh (no `memory-` prefix), so
@@ -1049,6 +1046,30 @@ with open(hooks_path, 'w') as fh:
 PYEOF
 
   info "Registered 7 B12 hooks in $HOOKS_JSON (SessionEnd owns summaries; Stop is turn-scoped)"
+}
+
+retire_codex_legacy_notify() {
+  if python3 - "$HOME/.codex/config.toml" "$HOME/.codex/hooks.json" << 'PYEOF'
+import json, os, sys, tomllib
+try:
+    config = tomllib.load(open(sys.argv[1], 'rb'))
+    hooks = json.load(open(sys.argv[2]))
+except Exception: raise SystemExit(1)
+notify = config.get('notify', [])
+legacy_active = any(os.path.basename(arg) == 'b12-codex-notify.sh'
+                    for arg in notify if isinstance(arg, str)) if isinstance(notify, list) else False
+replacement = any(
+    os.path.basename(str(hook.get('command', ''))) == 'memory-codex-session-end.sh'
+    for group in hooks.get('hooks', {}).get('SessionEnd', []) if isinstance(group, dict)
+    for hook in group.get('hooks', []) if isinstance(hook, dict))
+raise SystemExit(0 if replacement and not legacy_active else 1)
+PYEOF
+  then
+    rm -f "$HOOK_DEST/b12-codex-notify.sh"
+    info "Retired legacy B12 Codex notify adapter after SessionEnd migration"
+  else
+    warn "Keeping legacy B12 Codex notify adapter: SessionEnd migration is incomplete"
+  fi
 }
 
 # ─────────────────────────────────────────────
@@ -3581,6 +3602,7 @@ if $INSTALL_CODEX; then
   inject_codex_agents
   install_codex_skill
   register_codex_hooks_json
+  retire_codex_legacy_notify
   inject_codex_hooks_state
   echo ""
 fi

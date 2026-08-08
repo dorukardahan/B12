@@ -14,6 +14,7 @@ import sqlite3
 import subprocess
 import sys
 import time
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -156,6 +157,34 @@ def test_codex_session_end_hook_detaches_and_forwards_transcript(tmp_path):
             break
         time.sleep(0.02)
     assert called.read_text().splitlines()[-1] == str(rollout)
+
+
+def test_legacy_notify_is_retired_only_after_codex_migration(tmp_path):
+    home = tmp_path / "home"
+    hooks, codex = home / ".B12/hooks", home / ".codex"
+    hooks.mkdir(parents=True)
+    codex.mkdir()
+    legacy = hooks / "b12-codex-notify.sh"
+    legacy.write_text("#!/bin/sh\n")
+    config = codex / "config.toml"
+    config.write_text(f'notify = ["/custom-notify", "{legacy}"]\n')
+    (codex / "hooks.json").write_text('{"hooks": {}}\n')
+    env = os.environ | {"HOME": str(home), "B12_DATA_DIR": str(home / ".B12")}
+    def install(flag):
+        subprocess.run(
+            ["bash", str(ROOT / "install.sh"), flag, "--no-gc-cron"], env=env,
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=30, check=True,
+        )
+
+    install("--minimal")
+    assert legacy.exists()
+    python = home / ".local/b12-venv/bin/python3"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    install("--codex")
+    assert not legacy.exists()
+    assert tomllib.loads(config.read_text())["notify"] == ["/custom-notify"]
+    assert "SessionEnd" in json.loads((codex / "hooks.json").read_text())["hooks"]
 
 
 def test_codex_installer_splits_turn_and_session_end_responsibilities():
