@@ -159,6 +159,149 @@ def test_codex_session_end_hook_detaches_and_forwards_transcript(tmp_path):
     assert called.read_text().splitlines()[-1] == str(rollout)
 
 
+RETIRED_NOTIFY_LINE = (
+    "\x1b[0;32m[OK]\x1b[0m "
+    "Retired legacy B12 Codex notify adapter after SessionEnd migration"
+)
+KEPT_NOTIFY_LINE = (
+    "\x1b[1;33m[!]\x1b[0m "
+    "Keeping legacy B12 Codex notify adapter: SessionEnd migration is incomplete"
+)
+
+
+def _codex_retirement_fixture(tmp_path, notify_factory, *, adapter_exists=True):
+    home = tmp_path / "home"
+    hooks, codex = home / ".B12/hooks", home / ".codex"
+    hooks.mkdir(parents=True)
+    codex.mkdir()
+    legacy = hooks / "b12-codex-notify.sh"
+    if adapter_exists:
+        legacy.write_text("#!/bin/sh\n")
+    notify = notify_factory(str(legacy))
+    config = codex / "config.toml"
+    config.write_text(
+        f"notify = {json.dumps(notify)}\n"
+        'notify_backup = ["keep"]\n'
+    )
+    (codex / "hooks.json").write_text('{"hooks": {}}\n')
+    python = home / ".local/b12-venv/bin/python3"
+    python.parent.mkdir(parents=True)
+    python.symlink_to(sys.executable)
+    env = os.environ | {"HOME": str(home), "B12_DATA_DIR": str(home / ".B12")}
+
+    def install():
+        result = subprocess.run(
+            ["bash", str(ROOT / "install.sh"), "--codex", "--no-gc-cron"],
+            env=env, text=True, capture_output=True, timeout=30, check=True,
+        )
+        return result.stdout
+
+    return legacy, config, install
+
+
+def _retirement_lines(output):
+    return [
+        line for line in output.splitlines()
+        if "legacy B12 Codex notify adapter" in line
+    ]
+
+
+def _escaped_previous_notify(*commands):
+    return json.dumps(list(commands)).replace("/", r"\/")
+
+
+def test_codex_installer_retires_bare_sole_legacy_notify(tmp_path):
+    legacy, config, install = _codex_retirement_fixture(
+        tmp_path, lambda path: [path]
+    )
+
+    output = install()
+
+    assert not legacy.exists()
+    assert "notify" not in tomllib.loads(config.read_text())
+    assert _retirement_lines(output) == [RETIRED_NOTIFY_LINE]
+
+
+def test_codex_installer_decodes_escaped_wrapped_legacy_notify(tmp_path):
+    legacy, config, install = _codex_retirement_fixture(
+        tmp_path,
+        lambda path: [
+            "/computer-use", "turn-ended", "--previous-notify",
+            _escaped_previous_notify(path),
+        ],
+    )
+    encoded = tomllib.loads(config.read_text())["notify"][3]
+    assert r"\/" in encoded
+    assert str(legacy) not in encoded
+    assert json.loads(encoded) == [str(legacy)]
+
+    output = install()
+
+    assert not legacy.exists()
+    assert tomllib.loads(config.read_text())["notify"] == [
+        "/computer-use", "turn-ended",
+    ]
+    assert _retirement_lines(output) == [RETIRED_NOTIFY_LINE]
+
+
+def test_codex_installer_preserves_foreign_wrapped_notify_order(tmp_path):
+    foreign = ["/foreign-notify", "finished"]
+    legacy, config, install = _codex_retirement_fixture(
+        tmp_path,
+        lambda path: [
+            "/computer-use", "turn-ended", "--previous-notify",
+            _escaped_previous_notify(path, *foreign), "--after", "keep",
+        ],
+    )
+
+    output = install()
+
+    notify = tomllib.loads(config.read_text())["notify"]
+    assert notify[:3] == ["/computer-use", "turn-ended", "--previous-notify"]
+    assert json.loads(notify[3]) == foreign
+    assert notify[4:] == ["--after", "keep"]
+    assert not legacy.exists()
+    assert _retirement_lines(output) == [RETIRED_NOTIFY_LINE]
+
+
+def test_codex_installer_repairs_dangling_wrapped_notify_idempotently(tmp_path):
+    legacy, config, install = _codex_retirement_fixture(
+        tmp_path,
+        lambda path: [
+            "/computer-use", "turn-ended", "--previous-notify",
+            _escaped_previous_notify(path),
+        ],
+        adapter_exists=False,
+    )
+
+    first_output = install()
+    first_notify = tomllib.loads(config.read_text())["notify"]
+    second_output = install()
+
+    assert not legacy.exists()
+    assert first_notify == ["/computer-use", "turn-ended"]
+    assert tomllib.loads(config.read_text())["notify"] == first_notify
+    assert _retirement_lines(first_output) == [RETIRED_NOTIFY_LINE]
+    assert _retirement_lines(second_output) == [RETIRED_NOTIFY_LINE]
+
+
+def test_codex_installer_fails_closed_on_unknown_previous_notify_shape(tmp_path):
+    legacy, config, install = _codex_retirement_fixture(
+        tmp_path,
+        lambda path: [
+            "/computer-use", "turn-ended", "--previous-notify",
+            json.dumps({"argv": [path]}).replace("/", r"\/"),
+        ],
+    )
+    original_notify = tomllib.loads(config.read_text())["notify"]
+
+    output = install()
+
+    assert legacy.exists()
+    assert tomllib.loads(config.read_text())["notify"] == original_notify
+    assert _retirement_lines(output) == [KEPT_NOTIFY_LINE]
+
+
 def test_legacy_notify_is_retired_only_after_codex_migration(tmp_path):
     home = tmp_path / "home"
     hooks, codex = home / ".B12/hooks", home / ".codex"

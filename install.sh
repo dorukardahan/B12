@@ -1045,9 +1045,71 @@ try:
 except (OSError, tomllib.TOMLDecodeError): raise SystemExit(1)
 if not isinstance(notify, list) or not all(isinstance(arg, str) for arg in notify):
     raise SystemExit(1)
-kept = [arg for arg in notify if arg != legacy_path]
 original = ''.join(lines)
 mode = stat.S_IMODE(os.stat(config_path).st_mode)
+
+class UnsafeNotifyShape(Exception):
+    pass
+
+def retire_argv(argv, depth=0):
+    if depth > 8:
+        raise UnsafeNotifyShape()
+    kept, removed = [], False
+    index = 0
+    while index < len(argv):
+        arg = argv[index]
+        if arg == legacy_path:
+            removed = True
+            index += 1
+            continue
+        if arg == '--previous-notify':
+            if index + 1 >= len(argv):
+                raise UnsafeNotifyShape()
+            encoded = argv[index + 1]
+            try:
+                nested = json.loads(encoded)
+            except (TypeError, ValueError):
+                raise UnsafeNotifyShape()
+            if not isinstance(nested, list) or not all(isinstance(item, str) for item in nested):
+                raise UnsafeNotifyShape()
+            nested_kept, nested_removed = retire_argv(nested, depth + 1)
+            if nested_removed:
+                removed = True
+                if nested_kept:
+                    kept.extend((arg, json.dumps(nested_kept)))
+            else:
+                kept.extend((arg, encoded))
+            index += 2
+            continue
+        kept.append(arg)
+        index += 1
+    return kept, removed
+
+def contains_reference(value, depth=0):
+    if depth > 8:
+        return True
+    if isinstance(value, str):
+        if value == legacy_path:
+            return True
+        try:
+            decoded = json.loads(value)
+        except (TypeError, ValueError):
+            return False
+        if decoded == value:
+            return False
+        return contains_reference(decoded, depth + 1)
+    if isinstance(value, list):
+        return any(contains_reference(item, depth + 1) for item in value)
+    if isinstance(value, dict):
+        return any(contains_reference(item, depth + 1) for item in value.values())
+    return False
+
+try:
+    kept, changed = retire_argv(notify)
+    if contains_reference(kept):
+        raise UnsafeNotifyShape()
+except UnsafeNotifyShape:
+    raise SystemExit(1)
 
 def atomic_write(text):
     tmp = None
@@ -1063,8 +1125,7 @@ def atomic_write(text):
             try: os.unlink(tmp)
             except OSError: pass
 
-changed = kept != notify
-if kept != notify:
+if changed:
     root_end = next((i for i, line in enumerate(lines) if line.strip().startswith('[')), len(lines))
     start = next((i for i, line in enumerate(lines[:root_end]) if re.match(r'^\s*notify\s*=', line)), None)
     if start is None:
@@ -1076,11 +1137,39 @@ if kept != notify:
     else: raise SystemExit(1)
     lines[start:end + 1] = [f"notify = {json.dumps(kept)}\n"] if kept else []
     atomic_write(''.join(lines))
+
 try:
-    os.unlink(legacy_path)
-except FileNotFoundError:
-    pass
+    persisted = tomllib.loads(open(config_path).read()).get('notify', [])
+    if not isinstance(persisted, list) or not all(isinstance(arg, str) for arg in persisted):
+        raise UnsafeNotifyShape()
+    _, still_managed = retire_argv(persisted)
+    if still_managed or contains_reference(persisted):
+        raise UnsafeNotifyShape()
+except (OSError, tomllib.TOMLDecodeError, UnsafeNotifyShape):
+    if changed:
+        atomic_write(original)
+    raise SystemExit(1)
+
+staged_path = None
+try:
+    if os.path.lexists(legacy_path):
+        fd, staged_path = tempfile.mkstemp(
+            prefix='.b12-codex-notify-retiring-', dir=os.path.dirname(legacy_path))
+        os.close(fd)
+        os.unlink(staged_path)
+        os.replace(legacy_path, staged_path)
+        os.unlink(staged_path)
+        staged_path = None
 except OSError:
+    if staged_path and os.path.lexists(staged_path) and not os.path.lexists(legacy_path):
+        try:
+            os.replace(staged_path, legacy_path)
+        except OSError:
+            raise SystemExit(1)
+    if changed:
+        atomic_write(original)
+    raise SystemExit(1)
+if os.path.lexists(legacy_path) or (staged_path and os.path.lexists(staged_path)):
     if changed:
         atomic_write(original)
     raise SystemExit(1)
