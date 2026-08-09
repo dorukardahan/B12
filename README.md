@@ -104,7 +104,7 @@ B12 MCP Server (b12_mcp_server.py)
     ├── FTS5 hybrid search (BM25 keyword + vector cosine + porter stemming)
     ├── Effective-stability decay (importance + reinforcement slow aging)
     ├── Write-time semantic merge (cosine > 0.85 = merge, not duplicate)
-    └── Auto-backup (daily, 7-day rotation)
+    └── Auto-backup (daily, 7-day rotation) + operator summary dedupe (dry-run; `--execute` applies)
 ```
 
 </details>
@@ -209,7 +209,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Proactive surfacing** — automatically injects relevant past memories when you open files or hit errors
 - **Long-session re-surface** — on every Nth UserPromptSubmit turn (default 20), re-injects a small batch of THIS session's early-captured high-importance memories so they don't fade out of the model's effective working window
 - **Token budget guardrails** — per-turn char-based cap (~800 tokens) + cumulative session cap (~80K tokens) with skip-event logging to `~/.B12/memory-logs/token-budget-skips.jsonl`
-- **Smart consolidation** — deduplication, merge groups, and NLI contradiction detection across memories
+- **Smart consolidation + operator cleanup** — merge groups and NLI contradiction checks; legacy session-summary dedupe is dry-run by default and soft-deletes only with explicit `--execute`
 - **Export/import** — portable `.b12` format for backup, migration, or sharing memory snapshots
 - **Web dashboard** — Flask + Cytoscape.js visual browser for memory graph and statistics
 - **Health report** — comprehensive weekly report with health score, trends, and recommendations
