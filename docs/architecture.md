@@ -215,12 +215,10 @@ content hashes, graph endpoints, external-content FTS tables, and sqlite-vec are
 updated in the same transaction; existing duplicates and summaries without a
 session ID are untouched.
 
-A later operator-controlled cleanup must snapshot and dry-run active session-ID
-groups; retain the oldest row, apply the newest content/metadata, preserve minimum
-`created_at` and maximum `updated_at`, rewrite graph hashes, re-embed, remove
-redundant vec rows, then soft-delete redundant memories. Before commit, verify
-counts, FTS, graph, vec coverage, and `PRAGMA integrity_check`. No-ID summaries,
-synthetic IDs, hard deletes, and `VACUUM` stay out of that migration.
+Historical cleanup is explicit and dry-run-first via `scripts/b12_dedupe_session_summaries.py`.
+It reuses the runtime selector, reports exact row IDs and platform totals, and executes in one
+`BEGIN IMMEDIATE` only with `--execute`. Cleanup stamps only `deleted_at`; content, metadata,
+hashes, graph edges, vectors, and summaries without a usable session ID remain untouched.
 
 **Codex lifecycle split**: `Stop` captures only cheap per-turn goal progress.
 `SessionEnd` owns detached summary extraction after rollout flush because upstream
