@@ -230,6 +230,8 @@ def _copy_tracked_checkout(destination: Path) -> None:
         shutil.copy2(ROOT / relative, target, follow_symlinks=False)
 
     _git(destination, "init", "--initial-branch=main", "--quiet")
+    disabled_hooks = destination / ".git" / "disabled-hooks"
+    disabled_hooks.mkdir()
     _git(destination, "add", "--all")
     _git(
         destination,
@@ -239,6 +241,8 @@ def _copy_tracked_checkout(destination: Path) -> None:
         "user.email=test@invalid",
         "-c",
         "commit.gpgSign=false",
+        "-c",
+        f"core.hooksPath={disabled_hooks}",
         "commit",
         "--quiet",
         "-m",
@@ -247,11 +251,19 @@ def _copy_tracked_checkout(destination: Path) -> None:
 
 
 def test_release_dry_run_syncs_all_package_versions_without_git_side_effects(tmp_path, monkeypatch):
-    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    rejecting_hooks = tmp_path / "rejecting-hooks"
+    rejecting_hooks.mkdir()
+    pre_commit = rejecting_hooks / "pre-commit"
+    pre_commit.write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+    pre_commit.chmod(0o755)
+
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "3")
     monkeypatch.setenv("GIT_CONFIG_KEY_0", "commit.gpgSign")
     monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
     monkeypatch.setenv("GIT_CONFIG_KEY_1", "gpg.program")
     monkeypatch.setenv("GIT_CONFIG_VALUE_1", "/bin/false")
+    monkeypatch.setenv("GIT_CONFIG_KEY_2", "core.hooksPath")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_2", str(rejecting_hooks))
 
     checkout = tmp_path / "checkout"
     checkout.mkdir()
