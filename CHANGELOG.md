@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- Added `scripts/b12_dedupe_session_summaries.py`, a dry-run-first operator command that applies reported soft-deletes only with explicit `--execute`.
+
 ### Changed
 
 - Codex session extraction now runs from the true `SessionEnd` event; `Stop` is turn-scoped, and the legacy delayed notify adapter is removed on upgrade without replacing user-owned notify commands.
