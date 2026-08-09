@@ -237,6 +237,8 @@ def _copy_tracked_checkout(destination: Path) -> None:
         "user.name=B12 Tests",
         "-c",
         "user.email=test@invalid",
+        "-c",
+        "commit.gpgSign=false",
         "commit",
         "--quiet",
         "-m",
@@ -244,7 +246,13 @@ def _copy_tracked_checkout(destination: Path) -> None:
     )
 
 
-def test_release_dry_run_syncs_all_package_versions_without_git_side_effects(tmp_path):
+def test_release_dry_run_syncs_all_package_versions_without_git_side_effects(tmp_path, monkeypatch):
+    monkeypatch.setenv("GIT_CONFIG_COUNT", "2")
+    monkeypatch.setenv("GIT_CONFIG_KEY_0", "commit.gpgSign")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_0", "true")
+    monkeypatch.setenv("GIT_CONFIG_KEY_1", "gpg.program")
+    monkeypatch.setenv("GIT_CONFIG_VALUE_1", "/bin/false")
+
     checkout = tmp_path / "checkout"
     checkout.mkdir()
     _copy_tracked_checkout(checkout)
