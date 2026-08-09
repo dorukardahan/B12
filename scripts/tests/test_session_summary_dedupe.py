@@ -43,12 +43,12 @@ def _run(path: Path, *args: str) -> subprocess.CompletedProcess[str]:
 def test_dry_run_reports_exact_plan_and_never_writes(tmp_path):
     path = tmp_path / "dry.db"
     conn = _db(path)
-    _add(conn, "sid-a", "a-old", 1, 1)
-    _add(conn, "sid-a", "a-new", 2, 20)
+    _add(conn, "123456789012", "a-old", 1, 1)
+    _add(conn, "123456789012-full", "a-new", 2, 20)
     _add(conn, "sid-b", "b-old", 3, 3, None)
     _add(conn, "sid-b", "b-new", 4, 40, None)
     _add(conn, "sid-unique", "unique", 5, 5)
-    for n, sid in enumerate((None, "unknown", "gemini-unknown", " sid-space ", " sid-space ")):
+    for n, sid in enumerate((None, "unknown", "gemini-unknown", "gemini-unkno", " sid-space ", " sid-space ")):
         _add(conn, sid, f"out-{n}", 6 + n, 6 + n, None)
     conn.commit()
     conn.close()
@@ -60,12 +60,12 @@ def test_dry_run_reports_exact_plan_and_never_writes(tmp_path):
     assert result.stdout == """B12 session-summary dedupe
 Mode: DRY-RUN (no changes)
 Session plans:
-  sid=sid-a platforms=codex keep=2 remove=1
+  sid=123456789012-full platforms=codex keep=2 remove=1
   sid=sid-b platforms=(none) keep=4 remove=3
 Platform totals:
   (none): rows=2 sessions=1 duplicate_sessions=1 keep=1 remove=1
   codex: rows=3 sessions=2 duplicate_sessions=1 keep=2 remove=1
-No-session-id live rows: 5 (untouched)
+No-session-id live rows: 6 (untouched)
 Would soft-delete 2 rows across 2 sessions.
 Re-run with --execute to apply.
 """
@@ -80,8 +80,7 @@ def test_execute_preserves_rows_indexes_is_idempotent_and_upserts(tmp_path):
     old = _add(conn, sid, old_content, 1, 1, content_hash=old_hash)
     other = _add(conn, sid, "other old summary", 2, 2)
     keep = _add(conn, sid, "canonical updated summary", 3, 30)
-    out_of_scope = [_add(conn, value, f"out-{n}", 4 + n, 4 + n, None)
-                    for n, value in enumerate((None, "unknown", "gemini-unknown", " sid-space ", " sid-space "))]
+    out_of_scope = [_add(conn, value, f"out-{n}", 4 + n, 4 + n, None) for n, value in enumerate((None, "unknown", "gemini-unknown", "gemini-unkno", " sid-space ", " sid-space "))]
     for row_id in (old, other, keep):
         conn.execute("INSERT INTO memory_embeddings VALUES (?, ?)", (row_id, f"vec-{row_id}".encode()))
     conn.execute(

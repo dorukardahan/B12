@@ -14,7 +14,7 @@ from write_time_merge import select_session_summary_canonical
 
 _NONE = "(none)"
 _CHUNK = 500
-_OUT_OF_SCOPE_IDS = {"unknown", "gemini-unknown"}
+_OUT_OF_SCOPE_IDS = {"unknown", "gemini-unknown", "gemini-unkno"}
 
 def _identity(raw):
     try:
@@ -30,16 +30,23 @@ def _identity(raw):
     return (sid or None), (platform or _NONE)
 
 def _plan(conn: sqlite3.Connection) -> dict:
-    groups, platforms, no_sid = {}, {}, 0
+    groups, eligible, full_ids, no_sid = {}, [], {}, 0
     rows = conn.execute(
         "SELECT id, metadata FROM memories WHERE memory_type='session_summary' "
         "AND deleted_at IS NULL ORDER BY id").fetchall()
     for row_id, metadata in rows:
         sid, platform = _identity(metadata)
-        if sid is None:
-            no_sid += 1
-            continue
-        groups.setdefault(sid, []).append((int(row_id), platform))
+        if sid is None: no_sid += 1; continue
+        eligible.append((int(row_id), sid, platform))
+        if len(sid) > 12: full_ids.setdefault(sid[:12], set()).add(sid)
+
+    platforms = {}
+    for row_id, sid, platform in eligible:
+        owners = full_ids.get(sid) if len(sid) == 12 else None
+        if owners and len(owners) != 1:
+            raise RuntimeError(f"ambiguous legacy session prefix {sid!r}; database unchanged")
+        sid = next(iter(owners)) if owners else sid
+        groups.setdefault(sid, []).append((row_id, platform))
         stat = platforms.setdefault(platform, {"rows": 0, "sessions": set(), "dupes": set(), "remove": 0})
         stat["rows"] += 1
         stat["sessions"].add(sid)
@@ -53,7 +60,7 @@ def _plan(conn: sqlite3.Connection) -> dict:
         keep = int(chosen[0]) if chosen else -1
         member_ids = {row_id for row_id, _ in members}
         if keep not in member_ids:
-            raise RuntimeError(f"canonical row for session {sid!r} is outside its exact-ID group")
+            raise RuntimeError(f"canonical row for session {sid!r} is outside its logical-ID group")
         remove = [row_id for row_id, _ in members if row_id != keep]
         for row_id, platform in members:
             platforms[platform]["dupes"].add(sid)
@@ -89,8 +96,7 @@ def deduplicate(conn: sqlite3.Connection, *, execute: bool = False, now=None) ->
             conn.execute("COMMIT")
         return report
     except BaseException:
-        if owns_txn and conn.in_transaction:
-            conn.execute("ROLLBACK")
+        if owns_txn and conn.in_transaction: conn.execute("ROLLBACK")
         raise
 
 def render(report: dict, *, execute: bool) -> str:
@@ -129,13 +135,11 @@ def main(argv=None) -> int:
     parser.add_argument("--db-path", default=get_db_path(), help="override sqlite_vec.db path")
     args = parser.parse_args(argv)
     path = Path(args.db_path).expanduser().resolve()
-    if not path.is_file():
-        parser.error(f"database not found: {path}")
+    if not path.is_file(): parser.error(f"database not found: {path}")
     uri = path.as_uri() + "?mode=ro"
     conn = sqlite3.connect(str(path) if args.execute else uri, uri=not args.execute, timeout=30)
     conn.execute("PRAGMA busy_timeout=30000")
-    if not args.execute:
-        conn.execute("PRAGMA query_only=ON")
+    if not args.execute: conn.execute("PRAGMA query_only=ON")
     try:
         report = deduplicate(conn, execute=args.execute)
     finally:
