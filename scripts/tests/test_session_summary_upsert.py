@@ -14,6 +14,7 @@ SCRIPTS = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(SCRIPTS))
 
 import b12_mcp_server as server  # noqa: E402
+import write_time_merge as write_merge  # noqa: E402
 from write_time_merge import upsert_session_summary  # noqa: E402
 
 
@@ -158,6 +159,35 @@ def test_existing_duplicates_are_not_cleaned_and_newest_row_is_updated(tmp_path)
     conn.close()
 
 
+def test_selector_is_shared_with_upsert_and_prefers_fresh_exact_row(tmp_path, monkeypatch):
+    conn = _db(tmp_path / "selector.db")
+    sid = "selector-session-full-id"
+    ids = []
+    for content, created, updated in (
+        ("old", 10.0, 10.0), ("middle", 20.0, 20.0),
+        ("canonical updated in place", 30.0, 300.0),
+    ):
+        ids.append(conn.execute(
+            "INSERT INTO memories(content,content_hash,memory_type,metadata,created_at,updated_at) "
+            "VALUES (?,?, 'session_summary', ?, ?, ?)",
+            (content, f"selector-{created}", json.dumps({"session_id": sid}), created, updated),
+        ).lastrowid)
+    conn.commit()
+
+    selector = getattr(write_merge, "select_session_summary_canonical")
+    assert selector(conn, session_id=sid, content_hash=None)[0] == ids[-1]
+    calls = []
+
+    def observed(*args, **kwargs):
+        calls.append(kwargs)
+        return selector(*args, **kwargs)
+
+    monkeypatch.setattr(write_merge, "select_session_summary_canonical", observed)
+    assert _store(conn, sid, "fresh summary", 400.0, None) == ids[-1]
+    assert calls and calls[0]["session_id"] == sid
+    conn.close()
+
+
 def test_soft_deleted_matching_summary_is_resurrected_without_hash_collision(tmp_path):
     conn = _db(tmp_path / "resurrect.db")
     sid = "soft-deleted-session-full-id"
@@ -190,6 +220,28 @@ def test_soft_deleted_matching_summary_is_resurrected_without_hash_collision(tmp
     assert conn.execute(
         "SELECT content_embedding FROM memory_embeddings WHERE rowid = ?", (row_id,)
     ).fetchone()[0] == b"new-vector"
+    conn.close()
+
+
+def test_exact_hash_resurrection_demotes_previous_full_id_canonical(tmp_path):
+    conn = _db(tmp_path / "dedupe-resurrection.db")
+    sid = "deduped-session-full-id"
+    resurrected = _store(conn, sid, "returning old summary", 100.0, None)
+    returning_hash = conn.execute(
+        "SELECT content_hash FROM memories WHERE id=?", (resurrected,),
+    ).fetchone()[0]
+    conn.execute("UPDATE memories SET deleted_at=150 WHERE id=?", (resurrected,))
+    active = _store(conn, sid, "newer canonical summary", 200.0, None)
+
+    assert _store(conn, sid, "returning old summary", 300.0, None) == resurrected
+    assert conn.execute(
+        "SELECT id FROM memories WHERE memory_type='session_summary' "
+        "AND json_extract(metadata,'$.session_id')=? AND deleted_at IS NULL", (sid,),
+    ).fetchall() == [(resurrected,)]
+    assert conn.execute("SELECT deleted_at FROM memories WHERE id=?", (active,)).fetchone()[0]
+    assert conn.execute(
+        "SELECT content_hash FROM memories WHERE id=?", (resurrected,),
+    ).fetchone()[0] == returning_hash
     conn.close()
 
 

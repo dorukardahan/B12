@@ -462,6 +462,36 @@ def _rewrite_graph_hashes(conn: sqlite3.Connection, old_hash: str, new_hash: str
     conn.execute("DELETE FROM memory_graph WHERE source_hash = ? OR target_hash = ?", (old_hash, old_hash))
 
 
+def select_session_summary_canonical(
+    conn: sqlite3.Connection, *, session_id: str, content_hash: Optional[str] = None,
+):
+    """Return the row an upsert targets; ``None`` hashes consider live rows only."""
+    sid = (session_id or "").strip()
+    if not sid:
+        raise ValueError("session_id must be a non-empty string")
+    legacy_sid = sid[:12]
+    return conn.execute(
+        """SELECT id, content_hash, deleted_at FROM memories
+           WHERE memory_type = 'session_summary'
+             AND (
+               (deleted_at IS NULL AND
+                (CASE WHEN json_valid(metadata)
+                      THEN json_extract(metadata, '$.session_id') END) IN (?, ?))
+               OR
+               (? IS NOT NULL AND deleted_at IS NOT NULL AND content_hash = ? AND
+                (CASE WHEN json_valid(metadata)
+                      THEN json_extract(metadata, '$.session_id') END) = ?)
+             )
+           ORDER BY
+             (deleted_at IS NOT NULL) DESC,
+             ((CASE WHEN json_valid(metadata)
+                     THEN json_extract(metadata, '$.session_id') END) = ?) DESC,
+             COALESCE(updated_at, created_at, 0) DESC, id DESC
+           LIMIT 1""",
+        (sid, legacy_sid, content_hash, content_hash, sid, sid),
+    ).fetchone()
+
+
 def upsert_session_summary(
     conn: sqlite3.Connection,
     *,
@@ -481,7 +511,6 @@ def upsert_session_summary(
     updated (or removed when no fresh embedding is available) in the same txn.
     """
     sid = (session_id or "").strip()
-    legacy_sid = sid[:12]
     content = (content or "").strip()
     if not sid:
         raise ValueError("session_id must be a non-empty string")
@@ -514,28 +543,23 @@ def upsert_session_summary(
     if owns_txn:
         conn.execute("BEGIN IMMEDIATE")
     try:
-        row = conn.execute(
-            """SELECT id, content_hash, deleted_at FROM memories
-               WHERE memory_type = 'session_summary'
-                 AND (
-                   (deleted_at IS NULL AND
-                    (CASE WHEN json_valid(metadata)
-                          THEN json_extract(metadata, '$.session_id') END) IN (?, ?))
-                   OR
-                   (deleted_at IS NOT NULL AND content_hash = ? AND
-                    (CASE WHEN json_valid(metadata)
-                          THEN json_extract(metadata, '$.session_id') END) = ?)
-                 )
-               ORDER BY
-                 ((CASE WHEN json_valid(metadata)
-                         THEN json_extract(metadata, '$.session_id') END) = ?) DESC,
-                 (deleted_at IS NULL) DESC,
-                 COALESCE(updated_at, created_at, 0) DESC, id DESC
-               LIMIT 1""",
-            (sid, legacy_sid, content_hash, sid, sid),
-        ).fetchone()
+        row = select_session_summary_canonical(
+            conn, session_id=sid, content_hash=content_hash,
+        )
         if row:
             memory_id, old_hash = int(row[0]), str(row[1])
+            if row[2] is not None:
+                # A dedupe/retention tombstone may own the incoming globally-unique
+                # hash. Revive it, but first demote any active exact-full-ID row so
+                # the session still has one canonical live summary. Legacy-prefix
+                # fallbacks remain untouched for compatibility.
+                conn.execute(
+                    """UPDATE memories SET deleted_at = ?
+                       WHERE memory_type = 'session_summary' AND deleted_at IS NULL
+                         AND id != ? AND json_valid(metadata)
+                         AND json_extract(metadata, '$.session_id') = ?""",
+                    (now_ts, memory_id, sid),
+                )
             conn.execute(
                 """UPDATE memories
                    SET content = ?, content_hash = ?, tags = ?, metadata = ?,
