@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
+import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -198,3 +201,96 @@ def test_release_script_syncs_verifies_and_stages_opencode_manifest():
     assert "plugins/opencode/package.json" in git_add_region
     pre_commit_region = script.split("git commit", 1)[0]
     assert "python3 scripts/check_package_versions.py" in pre_commit_region
+
+
+def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        ["git", *args],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+
+def _copy_tracked_checkout(destination: Path) -> None:
+    """Create a clean main-branch checkout from the candidate working tree."""
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        capture_output=True,
+        check=True,
+    ).stdout.split(b"\0")
+    for raw_path in tracked:
+        if not raw_path:
+            continue
+        relative = Path(os.fsdecode(raw_path))
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(ROOT / relative, target, follow_symlinks=False)
+
+    _git(destination, "init", "--initial-branch=main", "--quiet")
+    _git(destination, "add", "--all")
+    _git(
+        destination,
+        "-c",
+        "user.name=B12 Tests",
+        "-c",
+        "user.email=test@invalid",
+        "commit",
+        "--quiet",
+        "-m",
+        "test fixture",
+    )
+
+
+def test_release_dry_run_syncs_all_package_versions_without_git_side_effects(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _copy_tracked_checkout(checkout)
+
+    with (checkout / "pyproject.toml").open("rb") as handle:
+        current = tomllib.load(handle)["project"]["version"]
+    major, minor, patch = (int(part) for part in current.split("."))
+    candidate = f"{major}.{minor}.{patch + 1}"
+    notes = checkout / "release-notes.md"
+    notes.write_text("### Fixed\n\n- Release test fixture.\n", encoding="utf-8")
+
+    head_before = _git(checkout, "rev-parse", "HEAD").stdout.strip()
+    tags_before = _git(checkout, "tag", "--list").stdout.splitlines()
+    release = subprocess.run(
+        ["bash", "scripts/release.sh", "--dry-run", candidate, str(notes)],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert release.returncode == 0, release.stdout + release.stderr
+
+    check = subprocess.run(
+        [sys.executable, "scripts/check_package_versions.py"],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
+
+    with (checkout / "pyproject.toml").open("rb") as handle:
+        pyproject = tomllib.load(handle)
+    package = json.loads((checkout / "package.json").read_text(encoding="utf-8"))
+    package_lock = json.loads((checkout / "package-lock.json").read_text(encoding="utf-8"))
+    opencode = json.loads(
+        (checkout / "plugins" / "opencode" / "package.json").read_text(encoding="utf-8")
+    )
+    versions = {
+        "pyproject.toml [project].version": pyproject["project"]["version"],
+        "package.json version": package["version"],
+        "package-lock.json version": package_lock["version"],
+        "package-lock.json packages[''].version": package_lock["packages"][""]["version"],
+        "plugins/opencode/package.json version": opencode["version"],
+    }
+    assert versions == {field: candidate for field in versions}, versions
+    assert _git(checkout, "rev-parse", "HEAD").stdout.strip() == head_before
+    assert _git(checkout, "tag", "--list").stdout.splitlines() == tags_before
