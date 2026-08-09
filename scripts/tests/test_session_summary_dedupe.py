@@ -48,7 +48,8 @@ def test_dry_run_reports_exact_plan_and_never_writes(tmp_path):
     _add(conn, "sid-b", "b-old", 3, 3, None)
     _add(conn, "sid-b", "b-new", 4, 40, None)
     _add(conn, "sid-unique", "unique", 5, 5)
-    _add(conn, None, "no-sid", 6, 6, None)
+    for n, sid in enumerate((None, "unknown", "gemini-unknown", " sid-space ", " sid-space ")):
+        _add(conn, sid, f"out-{n}", 6 + n, 6 + n, None)
     conn.commit()
     conn.close()
     before = path.read_bytes()
@@ -64,7 +65,7 @@ Session plans:
 Platform totals:
   (none): rows=2 sessions=1 duplicate_sessions=1 keep=1 remove=1
   codex: rows=3 sessions=2 duplicate_sessions=1 keep=2 remove=1
-No-session-id live rows: 1 (untouched)
+No-session-id live rows: 5 (untouched)
 Would soft-delete 2 rows across 2 sessions.
 Re-run with --execute to apply.
 """
@@ -79,7 +80,8 @@ def test_execute_preserves_rows_indexes_is_idempotent_and_upserts(tmp_path):
     old = _add(conn, sid, old_content, 1, 1, content_hash=old_hash)
     other = _add(conn, sid, "other old summary", 2, 2)
     keep = _add(conn, sid, "canonical updated summary", 3, 30)
-    no_sid = _add(conn, None, "untouched no sid", 4, 4, None)
+    out_of_scope = [_add(conn, value, f"out-{n}", 4 + n, 4 + n, None)
+                    for n, value in enumerate((None, "unknown", "gemini-unknown", " sid-space ", " sid-space "))]
     for row_id in (old, other, keep):
         conn.execute("INSERT INTO memory_embeddings VALUES (?, ?)", (row_id, f"vec-{row_id}".encode()))
     conn.execute(
@@ -98,7 +100,7 @@ def test_execute_preserves_rows_indexes_is_idempotent_and_upserts(tmp_path):
     assert [r[0] for r in conn.execute(
         "SELECT id FROM memories WHERE memory_type='session_summary' "
         "AND deleted_at IS NULL ORDER BY id"
-    )] == [keep, no_sid]
+    )] == [keep, *out_of_scope]
     for row_id in (old, other):
         after = dict(conn.execute("SELECT * FROM memories WHERE id=?", (row_id,)).fetchone())
         assert after.pop("deleted_at") is not None
@@ -109,7 +111,7 @@ def test_execute_preserves_rows_indexes_is_idempotent_and_upserts(tmp_path):
         assert conn.execute(f"SELECT rowid FROM {table} WHERE {table} MATCH 'returning'").fetchall() == []
     assert conn.execute("SELECT COUNT(*) FROM memory_embeddings").fetchone()[0] == 3
     assert conn.execute("SELECT COUNT(*) FROM memory_graph WHERE source_hash=?", (old_hash,)).fetchone()[0] == 1
-    assert conn.execute("SELECT deleted_at FROM memories WHERE id=?", (no_sid,)).fetchone()[0] is None
+    assert all(conn.execute("SELECT deleted_at FROM memories WHERE id=?", (row_id,)).fetchone()[0] is None for row_id in out_of_scope)
     deleted_state = [tuple(r) for r in conn.execute("SELECT id,deleted_at FROM memories ORDER BY id")]
     conn.close()
 

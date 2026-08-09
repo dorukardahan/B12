@@ -220,7 +220,7 @@ Historical cleanup is explicit and dry-run-first via
 selector, reports exact keep/remove row IDs and platform totals, and executes in
 one `BEGIN IMMEDIATE` transaction only with `--execute`. Cleanup stamps only
 `deleted_at`; content, metadata, hashes, graph edges, vectors, and summaries
-without a session ID remain untouched for normal retention/GC.
+without a usable session ID remain untouched for normal retention/GC.
 
 **Codex lifecycle split**: `Stop` captures only cheap per-turn goal progress.
 `SessionEnd` owns detached summary extraction after rollout flush because upstream

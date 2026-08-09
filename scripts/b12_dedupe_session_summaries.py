@@ -14,6 +14,7 @@ from write_time_merge import select_session_summary_canonical
 
 _NONE = "(none)"
 _CHUNK = 500
+_OUT_OF_SCOPE_IDS = {"unknown", "gemini-unknown"}
 
 def _identity(raw):
     try:
@@ -23,7 +24,7 @@ def _identity(raw):
     if not isinstance(metadata, dict):
         return None, _NONE
     sid = metadata.get("session_id")
-    sid = sid.strip() if isinstance(sid, str) else ""
+    sid = sid if isinstance(sid, str) and sid == sid.strip() and sid not in _OUT_OF_SCOPE_IDS else ""
     platform = metadata.get("platform")
     platform = platform.strip() if isinstance(platform, str) else ""
     return (sid or None), (platform or _NONE)
