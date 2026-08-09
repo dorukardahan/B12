@@ -8,6 +8,7 @@
 
 ### Fixed
 
+- Session-summary upserts now resolve soft-deleted exact-hash collisions by reviving that row and demoting the previous exact full-session canonical, preserving one live row after maintenance cleanup.
 - Codex upgrades now decode `--previous-notify` JSON wrappers before retiring the legacy adapter, repair dangling wrapped references, and fail closed on unrecognised wrapper shapes.
 - Codex upgrades now preserve symlink-managed `config.toml` files and user handlers that share a hook group with B12, and roll back notify-config changes if the legacy adapter cannot be removed.
 - Session-summary upserts now resurrect an exact full-session/hash row after retention soft-deletes it, avoiding the global `content_hash` constraint while leaving legacy duplicates untouched.
