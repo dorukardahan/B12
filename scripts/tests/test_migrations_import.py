@@ -745,6 +745,7 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
                 "tags": ["proj:alpha", "user:codex"],
                 "type": "session_summary",
                 "session_id": "codex-session-stable-123",
+                "valid_until": "2030-01-01T00:00:00Z",
             },
         )
     )
@@ -771,7 +772,8 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
         )
     )
     bound_rows = conn.execute(
-        "SELECT id, content, tags FROM memories WHERE memory_type='session_summary' "
+        "SELECT id, content, tags, valid_until FROM memories "
+        "WHERE memory_type='session_summary' "
         "AND json_extract(metadata, '$.session_id') = ? AND deleted_at IS NULL",
         ("codex-session-stable-123",),
     ).fetchall()
@@ -779,6 +781,7 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
         (original_bound_id, revised_bound_content)
     ]
     assert "proj:alpha" in bound_rows[0]["tags"].split(",")
+    assert bound_rows[0]["valid_until"] == "2030-01-01T00:00:00Z"
 
     explicit_clear_content = "Session summary: caller explicitly clears tags."
     asyncio.run(
@@ -788,12 +791,13 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
                 "type": "session_summary",
                 "session_id": "codex-session-stable-123",
                 "tags": [],
+                "valid_until": None,
             },
         )
     )
     assert conn.execute(
-        "SELECT tags FROM memories WHERE id = ?", (original_bound_id,)
-    ).fetchone()[0] == ""
+        "SELECT tags, valid_until FROM memories WHERE id = ?", (original_bound_id,)
+    ).fetchone()[:] == ("", None)
 
     older_delayed_content = "Session summary: an older encode completes late."
     newer_current_content = "Session summary: a newer write remains canonical."

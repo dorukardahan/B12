@@ -1050,6 +1050,7 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
     tags_supplied = "tags" in metadata
     tags_raw = metadata.pop("tags", None)
     memory_type = metadata.pop("type", metadata.pop("memory_type", "general"))
+    valid_until_supplied = "valid_until" in metadata
     valid_until = metadata.pop("valid_until", None)
     tags = _normalize_tags(tags_raw)
 
@@ -1132,10 +1133,11 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
                 embedding_bytes=None,
                 now=now_ts,
             )
-            db.execute(
-                "UPDATE memories SET valid_until = ? WHERE id = ?",
-                (valid_until, memory_id),
-            )
+            if valid_until_supplied:
+                db.execute(
+                    "UPDATE memories SET valid_until = ? WHERE id = ?",
+                    (valid_until, memory_id),
+                )
             stored = db.execute(
                 "SELECT content_hash FROM memories WHERE id = ?", (memory_id,)
             ).fetchone()
