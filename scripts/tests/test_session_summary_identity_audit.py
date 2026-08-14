@@ -273,21 +273,52 @@ def test_audit_matches_the_writer_session_id_usability_contract(tmp_path: Path) 
             "session-summary",
         )
     _add(conn, 8, {"session_id": "stable-session-id"}, "session-summary")
+    row_id = 9
+    for sentinel in ("none", "null", "n/a", "na"):
+        _add(
+            conn,
+            row_id,
+            {
+                "session_identity": "unbound",
+                "producer": sentinel,
+                "platform": "mcp",
+            },
+            "session-summary",
+        )
+        row_id += 1
+        _add(
+            conn,
+            row_id,
+            {
+                "session_identity": "unbound",
+                "producer": "mcp_memory_store",
+                "platform": sentinel,
+            },
+            "session-summary",
+        )
+        row_id += 1
     conn.commit()
 
     report = audit.audit_session_summaries(conn)
     conn.close()
 
     assert report["category_counts"] == {
-        "ambiguous_legacy": 0,
+        "ambiguous_legacy": 8,
         "bound": 1,
         "intentionally_unbound": 7,
         "recoverable_legacy": 0,
     }
-    assert [row["id"] for row in report["unbound_rows"]] == list(range(1, 8))
+    assert [row["id"] for row in report["unbound_rows"]] == [
+        *range(1, 8),
+        *range(9, 17),
+    ]
     assert all(
         row["category"] == "intentionally_unbound"
-        for row in report["unbound_rows"]
+        for row in report["unbound_rows"][:7]
+    )
+    assert all(
+        row["category"] == "ambiguous_legacy"
+        for row in report["unbound_rows"][7:]
     )
 
 

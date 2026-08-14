@@ -26,9 +26,7 @@ _UNUSABLE_SESSION_IDS = frozenset(
         "gemini-unkno",
     }
 )
-_UNUSABLE_IDENTITY_DIMENSIONS = frozenset(
-    {"unknown", "gemini-unknown", "gemini-unkno"}
-)
+_UNUSABLE_IDENTITY_DIMENSIONS = _UNUSABLE_SESSION_IDS
 
 
 def is_usable_session_id(value: object) -> bool:

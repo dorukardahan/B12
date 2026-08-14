@@ -972,26 +972,36 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
     assert auto_metadata["producer"] == "mcp_memory_store"
     assert auto_metadata["platform"] == "mcp"
 
-    invalid_dimension_content = "Session summary: normalize invalid identity dimensions."
-    asyncio.run(
-        b12_mcp_server.memory_store(
-            invalid_dimension_content,
-            {
-                "type": "session_summary",
-                "producer": 123,
-                "platform": "unknown",
-            },
+    invalid_dimension_cases = (
+        (123, "unknown"),
+        ("none", "none"),
+        ("null", "null"),
+        ("n/a", "n/a"),
+        ("na", "na"),
+    )
+    for index, (producer, platform) in enumerate(invalid_dimension_cases):
+        invalid_dimension_content = (
+            f"Session summary: normalize invalid identity dimensions case {index}."
         )
-    )
-    invalid_dimensions = json.loads(
-        conn.execute(
-            "SELECT metadata FROM memories WHERE content = ?",
-            (invalid_dimension_content,),
-        ).fetchone()[0]
-    )
-    assert invalid_dimensions["session_identity"] == "unbound"
-    assert invalid_dimensions["producer"] == "mcp_memory_store"
-    assert invalid_dimensions["platform"] == "mcp"
+        asyncio.run(
+            b12_mcp_server.memory_store(
+                invalid_dimension_content,
+                {
+                    "type": "session_summary",
+                    "producer": producer,
+                    "platform": platform,
+                },
+            )
+        )
+        invalid_dimensions = json.loads(
+            conn.execute(
+                "SELECT metadata FROM memories WHERE content = ?",
+                (invalid_dimension_content,),
+            ).fetchone()[0]
+        )
+        assert invalid_dimensions["session_identity"] == "unbound"
+        assert invalid_dimensions["producer"] == "mcp_memory_store"
+        assert invalid_dimensions["platform"] == "mcp"
     conn.close()
 
 
