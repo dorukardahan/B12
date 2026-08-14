@@ -1047,6 +1047,7 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
             if p.startswith("proj:"):
                 tracker["project"] = p[5:]
                 break
+    tags_supplied = "tags" in metadata
     tags_raw = metadata.pop("tags", None)
     memory_type = metadata.pop("type", metadata.pop("memory_type", "general"))
     valid_until = metadata.pop("valid_until", None)
@@ -1105,13 +1106,28 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
     # everything else keeps the content-hash dedup path.
     def _store_op(db):
         if bound_session_id is not None:
-            from write_time_merge import upsert_session_summary
+            from write_time_merge import (
+                select_session_summary_canonical,
+                upsert_session_summary,
+            )
+
+            upsert_tags = tags
+            if not tags_supplied:
+                canonical = select_session_summary_canonical(
+                    db, session_id=bound_session_id
+                )
+                if canonical:
+                    existing_tags = db.execute(
+                        "SELECT tags FROM memories WHERE id = ?", (canonical[0],)
+                    ).fetchone()
+                    if existing_tags:
+                        upsert_tags = existing_tags[0]
 
             memory_id = upsert_session_summary(
                 db,
                 session_id=bound_session_id,
                 content=content,
-                tags=tags,
+                tags=upsert_tags,
                 metadata=meta_json,
                 embedding_bytes=None,
                 now=now_ts,

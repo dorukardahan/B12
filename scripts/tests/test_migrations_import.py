@@ -771,13 +771,29 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
         )
     )
     bound_rows = conn.execute(
-        "SELECT id, content FROM memories WHERE memory_type='session_summary' "
+        "SELECT id, content, tags FROM memories WHERE memory_type='session_summary' "
         "AND json_extract(metadata, '$.session_id') = ? AND deleted_at IS NULL",
         ("codex-session-stable-123",),
     ).fetchall()
     assert [(row["id"], row["content"]) for row in bound_rows] == [
         (original_bound_id, revised_bound_content)
     ]
+    assert "proj:alpha" in bound_rows[0]["tags"].split(",")
+
+    explicit_clear_content = "Session summary: caller explicitly clears tags."
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            explicit_clear_content,
+            {
+                "type": "session_summary",
+                "session_id": "codex-session-stable-123",
+                "tags": [],
+            },
+        )
+    )
+    assert conn.execute(
+        "SELECT tags FROM memories WHERE id = ?", (original_bound_id,)
+    ).fetchone()[0] == ""
 
     older_delayed_content = "Session summary: an older encode completes late."
     newer_current_content = "Session summary: a newer write remains canonical."
