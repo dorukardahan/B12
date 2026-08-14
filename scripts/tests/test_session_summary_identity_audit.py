@@ -372,6 +372,63 @@ def test_exact_twelve_character_bound_id_participates_in_prefix_collision_check(
     assert by_id[3]["recovery_source"] is None
 
 
+def test_opencode_truncated_session_ids_do_not_claim_full_identity_ownership(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "opencode-prefix-collision.db"
+    conn = _db(path)
+    cases = (
+        ("123456789012", "session_end_plugin", 1),
+        ("abcdefabcdef", "macro_verbs", 4),
+    )
+    for prefix, extraction_method, first_id in cases:
+        _add(
+            conn,
+            first_id,
+            {
+                "session_id": prefix,
+                "source": "session_end",
+                "extraction_method": extraction_method,
+            },
+            "decision",
+            memory_type="decision",
+        )
+        _add(
+            conn,
+            first_id + 1,
+            {"session_id": f"{prefix}-one-genuine-full-id"},
+            "decision",
+            memory_type="decision",
+        )
+        _add(
+            conn,
+            first_id + 2,
+            {"source_session": prefix},
+            "session-summary",
+        )
+    _add(conn, 7, {"session_id": "feedfacefeed"}, "decision", memory_type="decision")
+    _add(
+        conn,
+        8,
+        {"session_id": "feedfacefeed-one-genuine-full-id"},
+        "decision",
+        memory_type="decision",
+    )
+    _add(conn, 9, {"source_session": "feedfacefeed"}, "session-summary")
+    conn.commit()
+
+    report = audit.audit_session_summaries(conn)
+    conn.close()
+
+    by_id = {row["id"]: row for row in report["unbound_rows"]}
+    assert by_id[3]["category"] == "recoverable_legacy"
+    assert by_id[3]["recovery_source"] == "metadata.source_session"
+    assert by_id[6]["category"] == "recoverable_legacy"
+    assert by_id[6]["recovery_source"] == "metadata.source_session"
+    assert by_id[9]["category"] == "ambiguous_legacy"
+    assert by_id[9]["recovery_source"] is None
+
+
 def test_structured_recovery_evidence_takes_precedence_over_complete_unbound_marker(
     tmp_path: Path,
 ) -> None:

@@ -24,6 +24,9 @@ from shared_patterns import (
 
 _NONE = "(none)"
 _LEGACY_PREFIX_LENGTH = 12
+_OPENCODE_TRUNCATED_ID_EXTRACTORS = frozenset(
+    {"session_end_plugin", "macro_verbs"}
+)
 _PUBLIC_TAG_PREFIXES = {
     "importance",
     "kind",
@@ -258,16 +261,29 @@ def _full_ids_by_prefix(conn: sqlite3.Connection) -> dict[str, set[str]]:
             session_id[:_LEGACY_PREFIX_LENGTH], set()
         ).add(session_id)
 
-    for raw_metadata, raw_tags in conn.execute("SELECT metadata, tags FROM memories"):
+    for memory_type, raw_metadata, raw_tags in conn.execute(
+        "SELECT memory_type, metadata, tags FROM memories"
+    ):
         metadata, _ = _metadata(raw_metadata)
         # A canonical metadata.session_id is already a bound full identity, even
-        # when its legitimate value happens to be exactly 12 characters. Recovery
-        # surfaces at exactly 12 characters are legacy prefixes, not additional
-        # full-ID owners; indexing them would make every unique prefix collide with
-        # itself plus its one matching full identity.
+        # when its legitimate value happens to be exactly 12 characters. The two
+        # OpenCode SessionEnd extraction paths are a documented exception: they put
+        # sessionId.slice(0, 12) on non-summary rows, so those producer fingerprints
+        # are legacy prefixes rather than full-ID owners. Recovery surfaces at exact
+        # 12 characters are likewise prefixes; indexing either kind would make every
+        # unique prefix collide with itself plus its one matching full identity.
+        metadata_session_id = _session_identifier(metadata.get("session_id"))
+        known_opencode_prefix = bool(
+            metadata_session_id
+            and len(metadata_session_id) == _LEGACY_PREFIX_LENGTH
+            and memory_type != "session_summary"
+            and metadata.get("source") == "session_end"
+            and metadata.get("extraction_method")
+            in _OPENCODE_TRUNCATED_ID_EXTRACTORS
+        )
         _index(
-            _session_identifier(metadata.get("session_id")),
-            allow_exact_prefix=True,
+            metadata_session_id,
+            allow_exact_prefix=not known_opencode_prefix,
         )
         _index(
             _session_identifier(metadata.get("source_session")),
