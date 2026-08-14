@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import gzip
+import hashlib
 import importlib
 import json
 import sqlite3
@@ -851,6 +852,84 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
     assert conn.execute(
         "SELECT 1 FROM memory_embeddings WHERE rowid = ?", (original_bound_id,)
     ).fetchone() is None
+
+    def add_tombstoned_summary(session_id, content, tags, valid_until):
+        content_hash = hashlib.sha256(
+            f"{content.lower()}|session:{session_id}".encode()
+        ).hexdigest()
+        conn.execute(
+            "INSERT INTO memories "
+            "(content_hash, content, tags, memory_type, metadata, created_at, "
+            "updated_at, valid_until, deleted_at) "
+            "VALUES (?, ?, ?, 'session_summary', ?, 1, 1, ?, 1)",
+            (
+                content_hash,
+                content,
+                tags,
+                json.dumps({"session_id": session_id}),
+                valid_until,
+            ),
+        )
+        conn.commit()
+
+    active_session_id = "revive-with-active-session"
+    active_content = "Session summary: active canonical state before revival."
+    revived_active_content = "Session summary: matching tombstone is revived."
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            active_content,
+            {
+                "type": "session_summary",
+                "session_id": active_session_id,
+                "tags": ["proj:active-canonical"],
+                "valid_until": "2035-01-01T00:00:00Z",
+            },
+        )
+    )
+    add_tombstoned_summary(
+        active_session_id,
+        revived_active_content,
+        "proj:stale-tombstone",
+        None,
+    )
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            revived_active_content,
+            {"type": "session_summary", "session_id": active_session_id},
+        )
+    )
+
+    tombstone_only_session_id = "revive-tombstone-only-session"
+    tombstone_only_content = "Session summary: restore a tombstone without an active row."
+    add_tombstoned_summary(
+        tombstone_only_session_id,
+        tombstone_only_content,
+        "proj:tombstone-only",
+        "2036-01-01T00:00:00Z",
+    )
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            tombstone_only_content,
+            {"type": "session_summary", "session_id": tombstone_only_session_id},
+        )
+    )
+
+    revival_outcomes = {}
+    for label, session_id in (
+        ("active", active_session_id),
+        ("tombstone_only", tombstone_only_session_id),
+    ):
+        row = conn.execute(
+            "SELECT tags, valid_until FROM memories "
+            "WHERE memory_type='session_summary' AND deleted_at IS NULL "
+            "AND json_extract(metadata, '$.session_id') = ?",
+            (session_id,),
+        ).fetchone()
+        revival_outcomes[label] = row[:]
+    assert revival_outcomes == {
+        "active": ("proj:active-canonical", "2035-01-01T00:00:00Z"),
+        "tombstone_only": ("proj:tombstone-only", "2036-01-01T00:00:00Z"),
+    }
 
     unusable_session_ids = (
         "none",

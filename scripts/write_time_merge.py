@@ -462,6 +462,19 @@ def _rewrite_graph_hashes(conn: sqlite3.Connection, old_hash: str, new_hash: str
     conn.execute("DELETE FROM memory_graph WHERE source_hash = ? OR target_hash = ?", (old_hash, old_hash))
 
 
+def session_summary_content_hash(*, session_id: str, content: str) -> str:
+    """Return the canonical salted hash used by session-summary upserts."""
+    sid = (session_id or "").strip()
+    summary = (content or "").strip()
+    if not sid:
+        raise ValueError("session_id must be a non-empty string")
+    if not summary:
+        raise ValueError("content must be a non-empty string")
+    return hashlib.sha256(
+        f"{summary.lower()}|session:{sid}".encode("utf-8")
+    ).hexdigest()
+
+
 def select_session_summary_canonical(
     conn: sqlite3.Connection, *, session_id: str, content_hash: Optional[str] = None,
 ):
@@ -528,9 +541,7 @@ def upsert_session_summary(
         metadata_obj = {}
     metadata_obj["session_id"] = sid
     metadata_str = json.dumps(metadata_obj, ensure_ascii=False)
-    content_hash = hashlib.sha256(
-        f"{content.lower()}|session:{sid}".encode("utf-8")
-    ).hexdigest()
+    content_hash = session_summary_content_hash(session_id=sid, content=content)
     embedding_blob = (
         embedding_bytes.tobytes()
         if isinstance(embedding_bytes, memoryview)

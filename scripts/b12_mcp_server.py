@@ -1109,20 +1109,34 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         if bound_session_id is not None:
             from write_time_merge import (
                 select_session_summary_canonical,
+                session_summary_content_hash,
                 upsert_session_summary,
             )
 
+            incoming_hash = session_summary_content_hash(
+                session_id=bound_session_id, content=content
+            )
+            active = select_session_summary_canonical(
+                db, session_id=bound_session_id
+            )
+            target = select_session_summary_canonical(
+                db, session_id=bound_session_id, content_hash=incoming_hash
+            )
+            preserved = active or target
+            preserved_tags = None
+            preserved_valid_until = None
+            if preserved:
+                preserved_metadata = db.execute(
+                    "SELECT tags, valid_until FROM memories WHERE id = ?",
+                    (preserved[0],),
+                ).fetchone()
+                if preserved_metadata:
+                    preserved_tags = preserved_metadata[0]
+                    preserved_valid_until = preserved_metadata[1]
+
             upsert_tags = tags
-            if not tags_supplied:
-                canonical = select_session_summary_canonical(
-                    db, session_id=bound_session_id
-                )
-                if canonical:
-                    existing_tags = db.execute(
-                        "SELECT tags FROM memories WHERE id = ?", (canonical[0],)
-                    ).fetchone()
-                    if existing_tags:
-                        upsert_tags = existing_tags[0]
+            if not tags_supplied and preserved is not None:
+                upsert_tags = preserved_tags
 
             memory_id = upsert_session_summary(
                 db,
@@ -1133,10 +1147,13 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
                 embedding_bytes=None,
                 now=now_ts,
             )
-            if valid_until_supplied:
+            if valid_until_supplied or preserved is not None:
                 db.execute(
                     "UPDATE memories SET valid_until = ? WHERE id = ?",
-                    (valid_until, memory_id),
+                    (
+                        valid_until if valid_until_supplied else preserved_valid_until,
+                        memory_id,
+                    ),
                 )
             stored = db.execute(
                 "SELECT content_hash FROM memories WHERE id = ?", (memory_id,)
