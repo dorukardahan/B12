@@ -340,7 +340,7 @@ def test_health_prefers_live_process_binary_over_stable_argv_symlink(tmp_path: P
     monkeypatch.setattr(b12_health.ctypes, "CDLL", lambda *args, **kwargs: _FakeLibProc())
 
     executable = b12_health._process_executable(
-        123, f"{stable_venv_python} /Users/example/.B12/hooks/scripts/b12_mcp_daemon.py"
+        123, f"{stable_venv_python} /tmp/b12-hooks/scripts/b12_mcp_daemon.py"
     )
 
     assert executable == str(deleted_cellar_python)
