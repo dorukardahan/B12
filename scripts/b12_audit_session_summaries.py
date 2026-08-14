@@ -247,22 +247,38 @@ def _recovery_candidate(
 def _full_ids_by_prefix(conn: sqlite3.Connection) -> dict[str, set[str]]:
     """Index IDs from all recovery surfaces, memory types, and deletion states."""
     prefixes: dict[str, set[str]] = {}
+
+    def _index(session_id: str | None, *, allow_exact_prefix: bool) -> None:
+        if not session_id:
+            return
+        minimum = _LEGACY_PREFIX_LENGTH if allow_exact_prefix else _LEGACY_PREFIX_LENGTH + 1
+        if len(session_id) < minimum:
+            return
+        prefixes.setdefault(
+            session_id[:_LEGACY_PREFIX_LENGTH], set()
+        ).add(session_id)
+
     for raw_metadata, raw_tags in conn.execute("SELECT metadata, tags FROM memories"):
         metadata, _ = _metadata(raw_metadata)
-        candidates = [
+        # A canonical metadata.session_id is already a bound full identity, even
+        # when its legitimate value happens to be exactly 12 characters. Recovery
+        # surfaces at exactly 12 characters are legacy prefixes, not additional
+        # full-ID owners; indexing them would make every unique prefix collide with
+        # itself plus its one matching full identity.
+        _index(
             _session_identifier(metadata.get("session_id")),
+            allow_exact_prefix=True,
+        )
+        _index(
             _session_identifier(metadata.get("source_session")),
-        ]
+            allow_exact_prefix=False,
+        )
         for tag in _tags(raw_tags):
             if tag.startswith("session:"):
-                candidates.append(
-                    _session_identifier(tag[len("session:"):])
+                _index(
+                    _session_identifier(tag[len("session:"):]),
+                    allow_exact_prefix=False,
                 )
-        for session_id in candidates:
-            if session_id and len(session_id) >= _LEGACY_PREFIX_LENGTH:
-                prefixes.setdefault(
-                    session_id[:_LEGACY_PREFIX_LENGTH], set()
-                ).add(session_id)
     return prefixes
 
 
