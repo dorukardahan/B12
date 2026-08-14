@@ -245,15 +245,24 @@ def _recovery_candidate(
 
 
 def _full_ids_by_prefix(conn: sqlite3.Connection) -> dict[str, set[str]]:
-    """Index IDs from all memory types and deletion states for collision checks."""
+    """Index IDs from all recovery surfaces, memory types, and deletion states."""
     prefixes: dict[str, set[str]] = {}
-    for (raw_metadata,) in conn.execute("SELECT metadata FROM memories"):
-        metadata, metadata_valid = _metadata(raw_metadata)
-        if not metadata_valid:
-            continue
-        session_id = _session_identifier(metadata.get("session_id"))
-        if session_id and len(session_id) >= _LEGACY_PREFIX_LENGTH:
-            prefixes.setdefault(session_id[:_LEGACY_PREFIX_LENGTH], set()).add(session_id)
+    for raw_metadata, raw_tags in conn.execute("SELECT metadata, tags FROM memories"):
+        metadata, _ = _metadata(raw_metadata)
+        candidates = [
+            _session_identifier(metadata.get("session_id")),
+            _session_identifier(metadata.get("source_session")),
+        ]
+        for tag in _tags(raw_tags):
+            if tag.startswith("session:"):
+                candidates.append(
+                    _session_identifier(tag[len("session:"):])
+                )
+        for session_id in candidates:
+            if session_id and len(session_id) >= _LEGACY_PREFIX_LENGTH:
+                prefixes.setdefault(
+                    session_id[:_LEGACY_PREFIX_LENGTH], set()
+                ).add(session_id)
     return prefixes
 
 

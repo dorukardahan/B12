@@ -147,6 +147,27 @@ def test_read_only_audit_classifies_every_active_unbound_summary(tmp_path: Path)
         "proj:deleted,session-summary",
         deleted_at=1.0,
     )
+    _add(
+        conn,
+        14,
+        {"source_session": "abcdefabcdef-source-full-a"},
+        "proj:other",
+        memory_type="decision",
+    )
+    _add(
+        conn,
+        15,
+        {},
+        "proj:other,session:abcdefabcdef-tag-full-b",
+        memory_type="decision",
+        deleted_at=1.0,
+    )
+    _add(
+        conn,
+        16,
+        {"source_session": "abcdefabcdef"},
+        "proj:collision,session-summary",
+    )
     conn.commit()
     conn.close()
     before = _sqlite_snapshot(path)
@@ -161,15 +182,15 @@ def test_read_only_audit_classifies_every_active_unbound_summary(tmp_path: Path)
     assert result.returncode == 0, result.stderr
     report = json.loads(result.stdout)
     assert report["mode"] == "DRY-RUN (no changes)"
-    assert report["active_session_summaries"] == 10
-    assert report["unbound_session_summaries"] == 8
+    assert report["active_session_summaries"] == 11
+    assert report["unbound_session_summaries"] == 9
     assert report["category_counts"] == {
-        "ambiguous_legacy": 5,
+        "ambiguous_legacy": 6,
         "bound": 2,
         "intentionally_unbound": 1,
         "recoverable_legacy": 2,
     }
-    assert [row["id"] for row in report["unbound_rows"]] == list(range(3, 11))
+    assert [row["id"] for row in report["unbound_rows"]] == [*range(3, 11), 16]
     assert {row["category"] for row in report["unbound_rows"]} == {
         "ambiguous_legacy",
         "intentionally_unbound",
@@ -195,6 +216,8 @@ def test_read_only_audit_classifies_every_active_unbound_summary(tmp_path: Path)
     assert by_id[9]["recovery_source"] is None
     assert by_id[10]["category"] == "ambiguous_legacy"
     assert by_id[10]["recovery_source"] is None
+    assert by_id[16]["category"] == "ambiguous_legacy"
+    assert by_id[16]["recovery_source"] is None
     assert _sqlite_snapshot(path) == before
 
     serialized = json.dumps(report, sort_keys=True)
