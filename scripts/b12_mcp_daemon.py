@@ -53,10 +53,12 @@ from mcp.shared.message import SessionMessage
 import b12_mcp_server as srv
 
 try:
-    from shared_patterns import rss_exceeds
+    from shared_patterns import process_executable_path, rss_exceeds
 except Exception:  # pragma: no cover — never block daemon on import
     def rss_exceeds(ceiling_mb):  # fail-open
         return 0
+    def process_executable_path(pid=None):  # fail-open
+        return sys.executable
 
 _UID = os.getuid() if hasattr(os, "getuid") else os.getpid()
 SOCK_PATH = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
@@ -113,6 +115,15 @@ except (TypeError, ValueError):
     INTERPRETER_CHECK_INTERVAL = 5.0
 _stale_interpreter_logged = False
 _draining_for_stale_interpreter = False
+
+
+def _missing_interpreter_path() -> str | None:
+    """Return a missing launcher/mapped-runtime path, or None if both exist."""
+    runtime_paths = {sys.executable, process_executable_path()}
+    return next(
+        (path for path in runtime_paths if path and not os.path.exists(path)),
+        None,
+    )
 
 
 def log(msg: str) -> None:
@@ -370,11 +381,12 @@ async def _interpreter_self_heal_timer() -> None:
     global _stale_interpreter_logged, _draining_for_stale_interpreter
     while True:
         await asyncio.sleep(INTERPRETER_CHECK_INTERVAL)
-        if os.path.exists(sys.executable):
+        missing_path = _missing_interpreter_path()
+        if missing_path is None:
             continue
         if not _stale_interpreter_logged:
             log(
-                f"interpreter executable missing: {sys.executable} — "
+                f"interpreter executable missing: {missing_path} — "
                 "stopping accepts and draining active requests before launchd restart"
             )
             _stale_interpreter_logged = True

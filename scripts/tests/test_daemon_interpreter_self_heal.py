@@ -5,7 +5,6 @@ model / MCP server.  No user database, Homebrew install, or network access is us
 """
 from __future__ import annotations
 
-import ctypes
 import json
 import os
 import plistlib
@@ -25,6 +24,9 @@ SCRIPTS = ROOT / "scripts"
 sys.path.insert(0, str(SCRIPTS))
 
 import b12_health
+import b12_mcp_daemon
+import embed_daemon
+import shared_patterns
 
 
 def _wait_for_path(path: Path, proc: subprocess.Popen, timeout: float = 5.0) -> None:
@@ -157,6 +159,39 @@ def test_embed_daemon_deleted_executable_exits_cleanly_after_response(tmp_path: 
         _stop_process(proc, sock)
 
 
+def test_embed_daemon_detects_deleted_mapped_binary_when_launcher_still_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    launcher = tmp_path / "venv" / "bin" / "python3"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("stable launcher", encoding="utf-8")
+    missing_runtime = tmp_path / "Cellar" / "python@3.14" / "3.14.6" / "Python"
+    running = [True]
+    monkeypatch.setattr(embed_daemon.sys, "executable", str(launcher))
+    monkeypatch.setattr(
+        embed_daemon, "process_executable_path", lambda: str(missing_runtime)
+    )
+    monkeypatch.setattr(embed_daemon, "_stale_interpreter_logged", False)
+
+    assert embed_daemon._request_restart_for_stale_interpreter(running) is True
+    assert running == [False]
+
+
+def test_mcp_daemon_detects_deleted_mapped_binary_when_launcher_still_exists(
+    tmp_path: Path, monkeypatch
+) -> None:
+    launcher = tmp_path / "venv" / "bin" / "python3"
+    launcher.parent.mkdir(parents=True)
+    launcher.write_text("stable launcher", encoding="utf-8")
+    missing_runtime = tmp_path / "Cellar" / "python@3.14" / "3.14.6" / "Python"
+    monkeypatch.setattr(b12_mcp_daemon.sys, "executable", str(launcher))
+    monkeypatch.setattr(
+        b12_mcp_daemon, "process_executable_path", lambda: str(missing_runtime)
+    )
+
+    assert b12_mcp_daemon._missing_interpreter_path() == str(missing_runtime)
+
+
 def test_mcp_daemon_deleted_executable_drains_inflight_request_before_exit(tmp_path: Path) -> None:
     stale_python = tmp_path / "python-stale"
     stale_python.symlink_to(sys.executable)
@@ -265,6 +300,8 @@ def test_retrieval_hook_starts_embed_daemon_on_demand(tmp_path: Path) -> None:
     python.symlink_to(sys.executable)
     daemon_script.write_text(
         "from pathlib import Path\n"
+        "import time\n"
+        "time.sleep(1.5)\n"
         f"Path({str(marker)!r}).write_text(__file__, encoding='utf-8')\n",
         encoding="utf-8",
     )
@@ -273,6 +310,7 @@ def test_retrieval_hook_starts_embed_daemon_on_demand(tmp_path: Path) -> None:
         f". {shlex.quote(str(ROOT / 'hooks' / '_b12_common.sh'))}; "
         "b12_ensure_embed_daemon"
     )
+    started = time.monotonic()
     result = subprocess.run(
         ["bash", "-c", command],
         env={
@@ -287,8 +325,10 @@ def test_retrieval_hook_starts_embed_daemon_on_demand(tmp_path: Path) -> None:
         timeout=3,
         check=False,
     )
+    elapsed = time.monotonic() - started
     assert result.returncode == 0, result.stderr
-    deadline = time.monotonic() + 1
+    assert elapsed < 1.0, f"on-demand launcher blocked the hook for {elapsed:.3f}s"
+    deadline = time.monotonic() + 2
     while time.monotonic() < deadline and not marker.exists():
         time.sleep(0.01)
     assert marker.read_text(encoding="utf-8").strip() == str(daemon_script)
@@ -317,15 +357,15 @@ def test_on_demand_embed_start_survives_retrieval_watchdog(tmp_path: Path) -> No
         "    killed.write_text('killed', encoding='utf-8')\n"
         "    sys.exit(143)\n"
         "signal.signal(signal.SIGTERM, stop)\n"
-        "time.sleep(0.4)\n"
+        "time.sleep(1.5)\n"
         "survived.write_text('survived', encoding='utf-8')\n",
         encoding="utf-8",
     )
 
     command = (
         f". {shlex.quote(str(ROOT / 'hooks' / '_b12_common.sh'))}; "
-        "b12_sync_watchdog 0.1 test-retrieval; "
-        "b12_ensure_embed_daemon; while :; do :; done"
+        "b12_ensure_embed_daemon; "
+        "b12_sync_watchdog 0.1 test-retrieval; while :; do :; done"
     )
     started = time.monotonic()
     result = subprocess.run(
@@ -344,8 +384,8 @@ def test_on_demand_embed_start_survives_retrieval_watchdog(tmp_path: Path) -> No
     )
     elapsed = time.monotonic() - started
     assert result.returncode == 0
-    assert elapsed < 0.3, f"on-demand start blocked the hook for {elapsed:.3f}s"
-    deadline = time.monotonic() + 1
+    assert elapsed < 1.0, f"retrieval watchdog fired too late ({elapsed:.3f}s)"
+    deadline = time.monotonic() + 2
     while time.monotonic() < deadline and not survived.exists() and not killed.exists():
         time.sleep(0.01)
     assert survived.exists(), "retrieval watchdog killed the on-demand model loader"
@@ -399,18 +439,9 @@ def test_health_prefers_live_process_binary_over_stable_argv_symlink(tmp_path: P
     deleted_cellar_python = tmp_path / "Cellar" / "python@3.14" / "3.14.6" / "Python"
     stable_venv_python.parent.mkdir(parents=True)
     stable_venv_python.write_text("still present", encoding="utf-8")
-    monkeypatch.setattr(b12_health.sys, "platform", "darwin")
-
-    class _FakeProcPidPath:
-        def __call__(self, pid, buf, size):
-            raw = os.fsencode(deleted_cellar_python)
-            ctypes.memmove(buf, raw + b"\0", len(raw) + 1)
-            return len(raw)
-
-    class _FakeLibProc:
-        proc_pidpath = _FakeProcPidPath()
-
-    monkeypatch.setattr(b12_health.ctypes, "CDLL", lambda *args, **kwargs: _FakeLibProc())
+    monkeypatch.setattr(
+        b12_health, "process_executable_path", lambda pid: str(deleted_cellar_python)
+    )
 
     executable = b12_health._process_executable(
         123, f"{stable_venv_python} /tmp/b12-hooks/scripts/b12_mcp_daemon.py"
@@ -418,6 +449,19 @@ def test_health_prefers_live_process_binary_over_stable_argv_symlink(tmp_path: P
 
     assert executable == str(deleted_cellar_python)
     assert not os.path.exists(executable)
+
+
+def test_process_executable_probe_does_not_use_own_runtime_for_another_pid(
+    monkeypatch,
+) -> None:
+    monkeypatch.setattr(shared_patterns.sys, "platform", "darwin")
+    monkeypatch.setattr(
+        shared_patterns.ctypes,
+        "CDLL",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("libproc unavailable")),
+    )
+
+    assert shared_patterns.process_executable_path(os.getpid() + 100_000) == ""
 
 
 def test_health_warns_when_running_daemon_version_differs_from_venv(tmp_path: Path, monkeypatch) -> None:

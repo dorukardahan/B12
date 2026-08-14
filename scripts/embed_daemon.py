@@ -48,7 +48,12 @@ try:
     if _here not in sys.path:
         sys.path.insert(0, _here)
     from b12_config import get as _b12_cfg_get
-    from shared_patterns import exact_tag_param, exact_tag_predicate, rss_exceeds
+    from shared_patterns import (
+        exact_tag_param,
+        exact_tag_predicate,
+        process_executable_path,
+        rss_exceeds,
+    )
 except Exception:  # pragma: no cover — never block daemon on config import
     def _b12_cfg_get(*_path, default=None):
         return default
@@ -60,6 +65,8 @@ except Exception:  # pragma: no cover — never block daemon on config import
         return f"%,{escaped},%"
     def rss_exceeds(ceiling_mb):  # fail-open if shared_patterns is unavailable
         return 0
+    def process_executable_path(pid=None):  # fail-open
+        return sys.executable
 
 warnings.filterwarnings('ignore')
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -111,14 +118,24 @@ def log(msg):
         pass
 
 
+def _missing_interpreter_path():
+    """Return a missing launcher/mapped-runtime path, or None if both exist."""
+    runtime_paths = {sys.executable, process_executable_path()}
+    return next(
+        (path for path in runtime_paths if path and not os.path.exists(path)),
+        None,
+    )
+
+
 def _request_restart_for_stale_interpreter(running):
     """Request a clean on-demand restart if this runtime vanished from disk."""
     global _stale_interpreter_logged
-    if os.path.exists(sys.executable):
+    missing_path = _missing_interpreter_path()
+    if missing_path is None:
         return False
     if not _stale_interpreter_logged:
         log(
-            f"interpreter executable missing: {sys.executable} — "
+            f"interpreter executable missing: {missing_path} — "
             "exiting cleanly after the current request for on-demand restart"
         )
         _stale_interpreter_logged = True

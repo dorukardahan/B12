@@ -12,7 +12,6 @@ Usage:
 """
 
 import argparse
-import ctypes
 import json
 import os
 import plistlib
@@ -27,6 +26,11 @@ try:
 except ImportError:  # pragma: no cover - Python < 3.11
     tomllib = None
 from pathlib import Path
+
+try:
+    from shared_patterns import process_executable_path
+except ImportError:  # pragma: no cover - standalone partial install
+    process_executable_path = None
 
 # ── Constants ────────────────────────────────────────────────────────
 
@@ -337,25 +341,12 @@ def _process_executable(pid: int, command: str) -> str:
     can remain stable while the mapped framework executable lives in a deleted
     versioned Cellar directory.
     """
-    if sys.platform == "darwin":
+    if process_executable_path is not None:
         try:
-            libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
-            buf = ctypes.create_string_buffer(4096)
-            size = libproc.proc_pidpath(int(pid), buf, ctypes.sizeof(buf))
-            if size > 0:
-                return os.fsdecode(buf.value)
-        except (AttributeError, OSError, ValueError):
-            pass
-    elif sys.platform.startswith("linux"):
-        try:
-            executable = os.readlink(f"/proc/{pid}/exe")
-            # Linux annotates an unlinked executable with this suffix; remove it
-            # so existence checks and user-facing output show the original path.
-            if executable.endswith(" (deleted)"):
-                executable = executable[:-10]
+            executable = process_executable_path(pid)
             if executable:
                 return executable
-        except OSError:
+        except (OSError, ValueError):
             pass
     try:
         return shlex.split(command)[0]
