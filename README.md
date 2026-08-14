@@ -475,6 +475,7 @@ Environment variables:
 - `B12_EMBED_GGUF_PATH` — absolute path to a BGE-M3 GGUF file when `B12_EMBED_BACKEND=gguf`
 - `B12_MAX_INJECT_TOKENS` — per-turn injection cap (default `800`, char proxy)
 - `B12_MAX_SESSION_TOKENS` — cumulative per-session injection cap (default `80000` = ~8% of 1M)
+- `B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT` — max seconds `memory_search` waits behind another embed-daemon operation before falling back to FTS (default: `2`)
 - `MCP_MAX_RESPONSE_CHARS` — max chars in search results (default: `40000`)
 
 ### Hooks (Claude Code `settings.json`)
@@ -508,6 +509,7 @@ If you run multiple Claude Code setups (e.g., personal + work):
 | `B12_INTERPRETER_CHECK_INTERVAL` | Long-lived MCP/embed daemons: seconds between checks that `sys.executable` still exists. If a Homebrew Python upgrade removes the running Cellar interpreter, daemons finish in-flight work and exit cleanly; launchd respawns MCP, while the next embedding need respawns embed. | `5` | `10` |
 | `B12_MCP_WAL_CHECKPOINT_INTERVAL` | MCP daemon: seconds between `PRAGMA wal_checkpoint(TRUNCATE)` runs (keeps the WAL from growing unbounded on an idle daemon). `0` disables. | `300` (5min) | `600` |
 | `B12_MCP_READ_POOL` | MCP server: number of worker threads (and thread-owned SQLite read connections) that serve reads off the event loop, so a slow query on one tab never blocks the others (WAL → concurrent readers). Writes always go through a single serialized writer thread (no knob). `0`/unset auto-sizes to `max(4, min(8, cpu_count))`. | `0` (auto) | `4` / `16` |
+| `B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT` | MCP `memory_search`: seconds to wait for the single embed-daemon queue before returning existing FTS results (hybrid) or a fail-soft empty result (semantic-only). This does not shorten an in-flight daemon request or affect store/embed operations. | `2` | `1` / `5` |
 
 #### Memory-safety guards
 

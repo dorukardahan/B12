@@ -702,6 +702,20 @@ try:
 except (TypeError, ValueError):
     _DAEMON_CLIENT_TIMEOUT = 20.0
 
+# Latency-sensitive retrieval gets a separate budget for WAITING to enter the
+# single-connection embed-daemon queue. It does not shorten the existing socket
+# timeout once a request starts, so stores and other correctness-sensitive embed
+# operations preserve their current behavior. Keep invalid/non-finite/non-positive
+# values from disabling semantic retrieval or crashing module import.
+try:
+    _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = float(
+        os.environ.get("B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT", "2")
+    )
+    if not 0 < _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT < float("inf"):
+        _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = 2.0
+except (TypeError, ValueError):
+    _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = 2.0
+
 
 def _ensure_embed_daemon(force: bool = False) -> bool:
     """Start the on-demand embed daemon when no process owns its singleton lock.
@@ -762,7 +776,9 @@ def daemon_request(op: str, **kwargs) -> dict | None:
         s.close()
 
 
-async def daemon_request_async(op: str, **kwargs) -> dict | None:
+async def daemon_request_async(
+    op: str, *, queue_timeout: float | None = None, **kwargs
+) -> dict | None:
     """Async wrapper for daemon_request: runs the blocking Unix-socket round-trip
     in a worker thread so the shared asyncio event loop is never stalled on
     daemon I/O. In daemon mode a single FastMCP loop serves every connected
@@ -778,8 +794,28 @@ async def daemon_request_async(op: str, **kwargs) -> dict | None:
     disconnects mid-`encode_batch`), we still wait for the in-flight socket
     round-trip to finish before releasing _daemon_lock — a worker thread can't
     be cancelled, and releasing early would let the next request race the
-    single-connection daemon. Cancellation then propagates as normal."""
-    async with _daemon_lock:
+    single-connection daemon. Cancellation then propagates as normal.
+
+    `queue_timeout` bounds only lock acquisition. A timeout returns None before
+    creating the worker, allowing latency-sensitive callers to fall back without
+    changing the in-flight socket budget for other operations."""
+    acquired = False
+    wait_started = time.monotonic()
+    try:
+        if queue_timeout is None:
+            await _daemon_lock.acquire()
+        else:
+            try:
+                async with asyncio.timeout(queue_timeout):
+                    await _daemon_lock.acquire()
+            except TimeoutError:
+                waited = time.monotonic() - wait_started
+                _sys.stderr.write(
+                    f"[b12_mcp_server] daemon queue timeout op={op} "
+                    f"waited={waited:.3f}s; request not started\n"
+                )
+                return None
+        acquired = True
         worker = asyncio.ensure_future(asyncio.to_thread(daemon_request, op, **kwargs))
         try:
             return await asyncio.shield(worker)
@@ -792,6 +828,9 @@ async def daemon_request_async(op: str, **kwargs) -> dict | None:
                     await asyncio.shield(worker)
                 except BaseException:
                     pass
+    finally:
+        if acquired:
+            _daemon_lock.release()
 
 
 async def _run_locked_offthread(fn, *args, **kwargs):
@@ -1293,7 +1332,11 @@ async def memory_search(
     # ── Semantic search via daemon (off the writer — daemon call is slow) ──
     if mode in ("semantic", "hybrid") and query:
         resp = await daemon_request_async(
-            "semantic_search", query=query, db_path=DB_PATH, limit=limit * 2
+            "semantic_search",
+            queue_timeout=_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT,
+            query=query,
+            db_path=DB_PATH,
+            limit=limit * 2,
         )
         if resp and resp.get("results"):
             def _semantic_merge(db):

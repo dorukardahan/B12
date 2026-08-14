@@ -124,6 +124,121 @@ def test_daemon_request_async_finishes_worker_on_cancellation():
     assert "slow" in completed, "worker was abandoned on cancellation (socket round-trip not awaited)"
 
 
+def test_daemon_request_async_queue_timeout_does_not_start_worker():
+    """A queue timeout returns None without starting a late daemon worker."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_daemon_request_async_queue_timeout_does_not_start_worker ({e})")
+        return
+
+    calls = []
+
+    def fake_daemon_request(op, **kwargs):
+        calls.append((op, kwargs))
+        return {"ok": True, "op": op}
+
+    orig_request, orig_lock = M.daemon_request, M._daemon_lock
+    M.daemon_request = fake_daemon_request
+    M._daemon_lock = asyncio.Lock()
+    try:
+        async def run():
+            await M._daemon_lock.acquire()
+            try:
+                return await asyncio.wait_for(
+                    M.daemon_request_async(
+                        "semantic_search", queue_timeout=0.02, query="bounded"
+                    ),
+                    timeout=0.2,
+                )
+            finally:
+                if M._daemon_lock.locked():
+                    M._daemon_lock.release()
+
+        result = asyncio.run(run())
+    finally:
+        M.daemon_request, M._daemon_lock = orig_request, orig_lock
+
+    assert result is None
+    assert calls == [], "queue timeout started a daemon worker after fallback"
+
+
+def test_daemon_request_async_without_queue_timeout_still_waits():
+    """Correctness-sensitive callers (stores/embeds) preserve the old wait."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_daemon_request_async_without_queue_timeout_still_waits ({e})")
+        return
+
+    calls = []
+
+    def fake_daemon_request(op, **kwargs):
+        calls.append((op, kwargs))
+        return {"ok": True, "op": op}
+
+    orig_request, orig_lock = M.daemon_request, M._daemon_lock
+    M.daemon_request = fake_daemon_request
+    M._daemon_lock = asyncio.Lock()
+    try:
+        async def run():
+            await M._daemon_lock.acquire()
+            task = asyncio.create_task(M.daemon_request_async("encode_batch", texts=["x"]))
+            await asyncio.sleep(0.04)
+            assert not task.done(), "unbounded caller stopped waiting for the daemon lock"
+            assert calls == [], "worker started before the daemon lock was available"
+            M._daemon_lock.release()
+            return await asyncio.wait_for(task, timeout=0.2)
+
+        result = asyncio.run(run())
+    finally:
+        M.daemon_request, M._daemon_lock = orig_request, orig_lock
+
+    assert result == {"ok": True, "op": "encode_batch"}
+    assert calls == [("encode_batch", {"texts": ["x"]})]
+
+
+def test_daemon_queue_wait_propagates_release_cancel_race():
+    """External cancellation wins when lock release races the queue waiter."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_daemon_queue_wait_propagates_release_cancel_race ({e})")
+        return
+
+    calls = []
+
+    def fake_daemon_request(op, **kwargs):
+        calls.append((op, kwargs))
+        return {"ok": True, "op": op}
+
+    orig_request, orig_lock = M.daemon_request, M._daemon_lock
+    M.daemon_request = fake_daemon_request
+    M._daemon_lock = asyncio.Lock()
+    try:
+        async def run():
+            await M._daemon_lock.acquire()
+            task = asyncio.create_task(
+                M.daemon_request_async("semantic_search", queue_timeout=1.0, query="x")
+            )
+            await asyncio.sleep(0)  # queue the lock acquisition
+            loop = asyncio.get_running_loop()
+            loop.call_soon(M._daemon_lock.release)
+            loop.call_soon(task.cancel)
+            try:
+                await task
+            except asyncio.CancelledError:
+                return True
+            return False
+
+        cancelled = asyncio.run(run())
+    finally:
+        M.daemon_request, M._daemon_lock = orig_request, orig_lock
+
+    assert cancelled, "release/cancel race swallowed caller cancellation"
+    assert calls == [], "cancelled queue waiter started a daemon worker"
+
+
 # ── PR-B: rare admin handlers offloaded off the FastMCP loop ────────────────
 
 

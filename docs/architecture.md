@@ -30,7 +30,7 @@ Custom FastMCP server providing 13 memory tools and 4 MCP resources. Replaces th
 - **Database**: SQLite + sqlite-vec (local file)
 - **Embeddings**: BGE-M3 (BAAI/bge-m3, 1024-dim, multilingual, cls pooling) via `embed_daemon.py` (runs locally, no API). Override via `MCP_EMBEDDING_MODEL`. Opt-in Q8_0 / Q4_K_M GGUF: set `B12_EMBED_BACKEND=gguf` + `B12_EMBED_GGUF_PATH=...`.
 - **Runtime self-heal**: both long-lived daemons periodically verify that `sys.executable` still exists. This catches Homebrew patch upgrades that delete the old versioned Cellar interpreter while processes continue running from memory. MCP closes its listener, drains in-flight JSON-RPC requests, and exits for launchd `KeepAlive` respawn; embed exits after its current request and is restarted asynchronously by the next retrieval need. The health CLI also compares each running daemon's interpreter path/version with the B12 venv.
-- **Search**: FTS5 hybrid — BM25 keyword + vector cosine + optional porter stemming
+- **Search**: FTS5 hybrid — BM25 keyword + vector cosine + optional porter stemming. `memory_search` bounds only its wait for the serialized embed-daemon queue (`B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT`, default 2s); on queue timeout hybrid mode immediately keeps its FTS results, while semantic-only mode fails soft. Store/embed operations retain the full queue wait and in-flight socket budget.
 - **FTS5 tables**: `memory_fts` (unicode61, exact match), `memory_fts_stemmed` (porter unicode61, morphological), `memory_content_fts` (trigram, legacy)
 - **Scoring**: Effective-stability decay-aware — combines retention, importance, relevance, and strength; importance and reinforcement flatten the aging curve
 - **Dedup**: Write-time semantic merge (cosine > 0.85 = merge, not INSERT)
