@@ -780,6 +780,39 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
         json.loads(row[0])["session_identity"] == "unbound"
         for row in unusable_rows
     )
+
+    auto_classified_content = "[Handoff] Continue the session-summary identity policy work."
+    asyncio.run(b12_mcp_server.memory_store(auto_classified_content, {}))
+    auto_classified = conn.execute(
+        "SELECT memory_type, metadata FROM memories WHERE content = ?",
+        (auto_classified_content,),
+    ).fetchone()
+    assert auto_classified["memory_type"] == "session_summary"
+    auto_metadata = json.loads(auto_classified["metadata"])
+    assert auto_metadata["session_identity"] == "unbound"
+    assert auto_metadata["producer"] == "mcp_memory_store"
+    assert auto_metadata["platform"] == "mcp"
+
+    invalid_dimension_content = "Session summary: normalize invalid identity dimensions."
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            invalid_dimension_content,
+            {
+                "type": "session_summary",
+                "producer": 123,
+                "platform": "unknown",
+            },
+        )
+    )
+    invalid_dimensions = json.loads(
+        conn.execute(
+            "SELECT metadata FROM memories WHERE content = ?",
+            (invalid_dimension_content,),
+        ).fetchone()[0]
+    )
+    assert invalid_dimensions["session_identity"] == "unbound"
+    assert invalid_dimensions["producer"] == "mcp_memory_store"
+    assert invalid_dimensions["platform"] == "mcp"
     conn.close()
 
 

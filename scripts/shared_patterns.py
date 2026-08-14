@@ -26,6 +26,9 @@ _UNUSABLE_SESSION_IDS = frozenset(
         "gemini-unkno",
     }
 )
+_UNUSABLE_IDENTITY_DIMENSIONS = frozenset(
+    {"unknown", "gemini-unknown", "gemini-unkno"}
+)
 
 
 def is_usable_session_id(value: object) -> bool:
@@ -34,6 +37,16 @@ def is_usable_session_id(value: object) -> bool:
         isinstance(value, str)
         and value == value.strip()
         and value.casefold() not in _UNUSABLE_SESSION_IDS
+    )
+
+
+def is_usable_identity_dimension(value: object) -> bool:
+    """Return whether a producer/platform identity dimension is reportable."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and value.casefold() not in _UNUSABLE_IDENTITY_DIMENSIONS
     )
 
 

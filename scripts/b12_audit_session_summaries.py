@@ -16,11 +16,14 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-from shared_patterns import get_db_path, is_usable_session_id
+from shared_patterns import (
+    get_db_path,
+    is_usable_identity_dimension,
+    is_usable_session_id,
+)
 
 _NONE = "(none)"
 _LEGACY_PREFIX_LENGTH = 12
-_OUT_OF_SCOPE_IDS = {"unknown", "gemini-unknown", "gemini-unkno"}
 _PUBLIC_TAG_PREFIXES = {
     "importance",
     "kind",
@@ -140,11 +143,7 @@ def _metadata(raw: object) -> tuple[dict[str, Any], bool]:
 
 
 def _identifier(value: object) -> str | None:
-    if not isinstance(value, str):
-        return None
-    if not value or value != value.strip() or value.casefold() in _OUT_OF_SCOPE_IDS:
-        return None
-    return value
+    return value if is_usable_identity_dimension(value) else None
 
 
 def _session_identifier(value: object) -> str | None:

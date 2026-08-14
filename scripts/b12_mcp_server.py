@@ -18,7 +18,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from mcp.server.fastmcp import FastMCP
-from shared_patterns import is_usable_session_id
+from shared_patterns import is_usable_identity_dimension, is_usable_session_id
 
 # Consolidation engine (lazy import path — scripts/ is on sys.path)
 try:
@@ -1052,17 +1052,6 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
     valid_until = metadata.pop("valid_until", None)
     tags = _normalize_tags(tags_raw)
 
-    # Generic MCP clients can store manual summaries without a host session ID.
-    # Keep those current writes out of the legacy/ambiguous bucket by emitting the
-    # same explicit identity contract as other intentionally-unbound producers.
-    if memory_type == "session_summary":
-        if not is_usable_session_id(metadata.get("session_id")):
-            metadata["session_identity"] = "unbound"
-            if not str(metadata.get("producer") or "").strip():
-                metadata["producer"] = "mcp_memory_store"
-            if not str(metadata.get("platform") or "").strip():
-                metadata["platform"] = "mcp"
-
     # Auto-classify: prefix first, then ML head via daemon (v12.2+)
     if memory_type in ("general", "note", ""):
         try:
@@ -1077,6 +1066,16 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         resp = await daemon_request_async("classify", text=content)
         if resp and resp.get("type"):
             memory_type = resp["type"]
+
+    # Generic MCP clients can store manual or auto-classified summaries without a
+    # host session ID. Apply identity defaults only after the final type is known.
+    if memory_type == "session_summary":
+        if not is_usable_session_id(metadata.get("session_id")):
+            metadata["session_identity"] = "unbound"
+            if not is_usable_identity_dimension(metadata.get("producer")):
+                metadata["producer"] = "mcp_memory_store"
+            if not is_usable_identity_dimension(metadata.get("platform")):
+                metadata["platform"] = "mcp"
 
     content_hash = compute_content_hash(content)
     now_ts, now_iso = _now()
