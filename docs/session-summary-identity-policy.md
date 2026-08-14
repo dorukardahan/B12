@@ -39,6 +39,11 @@ A current writer that creates a `session_summary` must do one of the following:
    `session_identity: "unbound"`, `producer: <stable writer name>`, and
    `platform: <stable host class>`.
 
+The canonical SessionEnd hook fails closed before embedding or database writes
+when its host does not supply a usable stable session ID. Its on-disk summary is
+retained, but sentinel identities such as `unknown` and `gemini-unknown` are not
+passed to the bound upsert path.
+
 Writers must also include a project when one is known. Field absence is retained
 only as a legacy state; new code must not use it to mean unbound.
 

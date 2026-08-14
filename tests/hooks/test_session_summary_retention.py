@@ -123,6 +123,22 @@ def upsert_session_summary(conn, *, session_id, content, tags, metadata, embeddi
 """,
         encoding="utf-8",
     )
+    (scripts / "shared_patterns.py").write_text(
+        """UNUSABLE = {
+    "", "unknown", "none", "null", "n/a", "na",
+    "gemini-unknown", "gemini-unkno",
+}
+
+def is_usable_session_id(value):
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and value.lower() not in UNUSABLE
+    )
+""",
+        encoding="utf-8",
+    )
 
 
 def test_session_end_does_not_apply_unreviewed_summary_deletion(tmp_path: Path) -> None:
@@ -185,3 +201,67 @@ def test_session_end_does_not_apply_unreviewed_summary_deletion(tmp_path: Path) 
     ).fetchall()
     conn.close()
     assert deleted == []
+
+
+def test_session_end_skips_database_summary_without_usable_session_id(
+    tmp_path: Path,
+) -> None:
+    summary_file = tmp_path / "project-latest.md"
+    summary_file.write_text(
+        "This is a non-trivial session summary that must not enter the database "
+        "without a stable usable session identity. It remains available in the "
+        "on-disk summary file for later inspection.\n",
+        encoding="utf-8",
+    )
+    hook_dir = tmp_path / "hook-runtime"
+    _install_embed_stubs(hook_dir)
+    hook_source = (ROOT / "hooks" / "memory-session-end.sh").read_text(
+        encoding="utf-8"
+    )
+    start_marker = "cat > \"$EMBED_SCRIPT\" << 'MEMPYEOF'\n"
+    assert hook_source.count(start_marker) == 1
+    embed_source = hook_source.split(start_marker, 1)[1].split(
+        "\nMEMPYEOF\n", 1
+    )[0]
+    embed_script = tmp_path / "session-end-embed.py"
+    embed_script.write_text(embed_source, encoding="utf-8")
+
+    inserted_by_session_id = {}
+    for index, session_id in enumerate(
+        ("unknown", "gemini-unknown", "gemini-unkno", " ")
+    ):
+        home = tmp_path / f"home-{index}"
+        db_path = home / ".local" / "share" / "mcp-memory" / "sqlite_vec.db"
+        _make_db(db_path)
+        conn = sqlite3.connect(db_path)
+        before = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        conn.close()
+
+        env = os.environ.copy()
+        env.update({"HOME": str(home), "B12_HOOK_DIR": str(hook_dir)})
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(embed_script),
+                str(summary_file),
+                "project",
+                "personal",
+                session_id,
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=20,
+        )
+        assert result.returncode == 0, result.stderr
+        conn = sqlite3.connect(db_path)
+        after = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        conn.close()
+        inserted_by_session_id[session_id] = after - before
+
+    assert inserted_by_session_id == {
+        "unknown": 0,
+        "gemini-unknown": 0,
+        "gemini-unkno": 0,
+        " ": 0,
+    }

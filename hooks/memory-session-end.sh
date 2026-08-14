@@ -765,6 +765,14 @@ with open(summary_file, 'r') as f:
 _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
 sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
 try:
+    from shared_patterns import is_usable_session_id
+except ImportError:
+    # Identity validation is mandatory for canonical SessionEnd summaries.
+    # Keep the on-disk summary, but fail closed before embedding or DB writes.
+    sys.exit(0)
+if not is_usable_session_id(session_id):
+    sys.exit(0)
+try:
     from b12_pii_scrubber import scrub as _pii_scrub
     content = _pii_scrub(content)
 except ImportError:
