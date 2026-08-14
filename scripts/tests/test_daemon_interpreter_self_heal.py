@@ -195,8 +195,7 @@ def test_mcp_daemon_detects_deleted_mapped_binary_when_launcher_still_exists(
     assert b12_mcp_daemon._missing_interpreter_path() == str(missing_runtime)
 
 
-@pytest.mark.asyncio
-async def test_mcp_boundary_client_is_closed_without_entering_server_during_drain(
+def test_mcp_boundary_client_is_closed_without_entering_server_during_drain(
     monkeypatch,
 ) -> None:
     called = {"run": False}
@@ -227,12 +226,15 @@ async def test_mcp_boundary_client_is_closed_without_entering_server_during_drai
     monkeypatch.setattr(b12_mcp_daemon, "_active_connections", 0)
     writer = FakeWriter()
 
-    await asyncio.wait_for(
-        b12_mcp_daemon.handle_client(
-            asyncio.StreamReader(), cast(asyncio.StreamWriter, writer)
-        ),
-        timeout=0.5,
-    )
+    async def exercise() -> None:
+        await asyncio.wait_for(
+            b12_mcp_daemon.handle_client(
+                asyncio.StreamReader(), cast(asyncio.StreamWriter, writer)
+            ),
+            timeout=0.5,
+        )
+
+    asyncio.run(exercise())
 
     assert called["run"] is False
     assert writer.closed is True
