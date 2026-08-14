@@ -82,13 +82,22 @@ def _install_embed_stubs(hook_dir: Path) -> None:
 """,
         encoding="utf-8",
     )
+    (scripts / "numpy.py").write_text(
+        "float32 = object()\n",
+        encoding="utf-8",
+    )
     (scripts / "sentence_transformers.py").write_text(
-        """import numpy as np
+        """class _Embedding:
+    def astype(self, dtype):
+        return self
+    def tobytes(self):
+        return b"\\x00" * 16
+
 class SentenceTransformer:
     def __init__(self, *args, **kwargs):
         pass
     def encode(self, texts, convert_to_numpy=True):
-        return np.zeros((len(texts), 4), dtype=np.float32)
+        return [_Embedding() for _ in texts]
 """,
         encoding="utf-8",
     )
