@@ -123,6 +123,80 @@ b12_async_fork() {
   disown
 }
 
+# True only when retrieval will actually issue a semantic or rerank request.
+# Keep keyword-only prompts from paying the ~2.2GB model startup cost.
+b12_embed_daemon_needed() {
+  local _mode="${1:-}" _rerank="${2:-false}" _count="${3:-0}"
+  case "$_count" in ''|*[!0-9]*) _count=0 ;; esac
+  [ "$_mode" != "keyword" ] && return 0
+  [ "$_rerank" = "true" ] && [ "$_count" -gt 0 ]
+}
+
+# ── b12_ensure_embed_daemon ───────────────────────────────────
+# Non-blocking, fail-soft on-demand start for hooks that need embeddings after
+# the SessionStart daemon has exited (idle timeout, RSS guard, Python upgrade).
+# The Python daemon's flock remains the authority for singleton ownership, so
+# racing hook fires can at worst launch harmless contenders that exit quickly.
+b12_ensure_embed_daemon() {
+  local _uid _runtime _sock _pidfile _lock _pid _cmd _python _script
+  _uid=$(id -u 2>/dev/null || echo $$)
+  _runtime="${B12_EMBED_RUNTIME_DIR:-/tmp}"
+  _sock="$_runtime/b12-embed-${_uid}.sock"
+  _pidfile="$_runtime/b12-embed-${_uid}.pid"
+  _lock="$_runtime/b12-embed-${_uid}.lock"
+
+  if [ -S "$_sock" ] && [ -f "$_pidfile" ]; then
+    _pid=$(cat "$_pidfile" 2>/dev/null | tr -d '[:space:]')
+    if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+      _cmd=$(ps -p "$_pid" -o command= 2>/dev/null || true)
+      case "$_cmd" in
+        *embed_daemon.py*) return 0 ;;
+      esac
+    fi
+  fi
+
+  _python="$HOME/.local/b12-venv/bin/python3"
+  _script="$_B12_HOOK_DIR/scripts/embed_daemon.py"
+  [ -x "$_python" ] && [ -f "$_script" ] || return 1
+
+  if [ -f "$_lock" ]; then
+    # The lock file intentionally survives clean daemon exit. Its recorded PID
+    # can later belong to an unrelated process, so PID liveness is not ownership.
+    # Exit 0 only when another process currently holds the real flock; acquiring
+    # it here means no daemon owns it, and process exit immediately releases it.
+    if "$_python" -c '
+import fcntl, sys
+handle = open(sys.argv[1], "a+")
+try:
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(0)
+except OSError:
+    raise SystemExit(1)
+raise SystemExit(1)
+' "$_lock" </dev/null >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
+  # Launch through a short-lived Python parent. The daemon is the launcher's
+  # child, so when the launcher exits it is reparented before this function
+  # returns. memory-retrieval's hard watchdog kills every DIRECT hook child;
+  # plain `cmd & disown` does not reparent and would let that watchdog kill the
+  # 3-12s model load. start_new_session also isolates terminal signals.
+  "$_python" -c '
+import subprocess, sys
+subprocess.Popen(
+    [sys.argv[1], sys.argv[2]],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    close_fds=True,
+    start_new_session=True,
+)
+' "$_python" "$_script" </dev/null >/dev/null 2>&1
+  return 0
+}
+
 # ── b12_should_skip_trivial TOOL_NAME TOOL_INPUT_JSON ─────────
 # S4 trivial-call whitelist. Returns 0 (skip the hook) for cheap
 # operations where surfacing memory is more cost than value. Caller

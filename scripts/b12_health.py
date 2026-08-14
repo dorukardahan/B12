@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import plistlib
+import shlex
 import shutil
 import socket
 import sqlite3
@@ -25,6 +26,11 @@ try:
 except ImportError:  # pragma: no cover - Python < 3.11
     tomllib = None
 from pathlib import Path
+
+try:
+    from shared_patterns import process_executable_path
+except ImportError:  # pragma: no cover - standalone partial install
+    process_executable_path = None
 
 # ── Constants ────────────────────────────────────────────────────────
 
@@ -257,6 +263,153 @@ def check_embed_daemon() -> CheckResult:
             "Embed daemon socket exists but not responsive",
             str(e),
         )
+
+
+def _python_version(executable: str) -> str | None:
+    """Read the on-disk interpreter version without importing B12 code."""
+    if not executable or not os.path.exists(executable):
+        return None
+    try:
+        result = subprocess.run(
+            [executable, "-c", "import platform; print(platform.python_version())"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
+def _venv_python_version() -> str | None:
+    for candidate in (_VENV_PATH / "bin" / "python3", _VENV_PATH / "bin" / "python"):
+        version = _python_version(str(candidate))
+        if version:
+            return version
+    return None
+
+
+def _daemon_pids() -> set[int]:
+    """Discover live MCP/embed daemons from PID files plus process scan."""
+    pids: set[int] = set()
+    for path in (
+        Path(f"/tmp/b12-mcp-{_UID}.pid"),
+        Path(f"/tmp/b12-embed-{_UID}.pid"),
+    ):
+        try:
+            pids.add(int(path.read_text(encoding="utf-8").strip()))
+        except (OSError, ValueError):
+            pass
+    try:
+        result = subprocess.run(
+            ["pgrep", "-u", str(_UID), "-f", "b12_mcp_daemon.py|embed_daemon.py"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        if result.returncode in (0, 1):
+            for raw in result.stdout.splitlines():
+                try:
+                    pids.add(int(raw.strip()))
+                except ValueError:
+                    pass
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return pids
+
+
+def _process_command(pid: int) -> str:
+    try:
+        result = subprocess.run(
+            ["ps", "-ww", "-p", str(pid), "-o", "command="],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout.strip() if result.returncode == 0 else ""
+
+
+def _process_executable(pid: int, command: str) -> str:
+    """Resolve the binary backing a live PID, not merely its original argv[0].
+
+    This distinction is the whole Homebrew failure signature: a venv argv path
+    can remain stable while the mapped framework executable lives in a deleted
+    versioned Cellar directory.
+    """
+    if process_executable_path is not None:
+        try:
+            executable = process_executable_path(pid)
+            if executable:
+                return executable
+        except (OSError, ValueError):
+            pass
+    try:
+        return shlex.split(command)[0]
+    except (ValueError, IndexError):
+        return command.split(maxsplit=1)[0] if command else ""
+
+
+def _running_daemon_interpreters() -> list[dict]:
+    """Return interpreter facts for each live long-running B12 daemon."""
+    rows = []
+    for pid in sorted(_daemon_pids()):
+        command = _process_command(pid)
+        if not command:
+            continue
+        if "b12_mcp_daemon.py" in command:
+            name = "mcp"
+            restart = f"launchctl kickstart -k gui/{_UID}/com.b12.mcp.daemon"
+        elif "embed_daemon.py" in command:
+            name = "embed"
+            restart = f"kill -TERM {pid}  # hooks restart it on next embedding need"
+        else:
+            # Ignore a reused PID file that now belongs to another process.
+            continue
+        executable = _process_executable(pid, command)
+        rows.append(
+            {
+                "name": name,
+                "pid": pid,
+                "executable": executable,
+                "python_version": _python_version(executable),
+                "restart": restart,
+            }
+        )
+    return rows
+
+
+def check_daemon_interpreters() -> CheckResult:
+    """Warn when a live daemon is pinned to a deleted or old Python runtime."""
+    venv_version = _venv_python_version()
+    stale = []
+    for row in _running_daemon_interpreters():
+        executable = row["executable"]
+        running_version = row.get("python_version")
+        missing = not os.path.exists(executable)
+        mismatch = bool(
+            venv_version and running_version and running_version != venv_version
+        )
+        if not missing and not mismatch:
+            continue
+        reason = f"executable missing: {executable}" if missing else (
+            f"running Python {running_version}, venv Python {venv_version}"
+        )
+        stale.append(
+            f"{row['name']} PID {row['pid']}: {reason}; restart: {row['restart']}"
+        )
+
+    if stale:
+        return CheckResult(
+            Status.WARN,
+            "Daemon interpreters: stale interpreter — restart needed",
+            " | ".join(stale),
+        )
+    return CheckResult(Status.OK, "Daemon interpreters")
 
 
 def check_launchd_plists() -> CheckResult:
@@ -794,6 +947,7 @@ def run_health_check(fix: bool = False) -> list[CheckResult]:
         check_python_modules(),
         check_sqlite_database(),
         check_embed_daemon(),
+        check_daemon_interpreters(),
         check_launchd_plists(),
         check_claude_setups(),
         check_mcp_config(),

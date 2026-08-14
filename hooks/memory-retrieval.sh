@@ -484,7 +484,15 @@ if [ "$_DEDUP_IDS" != "," ] && [ "$RESULT_COUNT" -gt 0 ]; then
 fi
 
 # ── Daemon path: parallel semantic + rerank (Phase 1 + v11) ───
-if daemon_alive; then
+# The daemon may have self-healed after a Homebrew Python upgrade (or exited
+# on idle/RSS). Start it only when this query will issue a semantic/rerank
+# request; keyword-only retrieval must not pay the model's CPU/RSS cost.
+_NEEDS_EMBED_DAEMON=false
+if b12_embed_daemon_needed "$QUERY_MODE" "$SHOULD_RERANK" "$RESULT_COUNT"; then
+  _NEEDS_EMBED_DAEMON=true
+  b12_ensure_embed_daemon 2>/dev/null || true
+fi
+if [ "$_NEEDS_EMBED_DAEMON" = true ] && daemon_alive; then
   # S2: prefer the `recall` op — single round-trip, threshold + dedup pushed
   # into the daemon. Falls back to legacy semantic_search if the daemon is
   # too old to know `recall`.

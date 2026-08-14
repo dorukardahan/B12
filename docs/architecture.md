@@ -29,6 +29,7 @@ Custom FastMCP server providing 13 memory tools and 4 MCP resources. Replaces th
 - **Resources**: `b12://context/project/{name}`, `b12://stats`, `b12://profile`, `b12://health`
 - **Database**: SQLite + sqlite-vec (local file)
 - **Embeddings**: BGE-M3 (BAAI/bge-m3, 1024-dim, multilingual, cls pooling) via `embed_daemon.py` (runs locally, no API). Override via `MCP_EMBEDDING_MODEL`. Opt-in Q8_0 / Q4_K_M GGUF: set `B12_EMBED_BACKEND=gguf` + `B12_EMBED_GGUF_PATH=...`.
+- **Runtime self-heal**: both long-lived daemons periodically verify that `sys.executable` still exists. This catches Homebrew patch upgrades that delete the old versioned Cellar interpreter while processes continue running from memory. MCP closes its listener, drains in-flight JSON-RPC requests, and exits for launchd `KeepAlive` respawn; embed exits after its current request and is restarted asynchronously by the next retrieval need. The health CLI also compares each running daemon's interpreter path/version with the B12 venv.
 - **Search**: FTS5 hybrid — BM25 keyword + vector cosine + optional porter stemming
 - **FTS5 tables**: `memory_fts` (unicode61, exact match), `memory_fts_stemmed` (porter unicode61, morphological), `memory_content_fts` (trigram, legacy)
 - **Scoring**: Effective-stability decay-aware — combines retention, importance, relevance, and strength; importance and reinforcement flatten the aging curve
