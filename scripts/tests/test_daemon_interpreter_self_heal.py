@@ -5,6 +5,7 @@ model / MCP server.  No user database, Homebrew install, or network access is us
 """
 from __future__ import annotations
 
+import asyncio
 import fcntl
 import json
 import os
@@ -17,6 +18,7 @@ import sys
 import textwrap
 import time
 from pathlib import Path
+from typing import cast
 
 import pytest
 
@@ -191,6 +193,51 @@ def test_mcp_daemon_detects_deleted_mapped_binary_when_launcher_still_exists(
     )
 
     assert b12_mcp_daemon._missing_interpreter_path() == str(missing_runtime)
+
+
+@pytest.mark.asyncio
+async def test_mcp_boundary_client_is_closed_without_entering_server_during_drain(
+    monkeypatch,
+) -> None:
+    called = {"run": False}
+
+    class FakeWriter:
+        closed = False
+
+        def close(self) -> None:
+            self.closed = True
+
+        async def wait_closed(self) -> None:
+            return None
+
+        def write(self, data: bytes) -> None:
+            pass
+
+        async def drain(self) -> None:
+            return None
+
+    async def fake_run(*args, **kwargs) -> None:
+        called["run"] = True
+
+    mcp_server = b12_mcp_daemon.srv.server._mcp_server
+    monkeypatch.setattr(mcp_server, "create_initialization_options", lambda: object())
+    monkeypatch.setattr(mcp_server, "run", fake_run)
+    monkeypatch.setattr(b12_mcp_daemon, "_draining_for_stale_interpreter", True)
+    monkeypatch.setattr(b12_mcp_daemon, "_connections", {})
+    monkeypatch.setattr(b12_mcp_daemon, "_active_connections", 0)
+    writer = FakeWriter()
+
+    await asyncio.wait_for(
+        b12_mcp_daemon.handle_client(
+            asyncio.StreamReader(), cast(asyncio.StreamWriter, writer)
+        ),
+        timeout=0.5,
+    )
+
+    assert called["run"] is False
+    assert writer.closed is True
+    assert b12_mcp_daemon._connections == {}
+    assert b12_mcp_daemon._active_connections == 0
 
 
 def test_mcp_daemon_deleted_executable_drains_inflight_request_before_exit(tmp_path: Path) -> None:

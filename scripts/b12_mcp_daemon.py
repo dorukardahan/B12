@@ -417,13 +417,19 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
         "last_activity": time.time(),
         "writer": writer,
         "inflight": set(),
-        "draining": False,
+        # A connection callback can already be queued when the listener closes.
+        # If the stale-runtime timer won that race, this boundary client must not
+        # enter FastMCP and keep the daemon drain waiting for normal client EOF.
+        "draining": _draining_for_stale_interpreter,
     }
     _connections[conn_id] = record
     log(f"Connection #{conn_id} accepted (active={_active_connections})")
     _enforce_conn_cap(conn_id)
 
     try:
+        if record["draining"]:
+            log(f"Connection #{conn_id} closed at interpreter-restart boundary")
+            return
         async with _socket_streams(reader, writer, record=record) as (rs, ws):
             init_opts = srv.server._mcp_server.create_initialization_options()
             await srv.server._mcp_server.run(rs, ws, init_opts)
