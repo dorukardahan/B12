@@ -484,6 +484,10 @@ if [ "$_DEDUP_IDS" != "," ] && [ "$RESULT_COUNT" -gt 0 ]; then
 fi
 
 # ── Daemon path: parallel semantic + rerank (Phase 1 + v11) ───
+# The daemon may have self-healed after a Homebrew Python upgrade (or exited
+# on idle/RSS). Start the replacement asynchronously; this request keeps the
+# existing fail-soft FTS/cold-fallback behavior while the model warms.
+b12_ensure_embed_daemon 2>/dev/null || true
 if daemon_alive; then
   # S2: prefer the `recall` op — single round-trip, threshold + dedup pushed
   # into the daemon. Falls back to legacy semantic_search if the daemon is

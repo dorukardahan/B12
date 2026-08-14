@@ -505,6 +505,7 @@ If you run multiple Claude Code setups (e.g., personal + work):
 | `B12_MCP_MAX_CONN` | MCP daemon: max concurrent client connections; evicts the most-idle one when exceeded. Emergency backstop only — eviction uses the same client-visible cancel path, so keep it well above realistic concurrency. `0` disables the cap. | `256` | `512` |
 | `B12_MCP_PROXY_RECONNECT` | Stdio proxy: when the daemon socket drops mid-session (daemon restart/redeploy, RSS-guard `os._exit`, `MAX_CONN` eviction, crash) while the host is still alive, transparently re-dial the daemon and replay the cached `initialize` handshake so the host never sees a disconnect. `0` reverts to legacy exit-on-EOF. | `1` (enabled) | `0` |
 | `B12_MCP_RECONNECT_BUDGET` | Stdio proxy: total seconds to keep retrying (capped backoff) before giving up a reconnect and exiting. Default ≈ one launchd respawn window. | `30` | `60` |
+| `B12_INTERPRETER_CHECK_INTERVAL` | Long-lived MCP/embed daemons: seconds between checks that `sys.executable` still exists. If a Homebrew Python upgrade removes the running Cellar interpreter, daemons finish in-flight work and exit cleanly; launchd respawns MCP, while the next embedding need respawns embed. | `5` | `10` |
 | `B12_MCP_WAL_CHECKPOINT_INTERVAL` | MCP daemon: seconds between `PRAGMA wal_checkpoint(TRUNCATE)` runs (keeps the WAL from growing unbounded on an idle daemon). `0` disables. | `300` (5min) | `600` |
 | `B12_MCP_READ_POOL` | MCP server: number of worker threads (and thread-owned SQLite read connections) that serve reads off the event loop, so a slow query on one tab never blocks the others (WAL → concurrent readers). Writes always go through a single serialized writer thread (no knob). `0`/unset auto-sizes to `max(4, min(8, cpu_count))`. | `0` (auto) | `4` / `16` |
 
@@ -557,6 +558,8 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 **Session start** — the SessionStart hook loads your user profile, last session's summary, cross-project hints, and pre-fetches relevant memories from the database using FTS5 + tag queries. All of this is injected as `additionalContext`.
 
 **During conversation** — every user message triggers the retrieval hook, which extracts keywords, runs hybrid FTS5/vector search with effective-stability decay scoring, and injects the top results. The PreToolUse hook ensures every `memory_store` call has proper scope tags.
+
+**Daemon self-heal** — long-lived daemons detect when a package-manager upgrade removes their on-disk Python executable. MCP stops accepting new work, drains active requests, exits, and is restarted by launchd; embed exits after its current request and the retrieval hook starts a replacement on demand. `b12 health` reports any running daemon pinned to a missing or version-mismatched interpreter with the exact restart command.
 
 **Session end** — the SessionEnd hook parses the full transcript, extracts decisions/errors/learnings/preferences using regex patterns (English + Turkish), generates embeddings in the background, and stores micro-memories with write-time dedup.
 

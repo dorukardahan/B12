@@ -105,6 +105,14 @@ try:
 except (TypeError, ValueError):
     MCP_MAX_RSS_MB = 2048
 RSS_GUARD_INTERVAL = float(os.environ.get("B12_MCP_RSS_GUARD_INTERVAL", "60"))  # 1 min
+try:
+    INTERPRETER_CHECK_INTERVAL = max(
+        0.05, float(os.environ.get("B12_INTERPRETER_CHECK_INTERVAL", "5"))
+    )
+except (TypeError, ValueError):
+    INTERPRETER_CHECK_INTERVAL = 5.0
+_stale_interpreter_logged = False
+_draining_for_stale_interpreter = False
 
 
 def log(msg: str) -> None:
@@ -127,7 +135,7 @@ def cleanup_socket_files() -> None:
 
 
 @asynccontextmanager
-async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, on_activity=None):
+async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWriter, record=None):
     """Bridge an asyncio (reader, writer) pair to anyio memory streams that
     speak `SessionMessage`. Mirrors `mcp.server.stdio.stdio_server` but over a
     Unix socket instead of stdin/stdout.
@@ -152,15 +160,27 @@ async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWr
                         return  # peer closed
                     # P2: mark inbound activity so the idle reaper doesn't cancel
                     # a connection that is still actively serving requests.
-                    if on_activity is not None:
+                    if record is not None:
                         try:
-                            on_activity()
+                            record["last_activity"] = time.time()
                         except Exception:
                             pass
                     try:
                         msg = types.JSONRPCMessage.model_validate_json(
                             line.decode("utf-8").rstrip()
                         )
+                        if record is not None and isinstance(msg.root, types.JSONRPCRequest):
+                            if record.get("draining"):
+                                # The proxy already tracks this as outstanding.
+                                # Do not start new work on the stale runtime; EOF
+                                # after the old in-flight set drains makes the
+                                # reconnect path synthesize a retryable response.
+                                log(
+                                    f"Connection #{record['id']} deferred request "
+                                    f"{msg.root.id} during interpreter restart"
+                                )
+                                continue
+                            record["inflight"].add(msg.root.id)
                         await in_send.send(SessionMessage(message=msg))
                     except Exception as exc:
                         await in_send.send(exc)
@@ -180,6 +200,15 @@ async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWr
                     )
                     writer.write(line.encode("utf-8"))
                     await writer.drain()
+                    if record is not None and isinstance(
+                        sm.message.root, (types.JSONRPCResponse, types.JSONRPCError)
+                    ):
+                        record["inflight"].discard(sm.message.root.id)
+                        if record.get("draining") and not record["inflight"]:
+                            log(f"Connection #{record['id']} drained; closing for interpreter restart")
+                            writer.close()
+                            await writer.wait_closed()
+                            return
         except (anyio.ClosedResourceError, ConnectionResetError, BrokenPipeError):
             pass
         except Exception as e:
@@ -199,6 +228,7 @@ _active_connections = 0
 _conn_seq = 0
 # conn_id -> {"task": asyncio.Task, "last_activity": float, "writer": StreamWriter}
 _connections: dict[int, dict] = {}
+_listener_server: asyncio.AbstractServer | None = None
 
 
 def _enforce_conn_cap(current_id: int) -> None:
@@ -329,22 +359,60 @@ async def _rss_self_guard_timer() -> None:
             log(f"rss guard error: {e}")
 
 
+async def _interpreter_self_heal_timer() -> None:
+    """Stop accepting new clients when this runtime disappears from disk.
+
+    Homebrew upgrades remove the old versioned Cellar directory while this
+    process can keep serving from memory.  Closing the listener rejects new
+    work immediately; existing client tasks are then allowed to finish before
+    the main task exits and launchd's KeepAlive respawns the daemon.
+    """
+    global _stale_interpreter_logged, _draining_for_stale_interpreter
+    while True:
+        await asyncio.sleep(INTERPRETER_CHECK_INTERVAL)
+        if os.path.exists(sys.executable):
+            continue
+        if not _stale_interpreter_logged:
+            log(
+                f"interpreter executable missing: {sys.executable} — "
+                "stopping accepts and draining active requests before launchd restart"
+            )
+            _stale_interpreter_logged = True
+        _draining_for_stale_interpreter = True
+        for record in list(_connections.values()):
+            record["draining"] = True
+            if not record["inflight"]:
+                writer = record.get("writer")
+                if writer is not None:
+                    writer.close()
+        if _listener_server is not None:
+            _listener_server.close()
+            await _listener_server.wait_closed()
+        elif _main_task is not None and not _main_task.done():
+            _main_task.cancel()
+        return
+
+
 async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
     """Serve one MCP session for one connected client (one Claude Code session)."""
     global _active_connections, _conn_seq
     _conn_seq += 1
     conn_id = _conn_seq
     _active_connections += 1
-    record = {"task": asyncio.current_task(), "last_activity": time.time(), "writer": writer}
+    record = {
+        "id": conn_id,
+        "task": asyncio.current_task(),
+        "last_activity": time.time(),
+        "writer": writer,
+        "inflight": set(),
+        "draining": False,
+    }
     _connections[conn_id] = record
     log(f"Connection #{conn_id} accepted (active={_active_connections})")
     _enforce_conn_cap(conn_id)
 
-    def _bump_activity() -> None:
-        record["last_activity"] = time.time()
-
     try:
-        async with _socket_streams(reader, writer, on_activity=_bump_activity) as (rs, ws):
+        async with _socket_streams(reader, writer, record=record) as (rs, ws):
             init_opts = srv.server._mcp_server.create_initialization_options()
             await srv.server._mcp_server.run(rs, ws, init_opts)
         log(f"Connection #{conn_id} completed normally")
@@ -393,6 +461,7 @@ def _install_signal_handlers() -> None:
 
 async def _serve() -> None:
     """Bind the Unix socket and serve forever (until cancelled)."""
+    global _listener_server
     # Clean up stale socket from prior unclean shutdown
     if os.path.exists(SOCK_PATH):
         os.unlink(SOCK_PATH)
@@ -417,6 +486,7 @@ async def _serve() -> None:
     async with srv.lifespan(srv.server) as _state:
         log("FastMCP lifespan initialized; accepting connections")
         server = await asyncio.start_unix_server(handle_client, path=SOCK_PATH)
+        _listener_server = server
         try:
             os.chmod(SOCK_PATH, 0o600)
         except OSError:
@@ -428,6 +498,7 @@ async def _serve() -> None:
             asyncio.create_task(_reap_idle_connections()),
             asyncio.create_task(_wal_checkpoint_timer()),
             asyncio.create_task(_rss_self_guard_timer()),
+            asyncio.create_task(_interpreter_self_heal_timer()),
         ]
 
         log(f"Listening on {SOCK_PATH}")
@@ -435,9 +506,22 @@ async def _serve() -> None:
             async with server:
                 await server.serve_forever()
         except asyncio.CancelledError:
+            # asyncio.Server closes the listener before re-raising.  Existing
+            # connection handlers are independent tasks created by
+            # start_unix_server(), so drain them instead of dying mid-request.
+            if _draining_for_stale_interpreter:
+                pending = []
+                for rec in list(_connections.values()):
+                    task = rec.get("task")
+                    if task is not None and not task.done():
+                        pending.append(task)
+                if pending:
+                    log(f"serve_forever cancelled; draining {len(pending)} active connection(s)")
+                    await asyncio.gather(*pending, return_exceptions=True)
             log("serve_forever cancelled, exiting")
             raise
         finally:
+            _listener_server = None
             for _t in _maint_tasks:
                 _t.cancel()
             for _t in _maint_tasks:

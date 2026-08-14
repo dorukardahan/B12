@@ -123,6 +123,36 @@ b12_async_fork() {
   disown
 }
 
+# ── b12_ensure_embed_daemon ───────────────────────────────────
+# Non-blocking, fail-soft on-demand start for hooks that need embeddings after
+# the SessionStart daemon has exited (idle timeout, RSS guard, Python upgrade).
+# The Python daemon's flock remains the authority for singleton ownership, so
+# racing hook fires can at worst launch harmless contenders that exit quickly.
+b12_ensure_embed_daemon() {
+  local _uid _runtime _sock _pidfile _lock _pid _python _script
+  _uid=$(id -u 2>/dev/null || echo $$)
+  _runtime="${B12_EMBED_RUNTIME_DIR:-/tmp}"
+  _sock="$_runtime/b12-embed-${_uid}.sock"
+  _pidfile="$_runtime/b12-embed-${_uid}.pid"
+  _lock="$_runtime/b12-embed-${_uid}.lock"
+
+  if [ -S "$_sock" ] && [ -f "$_pidfile" ]; then
+    _pid=$(cat "$_pidfile" 2>/dev/null | tr -d '[:space:]')
+    [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null && return 0
+  fi
+  if [ -f "$_lock" ]; then
+    _pid=$(cat "$_lock" 2>/dev/null | tr -d '[:space:]')
+    [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null && return 0
+  fi
+
+  _python="$HOME/.local/b12-venv/bin/python3"
+  _script="$_B12_HOOK_DIR/scripts/embed_daemon.py"
+  [ -x "$_python" ] && [ -f "$_script" ] || return 1
+  "$_python" "$_script" >/dev/null 2>&1 &
+  disown 2>/dev/null || true
+  return 0
+}
+
 # ── b12_should_skip_trivial TOOL_NAME TOOL_INPUT_JSON ─────────
 # S4 trivial-call whitelist. Returns 0 (skip the hook) for cheap
 # operations where surfacing memory is more cost than value. Caller
