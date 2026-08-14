@@ -5,6 +5,7 @@ model / MCP server.  No user database, Homebrew install, or network access is us
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import plistlib
@@ -392,6 +393,81 @@ def test_on_demand_embed_start_survives_retrieval_watchdog(tmp_path: Path) -> No
     assert not killed.exists()
 
 
+def test_on_demand_start_ignores_reused_pid_in_unlocked_stale_lock(
+    tmp_path: Path,
+) -> None:
+    home = tmp_path / "home"
+    hook_root = tmp_path / "hooks"
+    data = tmp_path / "data"
+    runtime = tmp_path / "runtime"
+    data.mkdir()
+    runtime.mkdir()
+    python = home / ".local" / "b12-venv" / "bin" / "python3"
+    daemon_script = hook_root / "scripts" / "embed_daemon.py"
+    python.parent.mkdir(parents=True)
+    daemon_script.parent.mkdir(parents=True)
+    marker = data / "started"
+    python.symlink_to(sys.executable)
+    daemon_script.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text('started', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    lock = runtime / f"b12-embed-{os.getuid()}.lock"
+    sock = runtime / f"b12-embed-{os.getuid()}.sock"
+    pidfile = runtime / f"b12-embed-{os.getuid()}.pid"
+    # A stale lock file can contain a PID now reused by this unrelated pytest.
+    lock.write_text(str(os.getpid()), encoding="utf-8")
+    pidfile.write_text(str(os.getpid()), encoding="utf-8")
+    stale_socket = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    stale_socket.bind(str(sock))
+    stale_socket.close()
+
+    command = (
+        f". {shlex.quote(str(ROOT / 'hooks' / '_b12_common.sh'))}; "
+        "b12_ensure_embed_daemon"
+    )
+    with lock.open("r+", encoding="utf-8") as handle:
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        held_result = subprocess.run(
+            ["bash", "-c", command],
+            env={
+                **os.environ,
+                "HOME": str(home),
+                "B12_DATA_DIR": str(data),
+                "B12_HOOK_DIR": str(hook_root),
+                "B12_EMBED_RUNTIME_DIR": str(runtime),
+            },
+            capture_output=True,
+            text=True,
+            timeout=3,
+            check=False,
+        )
+        assert held_result.returncode == 0, held_result.stderr
+        time.sleep(0.1)
+        assert not marker.exists(), "held singleton lock did not suppress a contender"
+
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "B12_DATA_DIR": str(data),
+            "B12_HOOK_DIR": str(hook_root),
+            "B12_EMBED_RUNTIME_DIR": str(runtime),
+        },
+        capture_output=True,
+        text=True,
+        timeout=3,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and not marker.exists():
+        time.sleep(0.01)
+    assert marker.exists(), "reused unrelated PID suppressed on-demand restart"
+
+
 def test_health_process_scan_is_scoped_to_current_user(monkeypatch) -> None:
     seen = {}
 
@@ -462,6 +538,14 @@ def test_process_executable_probe_does_not_use_own_runtime_for_another_pid(
     )
 
     assert shared_patterns.process_executable_path(os.getpid() + 100_000) == ""
+
+
+def test_process_executable_path_preserves_linux_deleted_marker(monkeypatch) -> None:
+    deleted = "/opt/runtime/python3.14 (deleted)"
+    monkeypatch.setattr(shared_patterns.sys, "platform", "linux")
+    monkeypatch.setattr(shared_patterns.os, "readlink", lambda path: deleted)
+
+    assert shared_patterns.process_executable_path(123) == deleted
 
 
 def test_health_warns_when_running_daemon_version_differs_from_venv(tmp_path: Path, monkeypatch) -> None:

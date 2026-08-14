@@ -129,7 +129,7 @@ b12_async_fork() {
 # The Python daemon's flock remains the authority for singleton ownership, so
 # racing hook fires can at worst launch harmless contenders that exit quickly.
 b12_ensure_embed_daemon() {
-  local _uid _runtime _sock _pidfile _lock _pid _python _script
+  local _uid _runtime _sock _pidfile _lock _pid _cmd _python _script
   _uid=$(id -u 2>/dev/null || echo $$)
   _runtime="${B12_EMBED_RUNTIME_DIR:-/tmp}"
   _sock="$_runtime/b12-embed-${_uid}.sock"
@@ -138,16 +138,37 @@ b12_ensure_embed_daemon() {
 
   if [ -S "$_sock" ] && [ -f "$_pidfile" ]; then
     _pid=$(cat "$_pidfile" 2>/dev/null | tr -d '[:space:]')
-    [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null && return 0
-  fi
-  if [ -f "$_lock" ]; then
-    _pid=$(cat "$_lock" 2>/dev/null | tr -d '[:space:]')
-    [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null && return 0
+    if [ -n "$_pid" ] && kill -0 "$_pid" 2>/dev/null; then
+      _cmd=$(ps -p "$_pid" -o command= 2>/dev/null || true)
+      case "$_cmd" in
+        *embed_daemon.py*) return 0 ;;
+      esac
+    fi
   fi
 
   _python="$HOME/.local/b12-venv/bin/python3"
   _script="$_B12_HOOK_DIR/scripts/embed_daemon.py"
   [ -x "$_python" ] && [ -f "$_script" ] || return 1
+
+  if [ -f "$_lock" ]; then
+    # The lock file intentionally survives clean daemon exit. Its recorded PID
+    # can later belong to an unrelated process, so PID liveness is not ownership.
+    # Exit 0 only when another process currently holds the real flock; acquiring
+    # it here means no daemon owns it, and process exit immediately releases it.
+    if "$_python" -c '
+import fcntl, sys
+handle = open(sys.argv[1], "a+")
+try:
+    fcntl.flock(handle.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+except BlockingIOError:
+    raise SystemExit(0)
+except OSError:
+    raise SystemExit(1)
+raise SystemExit(1)
+' "$_lock" </dev/null >/dev/null 2>&1; then
+      return 0
+    fi
+  fi
   # Launch through a short-lived Python parent. The daemon is the launcher's
   # child, so when the launcher exits it is reparented before this function
   # returns. memory-retrieval's hard watchdog kills every DIRECT hook child;

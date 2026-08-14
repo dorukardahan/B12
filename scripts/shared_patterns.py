@@ -36,8 +36,6 @@ def process_executable_path(pid: int | None = None) -> str:
     elif sys.platform.startswith("linux"):
         try:
             executable = os.readlink(f"/proc/{pid}/exe")
-            if executable.endswith(" (deleted)"):
-                executable = executable[:-10]
             if executable:
                 return executable
         except OSError:
