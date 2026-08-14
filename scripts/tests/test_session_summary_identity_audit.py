@@ -210,6 +210,49 @@ def test_read_only_audit_classifies_every_active_unbound_summary(tmp_path: Path)
         assert private_value not in serialized
 
 
+def test_audit_matches_the_writer_session_id_usability_contract(tmp_path: Path) -> None:
+    path = tmp_path / "session-id-contract.db"
+    conn = _db(path)
+    unbound_marker = {
+        "session_identity": "unbound",
+        "producer": "mcp_memory_store",
+        "platform": "mcp",
+    }
+    unusable_ids: tuple[object, ...] = (
+        "none",
+        "null",
+        "n/a",
+        "na",
+        "gemini-unknown",
+        "gemini-unkno",
+        123,
+    )
+    for row_id, session_id in enumerate(unusable_ids, start=1):
+        _add(
+            conn,
+            row_id,
+            {**unbound_marker, "session_id": session_id},
+            "session-summary",
+        )
+    _add(conn, 8, {"session_id": "stable-session-id"}, "session-summary")
+    conn.commit()
+
+    report = audit.audit_session_summaries(conn)
+    conn.close()
+
+    assert report["category_counts"] == {
+        "ambiguous_legacy": 0,
+        "bound": 1,
+        "intentionally_unbound": 7,
+        "recoverable_legacy": 0,
+    }
+    assert [row["id"] for row in report["unbound_rows"]] == list(range(1, 8))
+    assert all(
+        row["category"] == "intentionally_unbound"
+        for row in report["unbound_rows"]
+    )
+
+
 def test_dimension_labels_are_consistent_only_within_one_report(tmp_path: Path) -> None:
     path = tmp_path / "unlinkable-labels.db"
     conn = _db(path)

@@ -14,6 +14,29 @@ import sqlite3
 import sys
 
 
+_UNUSABLE_SESSION_IDS = frozenset(
+    {
+        "",
+        "unknown",
+        "none",
+        "null",
+        "n/a",
+        "na",
+        "gemini-unknown",
+        "gemini-unkno",
+    }
+)
+
+
+def is_usable_session_id(value: object) -> bool:
+    """Return whether ``value`` is a stable string session identifier."""
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and value.casefold() not in _UNUSABLE_SESSION_IDS
+    )
+
+
 def process_executable_path(pid: int | None = None) -> str:
     """Return the OS-reported binary mapped into a live process.
 

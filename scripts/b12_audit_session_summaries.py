@@ -16,7 +16,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterator
 
-from shared_patterns import get_db_path
+from shared_patterns import get_db_path, is_usable_session_id
 
 _NONE = "(none)"
 _LEGACY_PREFIX_LENGTH = 12
@@ -147,6 +147,10 @@ def _identifier(value: object) -> str | None:
     return value
 
 
+def _session_identifier(value: object) -> str | None:
+    return value if is_usable_session_id(value) else None
+
+
 def _tags(raw: object) -> list[str]:
     if not isinstance(raw, str):
         return []
@@ -216,13 +220,13 @@ def _recovery_candidate(
     full_ids_by_prefix: dict[str, set[str]],
 ) -> tuple[str | None, str | None, bool]:
     candidates: list[tuple[str, str]] = []
-    source_session = _identifier(metadata.get("source_session"))
+    source_session = _session_identifier(metadata.get("source_session"))
     if source_session:
         candidates.append((source_session, "metadata.source_session"))
     for tag in tags:
         if not tag.startswith("session:"):
             continue
-        value = _identifier(tag[len("session:"):])
+        value = _session_identifier(tag[len("session:"):])
         if value:
             candidates.append((value, "tag.session"))
 
@@ -248,7 +252,7 @@ def _full_ids_by_prefix(conn: sqlite3.Connection) -> dict[str, set[str]]:
         metadata, metadata_valid = _metadata(raw_metadata)
         if not metadata_valid:
             continue
-        session_id = _identifier(metadata.get("session_id"))
+        session_id = _session_identifier(metadata.get("session_id"))
         if session_id and len(session_id) >= _LEGACY_PREFIX_LENGTH:
             prefixes.setdefault(session_id[:_LEGACY_PREFIX_LENGTH], set()).add(session_id)
     return prefixes
@@ -277,7 +281,7 @@ def audit_session_summaries(
         metadata, metadata_valid = _metadata(row[1])
         tags = _tags(row[2])
         latest_at = row[4] if row[4] is not None else row[3]
-        session_id = _identifier(metadata.get("session_id")) if metadata_valid else None
+        session_id = _session_identifier(metadata.get("session_id")) if metadata_valid else None
         if session_id:
             category_counts["bound"] += 1
             continue

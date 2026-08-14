@@ -751,6 +751,35 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
     )
     assert bound["session_id"] == "codex-session-stable-123"
     assert "session_identity" not in bound
+
+    unusable_session_ids = (
+        "none",
+        "null",
+        "n/a",
+        "na",
+        "gemini-unknown",
+        "gemini-unkno",
+        123,
+    )
+    for index, unusable_session_id in enumerate(unusable_session_ids):
+        asyncio.run(
+            b12_mcp_server.memory_store(
+                f"Session summary: unusable session identity contract case {index}.",
+                {
+                    "type": "session_summary",
+                    "session_id": unusable_session_id,
+                },
+            )
+        )
+    unusable_rows = conn.execute(
+        "SELECT metadata FROM memories WHERE json_extract(metadata, '$.session_id') IN "
+        "('none', 'null', 'n/a', 'na', 'gemini-unknown', 'gemini-unkno', 123)"
+    ).fetchall()
+    assert len(unusable_rows) == len(unusable_session_ids)
+    assert all(
+        json.loads(row[0])["session_identity"] == "unbound"
+        for row in unusable_rows
+    )
     conn.close()
 
 

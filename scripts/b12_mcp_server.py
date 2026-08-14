@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from mcp.server.fastmcp import FastMCP
+from shared_patterns import is_usable_session_id
 
 # Consolidation engine (lazy import path — scripts/ is on sys.path)
 try:
@@ -1055,13 +1056,7 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
     # Keep those current writes out of the legacy/ambiguous bucket by emitting the
     # same explicit identity contract as other intentionally-unbound producers.
     if memory_type == "session_summary":
-        raw_session_id = metadata.get("session_id")
-        usable_session_id = (
-            raw_session_id is not None
-            and str(raw_session_id).strip().casefold()
-            not in {"", "unknown", "none", "null", "n/a", "na"}
-        )
-        if not usable_session_id:
+        if not is_usable_session_id(metadata.get("session_id")):
             metadata["session_identity"] = "unbound"
             if not str(metadata.get("producer") or "").strip():
                 metadata["producer"] = "mcp_memory_store"
