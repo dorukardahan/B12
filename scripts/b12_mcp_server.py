@@ -753,20 +753,65 @@ def _ensure_embed_daemon(force: bool = False) -> bool:
         return False
 
 
-def daemon_request(op: str, **kwargs) -> dict | None:
-    """Send JSON to embed_daemon via Unix socket. Returns None on failure."""
+def daemon_request(
+    op: str, *, queue_deadline_monotonic: float | None = None, **kwargs
+) -> dict | None:
+    """Send JSON to embed_daemon via Unix socket. Returns None on failure.
+
+    A queue deadline is carried over the local Unix socket so latency-sensitive
+    callers are bounded even when another MCP process already occupies the serial
+    daemon. The daemon ACKs admission before starting work; after that ACK the
+    normal operation timeout applies."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        s.settimeout(_DAEMON_CLIENT_TIMEOUT)
-        s.connect(SOCK_PATH)
-        s.sendall((json.dumps({"op": op, **kwargs}) + "\n").encode())
-        data = b""
-        while b"\n" not in data:
+    pending_admission = queue_deadline_monotonic is not None
+    buffered = b""
+
+    def _set_pre_admission_timeout() -> None:
+        if queue_deadline_monotonic is None:
+            return
+        remaining = queue_deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            raise socket.timeout("embed-daemon queue deadline expired")
+        s.settimeout(remaining)
+
+    def _recv_response_line(*, pre_admission: bool = False) -> dict:
+        nonlocal buffered
+        while b"\n" not in buffered:
+            if pre_admission:
+                _set_pre_admission_timeout()
             chunk = s.recv(65536)
-            if not chunk: break
-            data += chunk
-        resp = json.loads(data.decode().strip())
+            if not chunk:
+                break
+            buffered += chunk
+        line, separator, buffered = buffered.partition(b"\n")
+        if not line:
+            raise ValueError("empty embed-daemon response")
+        if not separator:
+            buffered = b""
+        return json.loads(line.decode().strip())
+
+    try:
+        if queue_deadline_monotonic is None:
+            s.settimeout(_DAEMON_CLIENT_TIMEOUT)
+        else:
+            _set_pre_admission_timeout()
+        s.connect(SOCK_PATH)
+        request = {"op": op, **kwargs}
+        if queue_deadline_monotonic is not None:
+            request["_queue_deadline_monotonic"] = queue_deadline_monotonic
+            _set_pre_admission_timeout()
+        s.sendall((json.dumps(request) + "\n").encode())
+        resp = _recv_response_line(pre_admission=pending_admission)
+        if resp.get("_accepted") is True:
+            pending_admission = False
+            s.settimeout(_DAEMON_CLIENT_TIMEOUT)
+            resp = _recv_response_line()
         return resp if resp.get("ok") else None
+    except socket.timeout:
+        if pending_admission:
+            return None
+        _ensure_embed_daemon(force=True)
+        return None
     except Exception:
         # Stale/missing sockets are expected after on-demand self-heal.  Launch
         # asynchronously and preserve this request's existing graceful fallback.
@@ -796,17 +841,22 @@ async def daemon_request_async(
     be cancelled, and releasing early would let the next request race the
     single-connection daemon. Cancellation then propagates as normal.
 
-    `queue_timeout` bounds only lock acquisition. A timeout returns None before
-    creating the worker, allowing latency-sensitive callers to fall back without
-    changing the in-flight socket budget for other operations."""
+    `queue_timeout` bounds both this process's lock wait and cross-process daemon
+    admission. The serial daemon ACKs requests admitted before the monotonic
+    deadline; only then does the normal socket operation timeout take over."""
     acquired = False
     wait_started = time.monotonic()
+    queue_deadline = (
+        None if queue_timeout is None else wait_started + queue_timeout
+    )
     try:
         if queue_timeout is None:
             await _daemon_lock.acquire()
         else:
+            assert queue_deadline is not None
             try:
-                async with asyncio.timeout(queue_timeout):
+                remaining_budget = queue_deadline - time.monotonic()
+                async with asyncio.timeout(max(0.0, remaining_budget)):
                     await _daemon_lock.acquire()
             except TimeoutError:
                 waited = time.monotonic() - wait_started
@@ -816,7 +866,14 @@ async def daemon_request_async(
                 )
                 return None
         acquired = True
-        worker = asyncio.ensure_future(asyncio.to_thread(daemon_request, op, **kwargs))
+        if queue_deadline is not None and queue_deadline <= time.monotonic():
+            return None
+        request_kwargs = dict(kwargs)
+        if queue_deadline is not None:
+            request_kwargs["queue_deadline_monotonic"] = queue_deadline
+        worker = asyncio.ensure_future(
+            asyncio.to_thread(daemon_request, op, **request_kwargs)
+        )
         try:
             return await asyncio.shield(worker)
         finally:
