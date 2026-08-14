@@ -76,6 +76,12 @@ def _make_db(path: Path) -> list[int]:
 def _install_embed_stubs(hook_dir: Path) -> None:
     scripts = hook_dir / "scripts"
     scripts.mkdir(parents=True)
+    (scripts / "sqlite_vec.py").write_text(
+        """def load(conn):
+    return None
+""",
+        encoding="utf-8",
+    )
     (scripts / "sentence_transformers.py").write_text(
         """import numpy as np
 class SentenceTransformer:
