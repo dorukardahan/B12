@@ -87,6 +87,10 @@ summary by project tag, independently of `metadata.session_id`.
 Retention uses soft deletion first. Hard deletion is deferred to the normal
 post-tombstone garbage-collection window and is never part of this audit.
 
+SessionEnd only writes or upserts summaries. It does not execute retention: a
+rank-only lifecycle cap cannot prove row age, identity category, or backup
+readiness and is therefore unsafe.
+
 ## Migration and rollback gates
 
 There is no automatic migration or startup cleanup. A future identity backfill
