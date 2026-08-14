@@ -618,6 +618,34 @@ def test_health_process_scan_is_scoped_to_current_user(monkeypatch) -> None:
     assert seen["args"][:4] == ["pgrep", "-u", str(b12_health._UID), "-f"]
 
 
+@pytest.mark.parametrize(
+    ("platform", "expected"),
+    [
+        ("darwin", "launchctl kickstart -k gui/501/com.b12.mcp.daemon"),
+        ("linux", "kill -TERM 123  # restart it with your process supervisor"),
+    ],
+)
+def test_health_mcp_restart_command_matches_the_host_platform(
+    monkeypatch, platform: str, expected: str
+) -> None:
+    monkeypatch.setattr(b12_health.sys, "platform", platform)
+    monkeypatch.setattr(b12_health, "_UID", 501)
+    monkeypatch.setattr(b12_health, "_daemon_pids", lambda: {123})
+    monkeypatch.setattr(
+        b12_health,
+        "_process_command",
+        lambda pid: "/venv/bin/python /hooks/scripts/b12_mcp_daemon.py",
+    )
+    monkeypatch.setattr(
+        b12_health, "_process_executable", lambda pid, command: "/venv/bin/python"
+    )
+    monkeypatch.setattr(b12_health, "_python_version", lambda executable: "3.14.7")
+
+    rows = b12_health._running_daemon_interpreters()
+
+    assert rows[0]["restart"] == expected
+
+
 def test_health_warns_when_daemon_executable_was_deleted(tmp_path: Path, monkeypatch) -> None:
     missing = tmp_path / "Cellar" / "python@3.14" / "3.14.6" / "Python"
     monkeypatch.setattr(b12_health, "_venv_python_version", lambda: "3.14.7")

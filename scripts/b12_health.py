@@ -363,7 +363,10 @@ def _running_daemon_interpreters() -> list[dict]:
             continue
         if "b12_mcp_daemon.py" in command:
             name = "mcp"
-            restart = f"launchctl kickstart -k gui/{_UID}/com.b12.mcp.daemon"
+            if sys.platform == "darwin":
+                restart = f"launchctl kickstart -k gui/{_UID}/com.b12.mcp.daemon"
+            else:
+                restart = f"kill -TERM {pid}  # restart it with your process supervisor"
         elif "embed_daemon.py" in command:
             name = "embed"
             restart = f"kill -TERM {pid}  # hooks restart it on next embedding need"
