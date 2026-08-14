@@ -101,6 +101,12 @@ READ_POOL_SIZE = (int(os.environ.get("B12_MCP_READ_POOL", "0"))
 # would each open a socket at once and a fast op could hit its 5s client timeout
 # waiting in the listen backlog behind a slow >10s encode_batch. See R&D SPD-1.
 _daemon_lock = asyncio.Lock()
+# Keep daemon socket work off asyncio's shared default executor. Rare admin tools
+# (export/import/consolidate) also use ``asyncio.to_thread`` and can saturate that
+# pool; queue_timeout must not be spent waiting behind unrelated local work.
+# _daemon_lock ensures this single-worker pool never has more than one submitted
+# round-trip at a time.
+_daemon_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="b12-daemon-io")
 
 # ── Session tracker (MCP-only platform support) ─────────────────
 # Tracks tool calls during a session so we can generate a summary
@@ -871,8 +877,9 @@ async def daemon_request_async(
         request_kwargs = dict(kwargs)
         if queue_deadline is not None:
             request_kwargs["queue_deadline_monotonic"] = queue_deadline
-        worker = asyncio.ensure_future(
-            asyncio.to_thread(daemon_request, op, **request_kwargs)
+        loop = asyncio.get_running_loop()
+        worker = loop.run_in_executor(
+            _daemon_pool, lambda: daemon_request(op, **request_kwargs)
         )
         try:
             return await asyncio.shield(worker)

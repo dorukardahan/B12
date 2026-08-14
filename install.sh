@@ -3556,6 +3556,31 @@ reload_daemon_if_running() {
   return $_rc          # propagate failure so the caller's `|| warn` fires (PR #129 P2)
 }
 
+# Retire an already-running embedding daemon after copy_scripts deploys new
+# protocol code. It is intentionally not relaunched here: hooks/MCP start it on
+# demand, avoiding a surprise multi-GB model warm-up during installation.
+# The PID file lives in a shared runtime directory, so defend against stale PID
+# reuse by checking both liveness and the process command before sending TERM.
+restart_embed_daemon_if_running() {
+  local _runtime="${B12_EMBED_RUNTIME_DIR:-/tmp}"
+  local _pidfile="$_runtime/b12-embed-$(id -u).pid"
+  local _pid _cmd
+  [ -f "$_pidfile" ] || return 0
+  _pid=$(tr -d '[:space:]' < "$_pidfile" 2>/dev/null || true)
+  case "$_pid" in ''|*[!0-9]*) return 0 ;; esac
+  kill -0 "$_pid" 2>/dev/null || return 0
+  _cmd=$(ps -p "$_pid" -o command= 2>/dev/null || true)
+  case "$_cmd" in *embed_daemon.py*) ;; *) return 0 ;; esac
+  if kill -TERM "$_pid" 2>/dev/null; then
+    info "Embedding daemon restart requested — new code will start on demand."
+    return 0
+  fi
+  # A clean race-to-exit is success; only report a daemon that is still live and
+  # could not be signalled.
+  kill -0 "$_pid" 2>/dev/null && return 1
+  return 0
+}
+
 # ═════════════════════════════════════════════
 # Main
 # ═════════════════════════════════════════════
@@ -3574,6 +3599,7 @@ create_dirs
 seed_user_config
 copy_hooks
 copy_scripts
+restart_embed_daemon_if_running || warn "Embedding daemon restart failed — stop the running embed_daemon.py process before using the upgraded MCP client."
 update_launchd_plists
 
 # Install B12 behavioral skill to Claude Code (enables /b12-memory command)
