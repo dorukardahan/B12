@@ -148,8 +148,22 @@ b12_ensure_embed_daemon() {
   _python="$HOME/.local/b12-venv/bin/python3"
   _script="$_B12_HOOK_DIR/scripts/embed_daemon.py"
   [ -x "$_python" ] && [ -f "$_script" ] || return 1
-  "$_python" "$_script" >/dev/null 2>&1 &
-  disown 2>/dev/null || true
+  # Launch through a short-lived Python parent. The daemon is the launcher's
+  # child, so when the launcher exits it is reparented before this function
+  # returns. memory-retrieval's hard watchdog kills every DIRECT hook child;
+  # plain `cmd & disown` does not reparent and would let that watchdog kill the
+  # 3-12s model load. start_new_session also isolates terminal signals.
+  "$_python" -c '
+import subprocess, sys
+subprocess.Popen(
+    [sys.argv[1], sys.argv[2]],
+    stdin=subprocess.DEVNULL,
+    stdout=subprocess.DEVNULL,
+    stderr=subprocess.DEVNULL,
+    close_fds=True,
+    start_new_session=True,
+)
+' "$_python" "$_script" </dev/null >/dev/null 2>&1
   return 0
 }
 

@@ -299,7 +299,7 @@ def _daemon_pids() -> set[int]:
             pass
     try:
         result = subprocess.run(
-            ["pgrep", "-f", "b12_mcp_daemon.py|embed_daemon.py"],
+            ["pgrep", "-u", str(_UID), "-f", "b12_mcp_daemon.py|embed_daemon.py"],
             capture_output=True,
             text=True,
             timeout=3,

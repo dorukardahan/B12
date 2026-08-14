@@ -262,12 +262,12 @@ def test_retrieval_hook_starts_embed_daemon_on_demand(tmp_path: Path) -> None:
     python.parent.mkdir(parents=True)
     daemon_script.parent.mkdir(parents=True)
     marker = data / "started"
-    python.write_text(
-        f"#!/bin/sh\nprintf '%s\\n' \"$*\" > {shlex.quote(str(marker))}\n",
+    python.symlink_to(sys.executable)
+    daemon_script.write_text(
+        "from pathlib import Path\n"
+        f"Path({str(marker)!r}).write_text(__file__, encoding='utf-8')\n",
         encoding="utf-8",
     )
-    python.chmod(0o755)
-    daemon_script.write_text("# fixture\n", encoding="utf-8")
 
     command = (
         f". {shlex.quote(str(ROOT / 'hooks' / '_b12_common.sh'))}; "
@@ -294,6 +294,79 @@ def test_retrieval_hook_starts_embed_daemon_on_demand(tmp_path: Path) -> None:
     assert marker.read_text(encoding="utf-8").strip() == str(daemon_script)
     retrieval = (ROOT / "hooks" / "memory-retrieval.sh").read_text(encoding="utf-8")
     assert "b12_ensure_embed_daemon" in retrieval
+
+
+def test_on_demand_embed_start_survives_retrieval_watchdog(tmp_path: Path) -> None:
+    home = tmp_path / "home"
+    hook_root = tmp_path / "hooks"
+    data = tmp_path / "data"
+    data.mkdir()
+    python = home / ".local" / "b12-venv" / "bin" / "python3"
+    daemon_script = hook_root / "scripts" / "embed_daemon.py"
+    python.parent.mkdir(parents=True)
+    daemon_script.parent.mkdir(parents=True)
+    survived = data / "survived"
+    killed = data / "killed"
+    python.symlink_to(sys.executable)
+    daemon_script.write_text(
+        "from pathlib import Path\n"
+        "import signal, sys, time\n"
+        f"killed = Path({str(killed)!r})\n"
+        f"survived = Path({str(survived)!r})\n"
+        "def stop(signum, frame):\n"
+        "    killed.write_text('killed', encoding='utf-8')\n"
+        "    sys.exit(143)\n"
+        "signal.signal(signal.SIGTERM, stop)\n"
+        "time.sleep(0.4)\n"
+        "survived.write_text('survived', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+
+    command = (
+        f". {shlex.quote(str(ROOT / 'hooks' / '_b12_common.sh'))}; "
+        "b12_sync_watchdog 0.1 test-retrieval; "
+        "b12_ensure_embed_daemon; while :; do :; done"
+    )
+    started = time.monotonic()
+    result = subprocess.run(
+        ["bash", "-c", command],
+        env={
+            **os.environ,
+            "HOME": str(home),
+            "B12_DATA_DIR": str(data),
+            "B12_HOOK_DIR": str(hook_root),
+            "B12_EMBED_RUNTIME_DIR": str(tmp_path / "runtime"),
+        },
+        capture_output=True,
+        text=True,
+        timeout=3,
+        check=False,
+    )
+    elapsed = time.monotonic() - started
+    assert result.returncode == 0
+    assert elapsed < 0.3, f"on-demand start blocked the hook for {elapsed:.3f}s"
+    deadline = time.monotonic() + 1
+    while time.monotonic() < deadline and not survived.exists() and not killed.exists():
+        time.sleep(0.01)
+    assert survived.exists(), "retrieval watchdog killed the on-demand model loader"
+    assert not killed.exists()
+
+
+def test_health_process_scan_is_scoped_to_current_user(monkeypatch) -> None:
+    seen = {}
+
+    def missing_pid_file(self, *args, **kwargs):
+        raise OSError("fixture: no pid file")
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(args, 1, "", "")
+
+    monkeypatch.setattr(b12_health.Path, "read_text", missing_pid_file)
+    monkeypatch.setattr(b12_health.subprocess, "run", fake_run)
+
+    assert b12_health._daemon_pids() == set()
+    assert seen["args"][:4] == ["pgrep", "-u", str(b12_health._UID), "-f"]
 
 
 def test_health_warns_when_daemon_executable_was_deleted(tmp_path: Path, monkeypatch) -> None:
