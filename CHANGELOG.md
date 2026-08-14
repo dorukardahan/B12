@@ -1,5 +1,23 @@
 # Changelog
 
+## [v11.82.1] — 2026-08-14
+
+### Fixed
+
+- Long-running MCP and embedding daemons now detect when a package-manager Python upgrade removes or replaces their mapped interpreter, then restart at safe request boundaries instead of continuing on a stale runtime.
+- MCP recovery drains already accepted JSON-RPC work before restarting, while existing proxy reconnection carries the host session onto the respawned daemon.
+- Embedding recovery now works for MCP-only hosts and restarts the model service on demand only when semantic search or reranking needs it, avoiding an unnecessary model startup for keyword-only retrieval.
+- Embed-daemon signal handling, singleton-lock validation, per-user process discovery, and client shutdown are hardened so restart detection cannot kill in-flight work or mistake another process for the managed daemon.
+
+### Changed
+
+- `b12 health` now inspects each live daemon's actual mapped executable on macOS and Linux, compares its Python runtime with the installed environment, and reports a launchd restart on macOS or process-termination/supervisor guidance on Linux and other Unix hosts when stale.
+- The stale-runtime check cadence is configurable while remaining lightweight by default.
+
+### Internal
+
+- Added cross-platform regression coverage for deleted/replaced interpreters, safe MCP draining, MCP-only recovery, prompt signal shutdown, on-demand embedding startup, lock ownership, process scoping, and healthy/stale health output.
+
 ## [v11.82.0] — 2026-08-09
 
 **Codex users: after upgrading, re-run `./install.sh --codex` and accept the new `SessionEnd` hook in Codex's StartupHooksReview trust screen. Without both steps, session summaries can silently stop.**

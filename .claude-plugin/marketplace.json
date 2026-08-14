@@ -12,7 +12,7 @@
       "name": "b12-memory",
       "source": "./",
       "description": "Persistent cross-session memory with automatic extraction, semantic search, spaced repetition, and contradiction detection. Supports Claude Code, Codex, Gemini, VS Code, Cursor, and 5+ more platforms.",
-      "version": "11.82.0",
+      "version": "11.82.1",
       "category": "memory",
       "tags": [
         "memory",
