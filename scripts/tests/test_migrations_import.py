@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import gzip
 import importlib
 import json
@@ -702,6 +703,10 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
         )
         """
     )
+    conn.execute(
+        "CREATE TABLE memory_embeddings ("
+        "rowid INTEGER PRIMARY KEY, content_embedding BLOB)"
+    )
 
     async def fake_write(op):
         result = op(conn)
@@ -751,6 +756,81 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
     )
     assert bound["session_id"] == "codex-session-stable-123"
     assert "session_identity" not in bound
+    original_bound_id = conn.execute(
+        "SELECT id FROM memories WHERE json_extract(metadata, '$.session_id') = ?",
+        ("codex-session-stable-123",),
+    ).fetchone()[0]
+    revised_bound_content = "Session summary: the same bound session has newer canonical content."
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            revised_bound_content,
+            {
+                "type": "session_summary",
+                "session_id": "codex-session-stable-123",
+            },
+        )
+    )
+    bound_rows = conn.execute(
+        "SELECT id, content FROM memories WHERE memory_type='session_summary' "
+        "AND json_extract(metadata, '$.session_id') = ? AND deleted_at IS NULL",
+        ("codex-session-stable-123",),
+    ).fetchall()
+    assert [(row["id"], row["content"]) for row in bound_rows] == [
+        (original_bound_id, revised_bound_content)
+    ]
+
+    older_delayed_content = "Session summary: an older encode completes late."
+    newer_current_content = "Session summary: a newer write remains canonical."
+
+    async def exercise_delayed_embedding_race():
+        first_encode_waiting = asyncio.Event()
+        release_first_encode = asyncio.Event()
+
+        async def delayed_daemon(action, **kwargs):
+            if action != "encode_batch":
+                return None
+            if kwargs["texts"][0] == older_delayed_content:
+                first_encode_waiting.set()
+                await release_first_encode.wait()
+                return {
+                    "embeddings": [base64.b64encode(b"stale-embedding").decode()]
+                }
+            return None
+
+        monkeypatch.setattr(b12_mcp_server, "daemon_request_async", delayed_daemon)
+        older = asyncio.create_task(
+            b12_mcp_server.memory_store(
+                older_delayed_content,
+                {
+                    "type": "session_summary",
+                    "session_id": "codex-session-stable-123",
+                },
+            )
+        )
+        await first_encode_waiting.wait()
+        await b12_mcp_server.memory_store(
+            newer_current_content,
+            {
+                "type": "session_summary",
+                "session_id": "codex-session-stable-123",
+            },
+        )
+        release_first_encode.set()
+        await older
+
+    asyncio.run(exercise_delayed_embedding_race())
+    current_bound = conn.execute(
+        "SELECT id, content FROM memories WHERE memory_type='session_summary' "
+        "AND json_extract(metadata, '$.session_id') = ? AND deleted_at IS NULL",
+        ("codex-session-stable-123",),
+    ).fetchone()
+    assert (current_bound["id"], current_bound["content"]) == (
+        original_bound_id,
+        newer_current_content,
+    )
+    assert conn.execute(
+        "SELECT 1 FROM memory_embeddings WHERE rowid = ?", (original_bound_id,)
+    ).fetchone() is None
 
     unusable_session_ids = (
         "none",

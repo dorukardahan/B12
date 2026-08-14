@@ -1069,8 +1069,11 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
 
     # Generic MCP clients can store manual or auto-classified summaries without a
     # host session ID. Apply identity defaults only after the final type is known.
+    bound_session_id = None
     if memory_type == "session_summary":
-        if not is_usable_session_id(metadata.get("session_id")):
+        if is_usable_session_id(metadata.get("session_id")):
+            bound_session_id = metadata["session_id"]
+        else:
             metadata["session_identity"] = "unbound"
             if not is_usable_identity_dimension(metadata.get("producer")):
                 metadata["producer"] = "mcp_memory_store"
@@ -1098,9 +1101,30 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         pass
     meta_json = _validate_metadata(base_meta)
 
-    # One atomic writer op: dedup-check → undelete OR INSERT OR IGNORE → read id.
-    # The id is read back within the same BEGIN IMMEDIATE txn (sees its own write).
+    # One atomic writer op. Bound summaries use the canonical session upsert;
+    # everything else keeps the content-hash dedup path.
     def _store_op(db):
+        if bound_session_id is not None:
+            from write_time_merge import upsert_session_summary
+
+            memory_id = upsert_session_summary(
+                db,
+                session_id=bound_session_id,
+                content=content,
+                tags=tags,
+                metadata=meta_json,
+                embedding_bytes=None,
+                now=now_ts,
+            )
+            db.execute(
+                "UPDATE memories SET valid_until = ? WHERE id = ?",
+                (valid_until, memory_id),
+            )
+            stored = db.execute(
+                "SELECT content_hash FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            return memory_id, stored["content_hash"]
+
         existing = db.execute(
             "SELECT id, deleted_at FROM memories WHERE content_hash = ?",
             (content_hash,),
@@ -1127,9 +1151,9 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         row = db.execute(
             "SELECT id FROM memories WHERE content_hash = ?", (content_hash,)
         ).fetchone()
-        return row["id"] if row else None
+        return (row["id"] if row else None), content_hash
 
-    mem_id = await _write(_store_op)
+    mem_id, content_hash = await _write(_store_op)
     if mem_id is None:
         return f"Stored (hash: {content_hash[:16]}) but could not retrieve ID"
 
@@ -1148,6 +1172,13 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         emb_bytes = base64.b64decode(resp["embeddings"][0])
 
         def _embed_op(db):
+            current = db.execute(
+                "SELECT content_hash FROM memories "
+                "WHERE id = ? AND deleted_at IS NULL",
+                (mem_id,),
+            ).fetchone()
+            if not current or current[0] != content_hash:
+                return
             try:
                 db.execute(
                     "INSERT OR REPLACE INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
