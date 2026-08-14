@@ -6,7 +6,7 @@ Replaces the 804MB mcp-memory-service with 4 tools, zero ML deps.
 All embedding/search ops delegated to embed_daemon via Unix socket.
 """
 
-import asyncio, base64, hashlib, json, os, socket, sqlite3, threading, time
+import asyncio, base64, hashlib, json, os, socket, sqlite3, subprocess, threading, time
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 try:
@@ -47,7 +47,11 @@ else:
 
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
 # Hardcode /tmp/ — macOS TMPDIR varies per session, causing socket mismatch
-SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
+_EMBED_RUNTIME_DIR = os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp")
+SOCK_PATH = os.path.join(_EMBED_RUNTIME_DIR, f"b12-embed-{_UID}.sock")
+_EMBED_LOCK_PATH = os.path.join(_EMBED_RUNTIME_DIR, f"b12-embed-{_UID}.lock")
+_EMBED_DAEMON_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed_daemon.py")
+_EMBED_PYTHON = _sys.executable
 
 # Optional pre-warmed daemon socket. When present and reachable, b12_mcp_server
 # runs as a thin stdio proxy that forwards the MCP wire protocol to the shared
@@ -699,6 +703,42 @@ except (TypeError, ValueError):
     _DAEMON_CLIENT_TIMEOUT = 20.0
 
 
+def _ensure_embed_daemon(force: bool = False) -> bool:
+    """Start the on-demand embed daemon when no process owns its singleton lock.
+
+    MCP-only hosts have no lifecycle hook to respawn an embed daemon that exits
+    after an interpreter upgrade, idle timeout, or RSS guard.  The triggering
+    request keeps the normal fail-soft fallback; a later request uses the warm
+    daemon.  Lock ownership, not stale PID-file contents, is authoritative.
+    """
+    if not force and os.path.exists(SOCK_PATH):
+        return False
+    try:
+        import fcntl
+
+        with open(_EMBED_LOCK_PATH, "a+") as lock_file:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+    except (ImportError, OSError):
+        return False
+    if not (os.path.isfile(_EMBED_DAEMON_SCRIPT) and os.path.isfile(_EMBED_PYTHON)):
+        return False
+    try:
+        subprocess.Popen(
+            [_EMBED_PYTHON, _EMBED_DAEMON_SCRIPT],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
 def daemon_request(op: str, **kwargs) -> dict | None:
     """Send JSON to embed_daemon via Unix socket. Returns None on failure."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
@@ -714,6 +754,9 @@ def daemon_request(op: str, **kwargs) -> dict | None:
         resp = json.loads(data.decode().strip())
         return resp if resp.get("ok") else None
     except Exception:
+        # Stale/missing sockets are expected after on-demand self-heal.  Launch
+        # asynchronously and preserve this request's existing graceful fallback.
+        _ensure_embed_daemon(force=True)
         return None
     finally:
         s.close()

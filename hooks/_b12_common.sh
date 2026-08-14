@@ -123,6 +123,15 @@ b12_async_fork() {
   disown
 }
 
+# True only when retrieval will actually issue a semantic or rerank request.
+# Keep keyword-only prompts from paying the ~2.2GB model startup cost.
+b12_embed_daemon_needed() {
+  local _mode="${1:-}" _rerank="${2:-false}" _count="${3:-0}"
+  case "$_count" in ''|*[!0-9]*) _count=0 ;; esac
+  [ "$_mode" != "keyword" ] && return 0
+  [ "$_rerank" = "true" ] && [ "$_count" -gt 0 ]
+}
+
 # ── b12_ensure_embed_daemon ───────────────────────────────────
 # Non-blocking, fail-soft on-demand start for hooks that need embeddings after
 # the SessionStart daemon has exited (idle timeout, RSS guard, Python upgrade).

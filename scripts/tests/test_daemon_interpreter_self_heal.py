@@ -242,6 +242,90 @@ def test_mcp_boundary_client_is_closed_without_entering_server_during_drain(
     assert b12_mcp_daemon._active_connections == 0
 
 
+def test_mcp_daemon_request_triggers_detached_embed_restart_on_connect_failure(
+    monkeypatch,
+) -> None:
+    mcp_server = b12_mcp_daemon.srv
+    ensure_calls = []
+
+    class FailingSocket:
+        def settimeout(self, timeout) -> None:
+            pass
+
+        def connect(self, path) -> None:
+            raise ConnectionRefusedError(path)
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(
+        mcp_server,
+        "_ensure_embed_daemon",
+        lambda force=False: ensure_calls.append(force),
+    )
+    monkeypatch.setattr(mcp_server.socket, "socket", lambda *args, **kwargs: FailingSocket())
+
+    assert mcp_server.daemon_request("classify", text="hello") is None
+    assert ensure_calls == [True]
+
+
+def test_mcp_embed_restart_launcher_is_detached_and_lock_guarded(
+    tmp_path: Path, monkeypatch
+) -> None:
+    mcp_server = b12_mcp_daemon.srv
+    spawned = []
+    lock_path = tmp_path / "embed.lock"
+    script_path = tmp_path / "embed_daemon.py"
+    script_path.write_text("pass\n", encoding="utf-8")
+
+    def fake_popen(argv, **kwargs):
+        spawned.append((argv, kwargs))
+        return object()
+
+    monkeypatch.setattr(mcp_server, "SOCK_PATH", str(tmp_path / "missing.sock"))
+    monkeypatch.setattr(mcp_server, "_EMBED_LOCK_PATH", str(lock_path))
+    monkeypatch.setattr(mcp_server, "_EMBED_DAEMON_SCRIPT", str(script_path))
+    monkeypatch.setattr(mcp_server, "_EMBED_PYTHON", sys.executable)
+    monkeypatch.setattr(mcp_server.subprocess, "Popen", fake_popen)
+
+    assert mcp_server._ensure_embed_daemon() is True
+    assert spawned[0][0] == [sys.executable, str(script_path)]
+    assert spawned[0][1]["stdin"] is subprocess.DEVNULL
+    assert spawned[0][1]["stdout"] is subprocess.DEVNULL
+    assert spawned[0][1]["stderr"] is subprocess.DEVNULL
+    assert spawned[0][1]["close_fds"] is True
+    assert spawned[0][1]["start_new_session"] is True
+
+    spawned.clear()
+    with lock_path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert mcp_server._ensure_embed_daemon() is False
+    assert spawned == []
+
+
+def test_embed_daemon_need_predicate_skips_keyword_only_queries() -> None:
+    common = ROOT / "hooks" / "_b12_common.sh"
+
+    def needed(mode: str, rerank: str, count: int) -> bool:
+        return subprocess.run(
+            [
+                "bash",
+                "-c",
+                f". {shlex.quote(str(common))}; "
+                f"b12_embed_daemon_needed {shlex.quote(mode)} {shlex.quote(rerank)} {count}",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+        ).returncode == 0
+
+    assert needed("keyword", "false", 2) is False
+    assert needed("hybrid", "false", 2) is True
+    assert needed("keyword", "true", 2) is True
+    hook = (ROOT / "hooks" / "memory-retrieval.sh").read_text(encoding="utf-8")
+    assert 'b12_embed_daemon_needed "$QUERY_MODE" "$SHOULD_RERANK" "$RESULT_COUNT"' in hook
+
+
 def test_mcp_daemon_deleted_executable_drains_inflight_request_before_exit(tmp_path: Path) -> None:
     stale_python = tmp_path / "python-stale"
     stale_python.symlink_to(sys.executable)
