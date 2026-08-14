@@ -664,6 +664,14 @@ def test_mcp_session_tracker_resets_after_flush(monkeypatch):
 
     b12_mcp_server._flush_session_tracker(conn)
 
+    metadata, tags = conn.execute(
+        "SELECT metadata, tags FROM memories WHERE memory_type='session_summary'"
+    ).fetchone()
+    parsed = json.loads(metadata)
+    assert parsed["session_identity"] == "unbound"
+    assert parsed["producer"] == "mcp_session_tracker"
+    assert parsed["platform"] == "mcp-only"
+    assert "source:mcp" in tags
     assert b12_mcp_server._session_tracker["search_queries"] == []
     assert b12_mcp_server._session_tracker["stored_count"] == 0
     assert b12_mcp_server._session_tracker["tool_calls"] == 0

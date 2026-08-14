@@ -62,6 +62,7 @@ py-modules = [
     "b12_cli",
     "b12_cli_provider",
     "b12_config",
+    "b12_audit_session_summaries",
     "b12_embed_quant_eval",
     "b12_gc",
     "b12_dedupe_session_summaries",

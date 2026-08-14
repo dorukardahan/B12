@@ -665,6 +665,9 @@ def _flush_session_tracker(db: sqlite3.Connection | None, tracker: dict | None =
             "importance_score": 0.6,
             "project": project,
             "source": "mcp_session_tracker",
+            "producer": "mcp_session_tracker",
+            "platform": "mcp-only",
+            "session_identity": "unbound",
             "tool_calls": tracker["tool_calls"],
         }
 
