@@ -9,7 +9,7 @@
 
 ### Changed
 
-- MCP-only session summaries now explicitly mark intentionally unbound identity with stable producer and platform metadata instead of relying on a missing `session_id`.
+- MCP session-summary writers now explicitly mark intentionally unbound identity with stable producer and platform metadata instead of relying on a missing `session_id`; the generic `memory_store` path supplies safe defaults for manual summaries.
 - SessionEnd no longer applies a rank-only session-summary cap; retention remains audit-, review-, and backup-gated.
 
 ## [v11.82.1] — 2026-08-14

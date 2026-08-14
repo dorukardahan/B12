@@ -1,3 +1,4 @@
+import asyncio
 import gzip
 import importlib
 import json
@@ -676,6 +677,91 @@ def test_mcp_session_tracker_resets_after_flush(monkeypatch):
     assert b12_mcp_server._session_tracker["stored_count"] == 0
     assert b12_mcp_server._session_tracker["tool_calls"] == 0
     assert b12_mcp_server._session_tracker["project"] is None
+
+
+def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
+    b12_mcp_server = _load_b12_mcp_server_with_fake_mcp(monkeypatch)
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE memories (
+            id INTEGER PRIMARY KEY,
+            content_hash TEXT UNIQUE,
+            content TEXT,
+            tags TEXT,
+            memory_type TEXT,
+            metadata TEXT,
+            strength REAL,
+            created_at REAL,
+            created_at_iso TEXT,
+            updated_at REAL,
+            updated_at_iso TEXT,
+            valid_until TEXT,
+            deleted_at REAL
+        )
+        """
+    )
+
+    async def fake_write(op):
+        result = op(conn)
+        conn.commit()
+        return result
+
+    async def no_daemon(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(b12_mcp_server, "_require_db", lambda: None)
+    monkeypatch.setattr(b12_mcp_server, "_write", fake_write)
+    monkeypatch.setattr(b12_mcp_server, "daemon_request_async", no_daemon)
+    monkeypatch.setenv("B12_DISABLE_FRAGMENT_FILTER", "1")
+
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            "Session summary: implemented the identity audit and documented the retention gates.",
+            {
+                "tags": ["proj:alpha", "user:codex"],
+                "type": "session_summary",
+                "importance_score": 0.7,
+            },
+        )
+    )
+    manual = json.loads(
+        conn.execute("SELECT metadata FROM memories WHERE memory_type='session_summary'").fetchone()[0]
+    )
+    assert manual["session_identity"] == "unbound"
+    assert manual["producer"] == "mcp_memory_store"
+    assert manual["platform"] == "mcp"
+
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            "Session summary: a host-provided stable session identity remains authoritative.",
+            {
+                "tags": ["proj:alpha", "user:codex"],
+                "type": "session_summary",
+                "session_id": "codex-session-stable-123",
+            },
+        )
+    )
+    bound = json.loads(
+        conn.execute(
+            "SELECT metadata FROM memories WHERE json_extract(metadata, '$.session_id') = ?",
+            ("codex-session-stable-123",),
+        ).fetchone()[0]
+    )
+    assert bound["session_id"] == "codex-session-stable-123"
+    assert "session_identity" not in bound
+    conn.close()
+
+
+def test_codex_manual_summary_template_declares_unbound_identity():
+    template = (
+        Path(__file__).resolve().parents[2] / "config" / "codex-agents-template.md"
+    ).read_text(encoding="utf-8")
+    mandatory_summary = template.split("- **AFTER last response**", 1)[1].split("```", 2)[1]
+    assert '"session_identity": "unbound"' in mandatory_summary
+    assert '"producer": "codex_agent_template"' in mandatory_summary
+    assert '"platform": "codex"' in mandatory_summary
 
 
 def test_mcp_session_tracker_contexts_are_isolated(monkeypatch):
