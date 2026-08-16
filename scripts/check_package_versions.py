@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
-"""Verify that every shipped package manifest uses the same version."""
+"""Verify that package metadata and the latest changelog release use one version."""
 
 from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -15,53 +16,211 @@ PYPROJECT_FILE = "pyproject.toml"
 PACKAGE_FILE = "package.json"
 PACKAGE_LOCK_FILE = "package-lock.json"
 OPENCODE_PACKAGE_FILE = "plugins/opencode/package.json"
+CHANGELOG_FILE = "CHANGELOG.md"
+SEMVER = r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?"
+CHANGELOG_RELEASE_PATTERN = re.compile(
+    rf"^[ ]{{0,3}}##\s+(?:\[v?(?P<bracket>{SEMVER})\]|v?(?P<plain>{SEMVER})(?:\s|$))",
+    re.IGNORECASE,
+)
+FENCE_PATTERN = re.compile(r"^[ ]{0,3}(?P<fence>`{3,}|~{3,})")
+HTML_COMMENT_OPEN_PATTERN = re.compile(r"^[ ]{0,3}<!--")
 
 
-def read_versions(root: Path) -> tuple[str, str, str, str, str]:
-    """Return versions from Python, Node, lockfile, and OpenCode metadata."""
+def _strip_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
+    """Remove block-style HTML comments while preserving inline literals.
+
+    Code spans (`` `...` ``) may legitimately document a literal ``<!--`` token
+    without a closing ``-->``, so opener detection skips spans first. A code
+    span only closes on a backtick run of the SAME length as its opener
+    (CommonMark), hence the backreference. Outside code spans a comment opener
+    is valid Markdown anywhere on the line — including after visible text —
+    per the CommonMark HTML block spec. Inside an active HTML comment,
+    backticks carry no code-span semantics, so closers are searched on the raw
+    line.
+    """
+    def _mask_code_spans(text: str) -> str:
+        """Blank out code spans without regex backtracking.
+
+        CommonMark: a backtick string of length N opens a code span that only a
+        *later backtick string of exactly length N* closes; runs of any other
+        length inside are literal content, and an unmatched opener is literal.
+        A linear scan implements that exactly (no non-atomic backtracking).
+        Masking is character-for-character, so indices stay aligned.
+        """
+        chars = list(text)
+        i = 0
+        length = len(text)
+        while i < length:
+            if text[i] != "`":
+                i += 1
+                continue
+            j = i
+            while j < length and text[j] == "`":
+                j += 1
+            run = j - i
+            closer = -1
+            k = j
+            while k < length:
+                if text[k] == "`":
+                    m = k
+                    while m < length and text[m] == "`":
+                        m += 1
+                    if m - k == run:
+                        closer = m
+                        break
+                    k = m  # different-length run: literal content, skip it
+                else:
+                    k += 1
+            if closer == -1:
+                i = j  # unmatched opener: literal backticks, not a span
+                continue
+            for x in range(i, closer):
+                chars[x] = " "
+            i = closer
+        return "".join(chars)
+
+    masked = _mask_code_spans(line)
+    visible: list[str] = []
+    cursor = 0
+    while cursor < len(masked):
+        if in_comment:
+            end = line.find("-->", cursor)
+            if end == -1:
+                return "".join(visible), True
+            cursor = end + 3
+            in_comment = False
+            continue
+
+        opener = masked.find("<!--", cursor)
+        if opener == -1:
+            visible.append(line[cursor:])
+            break
+        # Emit the visible prefix verbatim from the ORIGINAL line, then drop
+        # the rest of the line (comment content) until a closer appears.
+        visible.append(line[cursor:opener])
+        cursor = opener + 4
+        in_comment = True
+    return "".join(visible), in_comment
+
+
+def read_changelog_version(root: Path) -> str:
+    """Return the first semantic-version release heading from the changelog."""
+    changelog = (root / CHANGELOG_FILE).read_text(encoding="utf-8")
+    fence_char: str | None = None
+    fence_length = 0
+    in_html_comment = False
+
+    for raw_line in changelog.splitlines():
+        if fence_char is not None:
+            closing_fence = re.compile(
+                rf"^[ ]{{0,3}}{re.escape(fence_char)}{{{fence_length},}}[ \t]*$"
+            )
+            if closing_fence.fullmatch(raw_line):
+                fence_char = None
+                fence_length = 0
+            continue
+
+        if not in_html_comment and (
+            raw_line.startswith("    ") or raw_line.startswith("\t")
+        ):
+            continue
+
+        line, in_html_comment = _strip_html_comments(raw_line, in_html_comment)
+        if line.startswith("    ") or line.startswith("\t"):
+            continue
+
+        fence_match = FENCE_PATTERN.match(line)
+        if fence_match:
+            fence = fence_match.group("fence")
+            fence_char = fence[0]
+            fence_length = len(fence)
+            continue
+
+        match = CHANGELOG_RELEASE_PATTERN.match(line)
+        if match:
+            return str(match.group("bracket") or match.group("plain"))
+    raise ValueError("no semantic-version release heading found")
+
+
+def read_versions(root: Path) -> tuple[str, str, str | None, str | None, str, str]:
+    """Return versions from package metadata and the first changelog release."""
     with (root / PYPROJECT_FILE).open("rb") as handle:
         pyproject = tomllib.load(handle)
     with (root / PACKAGE_FILE).open(encoding="utf-8") as handle:
         package = json.load(handle)
-    with (root / PACKAGE_LOCK_FILE).open(encoding="utf-8") as handle:
-        package_lock = json.load(handle)
+    try:
+        with (root / PACKAGE_LOCK_FILE).open(encoding="utf-8") as handle:
+            package_lock = json.load(handle)
+    except FileNotFoundError:
+        package_lock = None
     with (root / OPENCODE_PACKAGE_FILE).open(encoding="utf-8") as handle:
         opencode_package = json.load(handle)
 
     return (
         str(pyproject["project"]["version"]),
         str(package["version"]),
-        str(package_lock["version"]),
-        str(package_lock["packages"][""]["version"]),
+        str(package_lock["version"]) if package_lock is not None else None,
+        str(package_lock["packages"][""]["version"])
+        if package_lock is not None
+        else None,
         str(opencode_package["version"]),
+        read_changelog_version(root),
     )
 
 
 def check_versions(root: Path) -> tuple[bool, str]:
     """Compare package versions and return a status plus an actionable message."""
     try:
-        python_version, node_version, lock_version, lock_root_version, opencode_version = read_versions(root)
-    except (OSError, KeyError, TypeError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
+        (
+            python_version,
+            node_version,
+            lock_version,
+            lock_root_version,
+            opencode_version,
+            changelog_version,
+        ) = read_versions(root)
+    except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError, tomllib.TOMLDecodeError) as exc:
         return False, (
             f"ERROR: could not read package versions from {PYPROJECT_FILE}, "
-            f"{PACKAGE_FILE}, {PACKAGE_LOCK_FILE}, and {OPENCODE_PACKAGE_FILE}: {exc}"
+            f"{PACKAGE_FILE}, {PACKAGE_LOCK_FILE}, {OPENCODE_PACKAGE_FILE}, "
+            f"and {CHANGELOG_FILE}: {exc}"
         )
 
-    versions = {python_version, node_version, lock_version, lock_root_version, opencode_version}
+    versions = {
+        version
+        for version in (
+            python_version,
+            node_version,
+            lock_version,
+            lock_root_version,
+            opencode_version,
+            changelog_version,
+        )
+        if version is not None
+    }
     if len(versions) != 1:
+        package_lock_lines = ""
+        if lock_version is not None:
+            package_lock_lines = (
+                f"  {PACKAGE_LOCK_FILE} version = {lock_version!r}\n"
+                f"  {PACKAGE_LOCK_FILE} packages[''].version = {lock_root_version!r}\n"
+            )
         return False, (
             "ERROR: package versions are out of sync:\n"
             f"  {PYPROJECT_FILE} [project].version = {python_version!r}\n"
             f"  {PACKAGE_FILE} version = {node_version!r}\n"
-            f"  {PACKAGE_LOCK_FILE} version = {lock_version!r}\n"
-            f"  {PACKAGE_LOCK_FILE} packages[''].version = {lock_root_version!r}\n"
+            f"{package_lock_lines}"
             f"  {OPENCODE_PACKAGE_FILE} version = {opencode_version!r}\n"
-            "Update all package version fields in the same version change."
+            f"  {CHANGELOG_FILE} first release version = {changelog_version!r}\n"
+            "Update all package version fields and the changelog release header in the same version change."
         )
 
+    surfaces = [PYPROJECT_FILE, PACKAGE_FILE]
+    if lock_version is not None:
+        surfaces.append(PACKAGE_LOCK_FILE)
+    surfaces.extend([OPENCODE_PACKAGE_FILE, CHANGELOG_FILE])
     return True, (
-        f"OK: {PYPROJECT_FILE}, {PACKAGE_FILE}, {PACKAGE_LOCK_FILE}, and {OPENCODE_PACKAGE_FILE} "
-        f"versions match ({python_version})."
+        f"OK: {', '.join(surfaces[:-1])}, and {surfaces[-1]} versions match ({python_version})."
     )
 
 

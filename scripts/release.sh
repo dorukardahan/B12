@@ -195,8 +195,10 @@ except FileNotFoundError:
 print(f"  synced version touchpoints -> {NEW}; prepended CHANGELOG section")
 PY
 
-# 2) Sanity: every version touchpoint agrees.
+# 2) Sanity: the canonical validator checks package metadata and the first
+# CHANGELOG release header together before any commit, tag, push, or release.
 echo "  verifying touchpoints..."
+python3 scripts/check_package_versions.py
 for chk in \
   "pyproject.toml:^version = \"$NEW\"" \
   "package.json:\"version\": \"$NEW\"" \
@@ -213,7 +215,7 @@ done
 if [ -f package-lock.json ]; then
   grep -qE "\"version\": \"$NEW\"" package-lock.json || { echo "ERROR: package-lock.json not synced to $NEW" >&2; exit 1; }
 fi
-echo "  all version touchpoints == $NEW ✓"
+echo "  all release version touchpoints == $NEW ✓"
 
 if [ "$DRY" -eq 1 ]; then
   echo "DRY-RUN: edits applied locally, NOT committed. Review with 'git diff', then 'git checkout -- .' to undo or re-run without --dry-run."
