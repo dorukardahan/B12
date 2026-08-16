@@ -38,13 +38,48 @@ def _strip_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
     backticks carry no code-span semantics, so closers are searched on the raw
     line.
     """
-    # Same-length backtick runs delimit a code span; inner backticks of a
-    # different run length stay part of the span content.
-    CODE_SPAN_PATTERN = re.compile(r"(?<!`)(`+)(?:(?!\1).)*?\1(?!`)")
+    def _mask_code_spans(text: str) -> str:
+        """Blank out code spans without regex backtracking.
 
-    # Masking replaces each matched span character-for-character, so masked
-    # indices stay aligned with the original line.
-    masked = CODE_SPAN_PATTERN.sub(lambda m: " " * (m.end() - m.start()), line)
+        CommonMark: a backtick string of length N opens a code span that only a
+        *later backtick string of exactly length N* closes; runs of any other
+        length inside are literal content, and an unmatched opener is literal.
+        A linear scan implements that exactly (no non-atomic backtracking).
+        Masking is character-for-character, so indices stay aligned.
+        """
+        chars = list(text)
+        i = 0
+        length = len(text)
+        while i < length:
+            if text[i] != "`":
+                i += 1
+                continue
+            j = i
+            while j < length and text[j] == "`":
+                j += 1
+            run = j - i
+            closer = -1
+            k = j
+            while k < length:
+                if text[k] == "`":
+                    m = k
+                    while m < length and text[m] == "`":
+                        m += 1
+                    if m - k == run:
+                        closer = m
+                        break
+                    k = m  # different-length run: literal content, skip it
+                else:
+                    k += 1
+            if closer == -1:
+                i = j  # unmatched opener: literal backticks, not a span
+                continue
+            for x in range(i, closer):
+                chars[x] = " "
+            i = closer
+        return "".join(chars)
+
+    masked = _mask_code_spans(line)
     visible: list[str] = []
     cursor = 0
     while cursor < len(masked):
