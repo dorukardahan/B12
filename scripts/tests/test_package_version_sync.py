@@ -117,6 +117,10 @@ def test_check_ignores_non_release_markdown_version_examples(tmp_path):
 ### v6.6.6 compatibility
 - This is an Unreleased subsection, not a release.
 
+Explanation. <!-- hidden draft
+## [v5.5.5] — hidden inside a mid-line comment
+-->
+
 ## [v1.2.3] — 2026-08-08
 
 ### Fixed

@@ -27,24 +27,49 @@ HTML_COMMENT_OPEN_PATTERN = re.compile(r"^[ ]{0,3}<!--")
 
 
 def _strip_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
-    """Remove block-style HTML comments while preserving inline literals."""
+    """Remove block-style HTML comments while preserving inline literals.
+
+    Code spans (`` `...` ``) may legitimately document a literal ``<!--`` token
+    without a closing ``-->``, so opener detection skips spans first. Outside
+    code spans a comment opener is valid Markdown anywhere on the line —
+    including after visible text — per the CommonMark HTML block spec.
+    """
+    CODE_SPAN_PATTERN = re.compile(r"`+[^`]*`+")
+
+    def _mask_code_spans(text: str) -> tuple[str, dict[int, bool]]:
+        """Replace code-span contents with spaces; return mask of span chars."""
+        masked = []
+        span_chars: dict[int, bool] = {}
+        cursor = 0
+        for span in CODE_SPAN_PATTERN.finditer(text):
+            masked.append(text[cursor:span.start()])
+            for i in range(span.start(), span.end()):
+                span_chars[i] = True
+                masked.append(" ")
+            cursor = span.end()
+        masked.append(text[cursor:])
+        return "".join(masked), span_chars
+
+    masked, span_chars = _mask_code_spans(line)
     visible: list[str] = []
     cursor = 0
-    while cursor < len(line):
+    while cursor < len(masked):
         if in_comment:
-            end = line.find("-->", cursor)
+            end = masked.find("-->", cursor)
             if end == -1:
                 return "".join(visible), True
             cursor = end + 3
             in_comment = False
             continue
 
-        remaining = line[cursor:]
-        opener = HTML_COMMENT_OPEN_PATTERN.match(remaining)
-        if opener is None:
-            visible.append(remaining)
+        opener = masked.find("<!--", cursor)
+        if opener == -1:
+            visible.append(line[cursor:])
             break
-        cursor += opener.end()
+        # Emit the visible prefix verbatim from the ORIGINAL line, then drop
+        # the rest of the line (comment content) until a closer appears.
+        visible.append(line[cursor:opener])
+        cursor = opener + 4
         in_comment = True
     return "".join(visible), in_comment
 
