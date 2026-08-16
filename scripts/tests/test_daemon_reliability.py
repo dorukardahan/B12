@@ -9,6 +9,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import sqlite3
 import sys
@@ -77,6 +78,83 @@ def test_handle_request_closes_conn_on_normal_return(tmp_path, monkeypatch):
     with pytest.raises(sqlite3.ProgrammingError):
         captured["c"].execute("SELECT 1")
 
+
+
+def test_embed_daemon_rejects_expired_queue_request_before_handler(monkeypatch):
+    """A request queued behind another process must be rejected by the serial
+    daemon itself once its client-supplied monotonic admission deadline expires."""
+    try:
+        import embed_daemon as D
+    except Exception as e:
+        pytest.skip(f"embed_daemon unavailable: {e}")
+
+    class FakeConn:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(json.loads(payload.decode().strip()))
+
+    conn = FakeConn()
+    request = {
+        "op": "semantic_search",
+        "_queue_deadline_monotonic": 9.0,
+    }
+    monkeypatch.setattr(D.time, "monotonic", lambda: 10.0)
+
+    assert D._admit_queued_request(conn, request) is False
+    assert conn.sent == [{"ok": False, "error": "queue_timeout"}]
+
+
+def test_embed_daemon_rejects_explicit_null_queue_deadline(monkeypatch):
+    """A present deadline field is fail-closed; JSON null is not field absence."""
+    try:
+        import embed_daemon as D
+    except Exception as e:
+        pytest.skip(f"embed_daemon unavailable: {e}")
+
+    class FakeConn:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(json.loads(payload.decode().strip()))
+
+    conn = FakeConn()
+    request = {
+        "op": "semantic_search",
+        "_queue_deadline_monotonic": None,
+    }
+    monkeypatch.setattr(D.time, "monotonic", lambda: 10.0)
+
+    assert D._admit_queued_request(conn, request) is False
+    assert conn.sent == [{"ok": False, "error": "queue_timeout"}]
+
+
+def test_embed_daemon_acknowledges_live_queue_request_before_handler(monkeypatch):
+    """Once admitted before the deadline, the daemon sends an ACK so the client
+    can switch from the queue budget to the normal operation timeout."""
+    try:
+        import embed_daemon as D
+    except Exception as e:
+        pytest.skip(f"embed_daemon unavailable: {e}")
+
+    class FakeConn:
+        def __init__(self):
+            self.sent = []
+
+        def sendall(self, payload):
+            self.sent.append(json.loads(payload.decode().strip()))
+
+    conn = FakeConn()
+    request = {
+        "op": "semantic_search",
+        "_queue_deadline_monotonic": 11.0,
+    }
+    monkeypatch.setattr(D.time, "monotonic", lambda: 10.0)
+
+    assert D._admit_queued_request(conn, request) is True
+    assert conn.sent == [{"ok": True, "_accepted": True}]
 
 
 def test_open_db_registers_conn_before_setup():

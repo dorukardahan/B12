@@ -102,6 +102,12 @@ READ_POOL_SIZE = (int(os.environ.get("B12_MCP_READ_POOL", "0"))
 # would each open a socket at once and a fast op could hit its 5s client timeout
 # waiting in the listen backlog behind a slow >10s encode_batch. See R&D SPD-1.
 _daemon_lock = asyncio.Lock()
+# Keep daemon socket work off asyncio's shared default executor. Rare admin tools
+# (export/import/consolidate) also use ``asyncio.to_thread`` and can saturate that
+# pool; queue_timeout must not be spent waiting behind unrelated local work.
+# _daemon_lock ensures this single-worker pool never has more than one submitted
+# round-trip at a time.
+_daemon_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="b12-daemon-io")
 
 # ── Session tracker (MCP-only platform support) ─────────────────
 # Tracks tool calls during a session so we can generate a summary
@@ -706,6 +712,20 @@ try:
 except (TypeError, ValueError):
     _DAEMON_CLIENT_TIMEOUT = 20.0
 
+# Latency-sensitive retrieval gets a separate budget for WAITING to enter the
+# single-connection embed-daemon queue. It does not shorten the existing socket
+# timeout once a request starts, so stores and other correctness-sensitive embed
+# operations preserve their current behavior. Keep invalid/non-finite/non-positive
+# values from disabling semantic retrieval or crashing module import.
+try:
+    _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = float(
+        os.environ.get("B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT", "2")
+    )
+    if not 0 < _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT < float("inf"):
+        _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = 2.0
+except (TypeError, ValueError):
+    _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = 2.0
+
 
 def _ensure_embed_daemon(force: bool = False) -> bool:
     """Start the on-demand embed daemon when no process owns its singleton lock.
@@ -743,20 +763,65 @@ def _ensure_embed_daemon(force: bool = False) -> bool:
         return False
 
 
-def daemon_request(op: str, **kwargs) -> dict | None:
-    """Send JSON to embed_daemon via Unix socket. Returns None on failure."""
+def daemon_request(
+    op: str, *, queue_deadline_monotonic: float | None = None, **kwargs
+) -> dict | None:
+    """Send JSON to embed_daemon via Unix socket. Returns None on failure.
+
+    A queue deadline is carried over the local Unix socket so latency-sensitive
+    callers are bounded even when another MCP process already occupies the serial
+    daemon. The daemon ACKs admission before starting work; after that ACK the
+    normal operation timeout applies."""
     s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-    try:
-        s.settimeout(_DAEMON_CLIENT_TIMEOUT)
-        s.connect(SOCK_PATH)
-        s.sendall((json.dumps({"op": op, **kwargs}) + "\n").encode())
-        data = b""
-        while b"\n" not in data:
+    pending_admission = queue_deadline_monotonic is not None
+    buffered = b""
+
+    def _set_pre_admission_timeout() -> None:
+        if queue_deadline_monotonic is None:
+            return
+        remaining = queue_deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            raise socket.timeout("embed-daemon queue deadline expired")
+        s.settimeout(remaining)
+
+    def _recv_response_line(*, pre_admission: bool = False) -> dict:
+        nonlocal buffered
+        while b"\n" not in buffered:
+            if pre_admission:
+                _set_pre_admission_timeout()
             chunk = s.recv(65536)
-            if not chunk: break
-            data += chunk
-        resp = json.loads(data.decode().strip())
+            if not chunk:
+                break
+            buffered += chunk
+        line, separator, buffered = buffered.partition(b"\n")
+        if not line:
+            raise ValueError("empty embed-daemon response")
+        if not separator:
+            buffered = b""
+        return json.loads(line.decode().strip())
+
+    try:
+        if queue_deadline_monotonic is None:
+            s.settimeout(_DAEMON_CLIENT_TIMEOUT)
+        else:
+            _set_pre_admission_timeout()
+        s.connect(SOCK_PATH)
+        request = {"op": op, **kwargs}
+        if queue_deadline_monotonic is not None:
+            request["_queue_deadline_monotonic"] = queue_deadline_monotonic
+            _set_pre_admission_timeout()
+        s.sendall((json.dumps(request) + "\n").encode())
+        resp = _recv_response_line(pre_admission=pending_admission)
+        if resp.get("_accepted") is True:
+            pending_admission = False
+            s.settimeout(_DAEMON_CLIENT_TIMEOUT)
+            resp = _recv_response_line()
         return resp if resp.get("ok") else None
+    except socket.timeout:
+        if pending_admission:
+            return None
+        _ensure_embed_daemon(force=True)
+        return None
     except Exception:
         # Stale/missing sockets are expected after on-demand self-heal.  Launch
         # asynchronously and preserve this request's existing graceful fallback.
@@ -766,7 +831,9 @@ def daemon_request(op: str, **kwargs) -> dict | None:
         s.close()
 
 
-async def daemon_request_async(op: str, **kwargs) -> dict | None:
+async def daemon_request_async(
+    op: str, *, queue_timeout: float | None = None, **kwargs
+) -> dict | None:
     """Async wrapper for daemon_request: runs the blocking Unix-socket round-trip
     in a worker thread so the shared asyncio event loop is never stalled on
     daemon I/O. In daemon mode a single FastMCP loop serves every connected
@@ -782,9 +849,42 @@ async def daemon_request_async(op: str, **kwargs) -> dict | None:
     disconnects mid-`encode_batch`), we still wait for the in-flight socket
     round-trip to finish before releasing _daemon_lock — a worker thread can't
     be cancelled, and releasing early would let the next request race the
-    single-connection daemon. Cancellation then propagates as normal."""
-    async with _daemon_lock:
-        worker = asyncio.ensure_future(asyncio.to_thread(daemon_request, op, **kwargs))
+    single-connection daemon. Cancellation then propagates as normal.
+
+    `queue_timeout` bounds both this process's lock wait and cross-process daemon
+    admission. The serial daemon ACKs requests admitted before the monotonic
+    deadline; only then does the normal socket operation timeout take over."""
+    acquired = False
+    wait_started = time.monotonic()
+    queue_deadline = (
+        None if queue_timeout is None else wait_started + queue_timeout
+    )
+    try:
+        if queue_timeout is None:
+            await _daemon_lock.acquire()
+        else:
+            assert queue_deadline is not None
+            try:
+                remaining_budget = queue_deadline - time.monotonic()
+                async with asyncio.timeout(max(0.0, remaining_budget)):
+                    await _daemon_lock.acquire()
+            except TimeoutError:
+                waited = time.monotonic() - wait_started
+                _sys.stderr.write(
+                    f"[b12_mcp_server] daemon queue timeout op={op} "
+                    f"waited={waited:.3f}s; request not started\n"
+                )
+                return None
+        acquired = True
+        if queue_deadline is not None and queue_deadline <= time.monotonic():
+            return None
+        request_kwargs = dict(kwargs)
+        if queue_deadline is not None:
+            request_kwargs["queue_deadline_monotonic"] = queue_deadline
+        loop = asyncio.get_running_loop()
+        worker = loop.run_in_executor(
+            _daemon_pool, lambda: daemon_request(op, **request_kwargs)
+        )
         try:
             return await asyncio.shield(worker)
         finally:
@@ -796,6 +896,9 @@ async def daemon_request_async(op: str, **kwargs) -> dict | None:
                     await asyncio.shield(worker)
                 except BaseException:
                     pass
+    finally:
+        if acquired:
+            _daemon_lock.release()
 
 
 async def _run_locked_offthread(fn, *args, **kwargs):
@@ -1373,7 +1476,11 @@ async def memory_search(
     # ── Semantic search via daemon (off the writer — daemon call is slow) ──
     if mode in ("semantic", "hybrid") and query:
         resp = await daemon_request_async(
-            "semantic_search", query=query, db_path=DB_PATH, limit=limit * 2
+            "semantic_search",
+            queue_timeout=_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT,
+            query=query,
+            db_path=DB_PATH,
+            limit=limit * 2,
         )
         if resp and resp.get("results"):
             def _semantic_merge(db):

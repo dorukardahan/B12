@@ -1,7 +1,7 @@
 """Regression test for SPD-1: blocking daemon calls are offloaded off the loop.
 
-`daemon_request_async` must run the blocking Unix-socket round-trip in a worker
-thread (via asyncio.to_thread) so the shared FastMCP event loop is never stalled
+`daemon_request_async` must run the blocking Unix-socket round-trip in a dedicated
+worker executor so the shared FastMCP event loop is never stalled
 on daemon I/O. We assert it (a) returns the wrapped result and (b) executes in a
 DIFFERENT thread than the caller.
 
@@ -9,9 +9,13 @@ Run via:  python3 -m pytest scripts/tests/test_mcp_async_offload.py -v
       or:  python3 scripts/tests/test_mcp_async_offload.py
 """
 import asyncio
+import json
 import os
+import socket
 import sys
 import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -122,6 +126,272 @@ def test_daemon_request_async_finishes_worker_on_cancellation():
         M.daemon_request = orig
 
     assert "slow" in completed, "worker was abandoned on cancellation (socket round-trip not awaited)"
+
+
+def test_daemon_request_async_queue_timeout_does_not_start_worker():
+    """A queue timeout returns None without starting a late daemon worker."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_daemon_request_async_queue_timeout_does_not_start_worker ({e})")
+        return
+
+    calls = []
+
+    def fake_daemon_request(op, **kwargs):
+        calls.append((op, kwargs))
+        return {"ok": True, "op": op}
+
+    orig_request, orig_lock = M.daemon_request, M._daemon_lock
+    M.daemon_request = fake_daemon_request
+    M._daemon_lock = asyncio.Lock()
+    try:
+        async def run():
+            await M._daemon_lock.acquire()
+            try:
+                return await asyncio.wait_for(
+                    M.daemon_request_async(
+                        "semantic_search", queue_timeout=0.02, query="bounded"
+                    ),
+                    timeout=0.2,
+                )
+            finally:
+                if M._daemon_lock.locked():
+                    M._daemon_lock.release()
+
+        result = asyncio.run(run())
+    finally:
+        M.daemon_request, M._daemon_lock = orig_request, orig_lock
+
+    assert result is None
+    assert calls == [], "queue timeout started a daemon worker after fallback"
+
+
+def test_daemon_request_async_without_queue_timeout_still_waits():
+    """Correctness-sensitive callers (stores/embeds) preserve the old wait."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_daemon_request_async_without_queue_timeout_still_waits ({e})")
+        return
+
+    calls = []
+
+    def fake_daemon_request(op, **kwargs):
+        calls.append((op, kwargs))
+        return {"ok": True, "op": op}
+
+    orig_request, orig_lock = M.daemon_request, M._daemon_lock
+    M.daemon_request = fake_daemon_request
+    M._daemon_lock = asyncio.Lock()
+    try:
+        async def run():
+            await M._daemon_lock.acquire()
+            task = asyncio.create_task(M.daemon_request_async("encode_batch", texts=["x"]))
+            await asyncio.sleep(0.04)
+            assert not task.done(), "unbounded caller stopped waiting for the daemon lock"
+            assert calls == [], "worker started before the daemon lock was available"
+            M._daemon_lock.release()
+            return await asyncio.wait_for(task, timeout=0.2)
+
+        result = asyncio.run(run())
+    finally:
+        M.daemon_request, M._daemon_lock = orig_request, orig_lock
+
+    assert result == {"ok": True, "op": "encode_batch"}
+    assert calls == [("encode_batch", {"texts": ["x"]})]
+
+
+def test_daemon_queue_wait_propagates_release_cancel_race():
+    """External cancellation wins when lock release races the queue waiter."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_daemon_queue_wait_propagates_release_cancel_race ({e})")
+        return
+
+    calls = []
+
+    def fake_daemon_request(op, **kwargs):
+        calls.append((op, kwargs))
+        return {"ok": True, "op": op}
+
+    orig_request, orig_lock = M.daemon_request, M._daemon_lock
+    M.daemon_request = fake_daemon_request
+    M._daemon_lock = asyncio.Lock()
+    try:
+        async def run():
+            await M._daemon_lock.acquire()
+            task = asyncio.create_task(
+                M.daemon_request_async("semantic_search", queue_timeout=1.0, query="x")
+            )
+            await asyncio.sleep(0)  # queue the lock acquisition
+            loop = asyncio.get_running_loop()
+            loop.call_soon(M._daemon_lock.release)
+            loop.call_soon(task.cancel)
+            try:
+                await task
+            except asyncio.CancelledError:
+                return True
+            return False
+
+        cancelled = asyncio.run(run())
+    finally:
+        M.daemon_request, M._daemon_lock = orig_request, orig_lock
+
+    assert cancelled, "release/cancel race swallowed caller cancellation"
+    assert calls == [], "cancelled queue waiter started a daemon worker"
+
+
+def test_search_queue_timeout_bounds_external_daemon_backlog(tmp_path):
+    """A separate MCP process can already occupy the serial embed daemon while
+    this process's asyncio lock is free. The search budget must still bound the
+    socket/backlog wait rather than inheriting the normal 20-second I/O timeout."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP test_search_queue_timeout_bounds_external_daemon_backlog ({e})")
+        return
+
+    sock_path = str(tmp_path / "embed.sock")
+    ready = threading.Event()
+    blocker_accepted = threading.Event()
+    server_errors = []
+
+    def recv_line(conn):
+        data = b""
+        while b"\n" not in data:
+            chunk = conn.recv(65536)
+            if not chunk:
+                break
+            data += chunk
+        return json.loads(data.decode().strip()) if data else {}
+
+    def fake_serial_daemon():
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        try:
+            server.bind(sock_path)
+            server.listen(8)
+            server.settimeout(1.0)
+            ready.set()
+
+            first, _ = server.accept()
+            with first:
+                recv_line(first)
+                blocker_accepted.set()
+                time.sleep(0.15)
+                try:
+                    first.sendall(b'{"ok":true}\n')
+                except OSError:
+                    pass
+
+            second, _ = server.accept()
+            with second:
+                recv_line(second)
+                try:
+                    second.sendall(b'{"ok":true,"results":[]}\n')
+                except OSError:
+                    pass
+        except BaseException as exc:
+            server_errors.append(exc)
+        finally:
+            server.close()
+
+    thread = threading.Thread(target=fake_serial_daemon, daemon=True)
+    thread.start()
+    assert ready.wait(1.0)
+
+    blocker = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    blocker.connect(sock_path)
+    blocker.sendall(b'{"op":"encode_batch","texts":["slow"]}\n')
+    assert blocker_accepted.wait(1.0)
+
+    original = (
+        M.SOCK_PATH,
+        M._DAEMON_CLIENT_TIMEOUT,
+        M._daemon_lock,
+        M._ensure_embed_daemon,
+    )
+    M.SOCK_PATH = sock_path
+    M._DAEMON_CLIENT_TIMEOUT = 1.0
+    M._daemon_lock = asyncio.Lock()
+    M._ensure_embed_daemon = lambda force=False: False
+    try:
+        started = time.monotonic()
+        result = asyncio.run(
+            M.daemon_request_async(
+                "semantic_search",
+                queue_timeout=0.03,
+                query="bounded",
+                db_path="unused",
+                limit=2,
+            )
+        )
+        elapsed = time.monotonic() - started
+    finally:
+        (
+            M.SOCK_PATH,
+            M._DAEMON_CLIENT_TIMEOUT,
+            M._daemon_lock,
+            M._ensure_embed_daemon,
+        ) = original
+        blocker.close()
+        thread.join(timeout=1.0)
+
+    assert result is None
+    assert elapsed < 0.10, f"external daemon backlog escaped queue budget: {elapsed:.3f}s"
+    assert not server_errors, server_errors
+
+
+def test_daemon_request_recomputes_queue_budget_before_each_admission_block(
+    monkeypatch,
+) -> None:
+    """Connect/send/ACK receive must share one absolute queue deadline."""
+    import b12_mcp_server as M
+    fake_socket = _BudgetSocket()
+    monotonic_values = iter((9.0, 9.2, 9.4))
+
+    monkeypatch.setattr(M.socket, "socket", lambda *_args, **_kwargs: fake_socket)
+    monkeypatch.setattr(M.time, "monotonic", lambda: next(monotonic_values))
+
+    result = M.daemon_request(
+        "semantic_search",
+        queue_deadline_monotonic=10.0,
+        query="deadline",
+    )
+
+    assert result == {"ok": True, "result": "admitted"}
+    assert len(fake_socket.timeouts) == 3
+    assert all(
+        abs(actual - expected) < 1e-9
+        for actual, expected in zip(fake_socket.timeouts, (1.0, 0.8, 0.6))
+    )
+
+
+class _BudgetSocket:
+    def __init__(self) -> None:
+        self.timeouts: list[float] = []
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc) -> None:
+        return None
+
+    def settimeout(self, timeout: float) -> None:
+        self.timeouts.append(timeout)
+
+    def connect(self, _path: str) -> None:
+        return None
+
+    def sendall(self, _payload: bytes) -> None:
+        return None
+
+    def recv(self, _size: int) -> bytes:
+        return b'{"ok": true, "result": "admitted"}\n'
+
+    def close(self) -> None:
+        return None
 
 
 # ── PR-B: rare admin handlers offloaded off the FastMCP loop ────────────────
@@ -403,6 +673,58 @@ def test_memory_refine_finishes_worker_on_cancellation():
     finally:
         M._refine_candidates = orig
     assert completed, "refine worker was abandoned on cancellation (lock would free mid-socket)"
+
+
+def test_daemon_request_async_isolated_from_default_executor_saturation():
+    """Admin ``to_thread`` backlog must not consume retrieval queue budget."""
+    try:
+        import b12_mcp_server as M
+    except Exception as e:
+        print(f"SKIP ({e})"); return
+
+    release = threading.Event()
+    blocker_started = threading.Event()
+    seen = {}
+
+    def block_default_executor():
+        blocker_started.set()
+        release.wait(timeout=1.0)
+
+    def fake_daemon_request(op, **kwargs):
+        seen["thread"] = threading.get_ident()
+        return {"ok": True, "result": "isolated"}
+
+    orig = M.daemon_request
+    M.daemon_request = fake_daemon_request
+    timer = threading.Timer(0.3, release.set)
+    try:
+        async def run():
+            loop = asyncio.get_running_loop()
+            default_pool = ThreadPoolExecutor(max_workers=1)
+            loop.set_default_executor(default_pool)
+            occupied = loop.run_in_executor(None, block_default_executor)
+            while not blocker_started.is_set():
+                await asyncio.sleep(0.001)
+            timer.start()
+            started = time.monotonic()
+            try:
+                result = await asyncio.wait_for(
+                    M.daemon_request_async("search", queue_timeout=0.1),
+                    timeout=0.2,
+                )
+                elapsed = time.monotonic() - started
+            finally:
+                release.set()
+                await occupied
+                default_pool.shutdown(wait=True)
+            assert result == {"ok": True, "result": "isolated"}
+            assert elapsed < 0.15, f"daemon request waited {elapsed:.3f}s in the default executor"
+        asyncio.run(run())
+    finally:
+        release.set()
+        timer.cancel()
+        M.daemon_request = orig
+    assert seen.get("thread") is not None
 
 
 if __name__ == "__main__":

@@ -32,6 +32,7 @@ import atexit
 import base64
 import fcntl
 import json
+import math
 import os
 import signal
 import socket
@@ -1092,6 +1093,31 @@ def _load_gguf_backend():
     return _GGUFEmbedShim(llama)
 
 
+def _admit_queued_request(conn, data):
+    """Enforce an optional cross-process queue deadline before model work.
+
+    The MCP client waits under the queue budget for this ACK, then switches to
+    its normal operation timeout. Requests accepted after their monotonic deadline
+    are rejected here and never enter an expensive embedding/search handler."""
+    missing = object()
+    raw_deadline = data.pop("_queue_deadline_monotonic", missing)
+    if raw_deadline is missing:
+        return True
+    try:
+        deadline = float(raw_deadline)
+    except (TypeError, ValueError):
+        deadline = float("nan")
+    if not math.isfinite(deadline) or time.monotonic() >= deadline:
+        conn.sendall(
+            (json.dumps({"ok": False, "error": "queue_timeout"}) + "\n").encode()
+        )
+        return False
+    conn.sendall(
+        (json.dumps({"ok": True, "_accepted": True}) + "\n").encode()
+    )
+    return True
+
+
 def handle_request(model, data, start_time, requests_served):
     """Route a JSON request to the appropriate handler."""
     op = data.get('op', '')
@@ -1274,24 +1300,25 @@ def main():
 
             if data:
                 request = json.loads(data.decode('utf-8').strip())
-                response = handle_request(model, request, start_time, requests_served)
-                requests_served += 1
-                last_request = time.time()
+                if _admit_queued_request(conn, request):
+                    response = handle_request(model, request, start_time, requests_served)
+                    requests_served += 1
+                    last_request = time.time()
 
-                # Memory self-guard: if we've ballooned past the ceiling, send
-                # this response then shut down cleanly (server.close + cleanup
-                # run after the loop). A peak-RSS trip is conservative by design.
-                _rss_over = rss_exceeds(EMBED_MAX_RSS_MB)
-                if _rss_over:
-                    log(f"RSS {_rss_over}MB > ceiling {EMBED_MAX_RSS_MB}MB "
-                        f"(B12_EMBED_MAX_RSS_MB) — shutting down to protect host")
-                    running[0] = False
+                    # Memory self-guard: if we've ballooned past the ceiling, send
+                    # this response then shut down cleanly (server.close + cleanup
+                    # run after the loop). A peak-RSS trip is conservative by design.
+                    _rss_over = rss_exceeds(EMBED_MAX_RSS_MB)
+                    if _rss_over:
+                        log(f"RSS {_rss_over}MB > ceiling {EMBED_MAX_RSS_MB}MB "
+                            f"(B12_EMBED_MAX_RSS_MB) — shutting down to protect host")
+                        running[0] = False
 
-                should_shutdown = response.pop('_shutdown', False)
-                conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
+                    should_shutdown = response.pop('_shutdown', False)
+                    conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
 
-                if should_shutdown:
-                    running[0] = False
+                    if should_shutdown:
+                        running[0] = False
         except Exception as e:
             try:
                 err_resp = json.dumps({'ok': False, 'error': str(e)}) + '\n'

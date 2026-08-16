@@ -10,6 +10,10 @@ behavioral test isn't feasible on the ubuntu runner).
 from __future__ import annotations
 
 import re
+import os
+import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -63,3 +67,86 @@ def test_reload_called_after_copy_scripts():
     copy_at = src.index("\ncopy_scripts\n")
     call_at = src.index("reload_daemon_if_running || warn")
     assert copy_at < call_at, "reload must be invoked after copy_scripts deploys the new code"
+
+
+def test_embed_daemon_upgrade_restart_is_pid_and_command_guarded():
+    src = _src()
+    m = re.search(r"restart_embed_daemon_if_running\(\)\s*\{(.*?)\n\}", src, re.DOTALL)
+    assert m, "restart_embed_daemon_if_running body not found"
+    body = m.group(1)
+    assert "B12_EMBED_RUNTIME_DIR" in body and "b12-embed-" in body and ".pid" in body
+    assert "kill -0" in body, "restart must require a live PID"
+    assert "ps -p" in body and "embed_daemon.py" in body, "restart must reject PID reuse"
+    assert "kill -TERM" in body, "verified embed daemon must receive a graceful TERM"
+
+
+def test_embed_daemon_restart_runs_after_support_script_copy():
+    src = _src()
+    copy_at = src.index("\ncopy_scripts\n")
+    restart_at = src.index("restart_embed_daemon_if_running || warn")
+    assert copy_at < restart_at, "embed daemon restart must happen after new code is deployed"
+
+
+def _invoke_embed_restart(runtime: Path) -> subprocess.CompletedProcess[str]:
+    src = _src()
+    m = re.search(r"restart_embed_daemon_if_running\(\)\s*\{(.*?)\n\}", src, re.DOTALL)
+    assert m
+    function = "restart_embed_daemon_if_running() {" + m.group(1) + "\n}"
+    return subprocess.run(
+        ["bash", "-c", f"info() {{ :; }}\n{function}\nrestart_embed_daemon_if_running"],
+        env=os.environ | {"B12_EMBED_RUNTIME_DIR": str(runtime)},
+        text=True,
+        capture_output=True,
+        timeout=5,
+    )
+
+
+def test_embed_daemon_upgrade_restart_terminates_verified_process(tmp_path: Path):
+    if shutil.which("bash") is None or not hasattr(os, "getuid"):
+        return
+    daemon = tmp_path / "embed_daemon.py"
+    daemon.write_text("import time\ntime.sleep(30)\n")
+    proc = subprocess.Popen([sys.executable, str(daemon)])
+    (tmp_path / f"b12-embed-{os.getuid()}.pid").write_text(str(proc.pid))
+    try:
+        result = _invoke_embed_restart(tmp_path)
+        assert result.returncode == 0, result.stderr
+        proc.wait(timeout=3)
+        assert proc.returncode is not None
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+
+
+def test_embed_daemon_upgrade_restart_rejects_reused_pid(tmp_path: Path):
+    if shutil.which("bash") is None or not hasattr(os, "getuid"):
+        return
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    (tmp_path / f"b12-embed-{os.getuid()}.pid").write_text(str(proc.pid))
+    try:
+        result = _invoke_embed_restart(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert proc.poll() is None, "unrelated process was terminated through a stale PID file"
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
+
+
+def test_embed_daemon_restart_rejects_similar_python_script_name(tmp_path: Path):
+    """A stale PID must not kill an unrelated Python script by substring match."""
+    if shutil.which("bash") is None or not hasattr(os, "getuid"):
+        return
+    decoy = tmp_path / "harmless-embed_daemon.py"
+    decoy.write_text("import time\ntime.sleep(30)\n")
+    proc = subprocess.Popen([sys.executable, str(decoy)])
+    (tmp_path / f"b12-embed-{os.getuid()}.pid").write_text(str(proc.pid))
+    try:
+        result = _invoke_embed_restart(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert proc.poll() is None, "similar script name was mistaken for the B12 daemon"
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)

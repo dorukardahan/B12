@@ -450,6 +450,52 @@ def test_real_handlers_mixed_store_search_update_delete(tmp_path):
     _run(M, tmp_path, body)
 
 
+def test_memory_search_falls_back_when_daemon_queue_is_busy(tmp_path):
+    """Issue #193: retrieval queue waits are bounded before socket work starts."""
+    M = _load()
+    if not hasattr(M, "_init_db"):
+        if pytest:
+            pytest.skip(f"b12_mcp_server unavailable ({M})")
+        return
+
+    async def body(M, db):
+        calls = []
+
+        def fake_daemon_request(op, **kwargs):
+            calls.append((op, kwargs))
+            return {"ok": True, "results": []}
+
+        old_request = M.daemon_request
+        old_budget = getattr(M, "_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT", None)
+        had_budget = hasattr(M, "_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT")
+        M.daemon_request = fake_daemon_request
+        M._MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = 0.02
+        await M._daemon_lock.acquire()
+        try:
+            hybrid = await asyncio.wait_for(
+                M.memory_search(query="seed memory", mode="hybrid", limit=3),
+                timeout=0.2,
+            )
+            semantic = await asyncio.wait_for(
+                M.memory_search(query="seed memory", mode="semantic", limit=3),
+                timeout=0.2,
+            )
+        finally:
+            if M._daemon_lock.locked():
+                M._daemon_lock.release()
+            M.daemon_request = old_request
+            if had_budget:
+                M._MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = old_budget
+            else:
+                delattr(M, "_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT")
+
+        assert "Found 3 memories" in hybrid
+        assert semantic == "No memories found."
+        assert calls == [], "timed-out search started a daemon worker"
+
+    _run(M, tmp_path, body)
+
+
 if __name__ == "__main__":
     import tempfile
 
