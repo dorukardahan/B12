@@ -22,8 +22,9 @@ error-prone parts (all version touchpoints, the CHANGELOG splice, commit/tag/rel
 # Is a release due? (commits since last tag, user-facing subset, suggested bump)
 scripts/release.sh --check
 
-# Cut it: sync every version touchpoint, prepend the CHANGELOG section, commit,
-# annotated-tag, create the GitHub release. <notes-file> is the agent's
+# Cut it: sync every version touchpoint, prepend the CHANGELOG section, validate
+# package metadata against that release header, commit, annotated-tag, and
+# create the GitHub release. <notes-file> is the agent's
 # hand-curated section body (### Added / ### Changed / ### Fixed / ### Internal).
 scripts/release.sh <X.Y.Z> path/to/notes.md
 scripts/release.sh --dry-run <X.Y.Z> path/to/notes.md   # preview, no commit/tag/push
