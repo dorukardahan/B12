@@ -30,32 +30,26 @@ def _strip_html_comments(line: str, in_comment: bool) -> tuple[str, bool]:
     """Remove block-style HTML comments while preserving inline literals.
 
     Code spans (`` `...` ``) may legitimately document a literal ``<!--`` token
-    without a closing ``-->``, so opener detection skips spans first. Outside
-    code spans a comment opener is valid Markdown anywhere on the line —
-    including after visible text — per the CommonMark HTML block spec.
+    without a closing ``-->``, so opener detection skips spans first. A code
+    span only closes on a backtick run of the SAME length as its opener
+    (CommonMark), hence the backreference. Outside code spans a comment opener
+    is valid Markdown anywhere on the line — including after visible text —
+    per the CommonMark HTML block spec. Inside an active HTML comment,
+    backticks carry no code-span semantics, so closers are searched on the raw
+    line.
     """
-    CODE_SPAN_PATTERN = re.compile(r"`+[^`]*`+")
+    # Same-length backtick runs delimit a code span; inner backticks of a
+    # different run length stay part of the span content.
+    CODE_SPAN_PATTERN = re.compile(r"(?<!`)(`+)(?:(?!\1).)*?\1(?!`)")
 
-    def _mask_code_spans(text: str) -> tuple[str, dict[int, bool]]:
-        """Replace code-span contents with spaces; return mask of span chars."""
-        masked = []
-        span_chars: dict[int, bool] = {}
-        cursor = 0
-        for span in CODE_SPAN_PATTERN.finditer(text):
-            masked.append(text[cursor:span.start()])
-            for i in range(span.start(), span.end()):
-                span_chars[i] = True
-                masked.append(" ")
-            cursor = span.end()
-        masked.append(text[cursor:])
-        return "".join(masked), span_chars
-
-    masked, span_chars = _mask_code_spans(line)
+    # Masking replaces each matched span character-for-character, so masked
+    # indices stay aligned with the original line.
+    masked = CODE_SPAN_PATTERN.sub(lambda m: " " * (m.end() - m.start()), line)
     visible: list[str] = []
     cursor = 0
     while cursor < len(masked):
         if in_comment:
-            end = masked.find("-->", cursor)
+            end = line.find("-->", cursor)
             if end == -1:
                 return "".join(visible), True
             cursor = end + 3
