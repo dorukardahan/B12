@@ -221,6 +221,15 @@ It reuses the runtime selector, reports exact row IDs and platform totals, and e
 `BEGIN IMMEDIATE` only with `--execute`. Cleanup stamps only `deleted_at`; content, metadata,
 hashes, graph edges, vectors, and summaries without a usable session ID remain untouched.
 
+Summaries without a usable ID are not one undifferentiated backlog. The read-only
+`scripts/b12_audit_session_summaries.py` tool classifies every active unbound row as
+intentionally unbound, recoverable legacy, or ambiguous legacy and inventories its
+producer/platform/project/tag shape and age without returning content or candidate IDs.
+Current writers must emit either a stable full ID or an explicit unbound marker with
+producer and platform. Retention, structured-only recovery, backup/rollback, collision,
+and project-context continuity gates are defined in the
+[session-summary identity and retention policy](session-summary-identity-policy.md).
+
 **Codex lifecycle split**: `Stop` captures only cheap per-turn goal progress.
 `SessionEnd` owns detached summary extraction after rollout flush because upstream
 caps teardown hooks at three seconds. The retired legacy `notify` path was a

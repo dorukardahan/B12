@@ -14,6 +14,40 @@ import sqlite3
 import sys
 
 
+_UNUSABLE_SESSION_IDS = frozenset(
+    {
+        "",
+        "unknown",
+        "none",
+        "null",
+        "n/a",
+        "na",
+        "gemini-unknown",
+        "gemini-unkno",
+    }
+)
+_UNUSABLE_IDENTITY_DIMENSIONS = _UNUSABLE_SESSION_IDS
+
+
+def is_usable_session_id(value: object) -> bool:
+    """Return whether ``value`` is a stable string session identifier."""
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and value.casefold() not in _UNUSABLE_SESSION_IDS
+    )
+
+
+def is_usable_identity_dimension(value: object) -> bool:
+    """Return whether a producer/platform identity dimension is reportable."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and value.casefold() not in _UNUSABLE_IDENTITY_DIMENSIONS
+    )
+
+
 def process_executable_path(pid: int | None = None) -> str:
     """Return the OS-reported binary mapped into a live process.
 
