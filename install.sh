@@ -3564,13 +3564,19 @@ reload_daemon_if_running() {
 restart_embed_daemon_if_running() {
   local _runtime="${B12_EMBED_RUNTIME_DIR:-/tmp}"
   local _pidfile="$_runtime/b12-embed-$(id -u).pid"
-  local _pid _cmd
+  local _pid _cmd _comm
   [ -f "$_pidfile" ] || return 0
   _pid=$(tr -d '[:space:]' < "$_pidfile" 2>/dev/null || true)
   case "$_pid" in ''|*[!0-9]*) return 0 ;; esac
   kill -0 "$_pid" 2>/dev/null || return 0
   _cmd=$(ps -p "$_pid" -o command= 2>/dev/null || true)
-  case "$_cmd" in *embed_daemon.py*) ;; *) return 0 ;; esac
+  _comm=$(ps -p "$_pid" -o comm= 2>/dev/null || true)
+  _comm=${_comm##*/}
+  # A stale PID may now belong to an editor or another Python script whose name
+  # merely contains "embed_daemon.py". Require both a Python executable and an
+  # exact script-token basename before signalling the process.
+  case "$_comm" in [Pp]ython|[Pp]ython[0-9]*) ;; *) return 0 ;; esac
+  case "$_cmd" in *"/embed_daemon.py"|*"/embed_daemon.py "*) ;; *) return 0 ;; esac
   if kill -TERM "$_pid" 2>/dev/null; then
     info "Embedding daemon restart requested — new code will start on demand."
     return 0

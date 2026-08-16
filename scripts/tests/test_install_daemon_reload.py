@@ -132,3 +132,21 @@ def test_embed_daemon_upgrade_restart_rejects_reused_pid(tmp_path: Path):
         if proc.poll() is None:
             proc.terminate()
             proc.wait(timeout=3)
+
+
+def test_embed_daemon_restart_rejects_similar_python_script_name(tmp_path: Path):
+    """A stale PID must not kill an unrelated Python script by substring match."""
+    if shutil.which("bash") is None or not hasattr(os, "getuid"):
+        return
+    decoy = tmp_path / "harmless-embed_daemon.py"
+    decoy.write_text("import time\ntime.sleep(30)\n")
+    proc = subprocess.Popen([sys.executable, str(decoy)])
+    (tmp_path / f"b12-embed-{os.getuid()}.pid").write_text(str(proc.pid))
+    try:
+        result = _invoke_embed_restart(tmp_path)
+        assert result.returncode == 0, result.stderr
+        assert proc.poll() is None, "similar script name was mistaken for the B12 daemon"
+    finally:
+        if proc.poll() is None:
+            proc.terminate()
+            proc.wait(timeout=3)
