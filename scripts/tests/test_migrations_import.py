@@ -1,4 +1,7 @@
+import asyncio
+import base64
 import gzip
+import hashlib
 import importlib
 import json
 import sqlite3
@@ -664,10 +667,352 @@ def test_mcp_session_tracker_resets_after_flush(monkeypatch):
 
     b12_mcp_server._flush_session_tracker(conn)
 
+    metadata, tags = conn.execute(
+        "SELECT metadata, tags FROM memories WHERE memory_type='session_summary'"
+    ).fetchone()
+    parsed = json.loads(metadata)
+    assert parsed["session_identity"] == "unbound"
+    assert parsed["producer"] == "mcp_session_tracker"
+    assert parsed["platform"] == "mcp-only"
+    assert "source:mcp" in tags
     assert b12_mcp_server._session_tracker["search_queries"] == []
     assert b12_mcp_server._session_tracker["stored_count"] == 0
     assert b12_mcp_server._session_tracker["tool_calls"] == 0
     assert b12_mcp_server._session_tracker["project"] is None
+
+
+def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
+    b12_mcp_server = _load_b12_mcp_server_with_fake_mcp(monkeypatch)
+    conn = sqlite3.connect(":memory:")
+    conn.row_factory = sqlite3.Row
+    conn.execute(
+        """
+        CREATE TABLE memories (
+            id INTEGER PRIMARY KEY,
+            content_hash TEXT UNIQUE,
+            content TEXT,
+            tags TEXT,
+            memory_type TEXT,
+            metadata TEXT,
+            strength REAL,
+            created_at REAL,
+            created_at_iso TEXT,
+            updated_at REAL,
+            updated_at_iso TEXT,
+            valid_until TEXT,
+            deleted_at REAL
+        )
+        """
+    )
+    conn.execute(
+        "CREATE TABLE memory_embeddings ("
+        "rowid INTEGER PRIMARY KEY, content_embedding BLOB)"
+    )
+
+    async def fake_write(op):
+        result = op(conn)
+        conn.commit()
+        return result
+
+    async def no_daemon(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(b12_mcp_server, "_require_db", lambda: None)
+    monkeypatch.setattr(b12_mcp_server, "_write", fake_write)
+    monkeypatch.setattr(b12_mcp_server, "daemon_request_async", no_daemon)
+    monkeypatch.setenv("B12_DISABLE_FRAGMENT_FILTER", "1")
+
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            "Session summary: implemented the identity audit and documented the retention gates.",
+            {
+                "tags": ["proj:alpha", "user:codex"],
+                "type": "session_summary",
+                "importance_score": 0.7,
+            },
+        )
+    )
+    manual = json.loads(
+        conn.execute("SELECT metadata FROM memories WHERE memory_type='session_summary'").fetchone()[0]
+    )
+    assert manual["session_identity"] == "unbound"
+    assert manual["producer"] == "mcp_memory_store"
+    assert manual["platform"] == "mcp"
+
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            "Session summary: a host-provided stable session identity remains authoritative.",
+            {
+                "tags": ["proj:alpha", "user:codex"],
+                "type": "session_summary",
+                "session_id": "codex-session-stable-123",
+                "valid_until": "2030-01-01T00:00:00Z",
+            },
+        )
+    )
+    bound = json.loads(
+        conn.execute(
+            "SELECT metadata FROM memories WHERE json_extract(metadata, '$.session_id') = ?",
+            ("codex-session-stable-123",),
+        ).fetchone()[0]
+    )
+    assert bound["session_id"] == "codex-session-stable-123"
+    assert "session_identity" not in bound
+    original_bound_id = conn.execute(
+        "SELECT id FROM memories WHERE json_extract(metadata, '$.session_id') = ?",
+        ("codex-session-stable-123",),
+    ).fetchone()[0]
+    revised_bound_content = "Session summary: the same bound session has newer canonical content."
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            revised_bound_content,
+            {
+                "type": "session_summary",
+                "session_id": "codex-session-stable-123",
+            },
+        )
+    )
+    bound_rows = conn.execute(
+        "SELECT id, content, tags, valid_until FROM memories "
+        "WHERE memory_type='session_summary' "
+        "AND json_extract(metadata, '$.session_id') = ? AND deleted_at IS NULL",
+        ("codex-session-stable-123",),
+    ).fetchall()
+    assert [(row["id"], row["content"]) for row in bound_rows] == [
+        (original_bound_id, revised_bound_content)
+    ]
+    assert "proj:alpha" in bound_rows[0]["tags"].split(",")
+    assert bound_rows[0]["valid_until"] == "2030-01-01T00:00:00Z"
+
+    explicit_clear_content = "Session summary: caller explicitly clears tags."
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            explicit_clear_content,
+            {
+                "type": "session_summary",
+                "session_id": "codex-session-stable-123",
+                "tags": [],
+                "valid_until": None,
+            },
+        )
+    )
+    assert conn.execute(
+        "SELECT tags, valid_until FROM memories WHERE id = ?", (original_bound_id,)
+    ).fetchone()[:] == ("", None)
+
+    older_delayed_content = "Session summary: an older encode completes late."
+    newer_current_content = "Session summary: a newer write remains canonical."
+
+    async def exercise_delayed_embedding_race():
+        first_encode_waiting = asyncio.Event()
+        release_first_encode = asyncio.Event()
+
+        async def delayed_daemon(action, **kwargs):
+            if action != "encode_batch":
+                return None
+            if kwargs["texts"][0] == older_delayed_content:
+                first_encode_waiting.set()
+                await release_first_encode.wait()
+                return {
+                    "embeddings": [base64.b64encode(b"stale-embedding").decode()]
+                }
+            return None
+
+        monkeypatch.setattr(b12_mcp_server, "daemon_request_async", delayed_daemon)
+        older = asyncio.create_task(
+            b12_mcp_server.memory_store(
+                older_delayed_content,
+                {
+                    "type": "session_summary",
+                    "session_id": "codex-session-stable-123",
+                },
+            )
+        )
+        await first_encode_waiting.wait()
+        await b12_mcp_server.memory_store(
+            newer_current_content,
+            {
+                "type": "session_summary",
+                "session_id": "codex-session-stable-123",
+            },
+        )
+        release_first_encode.set()
+        await older
+
+    asyncio.run(exercise_delayed_embedding_race())
+    current_bound = conn.execute(
+        "SELECT id, content FROM memories WHERE memory_type='session_summary' "
+        "AND json_extract(metadata, '$.session_id') = ? AND deleted_at IS NULL",
+        ("codex-session-stable-123",),
+    ).fetchone()
+    assert (current_bound["id"], current_bound["content"]) == (
+        original_bound_id,
+        newer_current_content,
+    )
+    assert conn.execute(
+        "SELECT 1 FROM memory_embeddings WHERE rowid = ?", (original_bound_id,)
+    ).fetchone() is None
+
+    def add_tombstoned_summary(session_id, content, tags, valid_until):
+        content_hash = hashlib.sha256(
+            f"{content.lower()}|session:{session_id}".encode()
+        ).hexdigest()
+        conn.execute(
+            "INSERT INTO memories "
+            "(content_hash, content, tags, memory_type, metadata, created_at, "
+            "updated_at, valid_until, deleted_at) "
+            "VALUES (?, ?, ?, 'session_summary', ?, 1, 1, ?, 1)",
+            (
+                content_hash,
+                content,
+                tags,
+                json.dumps({"session_id": session_id}),
+                valid_until,
+            ),
+        )
+        conn.commit()
+
+    active_session_id = "revive-with-active-session"
+    active_content = "Session summary: active canonical state before revival."
+    revived_active_content = "Session summary: matching tombstone is revived."
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            active_content,
+            {
+                "type": "session_summary",
+                "session_id": active_session_id,
+                "tags": ["proj:active-canonical"],
+                "valid_until": "2035-01-01T00:00:00Z",
+            },
+        )
+    )
+    add_tombstoned_summary(
+        active_session_id,
+        revived_active_content,
+        "proj:stale-tombstone",
+        None,
+    )
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            revived_active_content,
+            {"type": "session_summary", "session_id": active_session_id},
+        )
+    )
+
+    tombstone_only_session_id = "revive-tombstone-only-session"
+    tombstone_only_content = "Session summary: restore a tombstone without an active row."
+    add_tombstoned_summary(
+        tombstone_only_session_id,
+        tombstone_only_content,
+        "proj:tombstone-only",
+        "2036-01-01T00:00:00Z",
+    )
+    asyncio.run(
+        b12_mcp_server.memory_store(
+            tombstone_only_content,
+            {"type": "session_summary", "session_id": tombstone_only_session_id},
+        )
+    )
+
+    revival_outcomes = {}
+    for label, session_id in (
+        ("active", active_session_id),
+        ("tombstone_only", tombstone_only_session_id),
+    ):
+        row = conn.execute(
+            "SELECT tags, valid_until FROM memories "
+            "WHERE memory_type='session_summary' AND deleted_at IS NULL "
+            "AND json_extract(metadata, '$.session_id') = ?",
+            (session_id,),
+        ).fetchone()
+        revival_outcomes[label] = row[:]
+    assert revival_outcomes == {
+        "active": ("proj:active-canonical", "2035-01-01T00:00:00Z"),
+        "tombstone_only": ("proj:tombstone-only", "2036-01-01T00:00:00Z"),
+    }
+
+    unusable_session_ids = (
+        "none",
+        "null",
+        "n/a",
+        "na",
+        "gemini-unknown",
+        "gemini-unkno",
+        123,
+    )
+    for index, unusable_session_id in enumerate(unusable_session_ids):
+        asyncio.run(
+            b12_mcp_server.memory_store(
+                f"Session summary: unusable session identity contract case {index}.",
+                {
+                    "type": "session_summary",
+                    "session_id": unusable_session_id,
+                },
+            )
+        )
+    unusable_rows = conn.execute(
+        "SELECT metadata FROM memories WHERE json_extract(metadata, '$.session_id') IN "
+        "('none', 'null', 'n/a', 'na', 'gemini-unknown', 'gemini-unkno', 123)"
+    ).fetchall()
+    assert len(unusable_rows) == len(unusable_session_ids)
+    assert all(
+        json.loads(row[0])["session_identity"] == "unbound"
+        for row in unusable_rows
+    )
+
+    auto_classified_content = "[Handoff] Continue the session-summary identity policy work."
+    asyncio.run(b12_mcp_server.memory_store(auto_classified_content, {}))
+    auto_classified = conn.execute(
+        "SELECT memory_type, metadata FROM memories WHERE content = ?",
+        (auto_classified_content,),
+    ).fetchone()
+    assert auto_classified["memory_type"] == "session_summary"
+    auto_metadata = json.loads(auto_classified["metadata"])
+    assert auto_metadata["session_identity"] == "unbound"
+    assert auto_metadata["producer"] == "mcp_memory_store"
+    assert auto_metadata["platform"] == "mcp"
+
+    invalid_dimension_cases = (
+        (123, "unknown"),
+        ("none", "none"),
+        ("null", "null"),
+        ("n/a", "n/a"),
+        ("na", "na"),
+    )
+    for index, (producer, platform) in enumerate(invalid_dimension_cases):
+        invalid_dimension_content = (
+            f"Session summary: normalize invalid identity dimensions case {index}."
+        )
+        asyncio.run(
+            b12_mcp_server.memory_store(
+                invalid_dimension_content,
+                {
+                    "type": "session_summary",
+                    "producer": producer,
+                    "platform": platform,
+                },
+            )
+        )
+        invalid_dimensions = json.loads(
+            conn.execute(
+                "SELECT metadata FROM memories WHERE content = ?",
+                (invalid_dimension_content,),
+            ).fetchone()[0]
+        )
+        assert invalid_dimensions["session_identity"] == "unbound"
+        assert invalid_dimensions["producer"] == "mcp_memory_store"
+        assert invalid_dimensions["platform"] == "mcp"
+    conn.close()
+
+
+def test_codex_manual_summary_template_declares_unbound_identity():
+    template = (
+        Path(__file__).resolve().parents[2] / "config" / "codex-agents-template.md"
+    ).read_text(encoding="utf-8")
+    mandatory_summary = template.split("- **AFTER last response**", 1)[1].split("```", 2)[1]
+    assert '"session_identity": "unbound"' in mandatory_summary
+    assert '"producer": "codex_agent_template"' in mandatory_summary
+    assert '"platform": "codex"' in mandatory_summary
 
 
 def test_mcp_session_tracker_contexts_are_isolated(monkeypatch):

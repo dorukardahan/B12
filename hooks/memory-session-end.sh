@@ -765,6 +765,14 @@ with open(summary_file, 'r') as f:
 _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
 sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
 try:
+    from shared_patterns import is_usable_session_id
+except ImportError:
+    # Identity validation is mandatory for canonical SessionEnd summaries.
+    # Keep the on-disk summary, but fail closed before embedding or DB writes.
+    sys.exit(0)
+if not is_usable_session_id(session_id):
+    sys.exit(0)
+try:
     from b12_pii_scrubber import scrub as _pii_scrub
     content = _pii_scrub(content)
 except ImportError:
@@ -1102,24 +1110,10 @@ try:
     except Exception:
         pass  # Non-critical
 
-    # ─── Session summary cap: keep only 5 most recent per project ───
-    try:
-        conn.execute("""
-            UPDATE memories SET deleted_at = unixepoch('now')
-            WHERE memory_type = 'session_summary'
-              AND deleted_at IS NULL
-              AND tags LIKE ?
-              AND id NOT IN (
-                SELECT id FROM memories
-                WHERE memory_type = 'session_summary'
-                  AND deleted_at IS NULL
-                  AND tags LIKE ?
-                ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 5
-              )
-        """, (f'%proj:{project_name}%', f'%proj:{project_name}%'))
-    except Exception as e:
-        import sys
-        print(f"[B12] summary cap warning: {e}", file=sys.stderr)
+    # SessionEnd is a writer, not a retention executor. Identity-aware retention
+    # requires a fresh audit, a reviewed plan, and a verified backup; applying a
+    # rank-only cap here can hide recent, ambiguous, or intentionally-unbound rows.
+    # Keep retention audit-only in this lifecycle path.
 
     conn.commit()
     conn.close()

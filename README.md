@@ -209,7 +209,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Proactive surfacing** — automatically injects relevant past memories when you open files or hit errors
 - **Long-session re-surface** — on every Nth UserPromptSubmit turn (default 20), re-injects a small batch of THIS session's early-captured high-importance memories so they don't fade out of the model's effective working window
 - **Token budget guardrails** — per-turn char-based cap (~800 tokens) + cumulative session cap (~80K tokens) with skip-event logging to `~/.B12/memory-logs/token-budget-skips.jsonl`
-- **Smart consolidation + operator cleanup** — merge groups and NLI contradiction checks; legacy session-summary dedupe is dry-run by default and soft-deletes only with explicit `--execute`
+- **Smart consolidation + operator cleanup** — merge groups and NLI contradiction checks; the read-only session-summary identity audit classifies bound, intentionally unbound, recoverable legacy, and ambiguous legacy rows without exposing content or session IDs; legacy dedupe remains dry-run by default and soft-deletes only with explicit `--execute`
 - **Export/import** — portable `.b12` format for backup, migration, or sharing memory snapshots
 - **Web dashboard** — Flask + Cytoscape.js visual browser for memory graph and statistics
 - **Health report** — comprehensive weekly report with health score, trends, and recommendations
@@ -396,6 +396,7 @@ B12/
 │   ├── start-mcp.sh                #   MCP bootstrap (venv detection, used by plugin)
 │   ├── embed_daemon.py             #   Background embedding daemon (Unix socket)
 │   ├── write_time_merge.py         #   Semantic dedup at write time
+│   ├── b12_audit_session_summaries.py # Read-only summary identity/retention audit
 │   ├── b12_dedupe_session_summaries.py # Dry-run-first legacy summary cleanup
 │   ├── b12_importance.py           #   Write-side importance scoring (11-language signal taxonomy)
 │   ├── audit_importance_gap.py     #   Read-only importance-gap audit (ML-ROI gate, PR-2c)
@@ -454,6 +455,7 @@ B12/
 │   └── locomo/                     #   LoCoMo retrieval evaluation (MRR, NDCG)
 ├── docs/
 │   ├── architecture.md             #   Detailed architecture documentation
+│   ├── session-summary-identity-policy.md # Summary identity, audit, retention, migration gates
 │   └── setup.md                    #   Step-by-step installation guide
 ├── AGENTS.md                       #   Codex agent instructions (auto-deployed)
 ├── install.sh                      #   One-command installer
