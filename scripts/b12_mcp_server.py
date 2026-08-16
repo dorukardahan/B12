@@ -17,7 +17,16 @@ except ImportError:
 from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
-from mcp.server.fastmcp import FastMCP
+try:
+    # MCP Python SDK v2 (2026-07-28 protocol revision) renamed the high-level
+    # server class: mcp.server.fastmcp.FastMCP -> mcp.server.mcpserver.MCPServer.
+    # The decorator/run API surface B12 uses (@tool, @resource, lifespan, run)
+    # is unchanged between v1 FastMCP and v2 MCPServer. B12 still pins mcp<2 in
+    # pyproject (the daemon drain bridge needs v1 stream semantics); this shim
+    # keeps the import working when the v2 SDK is present in an environment.
+    from mcp.server.fastmcp import FastMCP
+except ImportError:  # pragma: no cover — exercised on mcp>=2 environments
+    from mcp.server.mcpserver import MCPServer as FastMCP
 from shared_patterns import is_usable_identity_dimension, is_usable_session_id
 
 # Consolidation engine (lazy import path — scripts/ is on sys.path)
