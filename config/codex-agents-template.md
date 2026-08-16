@@ -14,7 +14,14 @@ These rituals are **required** at every session boundary:
   ```
   mcp__B12__memory_store(
       content="Session summary: [what was done, key decisions, pending items]",
-      metadata={"tags": ["proj:{project}", "user:codex"], "type": "session_summary", "importance_score": 0.7}
+      metadata={
+          "tags": ["proj:{project}", "user:codex"],
+          "type": "session_summary",
+          "session_identity": "unbound",
+          "producer": "codex_agent_template",
+          "platform": "codex",
+          "importance_score": 0.7
+      }
   )
   ```
 
@@ -42,7 +49,11 @@ This returns pre-fetched project memories, last session summary, and behavioral 
 - `content` (str, required): The memory text
 - `metadata` (dict, optional): Contains tags, type, importance, quality score
   - `"tags"`: list or comma-string, e.g. `["proj:myproject", "user:personal"]`
-  - `"type"`: memory category — `architecture`, `decision`, `pattern`, `gotcha`, `preference`, `progress`, `learning`, `error_fix`
+  - `"type"`: memory category — `architecture`, `decision`, `pattern`, `gotcha`, `preference`, `progress`, `learning`, `error_fix`, `session_summary`
+  - A manual `session_summary` without a stable `session_id` must include
+    `"session_identity": "unbound"`, a non-empty `"producer"`, and a non-empty
+    `"platform"`. The MCP server supplies conservative generic defaults if a
+    client omits this contract.
   - `"importance_score"`: float — 2.0 (critical), 1.5 (important), 1.0 (normal), 0.7 (temporary)
   - `"quality_score"`: 0.0-1.0 (auto-managed; override via memory_quality)
 

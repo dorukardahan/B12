@@ -6,7 +6,7 @@ Replaces the 804MB mcp-memory-service with 4 tools, zero ML deps.
 All embedding/search ops delegated to embed_daemon via Unix socket.
 """
 
-import asyncio, base64, hashlib, json, os, socket, sqlite3, threading, time
+import asyncio, base64, hashlib, json, os, socket, sqlite3, subprocess, threading, time
 from concurrent.futures import ThreadPoolExecutor
 from contextvars import ContextVar
 try:
@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timezone
 
 from mcp.server.fastmcp import FastMCP
+from shared_patterns import is_usable_identity_dimension, is_usable_session_id
 
 # Consolidation engine (lazy import path — scripts/ is on sys.path)
 try:
@@ -47,7 +48,11 @@ else:
 
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
 # Hardcode /tmp/ — macOS TMPDIR varies per session, causing socket mismatch
-SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
+_EMBED_RUNTIME_DIR = os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp")
+SOCK_PATH = os.path.join(_EMBED_RUNTIME_DIR, f"b12-embed-{_UID}.sock")
+_EMBED_LOCK_PATH = os.path.join(_EMBED_RUNTIME_DIR, f"b12-embed-{_UID}.lock")
+_EMBED_DAEMON_SCRIPT = os.path.join(os.path.dirname(os.path.abspath(__file__)), "embed_daemon.py")
+_EMBED_PYTHON = _sys.executable
 
 # Optional pre-warmed daemon socket. When present and reachable, b12_mcp_server
 # runs as a thin stdio proxy that forwards the MCP wire protocol to the shared
@@ -55,7 +60,7 @@ SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
 # falls back to legacy in-process stdio mode below — non-Claude-Code consumers
 # (Codex, Gemini, Kimi, OpenCode, Grok) see zero behaviour change either way.
 MCP_DAEMON_SOCK = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
-B12_VERSION = "v11.81.5"
+B12_VERSION = "v11.82.1"
 
 # Fix C — resilient proxy reconnect. When the daemon-side socket closes while the
 # host CLI's stdin is still open (daemon restart by launchd/RSS-guard, redeploy,
@@ -97,6 +102,12 @@ READ_POOL_SIZE = (int(os.environ.get("B12_MCP_READ_POOL", "0"))
 # would each open a socket at once and a fast op could hit its 5s client timeout
 # waiting in the listen backlog behind a slow >10s encode_batch. See R&D SPD-1.
 _daemon_lock = asyncio.Lock()
+# Keep daemon socket work off asyncio's shared default executor. Rare admin tools
+# (export/import/consolidate) also use ``asyncio.to_thread`` and can saturate that
+# pool; queue_timeout must not be spent waiting behind unrelated local work.
+# _daemon_lock ensures this single-worker pool never has more than one submitted
+# round-trip at a time.
+_daemon_pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="b12-daemon-io")
 
 # ── Session tracker (MCP-only platform support) ─────────────────
 # Tracks tool calls during a session so we can generate a summary
@@ -223,6 +234,18 @@ def _ensure_schema(db: sqlite3.Connection) -> None:
         db.execute("ALTER TABLE memories ADD COLUMN difficulty REAL DEFAULT 5.0")
     if "due_date" not in existing_cols:
         db.execute("ALTER TABLE memories ADD COLUMN due_date TEXT")
+    # Non-unique on purpose: existing installs may already contain duplicate
+    # session summaries, and cleanup is a separate operator-controlled migration.
+    # Some legacy/test schemas predate the metadata columns; keep schema repair safe.
+    if {"memory_type", "metadata", "deleted_at"}.issubset(existing_cols):
+        db.execute("""
+            CREATE INDEX IF NOT EXISTS idx_memories_session_summary_session_id
+            ON memories(
+                CASE WHEN json_valid(metadata)
+                     THEN json_extract(metadata, '$.session_id') END
+            )
+            WHERE memory_type = 'session_summary' AND deleted_at IS NULL
+        """)
     # B12 FTS5 table (unicode61 tokenizer, used by hooks)
     # Includes tags column to match existing DB schema from mcp-memory-service
     db.execute("""
@@ -649,6 +672,9 @@ def _flush_session_tracker(db: sqlite3.Connection | None, tracker: dict | None =
             "importance_score": 0.6,
             "project": project,
             "source": "mcp_session_tracker",
+            "producer": "mcp_session_tracker",
+            "platform": "mcp-only",
+            "session_identity": "unbound",
             "tool_calls": tracker["tool_calls"],
         }
 
@@ -686,28 +712,128 @@ try:
 except (TypeError, ValueError):
     _DAEMON_CLIENT_TIMEOUT = 20.0
 
+# Latency-sensitive retrieval gets a separate budget for WAITING to enter the
+# single-connection embed-daemon queue. It does not shorten the existing socket
+# timeout once a request starts, so stores and other correctness-sensitive embed
+# operations preserve their current behavior. Keep invalid/non-finite/non-positive
+# values from disabling semantic retrieval or crashing module import.
+try:
+    _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = float(
+        os.environ.get("B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT", "2")
+    )
+    if not 0 < _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT < float("inf"):
+        _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = 2.0
+except (TypeError, ValueError):
+    _MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT = 2.0
 
-def daemon_request(op: str, **kwargs) -> dict | None:
-    """Send JSON to embed_daemon via Unix socket. Returns None on failure."""
-    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+
+def _ensure_embed_daemon(force: bool = False) -> bool:
+    """Start the on-demand embed daemon when no process owns its singleton lock.
+
+    MCP-only hosts have no lifecycle hook to respawn an embed daemon that exits
+    after an interpreter upgrade, idle timeout, or RSS guard.  The triggering
+    request keeps the normal fail-soft fallback; a later request uses the warm
+    daemon.  Lock ownership, not stale PID-file contents, is authoritative.
+    """
+    if not force and os.path.exists(SOCK_PATH):
+        return False
     try:
-        s.settimeout(_DAEMON_CLIENT_TIMEOUT)
-        s.connect(SOCK_PATH)
-        s.sendall((json.dumps({"op": op, **kwargs}) + "\n").encode())
-        data = b""
-        while b"\n" not in data:
+        import fcntl
+
+        with open(_EMBED_LOCK_PATH, "a+") as lock_file:
+            try:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return False
+    except (ImportError, OSError):
+        return False
+    if not (os.path.isfile(_EMBED_DAEMON_SCRIPT) and os.path.isfile(_EMBED_PYTHON)):
+        return False
+    try:
+        subprocess.Popen(
+            [_EMBED_PYTHON, _EMBED_DAEMON_SCRIPT],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            close_fds=True,
+            start_new_session=True,
+        )
+        return True
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def daemon_request(
+    op: str, *, queue_deadline_monotonic: float | None = None, **kwargs
+) -> dict | None:
+    """Send JSON to embed_daemon via Unix socket. Returns None on failure.
+
+    A queue deadline is carried over the local Unix socket so latency-sensitive
+    callers are bounded even when another MCP process already occupies the serial
+    daemon. The daemon ACKs admission before starting work; after that ACK the
+    normal operation timeout applies."""
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    pending_admission = queue_deadline_monotonic is not None
+    buffered = b""
+
+    def _set_pre_admission_timeout() -> None:
+        if queue_deadline_monotonic is None:
+            return
+        remaining = queue_deadline_monotonic - time.monotonic()
+        if remaining <= 0:
+            raise socket.timeout("embed-daemon queue deadline expired")
+        s.settimeout(remaining)
+
+    def _recv_response_line(*, pre_admission: bool = False) -> dict:
+        nonlocal buffered
+        while b"\n" not in buffered:
+            if pre_admission:
+                _set_pre_admission_timeout()
             chunk = s.recv(65536)
-            if not chunk: break
-            data += chunk
-        resp = json.loads(data.decode().strip())
+            if not chunk:
+                break
+            buffered += chunk
+        line, separator, buffered = buffered.partition(b"\n")
+        if not line:
+            raise ValueError("empty embed-daemon response")
+        if not separator:
+            buffered = b""
+        return json.loads(line.decode().strip())
+
+    try:
+        if queue_deadline_monotonic is None:
+            s.settimeout(_DAEMON_CLIENT_TIMEOUT)
+        else:
+            _set_pre_admission_timeout()
+        s.connect(SOCK_PATH)
+        request = {"op": op, **kwargs}
+        if queue_deadline_monotonic is not None:
+            request["_queue_deadline_monotonic"] = queue_deadline_monotonic
+            _set_pre_admission_timeout()
+        s.sendall((json.dumps(request) + "\n").encode())
+        resp = _recv_response_line(pre_admission=pending_admission)
+        if resp.get("_accepted") is True:
+            pending_admission = False
+            s.settimeout(_DAEMON_CLIENT_TIMEOUT)
+            resp = _recv_response_line()
         return resp if resp.get("ok") else None
+    except socket.timeout:
+        if pending_admission:
+            return None
+        _ensure_embed_daemon(force=True)
+        return None
     except Exception:
+        # Stale/missing sockets are expected after on-demand self-heal.  Launch
+        # asynchronously and preserve this request's existing graceful fallback.
+        _ensure_embed_daemon(force=True)
         return None
     finally:
         s.close()
 
 
-async def daemon_request_async(op: str, **kwargs) -> dict | None:
+async def daemon_request_async(
+    op: str, *, queue_timeout: float | None = None, **kwargs
+) -> dict | None:
     """Async wrapper for daemon_request: runs the blocking Unix-socket round-trip
     in a worker thread so the shared asyncio event loop is never stalled on
     daemon I/O. In daemon mode a single FastMCP loop serves every connected
@@ -723,9 +849,42 @@ async def daemon_request_async(op: str, **kwargs) -> dict | None:
     disconnects mid-`encode_batch`), we still wait for the in-flight socket
     round-trip to finish before releasing _daemon_lock — a worker thread can't
     be cancelled, and releasing early would let the next request race the
-    single-connection daemon. Cancellation then propagates as normal."""
-    async with _daemon_lock:
-        worker = asyncio.ensure_future(asyncio.to_thread(daemon_request, op, **kwargs))
+    single-connection daemon. Cancellation then propagates as normal.
+
+    `queue_timeout` bounds both this process's lock wait and cross-process daemon
+    admission. The serial daemon ACKs requests admitted before the monotonic
+    deadline; only then does the normal socket operation timeout take over."""
+    acquired = False
+    wait_started = time.monotonic()
+    queue_deadline = (
+        None if queue_timeout is None else wait_started + queue_timeout
+    )
+    try:
+        if queue_timeout is None:
+            await _daemon_lock.acquire()
+        else:
+            assert queue_deadline is not None
+            try:
+                remaining_budget = queue_deadline - time.monotonic()
+                async with asyncio.timeout(max(0.0, remaining_budget)):
+                    await _daemon_lock.acquire()
+            except TimeoutError:
+                waited = time.monotonic() - wait_started
+                _sys.stderr.write(
+                    f"[b12_mcp_server] daemon queue timeout op={op} "
+                    f"waited={waited:.3f}s; request not started\n"
+                )
+                return None
+        acquired = True
+        if queue_deadline is not None and queue_deadline <= time.monotonic():
+            return None
+        request_kwargs = dict(kwargs)
+        if queue_deadline is not None:
+            request_kwargs["queue_deadline_monotonic"] = queue_deadline
+        loop = asyncio.get_running_loop()
+        worker = loop.run_in_executor(
+            _daemon_pool, lambda: daemon_request(op, **request_kwargs)
+        )
         try:
             return await asyncio.shield(worker)
         finally:
@@ -737,6 +896,9 @@ async def daemon_request_async(op: str, **kwargs) -> dict | None:
                     await asyncio.shield(worker)
                 except BaseException:
                     pass
+    finally:
+        if acquired:
+            _daemon_lock.release()
 
 
 async def _run_locked_offthread(fn, *args, **kwargs):
@@ -988,8 +1150,10 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
             if p.startswith("proj:"):
                 tracker["project"] = p[5:]
                 break
+    tags_supplied = "tags" in metadata
     tags_raw = metadata.pop("tags", None)
     memory_type = metadata.pop("type", metadata.pop("memory_type", "general"))
+    valid_until_supplied = "valid_until" in metadata
     valid_until = metadata.pop("valid_until", None)
     tags = _normalize_tags(tags_raw)
 
@@ -1007,6 +1171,19 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         resp = await daemon_request_async("classify", text=content)
         if resp and resp.get("type"):
             memory_type = resp["type"]
+
+    # Generic MCP clients can store manual or auto-classified summaries without a
+    # host session ID. Apply identity defaults only after the final type is known.
+    bound_session_id = None
+    if memory_type == "session_summary":
+        if is_usable_session_id(metadata.get("session_id")):
+            bound_session_id = metadata["session_id"]
+        else:
+            metadata["session_identity"] = "unbound"
+            if not is_usable_identity_dimension(metadata.get("producer")):
+                metadata["producer"] = "mcp_memory_store"
+            if not is_usable_identity_dimension(metadata.get("platform")):
+                metadata["platform"] = "mcp"
 
     content_hash = compute_content_hash(content)
     now_ts, now_iso = _now()
@@ -1029,9 +1206,63 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         pass
     meta_json = _validate_metadata(base_meta)
 
-    # One atomic writer op: dedup-check → undelete OR INSERT OR IGNORE → read id.
-    # The id is read back within the same BEGIN IMMEDIATE txn (sees its own write).
+    # One atomic writer op. Bound summaries use the canonical session upsert;
+    # everything else keeps the content-hash dedup path.
     def _store_op(db):
+        if bound_session_id is not None:
+            from write_time_merge import (
+                select_session_summary_canonical,
+                session_summary_content_hash,
+                upsert_session_summary,
+            )
+
+            incoming_hash = session_summary_content_hash(
+                session_id=bound_session_id, content=content
+            )
+            active = select_session_summary_canonical(
+                db, session_id=bound_session_id
+            )
+            target = select_session_summary_canonical(
+                db, session_id=bound_session_id, content_hash=incoming_hash
+            )
+            preserved = active or target
+            preserved_tags = None
+            preserved_valid_until = None
+            if preserved:
+                preserved_metadata = db.execute(
+                    "SELECT tags, valid_until FROM memories WHERE id = ?",
+                    (preserved[0],),
+                ).fetchone()
+                if preserved_metadata:
+                    preserved_tags = preserved_metadata[0]
+                    preserved_valid_until = preserved_metadata[1]
+
+            upsert_tags = tags
+            if not tags_supplied and preserved is not None:
+                upsert_tags = preserved_tags
+
+            memory_id = upsert_session_summary(
+                db,
+                session_id=bound_session_id,
+                content=content,
+                tags=upsert_tags,
+                metadata=meta_json,
+                embedding_bytes=None,
+                now=now_ts,
+            )
+            if valid_until_supplied or preserved is not None:
+                db.execute(
+                    "UPDATE memories SET valid_until = ? WHERE id = ?",
+                    (
+                        valid_until if valid_until_supplied else preserved_valid_until,
+                        memory_id,
+                    ),
+                )
+            stored = db.execute(
+                "SELECT content_hash FROM memories WHERE id = ?", (memory_id,)
+            ).fetchone()
+            return memory_id, stored["content_hash"]
+
         existing = db.execute(
             "SELECT id, deleted_at FROM memories WHERE content_hash = ?",
             (content_hash,),
@@ -1058,9 +1289,9 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         row = db.execute(
             "SELECT id FROM memories WHERE content_hash = ?", (content_hash,)
         ).fetchone()
-        return row["id"] if row else None
+        return (row["id"] if row else None), content_hash
 
-    mem_id = await _write(_store_op)
+    mem_id, content_hash = await _write(_store_op)
     if mem_id is None:
         return f"Stored (hash: {content_hash[:16]}) but could not retrieve ID"
 
@@ -1079,6 +1310,13 @@ async def memory_store(content: str, metadata: dict | None = None) -> str:
         emb_bytes = base64.b64decode(resp["embeddings"][0])
 
         def _embed_op(db):
+            current = db.execute(
+                "SELECT content_hash FROM memories "
+                "WHERE id = ? AND deleted_at IS NULL",
+                (mem_id,),
+            ).fetchone()
+            if not current or current[0] != content_hash:
+                return
             try:
                 db.execute(
                     "INSERT OR REPLACE INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
@@ -1238,7 +1476,11 @@ async def memory_search(
     # ── Semantic search via daemon (off the writer — daemon call is slow) ──
     if mode in ("semantic", "hybrid") and query:
         resp = await daemon_request_async(
-            "semantic_search", query=query, db_path=DB_PATH, limit=limit * 2
+            "semantic_search",
+            queue_timeout=_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT,
+            query=query,
+            db_path=DB_PATH,
+            limit=limit * 2,
         )
         if resp and resp.get("results"):
             def _semantic_merge(db):
@@ -1993,17 +2235,17 @@ async def memory_session_context(
         # 3. Last session summary for this project
         if project_name:
             last_summary = db.execute("""
-                SELECT content, created_at, created_at_iso FROM memories
+                SELECT content,
+                       COALESCE(updated_at, created_at) AS summary_at,
+                       COALESCE(updated_at_iso, created_at_iso) AS summary_at_iso
+                FROM memories
                 WHERE memory_type = 'session_summary'
                   AND deleted_at IS NULL
                   AND tags LIKE ?
-                ORDER BY created_at DESC LIMIT 1
+                ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 1
             """, (f"%proj:{project_name}%",)).fetchone()
             if last_summary:
-                ts = _short_iso(
-                    last_summary["created_at"] if "created_at" in last_summary.keys() else None,
-                    last_summary["created_at_iso"] if "created_at_iso" in last_summary.keys() else None,
-                )
+                ts = _short_iso(last_summary["summary_at"], last_summary["summary_at_iso"])
                 ts_suffix = f"  _({ts})_" if ts else ""
                 sections.append(f"## Last Session Summary{ts_suffix}")
                 sections.append(_trim(last_summary['content'], cap=800))
@@ -2554,7 +2796,7 @@ async def resource_project_context(name: str) -> str:
             WHERE memory_type = 'session_summary'
               AND deleted_at IS NULL
               AND tags LIKE ?
-            ORDER BY created_at DESC LIMIT 1
+            ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 1
         """, (f"%proj:{name}%",)).fetchone()
         if last_summary:
             sections.append("## Last Session Summary")

@@ -5,12 +5,79 @@ hooks/memory-session-end.sh, hooks/memory-precompact.sh, and all scripts.
 
 English + Turkish contextual patterns (v4 format).
 """
+import ctypes
 import hashlib
 import json
 import os
 import re
 import sqlite3
 import sys
+
+
+_UNUSABLE_SESSION_IDS = frozenset(
+    {
+        "",
+        "unknown",
+        "none",
+        "null",
+        "n/a",
+        "na",
+        "gemini-unknown",
+        "gemini-unkno",
+    }
+)
+_UNUSABLE_IDENTITY_DIMENSIONS = _UNUSABLE_SESSION_IDS
+
+
+def is_usable_session_id(value: object) -> bool:
+    """Return whether ``value`` is a stable string session identifier."""
+    return (
+        isinstance(value, str)
+        and value == value.strip()
+        and value.casefold() not in _UNUSABLE_SESSION_IDS
+    )
+
+
+def is_usable_identity_dimension(value: object) -> bool:
+    """Return whether a producer/platform identity dimension is reportable."""
+    return (
+        isinstance(value, str)
+        and bool(value)
+        and value == value.strip()
+        and value.casefold() not in _UNUSABLE_IDENTITY_DIMENSIONS
+    )
+
+
+def process_executable_path(pid: int | None = None) -> str:
+    """Return the OS-reported binary mapped into a live process.
+
+    ``sys.executable`` is normally enough, but a stable venv launcher can remain
+    on disk while Homebrew removes the versioned framework binary already mapped
+    by a long-running process. macOS ``proc_pidpath`` and Linux ``/proc`` expose
+    that actual binary. Fail-soft to ``sys.executable`` on unsupported hosts.
+    """
+    requested_pid = pid
+    pid = os.getpid() if pid is None else int(pid)
+    if sys.platform == "darwin":
+        try:
+            libproc = ctypes.CDLL("/usr/lib/libproc.dylib", use_errno=True)
+            buf = ctypes.create_string_buffer(4096)
+            size = libproc.proc_pidpath(pid, buf, ctypes.sizeof(buf))
+            if size > 0:
+                return os.fsdecode(buf.value)
+        except (AttributeError, OSError, ValueError):
+            pass
+    elif sys.platform.startswith("linux"):
+        try:
+            executable = os.readlink(f"/proc/{pid}/exe")
+            if executable:
+                return executable
+        except OSError:
+            pass
+    # sys.executable describes only this process. Returning it for a failed
+    # arbitrary-PID probe would make health compare another daemon against the
+    # health command's own runtime instead of falling back to that PID's argv.
+    return sys.executable if requested_pid is None or pid == os.getpid() else ""
 
 
 # ── Platform-aware database path ──────────────────────────────────

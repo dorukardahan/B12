@@ -227,6 +227,36 @@ def store_memory(db_path, content, metadata_str, tags, embedding=None, memory_ty
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout=10000")
     try:
+        if memory_type == "session_summary":
+            # Session identity, not changing content, owns summary dedup.  Load
+            # sqlite-vec on this connection so replacing an existing summary can
+            # never leave its old vector attached to the new text.
+            try:
+                import sqlite_vec
+                conn.enable_load_extension(True)
+                sqlite_vec.load(conn)
+                conn.enable_load_extension(False)
+            except Exception:
+                pass
+            import base64
+            from write_time_merge import upsert_session_summary
+            embedding_blob = (
+                base64.b64decode(embedding)
+                if isinstance(embedding, str) and embedding
+                else embedding
+                if isinstance(embedding, (bytes, bytearray, memoryview))
+                else None
+            )
+            return upsert_session_summary(
+                conn,
+                session_id=json.loads(metadata_str).get("session_id", ""),
+                content=content,
+                tags=tags,
+                metadata=metadata_str,
+                embedding_bytes=embedding_blob,
+                now=now_epoch,
+            )
+
         # Check for duplicate (deleted_at IS NULL = not soft-deleted)
         existing = conn.execute(
             "SELECT id FROM memories WHERE content_hash = ? AND deleted_at IS NULL",
@@ -388,7 +418,9 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         save_processed_session(info.session_id)
         return {"status": "skip", "reason": "imported_from_claude"}
 
-    # Check if already processed
+    # scan_recent dedupes completed imports here. A real SessionEnd invocation
+    # enters through __main__ with force=True so retries always rebuild/upsert
+    # the canonical summary while hash-based ancillary writes stay idempotent.
     if not force and info.session_id in load_processed_sessions():
         return {"status": "skip", "reason": "already processed"}
 
@@ -524,7 +556,7 @@ def process_rollout(rollout_path: str, force: bool = False) -> dict:
         "importance_score": 0.6,
         "platform": "codex",
         "extraction_method": "codex_v2",
-        "session_id": info.session_id[:12],
+        "session_id": info.session_id,
         "git_branch": info.git_branch,
         "git_repo_url": info.git_repo_url,
     })

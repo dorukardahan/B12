@@ -32,6 +32,7 @@ import atexit
 import base64
 import fcntl
 import json
+import math
 import os
 import signal
 import socket
@@ -48,7 +49,12 @@ try:
     if _here not in sys.path:
         sys.path.insert(0, _here)
     from b12_config import get as _b12_cfg_get
-    from shared_patterns import exact_tag_param, exact_tag_predicate, rss_exceeds
+    from shared_patterns import (
+        exact_tag_param,
+        exact_tag_predicate,
+        process_executable_path,
+        rss_exceeds,
+    )
 except Exception:  # pragma: no cover — never block daemon on config import
     def _b12_cfg_get(*_path, default=None):
         return default
@@ -60,6 +66,8 @@ except Exception:  # pragma: no cover — never block daemon on config import
         return f"%,{escaped},%"
     def rss_exceeds(ceiling_mb):  # fail-open if shared_patterns is unavailable
         return 0
+    def process_executable_path(pid=None):  # fail-open
+        return sys.executable
 
 warnings.filterwarnings('ignore')
 os.environ['TOKENIZERS_PARALLELISM'] = 'false'
@@ -75,6 +83,16 @@ LOG_DIR = os.path.join(os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.B12
 LOG_PATH = os.path.join(LOG_DIR, "embed-daemon.log")
 IDLE_TIMEOUT = 7200  # 2 hours
 CONN_TIMEOUT = 15    # Per-connection read timeout (BGE-M3 batches can run >10s)
+# Polling accept() is deliberate: Python may transparently restart the blocking
+# syscall after SIGTERM, starving our handler until a client connects.
+ACCEPT_POLL_INTERVAL = 0.5
+try:
+    INTERPRETER_CHECK_INTERVAL = max(
+        0.05, float(os.environ.get('B12_INTERPRETER_CHECK_INTERVAL', '5'))
+    )
+except (TypeError, ValueError):
+    INTERPRETER_CHECK_INTERVAL = 5.0
+_stale_interpreter_logged = False
 # Production default: BGE-M3 (1024-dim, multilingual, cls pooling). Override
 # via MCP_EMBEDDING_MODEL for benchmarks or follow-up Q4_K_M GGUF rollout.
 MODEL_NAME = os.environ.get('MCP_EMBEDDING_MODEL', 'BAAI/bge-m3')
@@ -99,6 +117,31 @@ def log(msg):
             f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] [{os.getpid()}] {msg}\n")
     except Exception:
         pass
+
+
+def _missing_interpreter_path():
+    """Return a missing launcher/mapped-runtime path, or None if both exist."""
+    runtime_paths = {sys.executable, process_executable_path()}
+    return next(
+        (path for path in runtime_paths if path and not os.path.exists(path)),
+        None,
+    )
+
+
+def _request_restart_for_stale_interpreter(running):
+    """Request a clean on-demand restart if this runtime vanished from disk."""
+    global _stale_interpreter_logged
+    missing_path = _missing_interpreter_path()
+    if missing_path is None:
+        return False
+    if not _stale_interpreter_logged:
+        log(
+            f"interpreter executable missing: {missing_path} — "
+            "exiting cleanly after the current request for on-demand restart"
+        )
+        _stale_interpreter_logged = True
+    running[0] = False
+    return True
 
 
 def cleanup():
@@ -1050,6 +1093,31 @@ def _load_gguf_backend():
     return _GGUFEmbedShim(llama)
 
 
+def _admit_queued_request(conn, data):
+    """Enforce an optional cross-process queue deadline before model work.
+
+    The MCP client waits under the queue budget for this ACK, then switches to
+    its normal operation timeout. Requests accepted after their monotonic deadline
+    are rejected here and never enter an expensive embedding/search handler."""
+    missing = object()
+    raw_deadline = data.pop("_queue_deadline_monotonic", missing)
+    if raw_deadline is missing:
+        return True
+    try:
+        deadline = float(raw_deadline)
+    except (TypeError, ValueError):
+        deadline = float("nan")
+    if not math.isfinite(deadline) or time.monotonic() >= deadline:
+        conn.sendall(
+            (json.dumps({"ok": False, "error": "queue_timeout"}) + "\n").encode()
+        )
+        return False
+    conn.sendall(
+        (json.dumps({"ok": True, "_accepted": True}) + "\n").encode()
+    )
+    return True
+
+
 def handle_request(model, data, start_time, requests_served):
     """Route a JSON request to the appropriate handler."""
     op = data.get('op', '')
@@ -1190,15 +1258,22 @@ def main():
     # prime + the first UserPromptSubmit, plus a PreCompact) from racing into
     # a `Connection refused`; Claude Code itself is sequential per session.
     server.listen(8)
-    server.settimeout(60)  # Wakes up every 60s to check idle timeout
+    server.settimeout(ACCEPT_POLL_INTERVAL)
 
     start_time = time.time()
     last_request = time.time()
     requests_served = 0
+    next_interpreter_check = time.monotonic()
 
     log("Listening for connections")
 
     while running[0]:
+        now = time.monotonic()
+        if now >= next_interpreter_check:
+            next_interpreter_check = now + INTERPRETER_CHECK_INTERVAL
+            if _request_restart_for_stale_interpreter(running):
+                break
+
         # Idle timeout check
         if time.time() - last_request > IDLE_TIMEOUT:
             log(f"Idle timeout ({IDLE_TIMEOUT}s), shutting down")
@@ -1225,24 +1300,25 @@ def main():
 
             if data:
                 request = json.loads(data.decode('utf-8').strip())
-                response = handle_request(model, request, start_time, requests_served)
-                requests_served += 1
-                last_request = time.time()
+                if _admit_queued_request(conn, request):
+                    response = handle_request(model, request, start_time, requests_served)
+                    requests_served += 1
+                    last_request = time.time()
 
-                # Memory self-guard: if we've ballooned past the ceiling, send
-                # this response then shut down cleanly (server.close + cleanup
-                # run after the loop). A peak-RSS trip is conservative by design.
-                _rss_over = rss_exceeds(EMBED_MAX_RSS_MB)
-                if _rss_over:
-                    log(f"RSS {_rss_over}MB > ceiling {EMBED_MAX_RSS_MB}MB "
-                        f"(B12_EMBED_MAX_RSS_MB) — shutting down to protect host")
-                    running[0] = False
+                    # Memory self-guard: if we've ballooned past the ceiling, send
+                    # this response then shut down cleanly (server.close + cleanup
+                    # run after the loop). A peak-RSS trip is conservative by design.
+                    _rss_over = rss_exceeds(EMBED_MAX_RSS_MB)
+                    if _rss_over:
+                        log(f"RSS {_rss_over}MB > ceiling {EMBED_MAX_RSS_MB}MB "
+                            f"(B12_EMBED_MAX_RSS_MB) — shutting down to protect host")
+                        running[0] = False
 
-                should_shutdown = response.pop('_shutdown', False)
-                conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
+                    should_shutdown = response.pop('_shutdown', False)
+                    conn.sendall((json.dumps(response) + '\n').encode('utf-8'))
 
-                if should_shutdown:
-                    running[0] = False
+                    if should_shutdown:
+                        running[0] = False
         except Exception as e:
             try:
                 err_resp = json.dumps({'ok': False, 'error': str(e)}) + '\n'
@@ -1254,6 +1330,12 @@ def main():
                 conn.close()
             except Exception:
                 pass
+
+        # A package upgrade can remove the executable while a long request is
+        # running.  Check only after the response and connection cleanup so a
+        # self-heal never aborts in-flight embedding work.
+        if _request_restart_for_stale_interpreter(running):
+            break
 
     server.close()
     cleanup()

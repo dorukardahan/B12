@@ -29,7 +29,8 @@ Custom FastMCP server providing 13 memory tools and 4 MCP resources. Replaces th
 - **Resources**: `b12://context/project/{name}`, `b12://stats`, `b12://profile`, `b12://health`
 - **Database**: SQLite + sqlite-vec (local file)
 - **Embeddings**: BGE-M3 (BAAI/bge-m3, 1024-dim, multilingual, cls pooling) via `embed_daemon.py` (runs locally, no API). Override via `MCP_EMBEDDING_MODEL`. Opt-in Q8_0 / Q4_K_M GGUF: set `B12_EMBED_BACKEND=gguf` + `B12_EMBED_GGUF_PATH=...`.
-- **Search**: FTS5 hybrid — BM25 keyword + vector cosine + optional porter stemming
+- **Runtime self-heal**: both long-lived daemons periodically verify that `sys.executable` still exists. This catches Homebrew patch upgrades that delete the old versioned Cellar interpreter while processes continue running from memory. MCP closes its listener, drains in-flight JSON-RPC requests, and exits for launchd `KeepAlive` respawn; embed exits after its current request and is restarted asynchronously by the next retrieval need. The health CLI also compares each running daemon's interpreter path/version with the B12 venv.
+- **Search**: FTS5 hybrid — BM25 keyword + vector cosine + optional porter stemming. `memory_search` bounds only its wait for the serialized embed-daemon queue (`B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT`, default 2s); on queue timeout hybrid mode immediately keeps its FTS results, while semantic-only mode fails soft. Store/embed operations retain the full queue wait and in-flight socket budget.
 - **FTS5 tables**: `memory_fts` (unicode61, exact match), `memory_fts_stemmed` (porter unicode61, morphological), `memory_content_fts` (trigram, legacy)
 - **Scoring**: Effective-stability decay-aware — combines retention, importance, relevance, and strength; importance and reinforcement flatten the aging curve
 - **Dedup**: Write-time semantic merge (cosine > 0.85 = merge, not INSERT)
@@ -205,6 +206,35 @@ Process:
 **Background embedding**: A Python subprocess generates embeddings after the main hook completes. Uses WAL mode + busy_timeout for safe concurrent DB access.
 
 **Write-time merge**: Imports `merge_or_insert` from `scripts/write_time_merge.py`. Falls back to direct INSERT if the script is unavailable (graceful degradation).
+
+**Session-summary identity**: `metadata.session_id` identifies a
+`session_summary`. `upsert_session_summary()` takes `BEGIN IMMEDIATE`, updates the
+newest active row in place while preserving `created_at` and refreshing
+`updated_at`, and inserts only when none exists. An intentionally non-unique JSON
+index supports legacy databases that already contain duplicates. Session-salted
+content hashes, graph endpoints, external-content FTS tables, and sqlite-vec are
+updated in the same transaction; existing duplicates and summaries without a
+session ID are untouched.
+
+Historical cleanup is explicit and dry-run-first via `scripts/b12_dedupe_session_summaries.py`.
+It reuses the runtime selector, reports exact row IDs and platform totals, and executes in one
+`BEGIN IMMEDIATE` only with `--execute`. Cleanup stamps only `deleted_at`; content, metadata,
+hashes, graph edges, vectors, and summaries without a usable session ID remain untouched.
+
+Summaries without a usable ID are not one undifferentiated backlog. The read-only
+`scripts/b12_audit_session_summaries.py` tool classifies every active unbound row as
+intentionally unbound, recoverable legacy, or ambiguous legacy and inventories its
+producer/platform/project/tag shape and age without returning content or candidate IDs.
+Current writers must emit either a stable full ID or an explicit unbound marker with
+producer and platform. Retention, structured-only recovery, backup/rollback, collision,
+and project-context continuity gates are defined in the
+[session-summary identity and retention policy](session-summary-identity-policy.md).
+
+**Codex lifecycle split**: `Stop` captures only cheap per-turn goal progress.
+`SessionEnd` owns detached summary extraction after rollout flush because upstream
+caps teardown hooks at three seconds. The retired legacy `notify` path was a
+turn-complete callback with a 120-second debounce, not a session-end signal.
+Claude Code keeps the equivalent turn/session split.
 
 **Write-side importance scoring** (`scripts/b12_importance.py`): before a row is stored, content is scored into a fractional `[0, 0.95]` importance band with **no manual tagging**. Five bands (trivial 0.30 / baseline 0.50 / fact 0.70 / decision 0.75 / memorable 0.90, max-wins) are floored by a language-agnostic **signal taxonomy** layered on the original remember/decision/fact tokens: explicit save-cues, commitment/obligation verbs (negation-aware), deadlines/dates, `@handle`/email person mentions, numeric-with-context values, and identifiers (PR#/git-SHA/host-path). Detectors cover **11 languages** (en, tr, zh, hi, es, fr, ar, ru, pt, id, de): the
 six signal detectors plus native remember/decision/trivial lexicons per language,

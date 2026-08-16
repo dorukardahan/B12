@@ -192,7 +192,7 @@ captured when the host calls `memory_store`.
 | Platform | Capture | Restart or reload | Where to inspect MCP status | Additional healthy-state check |
 |----------|---------|-------------------|-----------------------------|--------------------------------|
 | Claude Code | **Automatic** | Quit all Claude Code sessions and start a new one. | Run `/mcp`; the `B12` row must say `connected`. | Run `/hooks`; the B12 user hooks should be listed. |
-| Codex CLI | **Automatic** | Close every live Codex session and start a new one; live sessions do not reload edited hook files. | Run `/mcp`; `B12` must be enabled and connected. | `~/.codex/hooks.json` should contain B12 commands for `SessionStart`, `UserPromptSubmit`, `Stop`, `PreToolUse`, `PostToolUse`, and `PreCompact`. |
+| Codex CLI | **Automatic** | Close every live Codex session and start a new one; live sessions do not reload edited hook files. | Run `/mcp`; `B12` must be enabled and connected. | Run `/hooks`; B12 commands for `SessionStart`, `SessionEnd`, `UserPromptSubmit`, turn-scoped `Stop`, `PreToolUse`, `PostToolUse`, and `PreCompact` must be installed and enabled. |
 | Antigravity CLI | **Automatic** | Start a new Antigravity session after plugin installation. | Open the session's MCP tools list and search for `memory_search`; it must be supplied by `B12`. | Run `agy plugin list` and confirm the `b12` plugin is enabled; `agy plugin validate ~/.B12/antigravity-plugin/b12` must succeed. |
 | Gemini CLI | **Automatic** | Exit Gemini CLI and start it again. | Run `/mcp`; `B12` must be connected and expose its tools. | Run `/hooks`; B12 `SessionStart`, `SessionEnd`, and `AfterTool` commands should be listed. |
 | Cline | **Automatic** | Run **Developer: Reload Window** in VS Code. | Open the Cline panel → **MCP Servers**; the `B12` server must be running and list its tools. | In Cline settings → **Feature Settings**, enable hooks and confirm `TaskStart`, `UserPromptSubmit`, and `PreCompact` exist under `~/Documents/Cline/Hooks/`. |
@@ -206,6 +206,10 @@ captured when the host calls `memory_store`.
 | Zed | MCP-only | Quit Zed and reopen the project. | Open **Settings → Context Servers**; `B12` must be active and list its tools. | No lifecycle hook check is expected. |
 | JetBrains AI (PyCharm/IDEA/etc.) | MCP-only | Restart the IDE after manually importing the template. | Open **Settings → Tools → AI Assistant → MCP**; `B12` must be running and list its tools. | No lifecycle hook check is expected. |
 | Amp | MCP-only | Exit Amp and start a new session. | Open **Amp Settings → MCP**; `B12` must be enabled and list its tools. | No lifecycle hook check is expected. |
+
+For a Codex upgrade, re-run `./install.sh --codex`; it preserves non-B12 notify
+argv, migrates summary capture to `SessionEnd`, and reports disabled B12 hooks.
+Enable reported entries in `/hooks`, then restart Codex.
 
 ### Step 6: Configure hooks (usually automatic)
 
@@ -556,30 +560,26 @@ Replace `/Users/yourname` with your actual home directory.
 | Feature | Claude Code | Codex CLI |
 |---------|-------------|-----------|
 | MCP tools (store/search/update/quality) | Automatic | Automatic |
-| Per-prompt memory retrieval | Automatic (hook) | Manual (model follows AGENTS.md instructions) |
-| Session summary extraction | Automatic (hook) | Not yet (planned for Layer 2) |
-| Tag auto-injection | Automatic (hook) | Manual (model follows instructions) |
-| Working context tracking | Automatic (hook) | Not available |
+| Per-prompt memory retrieval | Automatic (hook) | Automatic (`UserPromptSubmit`) |
+| Session summary extraction | Automatic (`SessionEnd`) | Automatic (detached `SessionEnd`) |
+| Tag auto-injection | Automatic (hook) | Automatic (`PreToolUse`) |
+| Working context tracking | Automatic (hook) | Automatic turn hooks |
 
-The 4 MCP tools work identically on both platforms. The difference is in automation — Claude Code hooks handle retrieval and storage silently, while Codex relies on AGENTS.md instructions to guide the model.
+The MCP tools share one implementation. Claude Code and Codex also automate lifecycle work; `AGENTS.md` remains the model-facing fallback rather than the owner of summary extraction.
 
-### Codex hook migration: `notify` → `Stop`
+### Codex lifecycle migration: legacy `notify` → `SessionEnd`
 
-Codex CLI **0.130.0** (hooks GA on 2026-05-14) replaces the legacy
-root-level `notify = [...]` config knob with the formal `Stop` hook event.
-B12 ships both paths so existing installs keep working:
+Codex CLI **0.130.0** introduced formal lifecycle hooks. B12 registers seven entries in `~/.codex/hooks.json`; session-scoped and turn-scoped work are separate:
 
-| Codex version | Path | What B12 ships |
-|---------------|------|----------------|
-| < 0.130.0     | root-level `notify = ["<...>/b12-codex-notify.sh"]` in `config.toml` | `hooks/b12-codex-notify.sh` — debounced rollout post-scrape (legacy) |
-| ≥ 0.130.0     | `[hooks.events.Stop]` block in `hooks.json` plus `[hooks.state]` SHA-256 pinning | `hooks/memory-codex-*.sh` family (Stop, SessionStart, UserPromptSubmit, PreToolUse, PostToolUse, PreCompact) |
+| Event | B12 responsibility |
+|-------|--------------------|
+| `SessionEnd` | True session-summary extraction; the adapter detaches immediately to stay inside Codex's three-second teardown cap |
+| `Stop` | Cheap per-turn active-goal progress only; never writes `session_summary` |
+| `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PreCompact` | Context retrieval, metadata, working-state, and compaction support |
 
-Both paths are safe to leave configured simultaneously — Codex 0.130.0
-honors `notify` for backwards compatibility while preferring the formal
-hook events when present. Upgrade by running `./install.sh --codex`
-again; the new hooks will be deployed and pre-pinned into
-`[hooks.state]` (Round 0 fix #1 — SHA-256 trusted_hash entries skip
-Codex's StartupHooksReview prompt-trust flow).
+Upgrade with `./install.sh --codex`. The installer removes the exact B12 legacy root-level notify argv and executable only after the exact deployed `SessionEnd` hook is registered. Other notify argv, same-named user commands, non-B12 hook
+entries, ordering, and `hooks.state` trust decisions are preserved. Check `/hooks`
+for reported disabled B12 entries, then restart every live Codex session.
 
 **Live-session caveat (issue #21160).** Editing `~/.codex/hooks.json` or
 `~/.codex/config.toml` while a Codex session is live silent-disables ALL
@@ -627,7 +627,7 @@ Each platform-specific flag performs the same minimal contract:
    re-runs are idempotent and uninstall is a clean sed delete.
 
 3. **Wire up host-specific hooks/plugins** if the platform exposes a hook surface
-   (Antigravity `hooks.json`, Cline `hooks/`, Codex `[hooks.events.*]` blocks).
+   (Antigravity `hooks.json`, Cline `hooks/`, Codex `hooks.json` event groups).
    Antigravity uses its native events: PreInvocation injects B12 context through
    `injectSteps[].ephemeralMessage`, PostToolUse is a safe no-op unless documented
    payload fields can support a behavior, and Stop runs session-end only when
@@ -642,7 +642,7 @@ Each platform-specific flag performs the same minimal contract:
 | Memory store (MCP tool) | Automatic | Automatic | Automatic | Automatic |
 | Memory search (MCP tool) | Automatic | Automatic | Automatic | Automatic |
 | Pre-prompt retrieval (hook) | ✓ silent | ✓ via `UserPromptSubmit` hook | ✓ via `userPromptSubmit` hook | Model follows instructions |
-| Session-end summary extraction | ✓ silent | ✓ via `Stop` hook | ✗ | ✗ |
+| Session-end summary extraction | ✓ silent | ✓ via detached `SessionEnd` hook | ✗ | ✗ |
 | Tag auto-injection on store | ✓ silent | ✓ via `PreToolUse` hook | ✓ | Model follows instructions |
 | Working-context tracking on tool use | ✓ silent | ✓ via `PostToolUse` hook | ✗ | ✗ |
 | `/mcp` verification | ✓ | ✓ | Cline panel | Host-specific UI |

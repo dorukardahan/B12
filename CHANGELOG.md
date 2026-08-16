@@ -1,5 +1,64 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Added a read-only session-summary identity audit that classifies every active unbound row by policy category and inventories payload-free producer, platform, project, tag-shape, and age dimensions.
+- Documented the session-summary identity, retention, structured recovery, backup/rollback, collision, and project-continuity policy.
+
+### Changed
+
+- MCP session-summary writers now explicitly mark intentionally unbound identity with stable producer and platform metadata instead of relying on a missing `session_id`; the generic `memory_store` path supplies safe defaults for manual summaries.
+- SessionEnd no longer applies a rank-only session-summary cap; retention remains audit-, review-, and backup-gated.
+
+## [v11.82.1] — 2026-08-14
+
+### Fixed
+
+- Long-running MCP and embedding daemons now detect when a package-manager Python upgrade removes or replaces their mapped interpreter, then restart at safe request boundaries instead of continuing on a stale runtime.
+- MCP recovery drains already accepted JSON-RPC work before restarting, while existing proxy reconnection carries the host session onto the respawned daemon.
+- Embedding recovery now works for MCP-only hosts and restarts the model service on demand only when semantic search or reranking needs it, avoiding an unnecessary model startup for keyword-only retrieval.
+- Embed-daemon signal handling, singleton-lock validation, per-user process discovery, and client shutdown are hardened so restart detection cannot kill in-flight work or mistake another process for the managed daemon.
+
+### Changed
+
+- `b12 health` now inspects each live daemon's actual mapped executable on macOS and Linux, compares its Python runtime with the installed environment, and reports a launchd restart on macOS or process-termination/supervisor guidance on Linux and other Unix hosts when stale.
+- The stale-runtime check cadence is configurable while remaining lightweight by default.
+
+### Internal
+
+- Added cross-platform regression coverage for deleted/replaced interpreters, safe MCP draining, MCP-only recovery, prompt signal shutdown, on-demand embedding startup, lock ownership, process scoping, and healthy/stale health output.
+
+## [v11.82.0] — 2026-08-09
+
+**Codex users: after upgrading, re-run `./install.sh --codex` and accept the new `SessionEnd` hook in Codex's StartupHooksReview trust screen. Without both steps, session summaries can silently stop.**
+
+### Added
+
+- Added `scripts/b12_dedupe_session_summaries.py` to clean the pre-existing duplicate session-summary backlog. It is dry-run by default; use `--execute` to apply soft-deletes. Back up the database first. The command is idempotent, never touches rows without a `session_id`, and leaves hard deletion to the normal 90-day garbage-collection window.
+
+### Changed
+
+- Codex summary extraction now runs from a real `SessionEnd` hook instead of the legacy delayed-notify adapter; `Stop` is now turn-scoped only.
+- Existing Codex installations must re-run `./install.sh --codex` so the new hook is registered and the legacy adapter is retired. Retirement safely handles `--previous-notify` JSON wrappers while preserving user-owned notify commands.
+- The installer reports hooks disabled in Codex trust state but deliberately does not override the user's trust choice.
+
+### Fixed
+
+- Repeated session-end events now upsert one summary row per session instead of appending duplicates, while preserving the original `created_at` value and keeping FTS, vector, and graph indexes synchronized.
+- Summary migration and resurrection now handle soft-deleted hash collisions safely, preserving one live canonical summary without rewriting unrelated legacy rows.
+- Codex upgrades preserve symlink-managed configuration and user handlers that share a hook group with B12, and roll back notify changes if the legacy adapter cannot be retired safely.
+- Release version synchronization now includes the shipped OpenCode manifest, closing a packaging drift gap.
+
+### Internal
+
+- Modernized Python package license metadata, upgraded `actions/setup-python` to v7, and added CI coverage for README platform-count drift.
+
+### Field verification
+
+- Verified end-to-end on macOS with both Codex and Claude Code. On a real 112 MB database, the dedupe dry-run predicted 571 removals across 114 sessions, execution matched exactly, a second run reported the database unchanged, zero duplicate sessions remained, and FTS stayed intact.
+
 ## [v11.81.5] — 2026-07-20
 
 ### Changed
@@ -901,12 +960,6 @@ model applied consistently across all three ranking surfaces.
 ### Bug Fixes
 
 * **install:** migrate launchd plists from ~/.claude/ to ~/.B12/ paths ([39fab9c](https://github.com/dorukardahan/B12/commit/39fab9cb3c535c0ddcb29d22c77f74e6b0e8907b))
-
-## Unreleased
-
-### Bug Fixes
-
-* **install:** add `update_launchd_plists()` to migrate `~/.claude/hooks/` → `~/.B12/hooks/` and `~/.claude/memory-logs/` → `~/.B12/memory-logs/` in launchd plist files, then reload affected jobs — previously `install.sh --all` copied hooks to the new location but left 5 launchd jobs pointing at the old path
 
 ## [11.7.1](https://github.com/dorukardahan/B12/compare/v11.7.0...v11.7.1) (2026-03-03)
 

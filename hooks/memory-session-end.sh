@@ -765,6 +765,14 @@ with open(summary_file, 'r') as f:
 _hook_dir = os.environ.get('B12_HOOK_DIR', os.path.expanduser('~/.B12/hooks'))
 sys.path.insert(0, os.path.join(_hook_dir, 'scripts'))
 try:
+    from shared_patterns import is_usable_session_id
+except ImportError:
+    # Identity validation is mandatory for canonical SessionEnd summaries.
+    # Keep the on-disk summary, but fail closed before embedding or DB writes.
+    sys.exit(0)
+if not is_usable_session_id(session_id):
+    sys.exit(0)
+try:
     from b12_pii_scrubber import scrub as _pii_scrub
     content = _pii_scrub(content)
 except ImportError:
@@ -861,11 +869,6 @@ try:
     sqlite_vec.load(conn)
     conn.enable_load_extension(False)
 
-    # Skip if already stored (duplicate hash)
-    if conn.execute("SELECT 1 FROM memories WHERE content_hash = ?", (content_hash,)).fetchone():
-        conn.close()
-        sys.exit(0)
-
     from datetime import datetime, timezone, timedelta
     import numpy as np
 
@@ -901,24 +904,24 @@ try:
         "setup": setup_context,
         "scope": "project",
         "type": "session-summary",
-        "session_id": session_id[:12],
+        "session_id": session_id,
         "importance_score": importance,
         "extraction_method": "regex_v2"
     })
 
-    conn.execute("""
-        INSERT INTO memories (content, content_hash, tags, memory_type, metadata,
-                              created_at, updated_at, created_at_iso, updated_at_iso)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-    """, (content, content_hash, tags, 'session_summary', metadata,
-          now.timestamp(), now.timestamp(), now.isoformat(), now.isoformat()))
-
-    row_id = conn.execute("SELECT id FROM memories WHERE content_hash = ?", (content_hash,)).fetchone()[0]
-
-    conn.execute("""
-        INSERT INTO memory_embeddings (rowid, content_embedding)
-        VALUES (?, ?)
-    """, (row_id, embedding_bytes))
+    from write_time_merge import upsert_session_summary
+    row_id = upsert_session_summary(
+        conn,
+        session_id=session_id,
+        content=content,
+        tags=tags,
+        metadata=metadata,
+        embedding_bytes=embedding_bytes,
+        now=now,
+    )
+    content_hash = conn.execute(
+        "SELECT content_hash FROM memories WHERE id = ?", (row_id,)
+    ).fetchone()[0]
 
     # Link to previous session summary for this project (temporal chain)
     prev = conn.execute("""
@@ -926,7 +929,7 @@ try:
         WHERE memory_type = 'session_summary'
           AND tags LIKE ?
           AND content_hash != ?
-        ORDER BY created_at DESC LIMIT 1
+        ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 1
     """, (f'%proj:{project_name}%', content_hash)).fetchone()
 
     if prev:
@@ -1107,24 +1110,10 @@ try:
     except Exception:
         pass  # Non-critical
 
-    # ─── Session summary cap: keep only 5 most recent per project ───
-    try:
-        conn.execute("""
-            UPDATE memories SET deleted_at = unixepoch('now')
-            WHERE memory_type = 'session_summary'
-              AND deleted_at IS NULL
-              AND tags LIKE ?
-              AND id NOT IN (
-                SELECT id FROM memories
-                WHERE memory_type = 'session_summary'
-                  AND deleted_at IS NULL
-                  AND tags LIKE ?
-                ORDER BY created_at DESC LIMIT 5
-              )
-        """, (f'%proj:{project_name}%', f'%proj:{project_name}%'))
-    except Exception as e:
-        import sys
-        print(f"[B12] summary cap warning: {e}", file=sys.stderr)
+    # SessionEnd is a writer, not a retention executor. Identity-aware retention
+    # requires a fresh audit, a reviewed plan, and a verified backup; applying a
+    # rank-only cap here can hide recent, ambiguous, or intentionally-unbound rows.
+    # Keep retention audit-only in this lifecycle path.
 
     conn.commit()
     conn.close()

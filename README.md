@@ -104,7 +104,7 @@ B12 MCP Server (b12_mcp_server.py)
     ├── FTS5 hybrid search (BM25 keyword + vector cosine + porter stemming)
     ├── Effective-stability decay (importance + reinforcement slow aging)
     ├── Write-time semantic merge (cosine > 0.85 = merge, not duplicate)
-    └── Auto-backup (daily, 7-day rotation)
+    └── Auto-backup (daily, 7-day rotation) + operator summary dedupe (dry-run; `--execute` applies)
 ```
 
 </details>
@@ -140,7 +140,7 @@ B12's MCP server works with any tool that supports MCP stdio. The installer hand
 | Platform | Flag | Capture | MCP Config Location | Instructions File |
 |----------|------|---------|--------------------|--------------------|
 | Claude Code | (default) | **Automatic** (full hooks) | ~/.claude.json | Built-in |
-| Codex CLI | `--codex` | **Automatic** (notify/Stop) | ~/.codex/config.toml | ~/.codex/AGENTS.md |
+| Codex CLI | `--codex` | **Automatic** (`SessionEnd` + turn-scoped `Stop`) | ~/.codex/config.toml | ~/.codex/AGENTS.md |
 | Antigravity CLI | `--antigravity` | **Automatic** (installed native plugin: PreInvocation/PostToolUse/Stop) | ~/.gemini/config/mcp_config.json + Antigravity plugin profile | AGENTS.md + plugin rules |
 | Gemini CLI | `--gemini` | **Automatic** (legacy Gemini CLI hook adapters; enterprise/paid API-key users) | ~/.gemini/settings.json | ~/.gemini/GEMINI.md |
 | Cline | `--cline` | **Automatic** (TaskStart/UserPromptSubmit/PreCompact) | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ |
@@ -209,7 +209,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Proactive surfacing** — automatically injects relevant past memories when you open files or hit errors
 - **Long-session re-surface** — on every Nth UserPromptSubmit turn (default 20), re-injects a small batch of THIS session's early-captured high-importance memories so they don't fade out of the model's effective working window
 - **Token budget guardrails** — per-turn char-based cap (~800 tokens) + cumulative session cap (~80K tokens) with skip-event logging to `~/.B12/memory-logs/token-budget-skips.jsonl`
-- **Smart consolidation** — deduplication, merge groups, and NLI contradiction detection across memories
+- **Smart consolidation + operator cleanup** — merge groups and NLI contradiction checks; the read-only session-summary identity audit classifies bound, intentionally unbound, recoverable legacy, and ambiguous legacy rows without exposing content or session IDs; legacy dedupe remains dry-run by default and soft-deletes only with explicit `--execute`
 - **Export/import** — portable `.b12` format for backup, migration, or sharing memory snapshots
 - **Web dashboard** — Flask + Cytoscape.js visual browser for memory graph and statistics
 - **Health report** — comprehensive weekly report with health score, trends, and recommendations
@@ -335,7 +335,7 @@ B12 works with any MCP-compatible coding assistant. The same MCP server and SQLi
 
 Each flag configures the platform's MCP config and injects B12 memory instructions into the platform's instruction file. Restart the platform and check its MCP status to verify.
 
-**Codex CLI specifics:** The `notify` hook fires after each agent turn. A 2-minute debounce detects session end, then processes the rollout JSONL to extract session summaries, decisions, errors, and learnings. The B12 Codex Skill also instructs the model to proactively search/store memory.
+**Codex CLI specifics:** Codex's `SessionEnd` event owns summary extraction after the rollout is flushed; the adapter detaches immediately to stay inside Codex's teardown timeout. `Stop` remains installed only for cheap turn-scoped progress capture. Re-running `./install.sh --codex` removes B12's legacy notify adapter while preserving any other notify argv, then reports B12 hooks that Codex's `/hooks` trust screen has explicitly disabled.
 
 ### 4. Optional — Automated tasks
 
@@ -372,6 +372,8 @@ B12/
 │   ├── memory-working-context.sh   #   PostToolUse — track active files
 │   ├── memory-precompact.sh        #   PreCompact — stage transcript summary
 │   ├── memory-session-end.sh       #   SessionEnd — extract & persist memories
+│   ├── memory-codex-session-end.sh #   Codex SessionEnd — detached summary extraction
+│   ├── memory-codex-stop.sh        #   Codex Stop — turn-scoped goal progress only
 │   ├── memory-proactive-surface.sh #   PostToolUse — proactive memory surfacing
 │   ├── memory-checkpoint.sh        #   PostToolUse — mid-session memory capture (rate-limited)
 │   ├── memory-instructions-loaded.sh # InstructionsLoaded — CLAUDE.md / rules load telemetry
@@ -385,7 +387,6 @@ B12/
 │   ├── memory-quality-audit.sh     #   Scheduled — weekly health score
 │   ├── memory-feedback-digest.sh   #   Scheduled — weekly usage digest
 │   ├── memory-browse.sh            #   Manual — CLI memory browser
-│   ├── b12-codex-notify.sh         #   Codex — notify hook (session-end debounce)
 │   └── gemini/                     #   Gemini CLI hook adapters
 │       ├── b12-gemini-session-start.sh  # SessionStart adapter
 │       ├── b12-gemini-session-end.sh    # SessionEnd adapter (transcript conversion)
@@ -395,6 +396,8 @@ B12/
 │   ├── start-mcp.sh                #   MCP bootstrap (venv detection, used by plugin)
 │   ├── embed_daemon.py             #   Background embedding daemon (Unix socket)
 │   ├── write_time_merge.py         #   Semantic dedup at write time
+│   ├── b12_audit_session_summaries.py # Read-only summary identity/retention audit
+│   ├── b12_dedupe_session_summaries.py # Dry-run-first legacy summary cleanup
 │   ├── b12_importance.py           #   Write-side importance scoring (11-language signal taxonomy)
 │   ├── audit_importance_gap.py     #   Read-only importance-gap audit (ML-ROI gate, PR-2c)
 │   ├── contradiction_resolver.py   #   ONNX NLI contradiction detection
@@ -452,6 +455,7 @@ B12/
 │   └── locomo/                     #   LoCoMo retrieval evaluation (MRR, NDCG)
 ├── docs/
 │   ├── architecture.md             #   Detailed architecture documentation
+│   ├── session-summary-identity-policy.md # Summary identity, audit, retention, migration gates
 │   └── setup.md                    #   Step-by-step installation guide
 ├── AGENTS.md                       #   Codex agent instructions (auto-deployed)
 ├── install.sh                      #   One-command installer
@@ -473,6 +477,7 @@ Environment variables:
 - `B12_EMBED_GGUF_PATH` — absolute path to a BGE-M3 GGUF file when `B12_EMBED_BACKEND=gguf`
 - `B12_MAX_INJECT_TOKENS` — per-turn injection cap (default `800`, char proxy)
 - `B12_MAX_SESSION_TOKENS` — cumulative per-session injection cap (default `80000` = ~8% of 1M)
+- `B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT` — max seconds `memory_search` waits behind another embed-daemon operation before falling back to FTS (default: `2`)
 - `MCP_MAX_RESPONSE_CHARS` — max chars in search results (default: `40000`)
 
 ### Hooks (Claude Code `settings.json`)
@@ -503,8 +508,10 @@ If you run multiple Claude Code setups (e.g., personal + work):
 | `B12_MCP_MAX_CONN` | MCP daemon: max concurrent client connections; evicts the most-idle one when exceeded. Emergency backstop only — eviction uses the same client-visible cancel path, so keep it well above realistic concurrency. `0` disables the cap. | `256` | `512` |
 | `B12_MCP_PROXY_RECONNECT` | Stdio proxy: when the daemon socket drops mid-session (daemon restart/redeploy, RSS-guard `os._exit`, `MAX_CONN` eviction, crash) while the host is still alive, transparently re-dial the daemon and replay the cached `initialize` handshake so the host never sees a disconnect. `0` reverts to legacy exit-on-EOF. | `1` (enabled) | `0` |
 | `B12_MCP_RECONNECT_BUDGET` | Stdio proxy: total seconds to keep retrying (capped backoff) before giving up a reconnect and exiting. Default ≈ one launchd respawn window. | `30` | `60` |
+| `B12_INTERPRETER_CHECK_INTERVAL` | Long-lived MCP/embed daemons: seconds between checks that `sys.executable` still exists. If a Homebrew Python upgrade removes the running Cellar interpreter, daemons finish in-flight work and exit cleanly; launchd respawns MCP, while the next embedding need respawns embed. | `5` | `10` |
 | `B12_MCP_WAL_CHECKPOINT_INTERVAL` | MCP daemon: seconds between `PRAGMA wal_checkpoint(TRUNCATE)` runs (keeps the WAL from growing unbounded on an idle daemon). `0` disables. | `300` (5min) | `600` |
 | `B12_MCP_READ_POOL` | MCP server: number of worker threads (and thread-owned SQLite read connections) that serve reads off the event loop, so a slow query on one tab never blocks the others (WAL → concurrent readers). Writes always go through a single serialized writer thread (no knob). `0`/unset auto-sizes to `max(4, min(8, cpu_count))`. | `0` (auto) | `4` / `16` |
+| `B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT` | MCP `memory_search`: seconds to wait for the single embed-daemon queue before returning existing FTS results (hybrid) or a fail-soft empty result (semantic-only). This does not shorten an in-flight daemon request or affect store/embed operations. | `2` | `1` / `5` |
 
 #### Memory-safety guards
 
@@ -556,6 +563,8 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 
 **During conversation** — every user message triggers the retrieval hook, which extracts keywords, runs hybrid FTS5/vector search with effective-stability decay scoring, and injects the top results. The PreToolUse hook ensures every `memory_store` call has proper scope tags.
 
+**Daemon self-heal** — long-lived daemons detect when a package-manager upgrade removes their on-disk Python executable. MCP stops accepting new work, drains active requests, exits, and is restarted by launchd; embed exits after its current request and the retrieval hook starts a replacement on demand. `b12 health` reports any running daemon pinned to a missing or version-mismatched interpreter with the exact restart command.
+
 **Session end** — the SessionEnd hook parses the full transcript, extracts decisions/errors/learnings/preferences using regex patterns (English + Turkish), generates embeddings in the background, and stores micro-memories with write-time dedup.
 
 **Between sessions** — scheduled tasks run daily backup, consolidation (Jaccard dedup), and weekly quality audits. Unused memories decay in strength (-0.05/week), while frequently accessed ones strengthen (+0.2 per retrieval).
@@ -580,6 +589,14 @@ B12 uses manual, owner-gated releases via [`scripts/release.sh`](scripts/release
 Dependency update PRs are review-gated too: Dependabot can suggest updates, but nothing is auto-merged.
 
 ## Changelog (recent)
+
+### v11.82.1 (2026-08-14)
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
+### v11.82.0 (2026-08-09)
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
 
 ### v11.81.5 (2026-07-20)
 

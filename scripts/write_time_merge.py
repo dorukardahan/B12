@@ -462,6 +462,154 @@ def _rewrite_graph_hashes(conn: sqlite3.Connection, old_hash: str, new_hash: str
     conn.execute("DELETE FROM memory_graph WHERE source_hash = ? OR target_hash = ?", (old_hash, old_hash))
 
 
+def session_summary_content_hash(*, session_id: str, content: str) -> str:
+    """Return the canonical salted hash used by session-summary upserts."""
+    sid = (session_id or "").strip()
+    summary = (content or "").strip()
+    if not sid:
+        raise ValueError("session_id must be a non-empty string")
+    if not summary:
+        raise ValueError("content must be a non-empty string")
+    return hashlib.sha256(
+        f"{summary.lower()}|session:{sid}".encode("utf-8")
+    ).hexdigest()
+
+
+def select_session_summary_canonical(
+    conn: sqlite3.Connection, *, session_id: str, content_hash: Optional[str] = None,
+):
+    """Return the row an upsert targets; ``None`` hashes consider live rows only."""
+    sid = (session_id or "").strip()
+    if not sid:
+        raise ValueError("session_id must be a non-empty string")
+    legacy_sid = sid[:12]
+    return conn.execute(
+        """SELECT id, content_hash, deleted_at FROM memories
+           WHERE memory_type = 'session_summary'
+             AND (
+               (deleted_at IS NULL AND
+                (CASE WHEN json_valid(metadata)
+                      THEN json_extract(metadata, '$.session_id') END) IN (?, ?))
+               OR
+               (? IS NOT NULL AND deleted_at IS NOT NULL AND content_hash = ? AND
+                (CASE WHEN json_valid(metadata)
+                      THEN json_extract(metadata, '$.session_id') END) = ?)
+             )
+           ORDER BY
+             (deleted_at IS NOT NULL) DESC,
+             ((CASE WHEN json_valid(metadata)
+                     THEN json_extract(metadata, '$.session_id') END) = ?) DESC,
+             COALESCE(updated_at, created_at, 0) DESC, id DESC
+           LIMIT 1""",
+        (sid, legacy_sid, content_hash, content_hash, sid, sid),
+    ).fetchone()
+
+
+def upsert_session_summary(
+    conn: sqlite3.Connection,
+    *,
+    session_id: str,
+    content: str,
+    tags: Optional[Union[str, Sequence[str]]],
+    metadata: Optional[Union[str, Dict[str, Any]]],
+    embedding_bytes: Optional[Union[bytes, bytearray, memoryview]],
+    now: Any = None,
+) -> int:
+    """Atomically insert or replace the newest active summary for a session.
+
+    Existing duplicate rows are intentionally left untouched for a later cleanup
+    migration.  ``BEGIN IMMEDIATE`` serializes first writes without requiring a
+    UNIQUE migration that would fail on those legacy duplicates.  External-content
+    FTS tables follow the UPDATE through their existing triggers; the vec row is
+    updated (or removed when no fresh embedding is available) in the same txn.
+    """
+    sid = (session_id or "").strip()
+    content = (content or "").strip()
+    if not sid:
+        raise ValueError("session_id must be a non-empty string")
+    if not content:
+        raise ValueError("content must be a non-empty string")
+
+    now_ts, now_iso = _coerce_now(now)
+    tags_str = _tags_to_str(tags)
+    metadata_str = _metadata_to_str(metadata) or "{}"
+    try:
+        metadata_obj = json.loads(metadata_str)
+    except (json.JSONDecodeError, TypeError):
+        metadata_obj = {}
+    if not isinstance(metadata_obj, dict):
+        metadata_obj = {}
+    metadata_obj["session_id"] = sid
+    metadata_str = json.dumps(metadata_obj, ensure_ascii=False)
+    content_hash = session_summary_content_hash(session_id=sid, content=content)
+    embedding_blob = (
+        embedding_bytes.tobytes()
+        if isinstance(embedding_bytes, memoryview)
+        else bytes(embedding_bytes)
+        if embedding_bytes
+        else None
+    )
+
+    owns_txn = not conn.in_transaction
+    if owns_txn:
+        conn.execute("BEGIN IMMEDIATE")
+    try:
+        row = select_session_summary_canonical(
+            conn, session_id=sid, content_hash=content_hash,
+        )
+        if row:
+            memory_id, old_hash = int(row[0]), str(row[1])
+            if row[2] is not None:
+                # A dedupe/retention tombstone may own the incoming globally-unique
+                # hash. Revive it, but first demote any active exact-full-ID row so
+                # the session still has one canonical live summary. Legacy-prefix
+                # fallbacks remain untouched for compatibility.
+                conn.execute(
+                    """UPDATE memories SET deleted_at = ?
+                       WHERE memory_type = 'session_summary' AND deleted_at IS NULL
+                         AND id != ? AND json_valid(metadata)
+                         AND json_extract(metadata, '$.session_id') = ?""",
+                    (now_ts, memory_id, sid),
+                )
+            conn.execute(
+                """UPDATE memories
+                   SET content = ?, content_hash = ?, tags = ?, metadata = ?,
+                       updated_at = ?, updated_at_iso = ?, deleted_at = NULL
+                   WHERE id = ?""",
+                (content, content_hash, tags_str, metadata_str,
+                 now_ts, now_iso, memory_id),
+            )
+            _rewrite_graph_hashes(conn, old_hash, content_hash)
+        else:
+            cursor = conn.execute(
+                """INSERT INTO memories
+                   (content, content_hash, tags, memory_type, metadata,
+                    created_at, updated_at, created_at_iso, updated_at_iso)
+                   VALUES (?, ?, ?, 'session_summary', ?, ?, ?, ?, ?)""",
+                (content, content_hash, tags_str, metadata_str,
+                 now_ts, now_ts, now_iso, now_iso),
+            )
+            if cursor.lastrowid is None:
+                raise RuntimeError("session summary insert returned no row id")
+            memory_id = int(cursor.lastrowid)
+
+        if conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE name = 'memory_embeddings'"
+        ).fetchone():
+            if embedding_blob is None:
+                conn.execute("DELETE FROM memory_embeddings WHERE rowid = ?", (memory_id,))
+            else:
+                _upsert_embedding(conn, memory_id, embedding_blob)
+
+        if owns_txn:
+            conn.commit()
+        return memory_id
+    except BaseException:
+        if owns_txn:
+            conn.rollback()
+        raise
+
+
 def _daemon_request(payload: dict, timeout: float = 10) -> Optional[dict]:
     """Send JSON request to embedding daemon, return parsed response or None."""
     import socket as _sock
