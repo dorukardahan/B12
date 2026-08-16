@@ -140,19 +140,19 @@ B12's MCP server works with any tool that supports MCP stdio. The installer hand
 | Platform | Flag | Capture | MCP Config Location | Instructions File |
 |----------|------|---------|--------------------|--------------------|
 | Claude Code | (default) | **Automatic** (full hooks) | ~/.claude.json | Built-in |
-| Codex CLI | `--codex` | **Automatic** (`SessionEnd` + turn-scoped `Stop`) | ~/.codex/config.toml | ~/.codex/AGENTS.md |
+| Codex CLI | `--codex` | **Automatic** (7 lifecycle hooks: SessionStart/SessionEnd/UserPromptSubmit/Stop/PreToolUse/PostToolUse/PreCompact) | ~/.codex/config.toml | ~/.codex/AGENTS.md |
 | Antigravity CLI | `--antigravity` | **Automatic** (installed native plugin: PreInvocation/PostToolUse/Stop) | ~/.gemini/config/mcp_config.json + Antigravity plugin profile | AGENTS.md + plugin rules |
 | Gemini CLI | `--gemini` | **Automatic** (legacy Gemini CLI hook adapters; enterprise/paid API-key users) | ~/.gemini/settings.json | ~/.gemini/GEMINI.md |
 | Cline | `--cline` | **Automatic** (TaskStart/UserPromptSubmit/PreCompact) | VS Code globalStorage/.../cline_mcp_settings.json | ~/Documents/Cline/Rules/b12-memory.md + ~/Documents/Cline/Hooks/ |
 | Continue.dev | `--continue` | **Automatic** (hooks) | ~/.continue/mcpServers/b12.yaml | ~/.continue/rules/b12-memory.md |
 | OpenCode | `--opencode` | **Automatic** (TS plugin) | ~/.config/opencode/opencode.json | ~/.config/opencode/AGENTS.md + TypeScript plugin (auto-deployed) |
 | Grok CLI | `--grok` | **Automatic** (PreCompact/SessionEnd plugin) | ~/.grok/config.toml + `.grok/plugins/b12/` | plugin + skill (see [docs/grok-integration.md](docs/grok-integration.md)) |
-| VS Code / Copilot | `--vscode` | MCP-only | ~/Library/.../Code/User/mcp.json | .github/copilot-instructions.md * |
+| VS Code / Copilot | `--vscode` | MCP-only | ~/Library/.../Code/User/mcp.json | .github/copilot-instructions.md \* |
 | Cursor | `--cursor` | MCP-only | ~/.cursor/mcp.json | ~/.cursor/rules/b12-memory.mdc |
 | Kimi Code | `--kimi` | MCP-only | ~/.kimi/mcp.json | ~/.kimi/AGENTS.md |
 | Windsurf | `--windsurf` | MCP-only | ~/.codeium/windsurf/mcp_config.json | ~/.codeium/.../global_rules.md |
 | Zed | `--zed` | MCP-only | ~/.config/zed/settings.json (`context_servers`) | Built-in |
-| JetBrains AI (PyCharm/IDEA/etc.) | *paste-only* | MCP-only | Settings → Tools → AI Assistant → MCP | `config/jetbrains-ai-mcp-template.json` (manual paste) |
+| JetBrains AI (PyCharm/IDEA/etc.) | *paste-only* | MCP-only | Settings → Tools → AI Assistant → MCP | `config/jetbrains-ai-mcp-template.json` (manual paste) \*\* |
 | Amp | `--amp` | MCP-only | `${XDG_CONFIG_HOME:-~/.config}/amp/settings.json` | Built-in |
 
 \* VS Code/Copilot instructions are per-project (`.github/copilot-instructions.md`). The installer creates a template in the B12 repo — copy it to each project where you want B12 active.
@@ -169,7 +169,7 @@ No install.sh wiring for
 the same reason — automating it would mean writing to an unsupported
 binary surface that the next IDE update could break.
 
-\** OpenCode also receives a TypeScript plugin (deployed to `~/.config/opencode/plugins/b12/`) for full lifecycle hooks (SessionStart, PreCompact, SessionEnd, tool tracking, memory retrieval). Requires Bun runtime.
+\**** OpenCode also receives a TypeScript plugin (deployed to `~/.config/opencode/plugins/b12/`) for full lifecycle hooks (SessionStart, PreCompact, SessionEnd, tool tracking, memory retrieval). Requires Bun runtime.
 
 All platforms share the same SQLite database — memories stored in one session are searchable in all others.
 
@@ -239,7 +239,7 @@ This installs B12 as a Claude Code plugin with hooks, MCP server, skills, and sl
 
 ```bash
 git clone https://github.com/dorukardahan/B12.git
-cd B12 && chmod +x install.sh && ./install.sh --full  # Creates venv + deps only (hooks/MCP managed by plugin)
+cd B12 && chmod +x install.sh && ./install.sh --full  # venv + deps (hooks/MCP config managed by the plugin)
 ```
 
 After installation, you get:
@@ -316,13 +316,16 @@ B12 works with any MCP-compatible coding assistant. The same MCP server and SQLi
 
 ```bash
 # Install B12 for additional platforms (requires existing venv)
-./install.sh --codex         # OpenAI Codex CLI
+./install.sh --codex         # OpenAI Codex CLI (7 lifecycle hooks)
 ./install.sh --antigravity   # Google Antigravity CLI (current consumer successor)
 ./install.sh --gemini        # Google Gemini CLI (legacy enterprise/API-key integration)
 ./install.sh --vscode        # VS Code / GitHub Copilot
 ./install.sh --cursor        # Cursor
 ./install.sh --kimi          # Kimi Code
 ./install.sh --windsurf      # Windsurf (Codeium)
+./install.sh --zed           # Zed
+./install.sh --amp           # Amp
+./install.sh --grok          # Grok CLI (PreCompact/SessionEnd plugin)
 ./install.sh --cline         # Cline (VS Code extension + TaskStart/UserPromptSubmit hooks)
 ./install.sh --continue      # Continue.dev (VS Code/JetBrains extension)
 ./install.sh --opencode      # OpenCode
@@ -335,7 +338,7 @@ B12 works with any MCP-compatible coding assistant. The same MCP server and SQLi
 
 Each flag configures the platform's MCP config and injects B12 memory instructions into the platform's instruction file. Restart the platform and check its MCP status to verify.
 
-**Codex CLI specifics:** Codex's `SessionEnd` event owns summary extraction after the rollout is flushed; the adapter detaches immediately to stay inside Codex's teardown timeout. `Stop` remains installed only for cheap turn-scoped progress capture. Re-running `./install.sh --codex` removes B12's legacy notify adapter while preserving any other notify argv, then reports B12 hooks that Codex's `/hooks` trust screen has explicitly disabled.
+**Codex CLI specifics:** Codex's `SessionEnd` event owns summary extraction after the rollout is flushed; the adapter detaches immediately to stay inside Codex's teardown timeout. The other six registered hooks split the remaining lifecycle: `SessionStart` injects context (spillover-safe), `UserPromptSubmit` tracks `/goal` state, `Stop` captures turn-scoped progress, and `PreToolUse`/`PostToolUse`/`PreCompact` mirror their Claude Code counterparts. Re-running `./install.sh --codex` removes B12's legacy notify adapter while preserving any other notify argv, then reports B12 hooks that Codex's `/hooks` trust screen has explicitly disabled.
 
 ### 4. Optional — Automated tasks
 
@@ -372,8 +375,13 @@ B12/
 │   ├── memory-working-context.sh   #   PostToolUse — track active files
 │   ├── memory-precompact.sh        #   PreCompact — stage transcript summary
 │   ├── memory-session-end.sh       #   SessionEnd — extract & persist memories
+│   ├── memory-codex-session-start.sh # Codex SessionStart — inject context (spillover-safe)
 │   ├── memory-codex-session-end.sh #   Codex SessionEnd — detached summary extraction
+│   ├── memory-codex-prompt-submit.sh # Codex UserPromptSubmit — /goal lifecycle tracking
 │   ├── memory-codex-stop.sh        #   Codex Stop — turn-scoped goal progress only
+│   ├── memory-codex-pre-tool.sh    #   Codex PreToolUse — auto-inject scope tags (memory_store)
+│   ├── memory-codex-post-tool.sh   #   Codex PostToolUse — file-modification telemetry
+│   ├── memory-codex-pre-compact.sh #   Codex PreCompact — stage transcript summary
 │   ├── memory-proactive-surface.sh #   PostToolUse — proactive memory surfacing
 │   ├── memory-checkpoint.sh        #   PostToolUse — mid-session memory capture (rate-limited)
 │   ├── memory-instructions-loaded.sh # InstructionsLoaded — CLAUDE.md / rules load telemetry
@@ -482,7 +490,7 @@ Environment variables:
 
 ### Hooks (Claude Code `settings.json`)
 
-All 9 lifecycle hook events plus 2 telemetry/observability hooks (InstructionsLoaded, FileChanged) are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically. See `docs/setup.md` for manual configuration.
+All 11 lifecycle hook events plus 2 telemetry/observability hooks (InstructionsLoaded, FileChanged) are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically. See `docs/setup.md` for manual configuration.
 
 ### Multi-setup
 
