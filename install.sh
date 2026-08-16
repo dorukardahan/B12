@@ -3591,7 +3591,7 @@ restart_embed_daemon_if_running() {
 # Main
 # ═════════════════════════════════════════════
 
-echo "B12 Memory System Installer (v11.82.1 — multi-platform)"
+echo "B12 Memory System Installer (v11.83.0 — multi-platform)"
 echo "─────────────────────────────────"
 
 # Full setup: create venv first

@@ -1,16 +1,23 @@
 # Changelog
 
-## Unreleased
+## [v11.83.0] — 2026-08-17
 
 ### Added
-
-- Added a read-only session-summary identity audit that classifies every active unbound row by policy category and inventories payload-free producer, platform, project, tag-shape, and age dimensions.
-- Documented the session-summary identity, retention, structured recovery, backup/rollback, collision, and project-continuity policy.
+- Read-only session-summary identity audit that classifies every active unbound row by policy category and inventories payload-free producer, platform, project, tag-shape, and age dimensions.
+- Documented the session-summary identity, retention, structured recovery, backup/rollback, collision, and project-continuity policy (docs/session-summary-identity-policy.md).
 
 ### Changed
-
 - MCP session-summary writers now explicitly mark intentionally unbound identity with stable producer and platform metadata instead of relying on a missing `session_id`; the generic `memory_store` path supplies safe defaults for manual summaries.
 - SessionEnd no longer applies a rank-only session-summary cap; retention remains audit-, review-, and backup-gated.
+- MCP server import falls back to the SDK v2 `MCPServer` name, so the server still starts on environments where the Python MCP SDK v2 is installed (the package pin remains on v1 for now).
+
+### Fixed
+- Embed daemon queue wait is now bounded: MCP client requests that cannot be admitted within the configured queue timeout fail fast instead of waiting indefinitely.
+- Installer daemon restart now verifies process identity before signaling, so a stale PID file can no longer terminate unrelated Python processes.
+- Release tooling now parses CHANGELOG headings correctly when versions are documented inside code spans, fenced/indented code blocks, or block HTML comments — validation no longer misreads the first real release version.
+
+### Internal
+- Release dry-run is covered by an end-to-end test verifying version sync across all package touchpoints without git side effects.
 
 ## [v11.82.1] — 2026-08-14
 

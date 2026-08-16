@@ -590,6 +590,10 @@ Dependency update PRs are review-gated too: Dependabot can suggest updates, but 
 
 ## Changelog (recent)
 
+### v11.83.0 (2026-08-17)
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ### v11.82.1 (2026-08-14)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full notes.
