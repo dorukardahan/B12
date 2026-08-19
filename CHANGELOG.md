@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Changed
+
+- Config / install help form now lists Google Antigravity alongside the other documented hosts.
+
 ## [v11.83.0] — 2026-08-17
 
 ### Added
