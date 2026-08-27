@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import socket
 import subprocess
 import sys
@@ -69,6 +70,24 @@ def test_manifest_accepts_installed_mcp_sdk() -> None:
     assert installed in requirement.specifier, (
         f"installed MCP SDK {installed} is outside the published requirement "
         f"{requirement.specifier}"
+    )
+
+
+def test_installer_mcp_bounds_match_manifest() -> None:
+    project = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))["project"]
+    requirement = next(
+        Requirement(item) for item in project["dependencies"] if Requirement(item).name == "mcp"
+    )
+    installer = (ROOT / "install.sh").read_text(encoding="utf-8")
+    installer_requirements = [
+        Requirement(item)
+        for item in re.findall(r'["\'](mcp(?=[<>=!~])[^"\']+)["\']', installer)
+    ]
+
+    assert installer_requirements, "installer does not declare an MCP SDK requirement"
+    assert all(item.specifier == requirement.specifier for item in installer_requirements), (
+        f"installer requirements {installer_requirements} do not match "
+        f"the package requirement {requirement}"
     )
 
 
