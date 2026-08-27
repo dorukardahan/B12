@@ -42,10 +42,13 @@ _INITIALIZED = {
 def _compat_env(tmp_path: Path) -> dict[str, str]:
     runtime = tmp_path / "runtime"
     data = tmp_path / "data"
+    home = tmp_path / "home"
     runtime.mkdir()
     data.mkdir()
+    home.mkdir()
     return {
         **os.environ,
+        "HOME": str(home),
         "B12_DATA_DIR": str(data),
         "B12_EMBED_RUNTIME_DIR": str(runtime),
         "B12_MCP_DAEMON_SOCK": str(runtime / "b12-mcp-test.sock"),
@@ -59,6 +62,13 @@ def _assert_initialize_response(payload: dict) -> None:
     assert payload["id"] == 1
     assert "error" not in payload
     assert payload["result"]["serverInfo"]["name"] == "B12"
+
+
+def test_compat_env_isolates_home(tmp_path: Path) -> None:
+    env = _compat_env(tmp_path)
+
+    assert env["HOME"] == str(tmp_path / "home")
+    assert Path(env["HOME"]).is_dir()
 
 
 def test_manifest_accepts_installed_mcp_sdk() -> None:
