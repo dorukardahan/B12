@@ -5,6 +5,7 @@
 ### Changed
 
 - Config / install help form now lists Google Antigravity alongside the other documented hosts.
+- Python package installs now support MCP SDK v1 and v2; CI exercises real direct-stdio and shared-daemon startup on both major lines.
 
 ## [v11.83.0] — 2026-08-17
 

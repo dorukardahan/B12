@@ -7,6 +7,37 @@ on:
     branches: [main]
 
 jobs:
+  mcp-sdk-compat:
+    name: MCP SDK ${{ matrix.mcp-major }} startup
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - mcp-major: v1
+            mcp-range: "mcp>=1,<2"
+          - mcp-major: v2
+            mcp-range: "mcp>=2,<3"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Install selected MCP SDK line
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install pytest packaging sqlite-vec "${{ matrix.mcp-range }}"
+
+      - name: Exercise real MCP startup and daemon lifecycle
+        run: |
+          PYTHONDONTWRITEBYTECODE=1 python3 -m pytest -p no:cacheprovider \
+            scripts/tests/test_mcp_sdk_compat.py \
+            scripts/tests/test_daemon_interpreter_self_heal.py \
+            -v --tb=short
+
   validate:
     name: bash + python syntax
     runs-on: ubuntu-latest
