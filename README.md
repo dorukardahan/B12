@@ -477,7 +477,7 @@ B12/
 
 ### MCP Server (`~/.claude.json`)
 
-The B12 MCP server is a custom FastMCP server (`b12_mcp_server.py`) that replaces the old `mcp-memory-service`. It runs in a dedicated Python venv at `~/.local/b12-venv/`.
+The B12 MCP server is a custom MCPServer/FastMCP-compatible server (`b12_mcp_server.py`) that replaces the old `mcp-memory-service`. It supports MCP Python SDK v1 and v2 and runs in a dedicated Python venv at `~/.local/b12-venv/`.
 
 Environment variables:
 - `MCP_EMBEDDING_MODEL` — sentence-transformer model name (default: `BAAI/bge-m3`; 1024-dim multilingual cls-pooled)

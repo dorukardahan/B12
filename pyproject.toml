@@ -24,10 +24,10 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = [
-    # Conservative bounds: floor for API stability, ceiling to block a known
-    # breaking major from silently installing. Verified against the working
-    # b12-venv (mcp 1.26, sentence-transformers 5.2, sqlite-vec 0.1.6, fsrs 6.3).
-    "mcp>=1.0,<2",
+    # Conservative bounds: floor for API stability, ceiling to block an
+    # untested future major from silently installing. MCP 1.x and 2.x are
+    # exercised in CI through the real stdio and shared-daemon startup paths.
+    "mcp>=1.0,<3",
     # BGE-M3 (default embed model, 1024-dim multilingual cls-pooled) ships
     # as PyTorch weights via sentence-transformers. The first SessionStart
     # downloads ~2.2GB once; opt into a smaller GGUF Q8_0/Q4_K_M via

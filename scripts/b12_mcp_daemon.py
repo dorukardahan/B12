@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """B12 MCP Daemon — long-running shared MCP host over Unix socket.
 
-Hosts the FastMCP server instance in a single launchd-managed process so
-multiple Claude Code sessions share one FastMCP boot (saves ~7-8s cold
+Hosts the MCP server instance in a single launchd-managed process so
+multiple Claude Code sessions share one server boot (saves ~7-8s cold
 start per session at 4 parallel sessions = ~28s reclaimed).
 
 Each Claude Code session spawns the thin stdio proxy (`b12_mcp_server.py`
@@ -20,8 +20,8 @@ Sockets:
   /tmp/b12-mcp-<UID>.pid    — PID file (best-effort)
 
 Concurrency:
-  Each accepted connection runs an independent FastMCP session against
-  the SHARED `server._mcp_server` instance. The module-level
+  Each accepted connection runs an independent MCP session against
+  the shared low-level server instance. The module-level
   `_session_tracker` in b12_mcp_server.py is read/written without a lock;
   concurrent sessions may produce slightly skewed counts but no crashes.
   This is documented as a known limitation; per-session tracker is a
@@ -117,6 +117,28 @@ _stale_interpreter_logged = False
 _draining_for_stale_interpreter = False
 
 
+def _mcp_low_level_server():
+    """Return the SDK's stream-serving kernel across supported MCP majors."""
+    for attr in ("_mcp_server", "_lowlevel_server"):
+        low_level = getattr(srv.server, attr, None)
+        if low_level is not None:
+            return low_level
+    raise RuntimeError("installed MCP SDK does not expose a low-level server")
+
+
+def _parse_jsonrpc_message(data: bytes):
+    """Parse one JSON-RPC frame across the MCP v1 RootModel and v2 union APIs."""
+    adapter = getattr(types, "jsonrpc_message_adapter", None)
+    if adapter is not None:
+        return adapter.validate_json(data, by_name=False)
+    return types.JSONRPCMessage.model_validate_json(data.decode("utf-8").rstrip())
+
+
+def _jsonrpc_payload(message):
+    """Unwrap the v1 RootModel; v2 already returns the concrete envelope."""
+    return getattr(message, "root", message)
+
+
 def _missing_interpreter_path() -> str | None:
     """Return a missing launcher/mapped-runtime path, or None if both exist."""
     runtime_paths = {sys.executable, process_executable_path()}
@@ -177,10 +199,9 @@ async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWr
                         except Exception:
                             pass
                     try:
-                        msg = types.JSONRPCMessage.model_validate_json(
-                            line.decode("utf-8").rstrip()
-                        )
-                        if record is not None and isinstance(msg.root, types.JSONRPCRequest):
+                        msg = _parse_jsonrpc_message(line)
+                        payload = _jsonrpc_payload(msg)
+                        if record is not None and isinstance(payload, types.JSONRPCRequest):
                             if record.get("draining"):
                                 # The proxy already tracks this as outstanding.
                                 # Do not start new work on the stale runtime; EOF
@@ -188,10 +209,10 @@ async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWr
                                 # reconnect path synthesize a retryable response.
                                 log(
                                     f"Connection #{record['id']} deferred request "
-                                    f"{msg.root.id} during interpreter restart"
+                                    f"{payload.id} during interpreter restart"
                                 )
                                 continue
-                            record["inflight"].add(msg.root.id)
+                            record["inflight"].add(payload.id)
                         await in_send.send(SessionMessage(message=msg))
                     except Exception as exc:
                         await in_send.send(exc)
@@ -211,10 +232,11 @@ async def _socket_streams(reader: asyncio.StreamReader, writer: asyncio.StreamWr
                     )
                     writer.write(line.encode("utf-8"))
                     await writer.drain()
+                    payload = _jsonrpc_payload(sm.message)
                     if record is not None and isinstance(
-                        sm.message.root, (types.JSONRPCResponse, types.JSONRPCError)
+                        payload, (types.JSONRPCResponse, types.JSONRPCError)
                     ):
-                        record["inflight"].discard(sm.message.root.id)
+                        record["inflight"].discard(payload.id)
                         if record.get("draining") and not record["inflight"]:
                             log(f"Connection #{record['id']} drained; closing for interpreter restart")
                             writer.close()
@@ -431,8 +453,9 @@ async def handle_client(reader: asyncio.StreamReader, writer: asyncio.StreamWrit
             log(f"Connection #{conn_id} closed at interpreter-restart boundary")
             return
         async with _socket_streams(reader, writer, record=record) as (rs, ws):
-            init_opts = srv.server._mcp_server.create_initialization_options()
-            await srv.server._mcp_server.run(rs, ws, init_opts)
+            low_level = _mcp_low_level_server()
+            init_opts = low_level.create_initialization_options()
+            await low_level.run(rs, ws, init_opts)
         log(f"Connection #{conn_id} completed normally")
     except (ConnectionResetError, BrokenPipeError):
         log(f"Connection #{conn_id} reset by peer")

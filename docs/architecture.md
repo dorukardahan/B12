@@ -23,7 +23,7 @@ Claude Code's built-in memory system:
 
 ### Layer 2: B12 MCP Server (`b12_mcp_server.py`)
 
-Custom FastMCP server providing 13 memory tools and 4 MCP resources. Replaces the old `mcp-memory-service` (pipx) with a ~2300-line server that delegates ML operations to a background embed daemon via Unix socket.
+Custom MCPServer/FastMCP-compatible server providing 13 memory tools and 4 MCP resources on MCP Python SDK v1 and v2. Replaces the old `mcp-memory-service` (pipx) with a server that delegates ML operations to a background embed daemon via Unix socket.
 
 - **Tools** (13): `memory_store`, `memory_search`, `memory_update`, `memory_delete`, `memory_forget`, `memory_quality`, `memory_session_context`, `memory_consolidate`, `memory_refine`, `memory_surface`, `memory_export`, `memory_import`, `memory_dashboard`
 - **Resources**: `b12://context/project/{name}`, `b12://stats`, `b12://profile`, `b12://health`

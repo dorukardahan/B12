@@ -566,10 +566,10 @@ setup_venv() {
 
   echo "Installing dependencies (mcp, sentence-transformers, sqlite-vec, fsrs)..."
   # Bounded specs (kept in sync with pyproject.toml): the installer installs by
-  # name, not from project metadata, so without these a future breaking major
-  # (e.g. mcp 2.x) could be pulled on a fresh install. Quote each spec so the
+  # name, not from project metadata, so without these an untested future major
+  # (e.g. mcp 3.x) could be pulled on a fresh install. Quote each spec so the
   # shell doesn't treat < / > as redirection.
-  "$VENV_PYTHON" -m pip install --quiet "mcp>=1.0,<2" "sentence-transformers>=2.2,<6" "sqlite-vec>=0.1,<0.2" "fsrs>=6,<7" || error "pip install failed"
+  "$VENV_PYTHON" -m pip install --quiet "mcp>=1.0,<3" "sentence-transformers>=2.2,<6" "sqlite-vec>=0.1,<0.2" "fsrs>=6,<7" || error "pip install failed"
   info "Dependencies installed"
 }
 
@@ -3648,13 +3648,13 @@ if [ -x "$VENV_PYTHON" ]; then
     info "MCP Python package available (via b12-venv)"
   else
     warn "MCP Python package not found in b12-venv"
-    warn "Run: $VENV_PYTHON -m pip install 'mcp>=1.0,<2' 'sentence-transformers>=2.2,<6' 'sqlite-vec>=0.1,<0.2' 'fsrs>=6,<7'"
+    warn "Run: $VENV_PYTHON -m pip install 'mcp>=1.0,<3' 'sentence-transformers>=2.2,<6' 'sqlite-vec>=0.1,<0.2' 'fsrs>=6,<7'"
   fi
 else
   if ! $FULL_SETUP; then
     warn "B12 venv not found. Run with --full for automatic setup, or manually:"
     echo "       python3 -m venv $VENV_PATH"
-    echo "       $VENV_PYTHON -m pip install 'mcp>=1.0,<2' 'sentence-transformers>=2.2,<6' 'sqlite-vec>=0.1,<0.2' 'fsrs>=6,<7'"
+    echo "       $VENV_PYTHON -m pip install 'mcp>=1.0,<3' 'sentence-transformers>=2.2,<6' 'sqlite-vec>=0.1,<0.2' 'fsrs>=6,<7'"
   fi
 fi
 
