@@ -6,6 +6,7 @@ hooks/memory-session-end.sh, hooks/memory-precompact.sh, and all scripts.
 English + Turkish contextual patterns (v4 format).
 """
 import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -48,6 +49,15 @@ def is_usable_identity_dimension(value: object) -> bool:
     )
 
 
+# Returned when macOS reports that a live process's binary no longer exists.
+# Absolute and unreachable, so os.path.exists() is always False for it.
+DELETED_EXECUTABLE = "/(deleted executable)"
+
+# This process's last OS-reported binary path, kept so a later lookup can still
+# name it after Homebrew deletes it.
+_own_executable = ""
+
+
 def process_executable_path(pid: int | None = None) -> str:
     """Return the OS-reported binary mapped into a live process.
 
@@ -56,6 +66,7 @@ def process_executable_path(pid: int | None = None) -> str:
     by a long-running process. macOS ``proc_pidpath`` and Linux ``/proc`` expose
     that actual binary. Fail-soft to ``sys.executable`` on unsupported hosts.
     """
+    global _own_executable
     requested_pid = pid
     pid = os.getpid() if pid is None else int(pid)
     if sys.platform == "darwin":
@@ -64,7 +75,18 @@ def process_executable_path(pid: int | None = None) -> str:
             buf = ctypes.create_string_buffer(4096)
             size = libproc.proc_pidpath(pid, buf, ctypes.sizeof(buf))
             if size > 0:
-                return os.fsdecode(buf.value)
+                path = os.fsdecode(buf.value)
+                if pid == os.getpid():
+                    _own_executable = path
+                return path
+            if ctypes.get_errno() == errno.ENOENT:
+                # macOS cannot name a binary that was deleted after launch (for
+                # example a versioned Homebrew keg removed by an upgrade). Falling
+                # back to sys.executable would hide that, because the venv
+                # launcher is still on disk, so report a path that is gone.
+                if pid == os.getpid() and _own_executable:
+                    return _own_executable
+                return DELETED_EXECUTABLE
         except (AttributeError, OSError, ValueError):
             pass
     elif sys.platform.startswith("linux"):
