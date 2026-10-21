@@ -704,6 +704,10 @@ def _flush_session_tracker(db: sqlite3.Connection | None, tracker: dict | None =
         _reset_session_tracker(tracker)
 
 server = FastMCP("B12", lifespan=lifespan)
+# After FastMCP has configured logging: collapse known protocol-probe warnings
+# from the pinned SDK (see b12_log_noise.py).
+from b12_log_noise import quiet_mcp_protocol_noise
+quiet_mcp_protocol_noise()
 
 
 # ── Helpers ──────────────────────────────────────────────────────
