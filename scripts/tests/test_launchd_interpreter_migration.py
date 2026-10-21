@@ -51,11 +51,18 @@ def _setup(tmp_path: Path, *, loaded: list[str], venv: bool = True) -> dict[str,
     stubs.mkdir()
     calls = tmp_path / "launchctl.calls"
     listing = "".join(f"-\t0\t{label}\n" for label in loaded)
+    exact = " ".join(loaded)
     (stubs / "uname").write_text("#!/bin/sh\necho Darwin\n")
+    # `launchctl list` prints the listing; `launchctl list <label>` succeeds only
+    # for an exactly matching loaded label, like the real command.
     (stubs / "launchctl").write_text(
         "#!/bin/sh\n"
         f'echo "$*" >> "{calls}"\n'
-        f'[ "$1" = list ] && printf "%b" "{listing}"\n'
+        'if [ "$1" = list ]; then\n'
+        f'  if [ -z "$2" ]; then printf "%b" "{listing}"; exit 0; fi\n'
+        f'  for l in {exact}; do [ "$l" = "$2" ] && exit 0; done\n'
+        "  exit 113\n"
+        "fi\n"
         "exit 0\n"
     )
     for stub in stubs.iterdir():
@@ -111,6 +118,14 @@ def test_loaded_job_is_reloaded_after_rewrite(tmp_path):
     _run(paths)
     assert _program(paths["consolidate"])[0] == str(paths["venv"])
     assert _reload_calls(paths) == [f'unload {paths["consolidate"]}', f'load {paths["consolidate"]}']
+
+
+def test_look_alike_loaded_label_does_not_reload_unloaded_job(tmp_path):
+    # Dots in the label must not act as regex wildcards against other jobs.
+    paths = _setup(tmp_path, loaded=["comXb12Ymemory-consolidate"])
+    _run(paths)
+    assert _program(paths["consolidate"])[0] == str(paths["venv"])
+    assert _reload_calls(paths) == []
 
 
 def test_missing_venv_leaves_plist_unchanged(tmp_path):

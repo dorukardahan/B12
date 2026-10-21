@@ -512,7 +512,9 @@ update_launchd_plists() {
       # paused consolidation run) stays off.
       local label
       label=$(basename "$plist" .plist)
-      if launchctl list 2>/dev/null | grep -q "[[:space:]]$label\$"; then
+      # Exact label query, as in reload_daemon_if_running(): grepping the full
+      # listing would treat the dots in the label as regex wildcards.
+      if launchctl list "$label" >/dev/null 2>&1; then
         launchctl unload "$plist" 2>/dev/null || true
         launchctl load "$plist" 2>/dev/null || true
       fi
