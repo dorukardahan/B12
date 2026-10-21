@@ -1299,6 +1299,62 @@ warn_live_codex_sessions() {
 # ─────────────────────────────────────────────
 # Codex CLI: install B12 skill
 # ─────────────────────────────────────────────
+
+# Prints a file's SHA-256 (coreutils, macOS shasum, or Python).
+b12_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+  fi
+}
+
+# True when FILE's SHA-256 equals one of the SHIPPED files in this checkout or
+# is listed under a path matching FROZEN_PATH in
+# config/codex-skills/shipped-skill-sha256.txt (versions shipped before the
+# .b12-installed marker existed).
+b12_file_is_shipped() {
+  local file="$1" frozen_path="$2" hash shipped
+  shift 2
+  hash=$(b12_sha256 "$file" 2>/dev/null)
+  [ -n "$hash" ] || return 1
+  for shipped in "$@"; do
+    [ -f "$shipped" ] && [ "$(b12_sha256 "$shipped")" = "$hash" ] && return 0
+  done
+  grep -qxE "$hash  $frozen_path" "$SCRIPT_DIR/config/codex-skills/shipped-skill-sha256.txt" 2>/dev/null
+}
+
+# True only when B12 provably wrote the skill in DIR and nobody changed it
+# since. With the .b12-installed marker install_codex_skill writes, every file
+# it records must still match it, so any later edit, removal or swap for
+# another B12 version counts as the user's. A file that already equals this
+# checkout's copy is also accepted: an upgrade interrupted between the copies
+# and the marker leaves that state, and replacing such a file changes nothing.
+# Without a marker (installs that
+# predate it), SKILL.md and agents/openai.yaml must be versions B12 shipped; B12
+# installed the Codex skill with that sidecar, so only copies of the shared
+# skill, which never had one, may lack it.
+b12_skill_is_installer_owned() {
+  local dir="$1" src="$SCRIPT_DIR/config/codex-skills/b12-memory" shared="$SCRIPT_DIR/skills/b12-memory/SKILL.md"
+  local hash path
+  if [ -e "$dir/.b12-installed" ]; then
+    grep -qE '^[0-9a-f]{64}  SKILL\.md$' "$dir/.b12-installed" 2>/dev/null || return 1
+    while read -r hash path; do
+      [ -f "$dir/$path" ] || return 1
+      [ "$(b12_sha256 "$dir/$path")" = "$hash" ] || cmp -s "$dir/$path" "$src/$path" || return 1
+    done < "$dir/.b12-installed"
+    return 0
+  fi
+  b12_file_is_shipped "$dir/SKILL.md" '.*/SKILL\.md' "$src/SKILL.md" "$shared" || return 1
+  if [ -e "$dir/agents/openai.yaml" ]; then
+    b12_file_is_shipped "$dir/agents/openai.yaml" '.*/agents/openai\.yaml' "$src/agents/openai.yaml"
+  else
+    b12_file_is_shipped "$dir/SKILL.md" 'skills/.*' "$shared"
+  fi
+}
+
 install_codex_skill() {
   local CODEX_DIR="$HOME/.codex"
   local SKILL_SRC="$SCRIPT_DIR/config/codex-skills/b12-memory"
@@ -1317,35 +1373,49 @@ install_codex_skill() {
     return
   fi
 
-  # Legacy cleanup: earlier installers wrote the B12 skill (`name: b12-memory`)
-  # to ~/.codex/skills/b12/ and later ~/.codex/skills/b12-memory/. Codex still
-  # reads that root, so a stale copy would load next to the new one.
-  #
-  # Two-tier fingerprint (Codex review on PR #18, rounds 2-3):
-  #   (a) byte-identical to the shipped Codex skill, or
-  #   (b) `name: b12-memory` plus a B12 installer header ("B12 Memory System"
-  #       from the shared skill, "B12 Memory for Codex" from this one)
-  # -> removed. A file that only declares `name: b12-memory` is left in place
-  # with a warning, since it may be user-authored.
+  # Legacy cleanup: earlier installers wrote the B12 skill to
+  # ~/.codex/skills/b12/ and later ~/.codex/skills/b12-memory/. Codex still
+  # reads that root, so a stale copy would load next to the new one. Copies a
+  # B12 installer wrote are removed; any other `name: b12-memory` file is left
+  # in place with a warning, since it may be user-authored.
   for legacy in "$CODEX_DIR/skills/b12" "$CODEX_DIR/skills/b12-memory"; do
     [ -f "$legacy/SKILL.md" ] || continue
-    if cmp -s "$legacy/SKILL.md" "$SKILL_SRC/SKILL.md" \
-       || { grep -q '^name: b12-memory$' "$legacy/SKILL.md" 2>/dev/null \
-            && grep -qE 'B12 Memory System|B12 Memory for Codex' "$legacy/SKILL.md" 2>/dev/null; }; then
+    if b12_skill_is_installer_owned "$legacy"; then
       rm -f "$legacy/SKILL.md" "$legacy/agents/openai.yaml"
       rmdir "$legacy/agents" 2>/dev/null || true
       rmdir "$legacy" 2>/dev/null || true
       info "Removed legacy B12 skill at $legacy (Codex now reads ~/.agents/skills)"
     elif grep -q '^name: b12-memory$' "$legacy/SKILL.md" 2>/dev/null; then
-      warn "Skill at $legacy/SKILL.md has \`name: b12-memory\` but does not match"
-      warn "the B12 installer fingerprint. Inspect it manually: rename its"
-      warn "frontmatter if it is yours, or delete it if it is stale installer output."
+      warn "Skill at $legacy/SKILL.md has \`name: b12-memory\` but is not a version"
+      warn "B12 shipped. Inspect it manually: rename its frontmatter if it is yours,"
+      warn "or delete it if it is stale B12 output."
     fi
   done
 
-  mkdir -p "$SKILL_DEST/agents"
-  cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
-  cp "$SKILL_SRC/agents/openai.yaml" "$SKILL_DEST/agents/openai.yaml"
+  # ~/.agents/skills is a shared user skill root: never overwrite a b12-memory
+  # skill there that a B12 installer did not write. Checked after the legacy
+  # cleanup so a stale B12 copy in ~/.codex/skills is still removed.
+  if { [ -e "$SKILL_DEST/SKILL.md" ] || [ -e "$SKILL_DEST/agents/openai.yaml" ]; } \
+     && ! b12_skill_is_installer_owned "$SKILL_DEST"; then
+    warn "A b12-memory skill at $SKILL_DEST was not written by the B12 installer"
+    warn "or was edited since; leaving it unchanged. Move it aside and re-run to"
+    warn "install the B12 Codex skill."
+    return
+  fi
+
+  # Record what B12 wrote (sha256sum format), so the next install can tell its
+  # own copy (replace) from one the user has edited since (keep). The marker is
+  # renamed into place, so an interrupted run never leaves a partial one.
+  if ! { mkdir -p "$SKILL_DEST/agents" \
+         && cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md" \
+         && cp "$SKILL_SRC/agents/openai.yaml" "$SKILL_DEST/agents/openai.yaml" \
+         && printf '%s  SKILL.md\n%s  agents/openai.yaml\n' \
+              "$(b12_sha256 "$SKILL_DEST/SKILL.md")" "$(b12_sha256 "$SKILL_DEST/agents/openai.yaml")" \
+              > "$SKILL_DEST/.b12-installed.tmp" \
+         && mv -f "$SKILL_DEST/.b12-installed.tmp" "$SKILL_DEST/.b12-installed"; }; then
+    warn "Could not finish installing the B12 skill to $SKILL_DEST; re-run ./install.sh --codex"
+    return
+  fi
   info "B12 skill installed to $SKILL_DEST"
 }
 
@@ -1449,20 +1519,32 @@ PYEOF
     fi
   fi
 
-  # Check B12 skill installed in Codex's user skill root, and that no stale
-  # copy is left in the deprecated ~/.codex/skills root (Codex would load both).
-  if [ -f "$HOME/.agents/skills/b12-memory/SKILL.md" ]; then
-    info "Verify: B12 skill installed"
-  else
-    warn "Verify: B12 skill NOT found at ~/.agents/skills/b12-memory"
-    errors=$((errors + 1))
-  fi
-  if [ -f "$HOME/.codex/skills/b12-memory/SKILL.md" ]; then
-    warn "Verify: a second b12-memory skill exists in ~/.codex/skills; Codex loads both"
-    errors=$((errors + 1))
-  fi
+  b12_verify_codex_skill || errors=$((errors + $?))
 
   return $errors
+}
+
+# Warns about each problem with the Codex B12 skill and returns their count.
+# Compares content rather than presence, so a b12-memory skill that the
+# installer left unchanged (not B12's) is reported as not installed.
+b12_verify_codex_skill() {
+  local skill="$HOME/.agents/skills/b12-memory/SKILL.md" problems=0
+  if [ ! -f "$skill" ]; then
+    warn "Verify: B12 skill NOT found at ~/.agents/skills/b12-memory"
+    problems=$((problems + 1))
+  elif ! cmp -s "$skill" "$SCRIPT_DIR/config/codex-skills/b12-memory/SKILL.md" \
+       || ! cmp -s "$(dirname "$skill")/agents/openai.yaml" "$SCRIPT_DIR/config/codex-skills/b12-memory/agents/openai.yaml"; then
+    warn "Verify: ~/.agents/skills/b12-memory holds another skill; the B12 Codex skill is NOT installed"
+    problems=$((problems + 1))
+  else
+    info "Verify: B12 skill installed"
+  fi
+  # Codex still reads the deprecated ~/.codex/skills root and would load both.
+  if [ -f "$HOME/.codex/skills/b12-memory/SKILL.md" ]; then
+    warn "Verify: a second b12-memory skill exists in ~/.codex/skills; Codex loads both"
+    problems=$((problems + 1))
+  fi
+  return $problems
 }
 
 # ═════════════════════════════════════════════

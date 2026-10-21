@@ -7,7 +7,7 @@ All notable changes to B12 are documented in this file.
 ### Changed
 
 - Codex gets a targeted B12 policy. The B12 block in `~/.codex/AGENTS.md` no longer makes memory calls mandatory at every session boundary, and Codex gets its own `b12-memory` skill instead of the shared Claude Code one: it searches B12 only for cross-session history that is absent from the visible conversation and current files, or for an explicit remember, correct, or forget request, while startup context and the session summary stay with the hooks. The shared skill's recall-verb triggers made Codex search B12 even for content it could still see, and the old block told it not to rely on the conversation. Claude Code keeps its current policy.
-- The Codex skill installs to `~/.agents/skills/b12-memory/`, the user skill root of Codex 0.163 (CLI and ChatGPT desktop app). The installer removes B12's old copy in the deprecated `~/.codex/skills` root, where Codex would load it a second time, and `agents/openai.yaml` limits the skill to Codex.
+- The Codex skill installs to `~/.agents/skills/b12-memory/`, the user skill root of Codex 0.163 (CLI and ChatGPT desktop app). The installer removes B12's old copy in the deprecated `~/.codex/skills` root, where Codex would load it a second time, never overwrites a `b12-memory` skill in `~/.agents/skills` that it did not write or that was edited after installation (it warns, and verify reports the B12 skill as not installed), recognizing its own copies by SHA-256 instead of by name, and `agents/openai.yaml` limits the skill to Codex (`products: [CODEX]`).
 
 ### Fixed
 

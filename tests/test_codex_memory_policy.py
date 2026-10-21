@@ -8,6 +8,7 @@ the Codex hooks already do. Claude Code keeps the shared skill.
 """
 from __future__ import annotations
 
+import hashlib
 import re
 import shutil
 import subprocess
@@ -22,6 +23,7 @@ CODEX_SKILL = CODEX_SKILL_DIR / "SKILL.md"
 CODEX_SKILL_YAML = CODEX_SKILL_DIR / "agents" / "openai.yaml"
 INSTALLER = ROOT / "install.sh"
 SHARED_SKILL = ROOT / "skills" / "b12-memory" / "SKILL.md"
+SHIPPED_HASHES = ROOT / "config" / "codex-skills" / "shipped-skill-sha256.txt"
 
 
 def _frontmatter(text: str) -> tuple[str, str]:
@@ -69,10 +71,18 @@ def test_codex_skill_has_narrow_invocation_boundary():
 
 def test_codex_skill_is_limited_to_codex():
     # ChatGPT chat can read ~/.agents/skills too, but has no B12 MCP server.
+    # OpenAI documents the sidecar's products as CHAT and/or CODEX; Codex 0.163
+    # also accepts these uppercase spellings.
     yaml = CODEX_SKILL_YAML.read_text()
-    assert re.search(r"^policy:\n(?:[ \t]+.*\n)*?[ \t]+products:\n[ \t]+- codex\s*$", yaml, re.MULTILINE)
+    products = re.search(r"^[ \t]+products:\n((?:[ \t]+- .*\n?)+)", yaml, re.MULTILINE)
+    assert products, "policy.products must be set"
+    values = re.findall(r"- ([A-Za-z]+)", products.group(1))
+    assert values == ["CODEX"]
+    assert set(values) <= {"CHAT", "CODEX"}
     display = re.search(r'^\s+display_name:\s*"([^"]+)"', yaml, re.MULTILINE)
-    assert display and len(display.group(1)) <= 64
+    short = re.search(r'^\s+short_description:\s*"([^"]+)"', yaml, re.MULTILINE)
+    assert display and 0 < len(display.group(1)) <= 64
+    assert short and 25 <= len(short.group(1)) <= 64
 
 
 def test_codex_agents_makes_current_context_authoritative():
@@ -103,14 +113,27 @@ def test_installer_keeps_codex_and_claude_skill_sources_separate():
     assert SHARED_SKILL.is_file()
 
 
-def _run_install_codex_skill(home: Path) -> subprocess.CompletedProcess:
-    function = re.search(r"\ninstall_codex_skill\(\)\s*\{.*?\n\}\n", INSTALLER.read_text(), re.DOTALL).group(0)
+def _run_codex_skill_functions(home: Path, call: str) -> subprocess.CompletedProcess:
+    source = INSTALLER.read_text()
+    functions = "".join(
+        re.search(rf"\n{name}\(\)\s*\{{.*?\n\}}\n", source, re.DOTALL).group(0)
+        for name in ("b12_sha256", "b12_file_is_shipped", "b12_skill_is_installer_owned", "install_codex_skill",
+                     "b12_verify_codex_skill")
+    )
     script = (
         'info() { echo "INFO $*"; }; warn() { echo "WARN $*"; }\n'
-        f'SCRIPT_DIR="{ROOT}"\n' + function + "install_codex_skill\n"
+        f'SCRIPT_DIR="{ROOT}"\n' + functions + call + "\n"
     )
     return subprocess.run(["bash", "-c", script], env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
                           capture_output=True, text=True, timeout=60)
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
+
+
+def _run_install_codex_skill(home: Path) -> subprocess.CompletedProcess:
+    return _run_codex_skill_functions(home, "install_codex_skill")
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
@@ -146,6 +169,180 @@ def test_installer_keeps_a_user_authored_skill_with_the_same_name(tmp_path):
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_never_overwrites_a_user_skill_in_the_agents_root(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    mine = home / ".agents" / "skills" / "b12-memory"
+    (mine / "agents").mkdir(parents=True)
+    # Name and B12 header text alone do not prove that B12 wrote a file.
+    own_skill = "---\nname: b12-memory\ndescription: my own notes\n---\n\n# B12 Memory for Codex\n\nPersonal.\n"
+    (mine / "SKILL.md").write_text(own_skill)
+    (mine / "agents" / "openai.yaml").write_text("interface:\n  display_name: Mine\n")
+
+    stale = home / ".codex" / "skills" / "b12-memory"
+    stale.mkdir(parents=True)
+    shutil.copy(SHARED_SKILL, stale / "SKILL.md")  # left by an earlier installer
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert (mine / "SKILL.md").read_text() == own_skill
+    assert (mine / "agents" / "openai.yaml").read_text() == "interface:\n  display_name: Mine\n"
+    assert "not written by the B12 installer" in result.stdout
+    # The stale B12 copy is still removed, or Codex would list two b12-memory skills.
+    assert not stale.exists()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_replaces_its_own_older_skill_in_the_agents_root(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    dest = home / ".agents" / "skills" / "b12-memory"
+    dest.mkdir(parents=True)
+    shutil.copy(SHARED_SKILL, dest / "SKILL.md")  # moved there from ~/.codex/skills by hand
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert (dest / "SKILL.md").read_text() == CODEX_SKILL.read_text()
+    assert (dest / "agents" / "openai.yaml").read_text() == CODEX_SKILL_YAML.read_text()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_keeps_its_own_skill_once_the_user_edits_it(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    assert _run_install_codex_skill(home).returncode == 0
+    skill = home / ".agents" / "skills" / "b12-memory" / "SKILL.md"
+    edited = skill.read_text() + "\nMy own rule.\n"
+    skill.write_text(edited)
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert skill.read_text() == edited
+    assert "was edited since" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_replaces_an_older_copy_it_marked(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    dest = home / ".agents" / "skills" / "b12-memory"
+    dest.mkdir(parents=True)
+    (dest / "agents").mkdir(parents=True)
+    older, older_yaml = "---\nname: b12-memory\ndescription: an older B12 release\n---\n", "interface: {}\n"
+    (dest / "SKILL.md").write_text(older)
+    (dest / "agents" / "openai.yaml").write_text(older_yaml)
+    (dest / ".b12-installed").write_text(
+        f"{_sha256(older.encode())}  SKILL.md\n{_sha256(older_yaml.encode())}  agents/openai.yaml\n")
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert (dest / "SKILL.md").read_text() == CODEX_SKILL.read_text()
+    assert (dest / "agents" / "openai.yaml").read_text() == CODEX_SKILL_YAML.read_text()
+    assert (dest / ".b12-installed").read_text() == (
+        f"{_sha256(CODEX_SKILL.read_bytes())}  SKILL.md\n{_sha256(CODEX_SKILL_YAML.read_bytes())}  agents/openai.yaml\n")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_keeps_a_sidecar_the_user_edited(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    assert _run_install_codex_skill(home).returncode == 0
+    sidecar = home / ".agents" / "skills" / "b12-memory" / "agents" / "openai.yaml"
+    edited = sidecar.read_text().replace('"B12 Memory"', '"My B12"')
+    sidecar.write_text(edited)
+
+    result = _run_codex_skill_functions(home, 'install_codex_skill; b12_verify_codex_skill; echo "problems=$?"')
+    assert result.returncode == 0, result.stderr
+    assert sidecar.read_text() == edited
+    assert "was edited since" in result.stdout
+    assert "problems=1" in result.stdout
+
+
+def test_shipped_skill_hashes_are_well_formed():
+    entries = [line for line in SHIPPED_HASHES.read_text().splitlines() if line and not line.startswith("#")]
+    assert len(entries) >= 6 and len(set(entries)) == len(entries)
+    paths = {"skills/b12/SKILL.md", "skills/b12-memory/SKILL.md", "config/codex-skills/b12-memory/SKILL.md",
+             "config/codex-skills/b12-memory/agents/openai.yaml"}
+    for entry in entries:
+        match = re.fullmatch(r"([0-9a-f]{64})  (\S+)", entry)
+        assert match and match.group(2) in paths, entry
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_keeps_a_marked_skill_swapped_for_another_b12_version(tmp_path):
+    # Once a marker exists, only the marker proves ownership; older B12 hashes do not.
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    assert _run_install_codex_skill(home).returncode == 0
+    skill = home / ".agents" / "skills" / "b12-memory" / "SKILL.md"
+    shutil.copy(SHARED_SKILL, skill)
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert skill.read_text() == SHARED_SKILL.read_text()
+    assert "was edited since" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@pytest.mark.parametrize("copied", [("SKILL.md",), ("SKILL.md", "agents/openai.yaml")])
+def test_installer_finishes_an_upgrade_interrupted_before_the_marker(tmp_path, copied):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    dest = home / ".agents" / "skills" / "b12-memory"
+    (dest / "agents").mkdir(parents=True)
+    older = {"SKILL.md": "---\nname: b12-memory\ndescription: an older B12 release\n---\n",
+             "agents/openai.yaml": "interface: {}\n"}
+    for path, text in older.items():
+        (dest / path).write_text(text)
+    (dest / ".b12-installed").write_text("".join(f"{_sha256(t.encode())}  {p}\n" for p, t in older.items()))
+    for path in copied:  # the run stopped after these copies, before the marker
+        shutil.copy(CODEX_SKILL_DIR / path, dest / path)
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert (dest / "SKILL.md").read_text() == CODEX_SKILL.read_text()
+    assert (dest / "agents" / "openai.yaml").read_text() == CODEX_SKILL_YAML.read_text()
+    assert f"{_sha256(CODEX_SKILL.read_bytes())}  SKILL.md" in (dest / ".b12-installed").read_text()
+    assert not (dest / ".b12-installed.tmp").exists()
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_keeps_a_sidecar_the_user_removed(tmp_path):
+    # e.g. to lift the Codex-only product restriction
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    assert _run_install_codex_skill(home).returncode == 0
+    sidecar = home / ".agents" / "skills" / "b12-memory" / "agents" / "openai.yaml"
+    sidecar.unlink()
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert not sidecar.exists()
+    assert "was edited since" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@pytest.mark.parametrize("user_skill", [False, True])
+def test_verify_reports_whether_the_b12_skill_is_installed(tmp_path, user_skill):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    if user_skill:
+        mine = home / ".agents" / "skills" / "b12-memory"
+        mine.mkdir(parents=True)
+        (mine / "SKILL.md").write_text("---\nname: b12-memory\ndescription: mine\n---\n\nPersonal.\n")
+
+    result = _run_codex_skill_functions(home, 'install_codex_skill; b12_verify_codex_skill; echo "problems=$?"')
+    assert result.returncode == 0, result.stderr
+    if user_skill:
+        assert "problems=1" in result.stdout
+        assert "the B12 Codex skill is NOT installed" in result.stdout
+        assert "Verify: B12 skill installed" not in result.stdout
+    else:
+        assert "problems=0" in result.stdout
+        assert "Verify: B12 skill installed" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
 def test_installer_skips_machines_without_codex(tmp_path):
     home = tmp_path / "home"
     home.mkdir()
@@ -160,6 +357,9 @@ def test_docs_describe_codex_hook_lifecycle_and_targeted_recall():
     assert "codex-specific b12 skill" in readme
     assert "missing cross-session context" in readme
     assert "~/.agents/skills/b12-memory" in setup
+    assert "leaves it unchanged and warns" in setup
+    assert "reports the b12 skill as not installed" in setup
+    assert "left unchanged with a warning" in readme
     assert "targeted model recall" in setup
     # The Codex UserPromptSubmit hook only tracks /goal; it never injects context.
     assert "automatic (`userpromptsubmit`)" not in setup
