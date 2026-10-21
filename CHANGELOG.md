@@ -6,6 +6,11 @@
 
 - Config / install help form now lists Google Antigravity alongside the other documented hosts.
 
+### Fixed
+
+- Installer now migrates launchd jobs that still run B12 Python scripts with `/usr/bin/python3` (Python 3.9 on macOS) to the B12 venv interpreter. Older consolidation jobs failed on every run because the scripts require Python 3.11+. Jobs that were unloaded or disabled stay off, and `/bin/bash` jobs are untouched.
+- `memory-consolidate.py` exits with a clear message under Python older than 3.11 instead of a traceback.
+
 ## [v11.83.0] — 2026-08-17
 
 ### Added
