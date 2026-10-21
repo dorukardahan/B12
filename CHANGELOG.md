@@ -13,6 +13,10 @@
 - Installer now migrates launchd jobs that still run B12 Python scripts with `/usr/bin/python3` (Python 3.9 on macOS) to the B12 venv interpreter. Older consolidation jobs failed on every run because the scripts require Python 3.11+. Jobs that were unloaded or disabled stay off, and `/bin/bash` jobs are untouched.
 - `memory-consolidate.py` exits with a clear message under Python older than 3.11 instead of a traceback.
 
+### Internal
+
+- The test suite passes on macOS. Socket-based tests now use a short temp dir (`tmp_path` there exceeds the 104-byte AF_UNIX limit), the SessionEnd retention tests use the platform's DB path instead of the Linux one (on macOS they were checking an unused file), and two tests that simulate a deleted runtime through a symlinked launcher, which only works on Linux, are skipped on macOS.
+
 ## [v11.83.0] — 2026-08-17
 
 ### Added
