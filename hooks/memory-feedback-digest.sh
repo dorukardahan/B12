@@ -346,7 +346,8 @@ if os.path.exists(DB_PATH):
             SET strength = MAX(0.3, COALESCE(strength, 1.0) - 0.05)
             WHERE deleted_at IS NULL
               AND (valid_until IS NULL OR valid_until > datetime('now'))
-              AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'pattern', 'association'))
+              AND ((memory_type IS NULL AND COALESCE(tags, '') NOT LIKE '%session-summary%')
+                   OR memory_type NOT IN ('session_summary', 'pattern', 'association'))
               AND COALESCE(last_accessed_at, created_at) < ?
               AND COALESCE(strength, 1.0) > 0.3
         """, (week_ago_ts,))
@@ -361,7 +362,8 @@ if os.path.exists(DB_PATH):
               AND COALESCE(last_accessed_at, created_at) < ?
               AND (valid_until IS NULL OR valid_until > datetime('now'))
               AND deleted_at IS NULL
-              AND (memory_type IS NULL OR memory_type NOT IN ('session_summary', 'pattern', 'association'))
+              AND ((memory_type IS NULL AND COALESCE(tags, '') NOT LIKE '%session-summary%')
+                   OR memory_type NOT IN ('session_summary', 'pattern', 'association'))
         """, (now.isoformat(), sixty_days_ago_ts))
         dormant_count = dormant.rowcount
 

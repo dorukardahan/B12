@@ -157,8 +157,26 @@ def test_type_exclusion_predicates_keep_untyped_rows():
     # In SQL `NULL NOT IN (...)` and `NULL != 'x'` are NULL, which drops untyped
     # memories; every SQL exclusion on memory_type needs an IS NULL branch.
     sql_exclusion = re.compile(r"(?:\w+\.)?memory_type\s*(?:NOT IN\s*\(|!=\s*'|<>\s*')")
-    guarded = re.compile(r"(?:\w+\.)?memory_type IS NULL OR")
-    assert not _offending_lines(sql_exclusion, guarded)
+    offenders = []
+    for path in _sql_sources():
+        lines = path.read_text().splitlines()
+        for n, line in enumerate(lines):
+            # The IS NULL branch may sit on the same line or the one before.
+            if sql_exclusion.search(line) and "memory_type IS NULL" not in " ".join(lines[max(0, n - 1) : n + 1]):
+                offenders.append(f"{path.relative_to(REPO_ROOT)}:{n + 1}")
+    assert not offenders
+
+
+def test_hooks_let_untyped_rows_past_summary_exclusions_only_without_the_tag():
+    # An untyped row tagged session-summary is still a summary: wherever a hook
+    # opens a summary exclusion to untyped rows, the same statement must keep
+    # summary-tagged rows out.
+    for path in sorted(REPO_ROOT.glob("hooks/**/*.sh")):
+        lines = path.read_text().splitlines()
+        for n, line in enumerate(lines):
+            if re.search(r"memory_type IS NULL", line) and "session_summary" in " ".join(lines[n : n + 2]):
+                window = " ".join(lines[max(0, n - 4) : n + 5])
+                assert "session-summary" in window, f"{path.relative_to(REPO_ROOT)}:{n + 1}"
 
 
 def _hook_jq(hook: str, var: str) -> str | None:
