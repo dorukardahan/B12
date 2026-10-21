@@ -81,17 +81,24 @@ def test_foreign_hooks_survive_and_b12_hooks_match_template(tmp_path):
 
 
 def test_only_known_b12_names_count_as_legacy_b12_hooks(tmp_path):
-    # A legacy ~/.claude*/hooks/ path is B12's only when it names a hook B12
-    # ships or once shipped; another tool's memory-*.sh must survive.
+    # A legacy ~/.claude*/hooks/ path is B12's only when it names a hook the
+    # settings template registers or once registered; another tool's
+    # memory-*.sh, even one sharing a name with a B12 utility, must survive.
     setup = tmp_path / ".claude-work"
     setup.mkdir()
-    foreign = {"type": "command", "command": "~/.claude-work/hooks/memory-sync.sh"}
-    (setup / "settings.json").write_text(json.dumps({"hooks": {"Stop": [
-        {"hooks": [foreign, {"type": "command", "command": "~/.claude/hooks/memory-upgrade.sh"}]},
-    ]}}))
+    foreign = [
+        {"type": "command", "command": "~/.claude-work/hooks/memory-sync.sh"},
+        # Shipped in hooks/ as a maintenance tool, never registered as a hook.
+        {"type": "command", "command": "~/.claude-work/hooks/memory-backup.sh"},
+    ]
+    legacy = [
+        {"type": "command", "command": "~/.claude/hooks/memory-session-start.sh"},
+        {"type": "command", "command": "~/.claude/hooks/memory-upgrade.sh"},
+    ]
+    (setup / "settings.json").write_text(json.dumps({"hooks": {"Stop": [{"hooks": foreign + legacy}]}}))
     commands = _commands(_install(setup, tmp_path)["hooks"])
-    assert "~/.claude-work/hooks/memory-sync.sh" in commands
-    assert "~/.claude/hooks/memory-upgrade.sh" not in commands
+    assert all(h["command"] in commands for h in foreign)
+    assert not any(h["command"] in commands for h in legacy)
 
 
 def test_merge_is_idempotent(tmp_path):
