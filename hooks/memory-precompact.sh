@@ -198,7 +198,7 @@ fi
 
 VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
 _UID=$(id -u 2>/dev/null || echo $$)
-EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
+EMBED_SOCK="${B12_EMBED_RUNTIME_DIR:-/tmp}/b12-embed-${_UID}.sock"
 
 if [ -f "$STAGING_DIR/precompact-${SESSION_ID}.txt" ] && [ -x "$VENV_PYTHON" ]; then
   "$VENV_PYTHON" - "$STAGING_DIR/precompact-${SESSION_ID}.txt" "$PROJECT_NAME" "$CWD" "$EMBED_SOCK" << 'PCPYEOF'

@@ -615,8 +615,8 @@ def _daemon_request(payload: dict, timeout: float = 10) -> Optional[dict]:
     import socket as _sock
     uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
     # Hardcode /tmp/ — macOS TMPDIR varies per session
-    sock_path = f"/tmp/b12-embed-{uid}.sock"
-    pid_path = f"/tmp/b12-embed-{uid}.pid"
+    sock_path = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{uid}.sock")
+    pid_path = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{uid}.pid")
     if not os.path.exists(sock_path) or not os.path.exists(pid_path):
         return None
     try:

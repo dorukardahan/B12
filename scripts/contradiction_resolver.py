@@ -151,7 +151,7 @@ def _encode_via_daemon(text):
     import socket as _sock
     import base64 as _b64
     uid = os.getuid() if hasattr(os, "getuid") else os.getpid()
-    sock_path = f"/tmp/b12-embed-{uid}.sock"
+    sock_path = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{uid}.sock")
     if not os.path.exists(sock_path):
         return None
     s = None

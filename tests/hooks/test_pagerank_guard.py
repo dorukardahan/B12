@@ -24,7 +24,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[2]
 HOOK = REPO_ROOT / "hooks" / "memory-session-start.sh"
 SCRIPTS_DIR = REPO_ROOT / "scripts"
-VENV_PYTHON = Path(os.path.expanduser("~/.local/b12-venv/bin/python3"))
+# The root conftest isolates HOME, so it passes the installed interpreter on.
+VENV_PYTHON = Path(os.environ.get("B12_TEST_VENV_PYTHON") or os.path.expanduser("~/.local/b12-venv/bin/python3"))
 PAGERANK_MARKER = "LIKELY-NEXT FILES (pagerank)"
 
 
