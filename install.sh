@@ -540,12 +540,36 @@ update_launchd_plists() {
 # ─────────────────────────────────────────────
 # Step 4: Merge hook config into settings.json
 # ─────────────────────────────────────────────
+
+# ~/.claude is always a setup. Other ~/.claude-* directories count only when
+# they contain something Claude Code creates in a config dir; archives or
+# folders that merely share the prefix must not get a settings.json or skill
+# written into them. A `.b12-ignore` file opts any directory out explicitly
+# (for example a backup copy of a real setup).
+is_claude_setup_dir() {
+  local dir="$1" marker
+  [ -d "$dir" ] || return 1
+  [ -e "$dir/.b12-ignore" ] && return 1
+  [ "$(basename "$dir")" = ".claude" ] && return 0
+  for marker in settings.json settings.local.json .claude.json .credentials.json CLAUDE.md history.jsonl \
+                projects skills commands agents plugins todos statsig shell-snapshots; do
+    [ -e "$dir/$marker" ] && return 0
+  done
+  return 1
+}
+
 install_to_setup() {
   local SETUP_DIR="$1"
   local SETTINGS_FILE="$SETUP_DIR/settings.json"
 
   if [ ! -d "$SETUP_DIR" ]; then
     warn "Setup directory not found: $SETUP_DIR (skipping)"
+    return
+  fi
+  # Checked here, not only in the --all loop, so the default ~/.claude and an
+  # explicit target directory honor the opt-out too.
+  if [ -e "$SETUP_DIR/.b12-ignore" ]; then
+    info "Skipping $SETUP_DIR (.b12-ignore)"
     return
   fi
 
@@ -557,7 +581,7 @@ install_to_setup() {
 
   # Merge hooks using python3 (preserves existing settings)
   if ! python3 - "$SETTINGS_FILE" "$SCRIPT_DIR/config/settings-template.json" << 'PYEOF'
-import sys, json
+import sys, json, re
 
 settings_path = sys.argv[1]
 template_path = sys.argv[2]
@@ -568,9 +592,48 @@ with open(settings_path, 'r') as f:
 with open(template_path, 'r') as f:
     template = json.load(f)
 
-# Merge hooks (replace entirely — template is source of truth)
+# The template is the source of truth for B12's own hooks only. Replacing the
+# whole "hooks" block deleted every hook the user had added for other tools,
+# so drop just the B12 handlers (current ~/.B12/hooks/ paths, and legacy
+# ~/.claude*/hooks/ paths that name a hook B12's settings template registers or
+# once registered) and keep everything else, including another tool's own
+# memory-*.sh hook.
+_LEGACY_B12 = re.compile(r"/\.claude[^/]*/hooks/(memory-[A-Za-z0-9_-]+\.(?:sh|py))\b")
+# Hooks the template registered in the past and no longer does.
+_RETIRED_B12_HOOKS = {'memory-consolidate.py', 'memory-upgrade.sh'}
+
+def _template_hook_names(template):
+    names = set()
+    for groups in (template.get('hooks') or {}).values():
+        for group in groups:
+            for handler in group.get('hooks', []):
+                names.update(re.findall(r"memory-[A-Za-z0-9_-]+\.(?:sh|py)", handler.get('command', '')))
+    return names
+
+def is_b12(handler):
+    command = handler.get('command', '') if isinstance(handler, dict) else ''
+    if '/.B12/hooks/' in command:
+        return True
+    return any(m.group(1) in _B12_HOOK_NAMES for m in _LEGACY_B12.finditer(command))
+
+_B12_HOOK_NAMES = _template_hook_names(template) | _RETIRED_B12_HOOKS
+
 if 'hooks' in template:
-    settings['hooks'] = template['hooks']
+    user_hooks = {}
+    for event, groups in (settings.get('hooks') or {}).items():
+        kept = []
+        for group in groups if isinstance(groups, list) else []:
+            if not isinstance(group, dict):
+                continue
+            handlers = [h for h in group.get('hooks', []) if not is_b12(h)]
+            if handlers:
+                kept.append(dict(group, hooks=handlers))
+        if kept:
+            user_hooks[event] = kept
+    merged = {event: list(groups) for event, groups in template['hooks'].items()}
+    for event, groups in user_hooks.items():
+        merged.setdefault(event, []).extend(groups)
+    settings['hooks'] = merged
 
 with open(settings_path, 'w') as f:
     json.dump(settings, f, indent=2)
@@ -3655,7 +3718,7 @@ update_launchd_plists
 install_claude_skill() {
   local SKILL_SRC="$SCRIPT_DIR/skills/b12-memory"
   for dir in "$HOME"/.claude*; do
-    [ -d "$dir" ] || continue
+    is_claude_setup_dir "$dir" || continue
     local SKILL_DEST="$dir/skills/b12-memory"
     mkdir -p "$SKILL_DEST"
     cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
@@ -3704,7 +3767,7 @@ fi
 # Install hooks to Claude Code setups
 if $INSTALL_ALL; then
   for dir in "$HOME"/.claude*; do
-    [ -d "$dir" ] || continue
+    is_claude_setup_dir "$dir" || continue
     base=$(basename "$dir")
     case "$base" in
       .claude|.claude-*) install_to_setup "$dir" ;;
