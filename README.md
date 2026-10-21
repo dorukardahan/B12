@@ -600,6 +600,14 @@ Dependency update PRs are review-gated too: Dependabot can suggest updates, but 
 
 ## Changelog (recent)
 
+### v11.83.1 (2026-10-21)
+
+- Hook output reaches Claude Code again: watchdogs and background workers no longer hold the host's pipes open.
+- Memories without a type show as `[general]` everywhere and are no longer dropped by type filters.
+- `install.sh` keeps other tools' hooks and honors a `.b12-ignore` opt-out.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ### v11.83.0 (2026-08-17)
 
 See [CHANGELOG.md](CHANGELOG.md) for the full notes.
