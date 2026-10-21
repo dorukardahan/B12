@@ -76,6 +76,29 @@ def test_retrieval_q4_reformat_keeps_general_for_untyped_rows(tmp_path):
     conn.close()
 
 
+def test_retrieval_graph_expansion_skips_summaries(tmp_path):
+    # Runs the hook's graph-expansion query as written: an untyped neighbour
+    # shows as [general], summaries (by type or by tag) stay out.
+    hook = (REPO_ROOT / "hooks" / "memory-retrieval.sh").read_text()
+    sql = re.search(r'GRAPH_EXPANDED=\$\(sqlite3 "\$DB_PATH" "(.*?)" 2>/dev/null\)', hook, re.S).group(1)
+    sql = sql.replace("\\$", "$").replace("${TOP_3_IDS}", "1").replace("${ALL_IDS}", "1")
+    conn = sqlite3.connect(tmp_path / "mem.db")
+    conn.executescript(
+        "CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT, content_hash TEXT, memory_type TEXT,"
+        " tags TEXT, metadata TEXT, deleted_at REAL);"
+        "CREATE TABLE memory_graph (source_hash TEXT, target_hash TEXT, relationship_type TEXT, similarity REAL);"
+    )
+    rows = [(1, "seed", "h1", "decision", ""), (2, "untyped note", "h2", None, "proj:x"),
+            (3, "tagged summary", "h3", None, "proj:x,session-summary"), (4, "typed summary", "h4", "session_summary", "")]
+    for mid, content, h, mtype, tags in rows:
+        conn.execute("INSERT INTO memories VALUES (?, ?, ?, ?, ?, '{}', NULL)", (mid, content, h, mtype, tags))
+        if mid > 1:
+            conn.execute("INSERT INTO memory_graph VALUES ('h1', ?, 'related', 0.9)", (h,))
+    shown = [r[0] for r in conn.execute(sql)]
+    conn.close()
+    assert shown == ["[general|src:?|imp:0.50|proj:?] untyped note"]
+
+
 def test_resurface_hits_carry_a_general_type(tmp_path):
     import b12_long_session
 

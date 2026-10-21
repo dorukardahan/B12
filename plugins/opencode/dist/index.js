@@ -789,6 +789,8 @@ class B12Database {
          JOIN memories m2 ON m2.content_hash = edges.neighbor_hash
          WHERE m2.id NOT IN (${allPlaceholders})
            AND m2.deleted_at IS NULL
+           AND (m2.memory_type IS NULL OR m2.memory_type NOT IN ('session_summary', 'progress'))
+           AND (m2.tags IS NULL OR m2.tags NOT LIKE '%session-summary%')
          ORDER BY edges.similarity DESC
          LIMIT ?`).all(...topIds, ...topIds, ...allIds, limit);
     return rows.map((r) => ({
