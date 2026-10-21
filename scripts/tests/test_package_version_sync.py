@@ -314,3 +314,34 @@ def test_release_dry_run_syncs_all_package_versions_without_git_side_effects(tmp
     assert versions == {field: candidate for field in versions}, versions
     assert _git(checkout, "rev-parse", "HEAD").stdout.strip() == head_before
     assert _git(checkout, "tag", "--list").stdout.splitlines() == tags_before
+
+
+def test_release_splice_replaces_the_bracketed_unreleased_heading(tmp_path):
+    # Runs release.sh's own touchpoint/CHANGELOG step against fixture files.
+    # The repo writes "## [Unreleased]"; the curated section must replace that
+    # block, not land above it and leave the pending entries below the release.
+    import re
+
+    code = re.search(r"python3 - \"\$NEW\" \"\$NOTES\" <<'PY'\n(.*?)\nPY\n", RELEASE.read_text(), re.S).group(1)
+    (tmp_path / "CHANGELOG.md").write_text(
+        "# Changelog\n\n## [Unreleased]\n\n### Fixed\n- Pending entry.\n\n"
+        "## [v1.2.3] — 2026-08-08\n\n### Fixed\n- Old.\n",
+        encoding="utf-8",
+    )
+    (tmp_path / "pyproject.toml").write_text('[project]\nversion = "1.2.3"\n', encoding="utf-8")
+    (tmp_path / "scripts").mkdir()
+    (tmp_path / "scripts" / "b12_mcp_server.py").write_text('B12_VERSION = "v1.2.3"\n', encoding="utf-8")
+    (tmp_path / "scripts" / "b12_health.py").write_text('VERSION = "1.2.3"\n', encoding="utf-8")
+    (tmp_path / "install.sh").write_text("# B12 Memory System Installer (v1.2.3)\n", encoding="utf-8")
+    for rel in ("package.json", ".claude-plugin/plugin.json", "plugins/opencode/package.json"):
+        (tmp_path / rel).parent.mkdir(parents=True, exist_ok=True)
+        (tmp_path / rel).write_text(json.dumps({"version": "1.2.3"}), encoding="utf-8")
+    notes = tmp_path / "notes.md"
+    notes.write_text("### Fixed\n- Curated entry.\n", encoding="utf-8")
+
+    subprocess.run([sys.executable, "-c", code, "1.2.4", str(notes)], cwd=tmp_path, check=True, capture_output=True)
+
+    changelog = (tmp_path / "CHANGELOG.md").read_text(encoding="utf-8")
+    assert changelog.startswith("# Changelog\n\n## [v1.2.4] — ")
+    assert "Curated entry." in changelog and "## [v1.2.3] — 2026-08-08" in changelog
+    assert "Unreleased" not in changelog and "Pending entry." not in changelog
