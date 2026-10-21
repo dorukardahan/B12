@@ -67,7 +67,7 @@ def test_sync_watchdog_still_emits_fallback_when_cap_fires(tmp_path):
 
 
 # The guard below models one logical line of shell at a time (physical lines
-# joined after a trailing `\`, `|`, `&&` or `||`): quoting, ( ) and { }
+# joined after a trailing `\`, `|`, `|&`, `&&` or `||`): quoting, ( ) and { }
 # groups, `$( )` and backtick substitutions, jobs, and-or lists, pipelines
 # and redirections applied in order, plus the fds a hook changes for itself
 # with `exec`. Every fd that still points at one of the hook's own output
@@ -242,11 +242,11 @@ def _leaks(line: str, fds: dict[int, str] | None = None) -> bool:
 
 def _continues(line: str) -> bool:
     """True if the shell reads the next physical line as part of this command:
-    a trailing backslash, or a trailing `|`, `&&` or `||` outside quotes."""
+    a trailing backslash, or a trailing `|`, `|&`, `&&` or `||` outside quotes."""
     if line.rstrip().endswith("\\"):
         return True
     tail = re.sub(r"\s#.*$", "", _top_level(line)[0]).rstrip()
-    return tail.endswith(("|", "&&"))
+    return tail.endswith(("|", "|&", "&&"))
 
 
 def _shell_lines(path: Path):
@@ -378,8 +378,10 @@ def test_continued_lines_are_joined(tmp_path):
         "a &&\n  b >/dev/null 2>&1 &\n"
         "cmd --flag \\\n  >/dev/null 2>&1 &\n"
         "x | \\\n  y >/dev/null 2>&1 &\n"
+        "exec 3>&2\n"
+        "sleep 30 |&\n  cat >/dev/null 2>&1 3>&- &\n"
     )
-    assert _leaking_lines(hook) == [1, 3, 7]
+    assert _leaking_lines(hook) == [1, 3, 7, 10]
 
 
 def test_heredoc_bodies_are_not_scanned(tmp_path):
