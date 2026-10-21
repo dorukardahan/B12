@@ -1300,16 +1300,32 @@ warn_live_codex_sessions() {
 # Codex CLI: install B12 skill
 # ─────────────────────────────────────────────
 
-# True when a SKILL.md was written by a B12 installer: byte-identical to the
-# shipped skill, or `name: b12-memory` plus a B12 header ("B12 Memory System"
-# from the shared skill, "B12 Memory for Codex" from the Codex one). Both
-# markers together are very unlikely in a user-authored skill (Codex review on
-# PR #18, rounds 2-3).
+# Prints a file's SHA-256 (coreutils, macOS shasum, or Python).
+b12_sha256() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$1" | cut -d' ' -f1
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$1" | cut -d' ' -f1
+  else
+    python3 -c 'import hashlib, sys; print(hashlib.sha256(open(sys.argv[1], "rb").read()).hexdigest())' "$1"
+  fi
+}
+
+# True only when B12 provably wrote this SKILL.md: its SHA-256 matches the
+# .b12-installed marker that install_codex_skill writes next to its copy, a
+# skill in this checkout, or a version B12 shipped before the marker existed
+# (config/codex-skills/shipped-skill-sha256.txt). A B12 copy edited after
+# installation no longer matches and is treated as the user's.
 b12_skill_is_installer_owned() {
-  local file="$1" shipped="$2"
-  cmp -s "$file" "$shipped" && return 0
-  grep -q '^name: b12-memory$' "$file" 2>/dev/null \
-    && grep -qE 'B12 Memory System|B12 Memory for Codex' "$file" 2>/dev/null
+  local file="$1" marker shipped hash
+  marker="$(dirname "$file")/.b12-installed"
+  hash=$(b12_sha256 "$file" 2>/dev/null)
+  [ -n "$hash" ] || return 1
+  [ -f "$marker" ] && [ "$(cat "$marker")" = "$hash" ] && return 0
+  for shipped in "$SCRIPT_DIR/config/codex-skills/b12-memory/SKILL.md" "$SCRIPT_DIR/skills/b12-memory/SKILL.md"; do
+    [ -f "$shipped" ] && [ "$(b12_sha256 "$shipped")" = "$hash" ] && return 0
+  done
+  grep -qxF "$hash" "$SCRIPT_DIR/config/codex-skills/shipped-skill-sha256.txt" 2>/dev/null
 }
 
 install_codex_skill() {
@@ -1337,30 +1353,34 @@ install_codex_skill() {
   # in place with a warning, since it may be user-authored.
   for legacy in "$CODEX_DIR/skills/b12" "$CODEX_DIR/skills/b12-memory"; do
     [ -f "$legacy/SKILL.md" ] || continue
-    if b12_skill_is_installer_owned "$legacy/SKILL.md" "$SKILL_SRC/SKILL.md"; then
+    if b12_skill_is_installer_owned "$legacy/SKILL.md"; then
       rm -f "$legacy/SKILL.md" "$legacy/agents/openai.yaml"
       rmdir "$legacy/agents" 2>/dev/null || true
       rmdir "$legacy" 2>/dev/null || true
       info "Removed legacy B12 skill at $legacy (Codex now reads ~/.agents/skills)"
     elif grep -q '^name: b12-memory$' "$legacy/SKILL.md" 2>/dev/null; then
-      warn "Skill at $legacy/SKILL.md has \`name: b12-memory\` but does not match"
-      warn "the B12 installer fingerprint. Inspect it manually: rename its"
-      warn "frontmatter if it is yours, or delete it if it is stale installer output."
+      warn "Skill at $legacy/SKILL.md has \`name: b12-memory\` but is not a version"
+      warn "B12 shipped. Inspect it manually: rename its frontmatter if it is yours,"
+      warn "or delete it if it is stale B12 output."
     fi
   done
 
   # ~/.agents/skills is a shared user skill root: never overwrite a b12-memory
   # skill there that a B12 installer did not write. Checked after the legacy
   # cleanup so a stale B12 copy in ~/.codex/skills is still removed.
-  if [ -f "$SKILL_DEST/SKILL.md" ] && ! b12_skill_is_installer_owned "$SKILL_DEST/SKILL.md" "$SKILL_SRC/SKILL.md"; then
-    warn "A b12-memory skill at $SKILL_DEST was not written by the B12 installer;"
-    warn "leaving it unchanged. Move it aside and re-run to install the B12 Codex skill."
+  if [ -f "$SKILL_DEST/SKILL.md" ] && ! b12_skill_is_installer_owned "$SKILL_DEST/SKILL.md"; then
+    warn "A b12-memory skill at $SKILL_DEST was not written by the B12 installer"
+    warn "or was edited since; leaving it unchanged. Move it aside and re-run to"
+    warn "install the B12 Codex skill."
     return
   fi
 
   mkdir -p "$SKILL_DEST/agents"
   cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
   cp "$SKILL_SRC/agents/openai.yaml" "$SKILL_DEST/agents/openai.yaml"
+  # Record what B12 wrote, so the next install can tell its own copy (replace)
+  # from one the user has edited since (keep).
+  b12_sha256 "$SKILL_DEST/SKILL.md" > "$SKILL_DEST/.b12-installed"
   info "B12 skill installed to $SKILL_DEST"
 }
 
@@ -1464,20 +1484,31 @@ PYEOF
     fi
   fi
 
-  # Check B12 skill installed in Codex's user skill root, and that no stale
-  # copy is left in the deprecated ~/.codex/skills root (Codex would load both).
-  if [ -f "$HOME/.agents/skills/b12-memory/SKILL.md" ]; then
-    info "Verify: B12 skill installed"
-  else
-    warn "Verify: B12 skill NOT found at ~/.agents/skills/b12-memory"
-    errors=$((errors + 1))
-  fi
-  if [ -f "$HOME/.codex/skills/b12-memory/SKILL.md" ]; then
-    warn "Verify: a second b12-memory skill exists in ~/.codex/skills; Codex loads both"
-    errors=$((errors + 1))
-  fi
+  b12_verify_codex_skill || errors=$((errors + $?))
 
   return $errors
+}
+
+# Warns about each problem with the Codex B12 skill and returns their count.
+# Compares content rather than presence, so a b12-memory skill that the
+# installer left unchanged (not B12's) is reported as not installed.
+b12_verify_codex_skill() {
+  local skill="$HOME/.agents/skills/b12-memory/SKILL.md" problems=0
+  if [ ! -f "$skill" ]; then
+    warn "Verify: B12 skill NOT found at ~/.agents/skills/b12-memory"
+    problems=$((problems + 1))
+  elif ! cmp -s "$skill" "$SCRIPT_DIR/config/codex-skills/b12-memory/SKILL.md"; then
+    warn "Verify: ~/.agents/skills/b12-memory holds another skill; the B12 Codex skill is NOT installed"
+    problems=$((problems + 1))
+  else
+    info "Verify: B12 skill installed"
+  fi
+  # Codex still reads the deprecated ~/.codex/skills root and would load both.
+  if [ -f "$HOME/.codex/skills/b12-memory/SKILL.md" ]; then
+    warn "Verify: a second b12-memory skill exists in ~/.codex/skills; Codex loads both"
+    problems=$((problems + 1))
+  fi
+  return $problems
 }
 
 # ═════════════════════════════════════════════
