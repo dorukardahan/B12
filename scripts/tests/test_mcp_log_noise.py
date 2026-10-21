@@ -86,6 +86,13 @@ def test_install_is_idempotent(root_capture):
     assert sum(isinstance(f, b12_log_noise.KnownProbeWarningFilter) for f in logging.getLogger().filters) == 1
 
 
+def test_module_is_packaged():
+    import tomllib
+
+    modules = tomllib.loads((_ROOT / "pyproject.toml").read_text())["tool"]["setuptools"]["py-modules"]
+    assert "b12_log_noise" in modules, "b12_mcp_server imports b12_log_noise; it must ship in the wheel"
+
+
 def test_server_installs_filter_after_fastmcp_logging_setup():
     src = (_ROOT / "scripts" / "b12_mcp_server.py").read_text()
     m = re.search(r'^server = FastMCP\("B12".*?$(.*?)^# ── Helpers', src, re.DOTALL | re.MULTILINE)
