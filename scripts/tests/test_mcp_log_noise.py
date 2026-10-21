@@ -1,0 +1,93 @@
+"""Guards for collapsing known MCP protocol-probe warnings in server stderr."""
+from __future__ import annotations
+
+import io
+import logging
+import re
+import sys
+from pathlib import Path
+
+import pytest
+
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT / "scripts"))
+
+import b12_log_noise  # noqa: E402
+
+DISCOVER = (
+    "Failed to validate request: 31 validation errors for ClientRequest\n"
+    "PingRequest.method\n  Input should be 'ping' [type=literal_error, input_value='server/discover', input_type=str]"
+)
+ROOTS = (
+    "Failed to validate notification: Received notification before initialization was complete. "
+    "Message was: method='notifications/roots/list_changed' params={} jsonrpc='2.0'"
+)
+
+
+@pytest.fixture
+def root_capture():
+    root = logging.getLogger()
+    sdk = logging.getLogger(b12_log_noise._SDK_REQUEST_LOGGER)
+    saved_filters, saved_level, saved_sdk_level = list(root.filters), root.level, sdk.level
+    stream = io.StringIO()
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(levelname)s %(message)s"))
+    root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    for f in list(root.filters):
+        if isinstance(f, b12_log_noise.KnownProbeWarningFilter):
+            root.removeFilter(f)
+    yield stream
+    root.removeHandler(handler)
+    root.filters[:] = saved_filters
+    root.setLevel(saved_level)
+    sdk.setLevel(saved_sdk_level)
+
+
+def test_known_probe_warnings_collapse_to_one_line_each(root_capture):
+    b12_log_noise.quiet_mcp_protocol_noise()
+    for _ in range(3):
+        logging.warning(DISCOVER)
+        logging.warning(ROOTS)
+    lines = root_capture.getvalue().splitlines()
+    assert len(lines) == 2, lines
+    assert "server/discover request" in lines[0] and "suppressed" in lines[0]
+    assert "roots/list_changed" in lines[1]
+    assert not any("validation errors" in line for line in lines)
+
+
+def test_real_failures_stay_visible(root_capture):
+    b12_log_noise.quiet_mcp_protocol_noise()
+    tools_call = "Failed to validate request: 2 validation errors, input_value='tools/call'"
+    other_prefix = "Unexpected client probe 'server/discover' during shutdown"
+    logging.warning(tools_call)
+    logging.warning(tools_call)
+    logging.warning(other_prefix)
+    logging.error("boom %s", DISCOVER)
+    out = root_capture.getvalue()
+    assert out.count("tools/call") == 2
+    assert other_prefix in out
+    assert "ERROR boom" in out and "validation errors for ClientRequest" in out
+
+
+def test_sdk_request_info_lines_are_dropped(root_capture):
+    b12_log_noise.quiet_mcp_protocol_noise()
+    logging.getLogger(b12_log_noise._SDK_REQUEST_LOGGER).info("Processing request of type %s", "ListToolsRequest")
+    logging.getLogger("b12_mcp_server.memory_delete").info("audit line")
+    out = root_capture.getvalue()
+    assert "Processing request" not in out
+    assert "audit line" in out
+
+
+def test_install_is_idempotent(root_capture):
+    first = b12_log_noise.quiet_mcp_protocol_noise()
+    second = b12_log_noise.quiet_mcp_protocol_noise()
+    assert first is second
+    assert sum(isinstance(f, b12_log_noise.KnownProbeWarningFilter) for f in logging.getLogger().filters) == 1
+
+
+def test_server_installs_filter_after_fastmcp_logging_setup():
+    src = (_ROOT / "scripts" / "b12_mcp_server.py").read_text()
+    m = re.search(r'^server = FastMCP\("B12".*?$(.*?)^# ── Helpers', src, re.DOTALL | re.MULTILINE)
+    assert m, "server construction block not found"
+    assert "quiet_mcp_protocol_noise()" in m.group(1), "filter must be installed right after FastMCP configures logging"

@@ -6,6 +6,10 @@
 
 - Config / install help form now lists Google Antigravity alongside the other documented hosts.
 
+### Fixed
+
+- The MCP server and daemon no longer flood stderr with SDK validation dumps for newer-protocol client probes (`server/discover`, pre-initialization `roots/list_changed`) or with one INFO line per request. Each known probe is logged once as a single line; all other warnings are unchanged. In daemon mode this stderr is an unrotated launchd log that had grown by megabytes per day.
+
 ## [v11.83.0] — 2026-08-17
 
 ### Added
