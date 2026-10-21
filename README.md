@@ -491,7 +491,7 @@ Environment variables:
 
 ### Hooks (Claude Code `settings.json`)
 
-All 11 lifecycle hook events plus 2 telemetry/observability hooks (InstructionsLoaded, FileChanged) are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically. See `docs/setup.md` for manual configuration.
+All 11 lifecycle hook events plus 2 telemetry/observability hooks (InstructionsLoaded, FileChanged) are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically: it replaces only B12's own hook entries and keeps hooks that other tools added. See `docs/setup.md` for manual configuration.
 
 ### Multi-setup
 
@@ -501,7 +501,8 @@ If you run multiple Claude Code setups (e.g., personal + work):
 - **Database** is shared — memories from any project are available everywhere
 - **Session summaries** are per-project, so they don't overwrite each other
 - **Hook config** needs to be in each setup's `settings.json`
-- **Install**: `./install.sh --all` handles all setups
+- **Install**: `./install.sh --all` handles all setups. It skips `~/.claude-*` folders that hold nothing Claude Code creates (for example a transcript archive).
+- **Opt out**: an empty `.b12-ignore` file in a setup directory makes every install mode skip it, including the default `~/.claude` and an explicit target directory
 - **Drift auto-fix**: `./install.sh --all --fix-drift` auto-registers B12 on any detected non-Claude platform (Codex/Gemini/Kimi/Cursor/Windsurf/OpenCode/Grok) whose MCP config is missing a B12 entry. Default behavior remains warn-only — `--fix-drift` is opt-in.
 
 ### Environment variables

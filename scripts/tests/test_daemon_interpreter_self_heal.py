@@ -32,6 +32,15 @@ import embed_daemon
 import shared_patterns
 
 
+# A symlinked launcher only simulates a deleted runtime on Linux, where
+# sys.executable keeps the symlink path. On macOS the framework build resolves it
+# to Homebrew's opt path, so unlinking the symlink removes nothing the daemon
+# maps and the daemon correctly keeps running.
+_LINUX_LAUNCHER_SEMANTICS = pytest.mark.skipif(
+    sys.platform == "darwin", reason="symlinked launcher resolves to the framework path on macOS"
+)
+
+
 def _wait_for_path(path: Path, proc: subprocess.Popen, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -97,8 +106,8 @@ def _fake_sentence_transformers(tmp_path: Path) -> Path:
     return package_root
 
 
-def _start_embed_daemon(tmp_path: Path, python: Path) -> tuple[subprocess.Popen, Path, Path, Path]:
-    runtime = tmp_path / "runtime"
+def _start_embed_daemon(tmp_path: Path, python: Path, socket_dir: Path) -> tuple[subprocess.Popen, Path, Path, Path]:
+    runtime = socket_dir / "runtime"
     data = tmp_path / "data"
     runtime.mkdir()
     fake_modules = _fake_sentence_transformers(tmp_path)
@@ -126,8 +135,8 @@ def _start_embed_daemon(tmp_path: Path, python: Path) -> tuple[subprocess.Popen,
     return proc, sock, pid_file, log_file
 
 
-def test_embed_daemon_sigterm_exits_promptly_and_cleans_runtime_files(tmp_path: Path) -> None:
-    proc, sock, pid_file, _ = _start_embed_daemon(tmp_path, Path(sys.executable))
+def test_embed_daemon_sigterm_exits_promptly_and_cleans_runtime_files(tmp_path: Path, short_tmp_path: Path) -> None:
+    proc, sock, pid_file, _ = _start_embed_daemon(tmp_path, Path(sys.executable), short_tmp_path)
     try:
         assert pid_file.exists()
         proc.send_signal(signal.SIGTERM)
@@ -140,10 +149,11 @@ def test_embed_daemon_sigterm_exits_promptly_and_cleans_runtime_files(tmp_path: 
         _stop_process(proc, sock)
 
 
-def test_embed_daemon_deleted_executable_exits_cleanly_after_response(tmp_path: Path) -> None:
+@_LINUX_LAUNCHER_SEMANTICS
+def test_embed_daemon_deleted_executable_exits_cleanly_after_response(tmp_path: Path, short_tmp_path: Path) -> None:
     stale_python = tmp_path / "python-stale"
     stale_python.symlink_to(sys.executable)
-    proc, sock, pid_file, log_file = _start_embed_daemon(tmp_path, stale_python)
+    proc, sock, pid_file, log_file = _start_embed_daemon(tmp_path, stale_python, short_tmp_path)
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
             client.settimeout(1)
@@ -326,10 +336,11 @@ def test_embed_daemon_need_predicate_skips_keyword_only_queries() -> None:
     assert 'b12_embed_daemon_needed "$QUERY_MODE" "$SHOULD_RERANK" "$RESULT_COUNT"' in hook
 
 
-def test_mcp_daemon_deleted_executable_drains_inflight_request_before_exit(tmp_path: Path) -> None:
+@_LINUX_LAUNCHER_SEMANTICS
+def test_mcp_daemon_deleted_executable_drains_inflight_request_before_exit(tmp_path: Path, short_tmp_path: Path) -> None:
     stale_python = tmp_path / "python-stale"
     stale_python.symlink_to(sys.executable)
-    sock = tmp_path / "mcp.sock"
+    sock = short_tmp_path / "mcp.sock"
     marker = tmp_path / "request-started"
     log_file = tmp_path / "mcp-daemon.log"
 
@@ -528,11 +539,12 @@ def test_on_demand_embed_start_survives_retrieval_watchdog(tmp_path: Path) -> No
 
 def test_on_demand_start_ignores_reused_pid_in_unlocked_stale_lock(
     tmp_path: Path,
+    short_tmp_path: Path,
 ) -> None:
     home = tmp_path / "home"
     hook_root = tmp_path / "hooks"
     data = tmp_path / "data"
-    runtime = tmp_path / "runtime"
+    runtime = short_tmp_path / "runtime"
     data.mkdir()
     runtime.mkdir()
     python = home / ".local" / "b12-venv" / "bin" / "python3"

@@ -806,8 +806,8 @@ if not os.path.exists(DB_PATH):
 # Try embedding daemon before loading SentenceTransformer (~4.5s savings)
 _uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
 # Hardcode /tmp/ — macOS TMPDIR varies per session
-_DAEMON_SOCK = f"/tmp/b12-embed-{_uid}.sock"
-_DAEMON_PID = f"/tmp/b12-embed-{_uid}.pid"
+_DAEMON_SOCK = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_uid}.sock")
+_DAEMON_PID = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_uid}.pid")
 _USE_DAEMON = False
 
 if os.path.exists(_DAEMON_SOCK) and os.path.exists(_DAEMON_PID):
