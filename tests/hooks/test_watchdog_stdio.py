@@ -66,6 +66,12 @@ def test_sync_watchdog_still_emits_fallback_when_cap_fires(tmp_path):
 
 
 
+# The guard below models one line of shell at a time: quoting, ( ) and { }
+# groups, jobs, and-or lists, pipelines and redirections applied in order,
+# plus the fds a hook changes for itself with `exec`. Every fd that still
+# points at one of the hook's own output pipes ("hook") when a job is put in
+# the background is a leak.
+
 # Control operators that start a new job (`;` and a lone `&`, not `&&`, `>&`,
 # `&>` or `|&`), and those that chain an and-or list or a pipeline.
 _JOB_SEPARATOR = re.compile(r"(;|(?<![&>|<])&(?![&>]))")
@@ -76,6 +82,11 @@ _PIPE = re.compile(r"(\|&?)")
 _REDIRECT = re.compile(r"(?<!\S)(\d*|&)(>>?|<)(&?)\s*([^\s;&|<>]+)")
 # A heredoc opener (`<<EOF`, `<<-'EOF'`), not a `<<<` here-string.
 _HEREDOC = re.compile(r"(?<!<)<<-?\s*(['\"]?)(\w+)\1(?!<)")
+# A line that only changes the hook's own fds, such as `exec 3>&2`.
+_EXEC_REDIRECT = re.compile(r"^exec((?:\s+(?:\d*|&)(?:>>?|<)&?\s*\S+)+)\s*$")
+# A group collapsed by _top_level, numbered in order of appearance.
+_GROUP = re.compile("\x00(\\d+)\x00")
+_HOOK_FDS = {1: "hook", 2: "hook"}
 
 
 def _quote_end(line: str, i: int) -> int:
@@ -112,10 +123,11 @@ def _group_end(line: str, i: int) -> int:
     return len(line)
 
 
-def _top_level(line: str) -> str:
-    """The line with quoted text and nested ( ), $( ), { } and ${ } groups
-    collapsed to `x`, so only the outer shell syntax is left."""
-    out, i = [], 0
+def _top_level(line: str) -> tuple[str, list[str]]:
+    """The line with only its outer shell syntax left: quoted text, `$( )`,
+    `${ }` and process substitutions collapse to `x`, and each ( ) or { }
+    group collapses to a numbered placeholder whose body is returned."""
+    out, groups, i = [], [], 0
     while i < len(line):
         ch = line[i]
         if ch == "\\":
@@ -125,44 +137,23 @@ def _top_level(line: str) -> str:
             out.append(ch + "x" + ch)
             i = _quote_end(line, i)
         elif ch in "({":
-            out.append("x")
-            i = _group_end(line, i)
+            end = _group_end(line, i)
+            if i and line[i - 1] in "$<>":
+                out.append("x")
+            else:
+                out.append(f"\x00{len(groups)}\x00")
+                groups.append(line[i + 1 : end - 1])
+            i = end
         else:
             out.append(ch)
             i += 1
-    return "".join(out)
+    return "".join(out), groups
 
 
-def _background_commands(line: str) -> list[tuple[str, dict[int, str]]] | None:
-    """For a line that backgrounds work, every pipeline stage of every and-or
-    element of every job followed by `&` (wherever it sits on the line), with
-    the fds it starts with: a stage that feeds a pipe has its stdout (and, for
-    `|&`, its stderr) on that pipe; everything else starts on the hook's own
-    pipes. None if nothing is backgrounded."""
-    line = line.strip()
-    if not line or line.startswith("#"):
-        return None
-    if line[0] in ")}":  # closes a multi-line group; what follows covers all of it
-        line = "x" + line[1:]
-    parts = _JOB_SEPARATOR.split(re.sub(r"\s#.*$", "", _top_level(line)))
-    commands = []
-    for k in range(0, len(parts) - 1, 2):
-        if parts[k + 1] != "&":
-            continue
-        for element in _AND_OR.split(parts[k]):
-            stages = _PIPE.split(element)
-            for i in range(0, len(stages), 2):
-                into = stages[i + 1] if i + 1 < len(stages) else None
-                fds = {1: "pipe" if into else "hook", 2: "pipe" if into == "|&" else "hook"}
-                commands.append((stages[i], fds))
-    return commands or None
-
-
-def _hook_fds_left(command: str, start: dict[int, str] | None = None) -> set[int]:
-    """Apply the command's redirections left to right, as the shell does, and
-    return which of fd 1 and fd 2 still point at one of the hook's own output
-    pipes. `2>&1 >/dev/null` leaves fd 2 on the hook's stdout."""
-    fds = dict(start or {1: "hook", 2: "hook"})
+def _apply_redirections(command: str, fds: dict[int, str]) -> dict[int, str]:
+    """The fds after the command's redirections, applied left to right as the
+    shell does: `2>&1 >/dev/null` leaves fd 2 on whatever fd 1 was."""
+    fds = dict(fds)
     for fd, op, dup, target in _REDIRECT.findall(command):
         if op == "<":
             continue
@@ -171,14 +162,43 @@ def _hook_fds_left(command: str, start: dict[int, str] | None = None) -> set[int
         elif not dup:
             fds[int(fd or 1)] = "file"
         elif target == "-":
-            fds[int(fd or 1)] = "closed"
+            fds.pop(int(fd or 1), None)
         else:
             fds[int(fd or 1)] = fds.get(int(target), "other") if target.isdigit() else "file"
-    return {n for n in (1, 2) if fds[n] == "hook"}
+    return fds
 
 
-def _leaks(line: str) -> bool:
-    return any(_hook_fds_left(c, fds) for c, fds in _background_commands(line) or [])
+def _hook_fds_left(command: str, start: dict[int, str] | None = None) -> set[int]:
+    return {n for n, v in _apply_redirections(command, start or _HOOK_FDS).items() if v == "hook"}
+
+
+def _leaks(line: str, fds: dict[int, str] | None = None) -> bool:
+    """True if the line puts work in the background with an fd still on the
+    hook's pipes. Every pipeline stage of every and-or element is checked with
+    the fds it starts with (a stage feeding a pipe has stdout, and for `|&`
+    stderr, on that pipe), and the body of a ( ) or { } group is checked with
+    the fds the group runs with, so `( sleep 30 & echo )` is caught too."""
+    fds = dict(fds or _HOOK_FDS)
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return False
+    if line[0] in ")}":  # closes a multi-line group; what follows covers all of it
+        line = "x" + line[1:]
+    flat, groups = _top_level(line)
+    parts = _JOB_SEPARATOR.split(re.sub(r"\s#.*$", "", flat))
+    for k in range(0, len(parts), 2):
+        background = k + 1 < len(parts) and parts[k + 1] == "&"
+        for element in _AND_OR.split(parts[k]):
+            stages = _PIPE.split(element)
+            for i in range(0, len(stages), 2):
+                into = stages[i + 1] if i + 1 < len(stages) else None
+                start = {**fds, **({1: "pipe"} if into else {}), **({2: "pipe"} if into == "|&" else {})}
+                after = _apply_redirections(stages[i], start)
+                if background and "hook" in after.values():
+                    return True
+                if any(_leaks(groups[int(n)], after) for n in _GROUP.findall(stages[i])):
+                    return True
+    return False
 
 
 def _shell_lines(path: Path):
@@ -196,6 +216,20 @@ def _shell_lines(path: Path):
             terminator = heredoc.group(2)
 
 
+def _leaking_lines(path: Path) -> list[int]:
+    """Lines of a hook that background work with an fd on the hook's pipes,
+    following `exec` redirections such as `exec 3>&2` (a second handle on the
+    hook's stderr) down the file."""
+    fds, found = dict(_HOOK_FDS), []
+    for lineno, line in _shell_lines(path):
+        exec_line = _EXEC_REDIRECT.match(_top_level(line.strip())[0])
+        if exec_line:
+            fds = _apply_redirections(exec_line.group(1), fds)
+        elif _leaks(line, fds):
+            found.append(lineno)
+    return found
+
+
 def test_redirections_apply_left_to_right():
     assert _hook_fds_left(" </dev/null >/dev/null 2>&1 3>&- ") == set()
     assert _hook_fds_left(' >> "$LOG" 2>&1 ') == set()
@@ -209,11 +243,13 @@ def test_redirections_apply_left_to_right():
     assert _hook_fds_left(" ", {1: "pipe", 2: "hook"}) == {2}
     assert _hook_fds_left(" 2>/dev/null ", {1: "pipe", 2: "hook"}) == set()
     assert _hook_fds_left(" ", {1: "pipe", 2: "pipe"}) == set()
+    assert _hook_fds_left(" >/dev/null 2>&1 ", {1: "hook", 2: "hook", 3: "hook"}) == {3}
+    assert _hook_fds_left(" >/dev/null 2>&1 3>&- ", {1: "hook", 2: "hook", 3: "hook"}) == set()
 
 
-def test_background_commands_follow_shell_structure():
-    for line in ("cmd && other", "cmd 2>&1", "# sleep 1 &", "x=1", 'echo "a & b"'):
-        assert _background_commands(line) is None
+def test_leaks_follow_shell_structure():
+    for line in ("cmd && other", "cmd 2>&1", "# sleep 1 &", "x=1", 'echo "a & b"', "( a; b )"):
+        assert not _leaks(line)
     detached = [
         ") </dev/null >/dev/null 2>&1 &",
         "} >/dev/null 2>&1 &",
@@ -230,6 +266,8 @@ def test_background_commands_follow_shell_structure():
         "cmd &>/dev/null &",
         '( sleep 30; echo ")" ) >/dev/null 2>&1 &',
         'cmd "a \\" & b" >/dev/null 2>&1 &',
+        "( sleep 30 & echo done ) >/dev/null 2>&1",
+        'x="$(sleep 1 &)"',
     ]
     leaking = [
         '( "$@" ) 2>>"$_log" < /dev/null &',
@@ -247,25 +285,41 @@ def test_background_commands_follow_shell_structure():
         "slow_command & echo done",
         "cmd 2>&1 >/dev/null &",
         "cmd >&2 &",
+        "( sleep 30 & echo done )",
+        "{ sleep 30 & }",
+        "if true; then ( sleep 30 & ); fi",
     ]
     assert [line for line in detached if _leaks(line)] == []
     assert [line for line in leaking if not _leaks(line)] == []
 
 
+def test_exec_redirections_carry_down_the_file(tmp_path):
+    hook = tmp_path / "hook.sh"
+    hook.write_text(
+        "exec 3>&2\n"
+        "( work ) </dev/null >/dev/null 2>&1 &\n"
+        "( work ) </dev/null >/dev/null 2>&1 3>&- &\n"
+        "exec 2>>/tmp/err.log 3>&-\n"
+        "( work ) >/dev/null &\n"
+    )
+    assert _leaking_lines(hook) == [2]
+
+
 def test_heredoc_bodies_are_not_scanned(tmp_path):
     hook = tmp_path / "hook.sh"
     hook.write_text("python3 - <<'PYEOF'\nmask = flags & 0xFF\nPYEOF\nslow &\n")
-    assert [n for n, line in _shell_lines(hook) if _leaks(line)] == [4]
+    assert _leaking_lines(hook) == [4]
 
 
 def test_every_backgrounded_job_detaches_stdout():
     # Any backgrounded job in a hook (a multi-line block, a one-line group, a
-    # plain command, a pipeline or an and-or list, at the end of a line or not)
-    # must not leave stdout or stderr on the hook's own pipes, or that command
-    # keeps the host's pipe open after the hook exits.
-    offenders = []
-    for path in sorted(HOOKS.rglob("*.sh")):
-        for lineno, line in _shell_lines(path):
-            if _leaks(line):
-                offenders.append(f"{path.relative_to(ROOT)}:{lineno}")
+    # plain command, a pipeline or an and-or list, at the end of a line or not,
+    # or inside a foreground group) must not leave an fd on the hook's own
+    # pipes, including copies made with `exec`, or that command keeps the
+    # host's pipe open after the hook exits.
+    offenders = [
+        f"{path.relative_to(ROOT)}:{lineno}"
+        for path in sorted(HOOKS.rglob("*.sh"))
+        for lineno in _leaking_lines(path)
+    ]
     assert not offenders, f"backgrounded job inherits the hook's output: {offenders}"
