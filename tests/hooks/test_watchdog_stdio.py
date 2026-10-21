@@ -65,16 +65,17 @@ def test_sync_watchdog_still_emits_fallback_when_cap_fires(tmp_path):
     assert log.exists() and '"label":"test"' in log.read_text()
 
 
-# A line that backgrounds a job ends in a lone `&` (not `&&`, `>&`, `|&`).
-_BACKGROUNDED = re.compile(r"(?<![&>|])&\s*(?:#.*)?$")
-# stdout (fd 1) must go to a file or be closed: `>`, `1>`, `>>`, `1>>`, `&>`,
-# `&>>` or `>&-`. `2>...` leaves fd 1 on the host pipe and `>&2` only moves it
-# to another inherited fd.
-_STDOUT_TO_FILE = re.compile(r"(?:^|\s)(?:(?:1?|&)>{1,2}\s*[^\s&]|1?>&-)")
-# Control operators that start a new job, and those that chain an and-or list.
+
+# Control operators that start a new job (`;` and a lone `&`, not `&&`, `>&`,
+# `&>` or `|&`), and those that chain an and-or list or a pipeline.
 _JOB_SEPARATOR = re.compile(r"(;|(?<![&>|<])&(?![&>]))")
 _AND_OR = re.compile(r"&&|\|\|")
 _PIPE = re.compile(r"\|&?")
+# One redirection: an fd (or `&` for both outputs), the operator, `&` when it
+# duplicates or closes, and the target (a file, an fd number or `-`).
+_REDIRECT = re.compile(r"(?<!\S)(\d*|&)(>>?|<)(&?)\s*([^\s;&|<>]+)")
+# A heredoc opener (`<<EOF`, `<<-'EOF'`), not a `<<<` here-string.
+_HEREDOC = re.compile(r"(?<!<)<<-?\s*(['\"]?)(\w+)\1(?!<)")
 
 
 def _top_level(line: str) -> str:
@@ -105,47 +106,77 @@ def _top_level(line: str) -> str:
     return "".join(out)
 
 
-def _stdout_holders(line: str) -> list[str] | None:
-    """For a line that backgrounds work, the commands whose stdout is still the
-    hook's: the last pipeline stage of every and-or element of every job that
-    ends in `&`. None if the line backgrounds nothing."""
+def _background_commands(line: str) -> list[str] | None:
+    """For a line that backgrounds work, the commands whose output could still
+    be the hook's: the last pipeline stage of every and-or element of every job
+    followed by `&`, wherever it sits on the line. None if nothing is
+    backgrounded."""
     line = line.strip()
-    if not line or line.startswith("#") or not _BACKGROUNDED.search(line):
+    if not line or line.startswith("#"):
         return None
     if line[0] in ")}":  # closes a multi-line group; what follows covers all of it
         line = "x" + line[1:]
-    flat = re.sub(r"\s#.*$", "", _top_level(line))
-    parts = _JOB_SEPARATOR.split(flat)
-    holders = []
+    parts = _JOB_SEPARATOR.split(re.sub(r"\s#.*$", "", _top_level(line)))
+    commands = []
     for k in range(0, len(parts) - 1, 2):
         if parts[k + 1] == "&":
-            holders += [_PIPE.split(element)[-1] for element in _AND_OR.split(parts[k])]
-    return holders
+            commands += [_PIPE.split(element)[-1] for element in _AND_OR.split(parts[k])]
+    return commands or None
 
 
-def _detaches_stdout(command: str) -> bool:
-    return bool(_STDOUT_TO_FILE.search(" " + command))
+def _hook_fds_left(command: str) -> set[int]:
+    """Apply the command's redirections left to right, as the shell does, and
+    return which of fd 1 and fd 2 still point at one of the hook's own output
+    pipes. `2>&1 >/dev/null` leaves fd 2 on the hook's stdout."""
+    fds = {1: "hook", 2: "hook"}
+    for fd, op, dup, target in _REDIRECT.findall(command):
+        if op == "<":
+            continue
+        if fd == "&":
+            fds[1] = fds[2] = "file"
+        elif not dup:
+            fds[int(fd or 1)] = "file"
+        elif target == "-":
+            fds[int(fd or 1)] = "closed"
+        else:
+            fds[int(fd or 1)] = fds.get(int(target), "other") if target.isdigit() else "file"
+    return {n for n in (1, 2) if fds[n] == "hook"}
 
 
 def _leaks(line: str) -> bool:
-    holders = _stdout_holders(line)
-    return holders is not None and not all(_detaches_stdout(h) for h in holders)
+    return any(_hook_fds_left(c) for c in _background_commands(line) or [])
 
 
-def test_stdout_redirect_matcher():
-    assert _detaches_stdout(" </dev/null >/dev/null 2>&1 3>&- ")
-    assert _detaches_stdout(" > /dev/null 2>&1 ")
-    assert _detaches_stdout(' >> "$LOG" 2>&1 ')
-    assert _detaches_stdout(" 1>/dev/null ")
-    assert not _detaches_stdout(" 2>/dev/null ")
-    assert not _detaches_stdout(" 2>>errors.log ")
-    assert not _detaches_stdout(" >&2 ")
-    assert not _detaches_stdout(" ")
+def _shell_lines(path: Path):
+    """(lineno, line) for the shell code of a hook, skipping heredoc bodies
+    such as embedded Python, where `&` is not a shell operator."""
+    terminator = None
+    for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        if terminator is not None:
+            if line.strip() == terminator:
+                terminator = None
+            continue
+        yield lineno, line
+        heredoc = _HEREDOC.search(line)
+        if heredoc:
+            terminator = heredoc.group(2)
 
 
-def test_stdout_holders_follow_shell_structure():
-    for line in ("cmd && other", "cmd 2>&1", "# sleep 1 &", "x=1"):
-        assert _stdout_holders(line) is None
+def test_redirections_apply_left_to_right():
+    assert _hook_fds_left(" </dev/null >/dev/null 2>&1 3>&- ") == set()
+    assert _hook_fds_left(' >> "$LOG" 2>&1 ') == set()
+    assert _hook_fds_left(" &>/dev/null ") == set()
+    assert _hook_fds_left(" >&- 2>&- ") == set()
+    assert _hook_fds_left(" 2>&1 >/dev/null ") == {2}
+    assert _hook_fds_left(" >/dev/null ") == {2}
+    assert _hook_fds_left(" 2>/dev/null ") == {1}
+    assert _hook_fds_left(" >&2 2>/dev/null ") == {1}
+    assert _hook_fds_left(" ") == {1, 2}
+
+
+def test_background_commands_follow_shell_structure():
+    for line in ("cmd && other", "cmd 2>&1", "# sleep 1 &", "x=1", 'echo "a & b"'):
+        assert _background_commands(line) is None
     detached = [
         ") </dev/null >/dev/null 2>&1 &",
         "} >/dev/null 2>&1 &",
@@ -154,34 +185,42 @@ def test_stdout_holders_follow_shell_structure():
         'cmd >"${LOG}" 2>&1 &',
         'echo "$X" | bash "$B" >/dev/null 2>&1 &',
         "find . \\( -name '*.js' \\) -print > \"$raw\" 2>/dev/null &",
-        "a >/dev/null && b >/dev/null &",
+        "a >/dev/null 2>&1 && b >/dev/null 2>&1 &",
         "foreground; bg >/dev/null 2>&1 &",
+        "slow >/dev/null 2>&1 & echo started",
         "cmd &>/dev/null &",
-        "cmd >&- &",
     ]
     leaking = [
         '( "$@" ) 2>>"$_log" < /dev/null &',
-        "( cmd >/tmp/x ) &",
-        "{ cmd >/tmp/x; } &",
+        "( cmd >/tmp/x 2>&1 ) &",
+        "{ cmd >/tmp/x 2>&1; } &",
         "producer >/tmp/x | sleep 30 &",
         "} | tee x &",
         'cmd "$(date >/tmp/x)" &',
-        "a && b >/dev/null &",
-        "quiet >/dev/null & loud &",
+        "a && b >/dev/null 2>&1 &",
+        "quiet >/dev/null 2>&1 & loud &",
+        "slow_command & echo done",
+        "cmd 2>&1 >/dev/null &",
         "cmd >&2 &",
     ]
     assert [line for line in detached if _leaks(line)] == []
     assert [line for line in leaking if not _leaks(line)] == []
 
 
+def test_heredoc_bodies_are_not_scanned(tmp_path):
+    hook = tmp_path / "hook.sh"
+    hook.write_text("python3 - <<'PYEOF'\nmask = flags & 0xFF\nPYEOF\nslow &\n")
+    assert [n for n, line in _shell_lines(hook) if _leaks(line)] == [4]
+
+
 def test_every_backgrounded_job_detaches_stdout():
     # Any backgrounded job in a hook (a multi-line block, a one-line group, a
-    # plain command, a pipeline or an and-or list) must not leave a command on
-    # the hook's stdout, or that command keeps the host's pipe open after the
-    # hook exits.
+    # plain command, a pipeline or an and-or list, at the end of a line or not)
+    # must not leave stdout or stderr on the hook's own pipes, or that command
+    # keeps the host's pipe open after the hook exits.
     offenders = []
     for path in sorted(HOOKS.rglob("*.sh")):
-        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        for lineno, line in _shell_lines(path):
             if _leaks(line):
                 offenders.append(f"{path.relative_to(ROOT)}:{lineno}")
-    assert not offenders, f"backgrounded job inherits hook stdout: {offenders}"
+    assert not offenders, f"backgrounded job inherits the hook's output: {offenders}"
