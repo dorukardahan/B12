@@ -105,6 +105,20 @@ def test_notification_match_requires_the_method(root_capture):
     assert "notifications/progress" in root_capture.getvalue()
 
 
+def test_post_initialization_roots_failure_stays_visible(root_capture):
+    b12_log_noise.quiet_mcp_protocol_noise()
+    malformed = (
+        "Failed to validate notification: 1 validation error for RootsListChangedNotification\n"
+        "params\n  Input should be a valid dictionary [type=dict_type, input_value='bad', input_type=str]. "
+        "Message was: method='notifications/roots/list_changed' params='bad' jsonrpc='2.0'"
+    )
+    logging.warning(ROOTS)
+    logging.warning(malformed)
+    logging.warning(malformed)
+    out = root_capture.getvalue()
+    assert out.count("RootsListChangedNotification") == 2, "post-init failures must not be collapsed"
+
+
 def test_sdk_request_info_lines_are_dropped(root_capture):
     b12_log_noise.quiet_mcp_protocol_noise()
     logging.getLogger(b12_log_noise._SDK_REQUEST_LOGGER).info("Processing request of type %s", "ListToolsRequest")

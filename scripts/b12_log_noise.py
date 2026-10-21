@@ -30,7 +30,12 @@ _KNOWN_PROBES = (
     ),
     (
         "Failed to validate notification",
-        re.compile(r"Message was: method='notifications/roots/list_changed'"),
+        # Only the pre-initialization rejection; a malformed roots/list_changed
+        # after initialization is a real failure and stays visible.
+        re.compile(
+            r"Received notification before initialization was complete\. "
+            r"Message was: method='notifications/roots/list_changed'"
+        ),
         "pre-initialization roots/list_changed notification",
     ),
 )
