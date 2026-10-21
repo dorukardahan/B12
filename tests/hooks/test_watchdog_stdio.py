@@ -196,7 +196,8 @@ def _top_level(line: str) -> tuple[str, list[str], list[str], list[tuple[str, st
         elif ch in "({":
             end = _group_end(line, i)
             prev = line[i - 1] if i else ""
-            if ch == "(" and line[i + 1 : i + 2] == "(":  # arithmetic: `&` is bitwise
+            if ch == "(" and line[i + 1 : i + 2] == "(":  # arithmetic: `&` is bitwise,
+                substs += _substitutions_in(line[i + 2 : end - 2])  # but $( ) inside still runs
                 out.append("x")
             elif ch == "(" and prev == "$":
                 substs.append(line[i + 1 : end - 1])
@@ -371,6 +372,7 @@ def test_leaks_follow_shell_structure():
         """read -r x < <(printf '%s' "$I" 2>/dev/null | jq -r . 2>/dev/null)""",
         "cat <(sleep 30 2>/dev/null) >/dev/null 2>&1 &",
         "x=$(( a & b ))",
+        "AGE=$(( $(date +%s) - $(file_mtime \"$F\") ))",
         "(( a & 1 ))",
         "x=${v:-$(date)}",
         "x=${v:-'$(sleep 30 &)'}",
@@ -404,6 +406,7 @@ def test_leaks_follow_shell_structure():
         """read -r x < <(printf '%s' "$I" | jq -r . 2>/dev/null)""",
         "tee >(sleep 30 2>/dev/null) >/dev/null 2>&1",
         "x=${v:-$(sleep 30 &)}",
+        "x=$(( $(sleep 30 &) + 1 ))",
         "x=${v:-`sleep 30 &`}",
     ]
     assert [line for line in detached if _leaks(line)] == []
