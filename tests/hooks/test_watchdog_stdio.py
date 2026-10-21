@@ -71,9 +71,9 @@ def test_sync_watchdog_still_emits_fallback_when_cap_fires(tmp_path):
 # groups, `$( )` and backtick substitutions, jobs, and-or lists, pipelines
 # and redirections applied in order, plus the fds a hook changes for itself
 # with `exec`. Every fd that still points at one of the hook's own output
-# pipes ("hook") when a job is put in the background is a leak. Not modelled:
-# multi-line groups (only their closing line is checked) and process
-# substitutions such as `< <(printf ... | jq ...)`.
+# pipes ("hook") when a job is put in the background is a leak; process
+# substitutions run asynchronously, so their bodies count as background work.
+# Not modelled: multi-line groups (only their closing line is checked).
 
 # Control operators that start a new job (`;` and a lone `&`, not `&&`, `>&`,
 # `&>` or `|&`), and those that chain an and-or list or a pipeline.
@@ -131,13 +131,14 @@ def _backtick_end(line: str, i: int) -> int:
     return _quote_end(line, i)
 
 
-def _top_level(line: str) -> tuple[str, list[str], list[str]]:
+def _top_level(line: str) -> tuple[str, list[str], list[str], list[tuple[str, str]]]:
     """The line with only its outer shell syntax left, plus what it runs
     inside: each ( ) or { } group collapses to a numbered placeholder whose
-    body is returned, and the bodies of `$( )` and backtick substitutions,
-    including those inside double quotes, are returned for checking. Single
-    quoted text, `${ }` and process substitutions collapse to `x`."""
-    out, groups, substs, i = [], [], [], 0
+    body is returned, the bodies of `$( )` and backtick substitutions
+    (including those inside double quotes) are returned, and so are process
+    substitutions with their direction (`<` or `>`). Single quoted text,
+    `${ }` and arithmetic `(( ))` collapse to `x`."""
+    out, groups, substs, procs, i = [], [], [], [], 0
     while i < len(line):
         ch = line[i]
         if ch == "\\":
@@ -170,10 +171,17 @@ def _top_level(line: str) -> tuple[str, list[str], list[str]]:
             i = j + 1
         elif ch in "({":
             end = _group_end(line, i)
-            if i and line[i - 1] == "$" and ch == "(":
+            prev = line[i - 1] if i else ""
+            if ch == "(" and line[i + 1 : i + 2] == "(":  # arithmetic: `&` is bitwise
+                out.append("x")
+            elif ch == "(" and prev == "$":
                 substs.append(line[i + 1 : end - 1])
                 out.append("x")
-            elif i and line[i - 1] in "$<>":
+            elif ch == "(" and prev and prev in "<>":
+                out.pop()  # the `<` or `>` belongs to the substitution, not a redirection
+                procs.append((prev, line[i + 1 : end - 1]))
+                out.append("x")
+            elif prev == "$":
                 out.append("x")
             else:
                 out.append(f"\x00{len(groups)}\x00")
@@ -182,7 +190,7 @@ def _top_level(line: str) -> tuple[str, list[str], list[str]]:
         else:
             out.append(ch)
             i += 1
-    return "".join(out), groups, substs
+    return "".join(out), groups, substs, procs
 
 
 def _apply_redirections(command: str, fds: dict[int, str]) -> dict[int, str]:
@@ -207,26 +215,32 @@ def _hook_fds_left(command: str, start: dict[int, str] | None = None) -> set[int
     return {n for n, v in _apply_redirections(command, start or _HOOK_FDS).items() if v == "hook"}
 
 
-def _leaks(line: str, fds: dict[int, str] | None = None) -> bool:
+def _leaks(line: str, fds: dict[int, str] | None = None, async_body: bool = False) -> bool:
     """True if the line puts work in the background with an fd still on the
     hook's pipes. Every pipeline stage of every and-or element is checked with
     the fds it starts with (a stage feeding a pipe has stdout, and for `|&`
     stderr, on that pipe), and the body of a ( ) or { } group is checked with
-    the fds the group runs with, so `( sleep 30 & echo )` is caught too."""
+    the fds the group runs with, so `( sleep 30 & echo )` is caught too.
+    With async_body every job counts as backgrounded (a process substitution's
+    body, which the shell does not wait for)."""
     fds = dict(fds or _HOOK_FDS)
     line = line.strip()
     if not line or line.startswith("#"):
         return False
     if line[0] in ")}":  # closes a multi-line group; what follows covers all of it
         line = "x" + line[1:]
-    flat, groups, substs = _top_level(line)
+    flat, groups, substs, procs = _top_level(line)
     # A substitution's stdout is a pipe the hook waits on, so work left
     # running there holds the hook up just as one on its own stdout would.
     if any(_leaks(body, {**fds, 1: "hook"}) for body in substs):
         return True
+    # `<( )` writes to a pipe the reader consumes; `>( )` keeps the shell's
+    # stdout. Either way the body runs unwaited, with the other fds inherited.
+    if any(_leaks(body, {**fds, 1: "pipe"} if kind == "<" else fds, async_body=True) for kind, body in procs):
+        return True
     parts = _JOB_SEPARATOR.split(re.sub(r"\s#.*$", "", flat))
     for k in range(0, len(parts), 2):
-        background = k + 1 < len(parts) and parts[k + 1] == "&"
+        background = async_body or (k + 1 < len(parts) and parts[k + 1] == "&")
         for element in _AND_OR.split(parts[k]):
             stages = _PIPE.split(element)
             for i in range(0, len(stages), 2):
@@ -329,6 +343,10 @@ def test_leaks_follow_shell_structure():
         'x="$(sleep 30 >/dev/null 2>&1 &)"',
         'x="$(date)"',
         'y=$(printf "%s" "$a" | jq -r . 2>/dev/null)',
+        """read -r x < <(printf '%s' "$I" 2>/dev/null | jq -r . 2>/dev/null)""",
+        "cat <(sleep 30 2>/dev/null) >/dev/null 2>&1 &",
+        "x=$(( a & b ))",
+        "(( a & 1 ))",
     ]
     leaking = [
         '( "$@" ) 2>>"$_log" < /dev/null &',
@@ -354,6 +372,10 @@ def test_leaks_follow_shell_structure():
         "x=`sleep 30 &`",
         'echo "a $(sleep 30 & echo) b"',
         'x="$(sleep 30 >/dev/null &)"',
+        "cat <(sleep 30) >/dev/null 2>&1 &",
+        "read -r x < <(sleep 30 | jq .)",
+        """read -r x < <(printf '%s' "$I" | jq -r . 2>/dev/null)""",
+        "tee >(sleep 30 2>/dev/null) >/dev/null 2>&1",
     ]
     assert [line for line in detached if _leaks(line)] == []
     assert [line for line in leaking if not _leaks(line)] == []
