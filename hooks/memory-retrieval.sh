@@ -585,7 +585,7 @@ if [ "$_NEEDS_EMBED_DAEMON" = true ] && daemon_alive; then
       RERANK_IDS=$(echo "$_RESP" | jq -r '.ranked_ids | map(tostring) | join(",")')
       if [ -n "$RERANK_IDS" ]; then
         RESULT_DISPLAY=$(sqlite3 "$DB_PATH" "
-          SELECT '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
+          SELECT '[' || COALESCE(m.memory_type, 'general') || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
           FROM memories m
           WHERE m.id IN (${RERANK_IDS})
           ORDER BY CASE m.id
@@ -633,7 +633,7 @@ try:
         conn.enable_load_extension(False)
         rows = conn.execute("""
             SELECT m.id,
-                   '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' '),
+                   '[' || COALESCE(m.memory_type, 'general') || '] ' || replace(substr(m.content, 1, 300), char(10), ' '),
                    e.content_embedding
             FROM memories m
             JOIN memory_embeddings e ON m.id = e.rowid
@@ -702,7 +702,7 @@ COLDEOF
         if [ -n "$_rerank_ids" ]; then
           RERANK_IDS=$(echo "$_rerank_ids" | sed 's/,$//')
           RESULT_DISPLAY=$(sqlite3 "$DB_PATH" "
-            SELECT '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
+            SELECT '[' || COALESCE(m.memory_type, 'general') || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
             FROM memories m
             WHERE m.id IN (${RERANK_IDS})
             ORDER BY CASE m.id

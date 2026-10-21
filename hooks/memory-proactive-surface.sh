@@ -258,7 +258,7 @@ if [ -z "$_HIT_COUNT" ] || [ "$_HIT_COUNT" = "0" ]; then
 fi
 
 # ── Format hits (basic format — Q4 4-field upgrade lives in P-RECALL) ───
-_DISPLAY=$(echo "$_RESP" | jq -r '.results | map(.display) | .[]')
+_DISPLAY=$(echo "$_RESP" | jq -r '.results | map(.display // empty) | .[]')
 
 _HEADER="Proactive surfacing (${TRIGGER_TYPE}: $(echo "$QUERY" | head -c 60)):"
 _CAND_CONTEXT=$(printf '%s\n%s\n' "$_HEADER" "$_DISPLAY")

@@ -406,7 +406,7 @@ if [ -f "$DB_PATH" ]; then
     fi
 
     PROJ_MEMS=$(sqlite3 "$DB_PATH" "
-      SELECT '[' || m.memory_type || '] ' || substr(m.content, 1, 200)
+      SELECT '[' || COALESCE(m.memory_type, 'general') || '] ' || substr(m.content, 1, 200)
       FROM memories m
       WHERE m.deleted_at IS NULL
         AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
