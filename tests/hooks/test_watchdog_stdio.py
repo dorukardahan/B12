@@ -63,3 +63,18 @@ def test_sync_watchdog_still_emits_fallback_when_cap_fires(tmp_path):
     assert exited < 2.0, f"cap did not fire: hook ran {exited:.2f}s"
     log = tmp_path / "memory-logs" / "sync-cap-hits.jsonl"
     assert log.exists() and '"label":"test"' in log.read_text()
+
+
+_BACKGROUND_BLOCK_END = re.compile(r"^[)}]\s*(?P<tail>.*)&\s*(#.*)?$")
+
+
+def test_every_backgrounded_block_detaches_stdout():
+    # Any `( ... ) &` or `{ ...; } &` block in a hook must not inherit the
+    # hook's stdout, or it keeps the host's pipe open after the hook exits.
+    offenders = []
+    for path in sorted(HOOKS.rglob("*.sh")):
+        for lineno, line in enumerate(path.read_text().splitlines(), 1):
+            m = _BACKGROUND_BLOCK_END.match(line.strip())
+            if m and not re.search(r">\s*/dev/null|>>", m.group("tail")):
+                offenders.append(f"{path.relative_to(ROOT)}:{lineno}")
+    assert not offenders, f"backgrounded block inherits hook stdout: {offenders}"
