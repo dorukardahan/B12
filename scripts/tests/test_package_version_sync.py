@@ -213,6 +213,26 @@ def _git(cwd: Path, *args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
+def _commit_fixture(cwd: Path, relative_path: str, content: str, message: str) -> None:
+    path = cwd / relative_path
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(content, encoding="utf-8")
+    _git(cwd, "add", relative_path)
+    _git(
+        cwd,
+        "-c",
+        "user.name=B12 Tests",
+        "-c",
+        "user.email=test@invalid",
+        "-c",
+        "commit.gpgSign=false",
+        "commit",
+        "--quiet",
+        "-m",
+        message,
+    )
+
+
 def _copy_tracked_checkout(destination: Path) -> None:
     """Create a clean main-branch checkout from the candidate working tree."""
     tracked = subprocess.run(
@@ -248,6 +268,94 @@ def _copy_tracked_checkout(destination: Path) -> None:
         "-m",
         "test fixture",
     )
+
+
+def test_release_check_uses_nearest_strict_release_tag(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _copy_tracked_checkout(checkout)
+
+    with (checkout / "pyproject.toml").open("rb") as handle:
+        current = tomllib.load(handle)["project"]["version"]
+    major, minor, _patch = (int(part) for part in current.split("."))
+
+    _git(checkout, "tag", f"v{current}")
+    _commit_fixture(checkout, "feature.txt", "feature\n", "feat(core): add fixture feature")
+    _git(checkout, "tag", "maintenance-marker")
+    _git(checkout, "tag", "v99.0.0-rc1")
+    _commit_fixture(checkout, "fix.txt", "fix\n", "fix: add fixture correction")
+
+    result = subprocess.run(
+        ["bash", "scripts/release.sh", "--check"],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"Last release : v{current}" in result.stdout
+    assert "Unreleased   : 2 commits" in result.stdout
+    assert f"Suggested    : v{major}.{minor + 1}.0  (bump: minor)" in result.stdout
+    assert "feat(core): add fixture feature" in result.stdout
+    assert "fix: add fixture correction" in result.stdout
+
+
+def test_release_check_without_release_tags_remains_indeterminate(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _copy_tracked_checkout(checkout)
+
+    with (checkout / "pyproject.toml").open("rb") as handle:
+        current = tomllib.load(handle)["project"]["version"]
+
+    result = subprocess.run(
+        ["bash", "scripts/release.sh", "--check"],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "Release check: INDETERMINATE" in result.stdout
+    assert f"Current package version: v{current}." in result.stdout
+
+
+def test_release_dry_run_uses_strict_release_tag_as_version_baseline(tmp_path):
+    checkout = tmp_path / "checkout"
+    checkout.mkdir()
+    _copy_tracked_checkout(checkout)
+
+    with (checkout / "pyproject.toml").open("rb") as handle:
+        current = tomllib.load(handle)["project"]["version"]
+    major, minor, patch = (int(part) for part in current.split("."))
+    candidate = f"{major}.{minor}.{patch + 1}"
+
+    _git(checkout, "tag", f"v{current}")
+    _commit_fixture(checkout, "marker.txt", "marker\n", "chore: add fixture marker")
+    _git(checkout, "tag", "maintenance-marker")
+    notes = checkout / "release-notes.md"
+    notes.write_text("### Fixed\n\n- Release baseline fixture.\n", encoding="utf-8")
+
+    result = subprocess.run(
+        ["bash", "scripts/release.sh", "--dry-run", candidate, str(notes)],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert f"Cutting release v{candidate} (last: v{current})  dry-run=1" in result.stdout
+    check = subprocess.run(
+        [sys.executable, "scripts/check_package_versions.py"],
+        cwd=checkout,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert check.returncode == 0, check.stdout + check.stderr
 
 
 def test_release_dry_run_syncs_all_package_versions_without_git_side_effects(tmp_path, monkeypatch):
