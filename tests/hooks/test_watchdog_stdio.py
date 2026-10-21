@@ -66,6 +66,24 @@ def test_sync_watchdog_still_emits_fallback_when_cap_fires(tmp_path):
 
 
 _BACKGROUND_BLOCK_END = re.compile(r"^[)}]\s*(?P<tail>.*)&\s*(#.*)?$")
+# stdout (fd 1, written as `>`, `1>`, `>>` or `1>>`) must go to a file; `2>...`
+# leaves fd 1 on the host pipe and `>&2` only moves it to another inherited fd.
+_STDOUT_TO_FILE = re.compile(r"(?:^|\s)1?>{1,2}\s*[^\s&]")
+
+
+def _detaches_stdout(tail: str) -> bool:
+    return bool(_STDOUT_TO_FILE.search(tail))
+
+
+def test_stdout_redirect_matcher():
+    assert _detaches_stdout(" </dev/null >/dev/null 2>&1 3>&- ")
+    assert _detaches_stdout(" > /dev/null 2>&1 ")
+    assert _detaches_stdout(' >> "$LOG" 2>&1 ')
+    assert _detaches_stdout(" 1>/dev/null ")
+    assert not _detaches_stdout(" 2>/dev/null ")
+    assert not _detaches_stdout(" 2>>errors.log ")
+    assert not _detaches_stdout(" >&2 ")
+    assert not _detaches_stdout(" ")
 
 
 def test_every_backgrounded_block_detaches_stdout():
@@ -75,6 +93,6 @@ def test_every_backgrounded_block_detaches_stdout():
     for path in sorted(HOOKS.rglob("*.sh")):
         for lineno, line in enumerate(path.read_text().splitlines(), 1):
             m = _BACKGROUND_BLOCK_END.match(line.strip())
-            if m and not re.search(r">\s*/dev/null|>>", m.group("tail")):
+            if m and not _detaches_stdout(" " + m.group("tail")):
                 offenders.append(f"{path.relative_to(ROOT)}:{lineno}")
     assert not offenders, f"backgrounded block inherits hook stdout: {offenders}"
