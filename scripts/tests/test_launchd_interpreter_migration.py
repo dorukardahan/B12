@@ -136,6 +136,20 @@ def test_docs_installed_plist_name_is_migrated_by_its_label(tmp_path, loaded, no
     assert _reload_calls(paths) == expected
 
 
+@pytest.mark.parametrize("no_plutil", [False, True], ids=["plutil", "awk-fallback"])
+def test_unrelated_launchd_named_plist_is_left_alone(tmp_path, no_plutil):
+    # A third-party launchd-*.plist must not be rewritten or reloaded, even if
+    # its contents look like something the migration would touch.
+    paths = _setup(tmp_path, loaded=["org.example.tool"], no_plutil=no_plutil)
+    foreign = paths["consolidate"].parent / "launchd-tool.plist"
+    _write_plist(foreign, ["/usr/bin/python3", f'{paths["home"]}/.B12/hooks/tool.py',
+                           f'{paths["home"]}/.claude/hooks/tool.sh'], "org.example.tool")
+    before = foreign.read_bytes()
+    _run(paths)
+    assert foreign.read_bytes() == before
+    assert not any("launchd-tool.plist" in c for c in _reload_calls(paths))
+
+
 def test_look_alike_loaded_label_does_not_reload_unloaded_job(tmp_path):
     # Dots in the label must not act as regex wildcards against other jobs.
     paths = _setup(tmp_path, loaded=["comXb12Ymemory-consolidate"])

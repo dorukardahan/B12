@@ -483,6 +483,16 @@ update_launchd_plists() {
     [ -f "$plist" ] || continue
     local changed=false
 
+    # The job label lives inside the plist; the file name may differ. Only
+    # touch B12 jobs: launchd-*.plist can also belong to unrelated software.
+    local label
+    label=$(plutil -extract Label raw -o - "$plist" 2>/dev/null) \
+      || label=$(awk '/<key>Label<\/key>/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print; exit }' "$plist")
+    case "$label" in
+      com.b12.*) ;;
+      *) continue ;;
+    esac
+
     # Check for old ~/.claude/hooks/ paths
     if grep -q "$HOME/.claude/hooks/" "$plist" 2>/dev/null; then
       sed -i '' "s|$HOME/.claude/hooks/|$HOME/.B12/hooks/|g" "$plist"
@@ -512,11 +522,6 @@ update_launchd_plists() {
       # Reload only jobs that were loaded before the rewrite so launchd picks
       # up the new file. A job the user unloaded or disabled (for example a
       # paused consolidation run) stays off.
-      local label
-      # The job label lives inside the plist; the file name may differ.
-      label=$(plutil -extract Label raw -o - "$plist" 2>/dev/null) \
-        || label=$(awk '/<key>Label<\/key>/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print; exit }' "$plist")
-      [ -n "$label" ] || label=$(basename "$plist" .plist)
       # Exact label query, as in reload_daemon_if_running(): grepping the full
       # listing would treat the dots in the label as regex wildcards.
       if launchctl list "$label" >/dev/null 2>&1; then
