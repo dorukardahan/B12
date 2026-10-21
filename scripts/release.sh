@@ -135,7 +135,9 @@ out, i, inserted = [], 0, False
 # keep the title line(s) until the first "## "
 while i < len(cl) and not cl[i].startswith("## "):
     out.append(cl[i]); i += 1
-if i < len(cl) and cl[i].startswith("## Unreleased"):
+# The repo writes the heading as "## [Unreleased]"; accept both spellings so
+# the curated section replaces it instead of landing above it.
+if i < len(cl) and re.match(r"## \[?Unreleased\]?", cl[i]):
     i += 1
     while i < len(cl) and not cl[i].startswith("## "):  # skip old Unreleased body
         i += 1

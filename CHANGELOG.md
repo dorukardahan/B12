@@ -1,5 +1,7 @@
 # Changelog
 
+All notable changes to B12 are documented in this file.
+
 ## [Unreleased]
 
 ### Changed
@@ -23,6 +25,7 @@
 
 ### Internal
 
+- `scripts/release.sh` now replaces the `## [Unreleased]` block, as the repo writes it, with the curated release section. It only matched `## Unreleased`, so a release would have landed above the pending entries and left them under it. The CHANGELOG also gains the missing v10.5 and v11.21.0 entries.
 - The test suite passes on macOS. Socket-based tests now use a short temp dir (`tmp_path` there exceeds the 104-byte AF_UNIX limit), the SessionEnd retention tests use the platform's DB path instead of the Linux one (on macOS they were checking an unused file), and two tests that simulate a deleted runtime through a symlinked launcher, which only works on Linux, are skipped on macOS.
 
 ## [v11.83.0] — 2026-08-17
@@ -803,6 +806,13 @@ model applied consistently across all three ranking surfaces.
 * Audited every hook event B12 wires (`SessionStart`, `PreCompact`, `SessionEnd`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`) against the current Claude Code 2.1.143 hook contract. **All payload shapes unchanged**, no regressions. Opportunities surfaced (not adopted in this release): `PostToolUseFailure`, `PostCompact`, `effort.level` field, `CLAUDE_CODE_SESSION_ID` env var.
 
 
+# [11.21.0](https://github.com/dorukardahan/B12/compare/v11.20.2...v11.21.0) (2026-05-15)
+
+
+### Features
+
+* **opencode:** add TypeScript plugin with full lifecycle hooks ([37a4bc8](https://github.com/dorukardahan/B12/commit/37a4bc8f4f8f6c7a2778c6d8c65088aaedaba3a0))
+
 ## [11.20.2](https://github.com/dorukardahan/B12/compare/v11.20.1...v11.20.2) (2026-03-16)
 
 
@@ -1173,7 +1183,17 @@ Major quality milestone: 3 independent AI auditors (Claude, Gemini, Codex) + 4-t
 
 * Address code review issues from multi-platform integration ([73df115](https://github.com/dorukardahan/B12/commit/73df1152f761e4059bd75bba49de5c7bbf729c2c))
 
-All notable changes to B12 are documented in this file.
+## v10.5 (2026-02-26) — Multi-Platform Support
+
+### Added
+- **7 new platform integrations**: Gemini CLI, VS Code/Copilot, Cursor, Kimi Code, Windsurf, Cline, OpenCode
+- Each platform gets its own --flag for install.sh
+- Shared inject_b12_section() helper eliminates duplicated code
+- 14 config templates for MCP configs + instruction files
+- All platforms share the same SQLite database
+
+### Fixed
+- Cursor tool naming bug (single → double underscore)
 
 ## v10.4 (2026-02-25) — ~/.B12 Migration
 
