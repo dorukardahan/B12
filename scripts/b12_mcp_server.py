@@ -77,10 +77,14 @@ B12_VERSION = "v11.83.0"
 # the cached MCP `initialize` + `notifications/initialized` so the host never sees
 # the break. Set B12_MCP_PROXY_RECONNECT=0 to disable (exit-on-EOF legacy behavior).
 _PROXY_RECONNECT = os.environ.get("B12_MCP_PROXY_RECONNECT", "1") != "0"
+# The default must outlast one throttled launchd respawn: if the first spawn after
+# a restart exits at once, launchd waits ThrottleInterval (30s in the plist) before
+# the next try, and the daemon then needs a few seconds to cold-start. A 30s budget
+# expired just before that and left every open session disconnected.
 try:
-    _RECONNECT_BUDGET_S = max(0.0, float(os.environ.get("B12_MCP_RECONNECT_BUDGET", "30")))
+    _RECONNECT_BUDGET_S = max(0.0, float(os.environ.get("B12_MCP_RECONNECT_BUDGET", "45")))
 except (TypeError, ValueError):
-    _RECONNECT_BUDGET_S = 30.0
+    _RECONNECT_BUDGET_S = 45.0
 
 # ── SQLite access (BB1: per-connection, off the event loop) ──────
 # Reads run concurrently on a thread pool — WAL allows many concurrent readers —
@@ -3060,7 +3064,7 @@ async def _run_as_proxy(sock_path: str) -> None:
         replays `notifications/initialized`, synthesizes a retryable error for each
         in-flight request, and resumes — so Claude Code never sees the break. If
         reconnection can't succeed within B12_MCP_RECONNECT_BUDGET seconds (default
-        30, ~one launchd respawn), or the reconnect negotiates a different protocol/
+        45, one throttled launchd respawn plus a cold start), or the reconnect negotiates a different protocol/
         capability set, the proxy exits (legacy behavior: B12 shows disconnected
         until a manual /mcp). Set B12_MCP_PROXY_RECONNECT=0 to disable entirely.
     """

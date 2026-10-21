@@ -34,7 +34,7 @@ def get_db_path():
 def daemon_request(texts):
     """Request embeddings from the embed daemon via Unix socket."""
     _uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-    sock_path = f"/tmp/b12-embed-{_uid}.sock"
+    sock_path = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_uid}.sock")
     if not os.path.exists(sock_path):
         return None
     try:
@@ -244,7 +244,7 @@ def main():
 
     # Check daemon is running
     _uid2 = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-    sock_path = f"/tmp/b12-embed-{_uid2}.sock"
+    sock_path = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_uid2}.sock")
     if not os.path.exists(sock_path):
         print("Embed daemon not running. Start a Claude Code session first,")
         print("or run: ~/.local/b12-venv/bin/python3 scripts/embed_daemon.py &")

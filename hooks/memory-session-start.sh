@@ -35,8 +35,8 @@ done
 # Singleton: daemon uses fcntl.flock() — only one instance can run.
 _UID=$(id -u 2>/dev/null || echo $$)
 # Hardcode /tmp/ — macOS TMPDIR varies per session, causing mismatch with daemon
-EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
-EMBED_LOCK="/tmp/b12-embed-${_UID}.lock"
+EMBED_SOCK="${B12_EMBED_RUNTIME_DIR:-/tmp}/b12-embed-${_UID}.sock"
+EMBED_LOCK="${B12_EMBED_RUNTIME_DIR:-/tmp}/b12-embed-${_UID}.lock"
 VENV_PYTHON="$HOME/.local/b12-venv/bin/python3"
 B12_SCRIPTS="${B12_HOOK_DIR:-$HOME/.B12/hooks}/scripts"
 DAEMON_SCRIPT="$B12_SCRIPTS/embed_daemon.py"
