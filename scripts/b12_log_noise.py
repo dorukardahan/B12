@@ -17,10 +17,22 @@ including validation failures for real methods, passes through unchanged.
 from __future__ import annotations
 
 import logging
+import re
 
+# Match the method itself, not any payload text: a real request whose arguments
+# contain "server/discover" also echoes that string in its validation dump, but
+# only the probe has it as the input of a `<Type>Request.method` literal check.
 _KNOWN_PROBES = (
-    ("Failed to validate request", "'server/discover'", "server/discover request"),
-    ("Failed to validate notification", "notifications/roots/list_changed", "pre-initialization roots/list_changed notification"),
+    (
+        "Failed to validate request",
+        re.compile(r"Request\.method\n\s*Input should be [^\n]*\[type=literal_error, input_value='server/discover'"),
+        "server/discover request",
+    ),
+    (
+        "Failed to validate notification",
+        re.compile(r"Message was: method='notifications/roots/list_changed'"),
+        "pre-initialization roots/list_changed notification",
+    ),
 )
 
 _SDK_REQUEST_LOGGER = "mcp.server.lowlevel.server"
@@ -37,8 +49,8 @@ class KnownProbeWarningFilter(logging.Filter):
         if record.levelno != logging.WARNING:
             return True
         message = record.getMessage()
-        for prefix, marker, label in _KNOWN_PROBES:
-            if message.startswith(prefix) and marker in message:
+        for prefix, pattern, label in _KNOWN_PROBES:
+            if message.startswith(prefix) and pattern.search(message):
                 if label in self._seen:
                     return False
                 self._seen.add(label)

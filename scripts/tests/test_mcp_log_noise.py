@@ -70,6 +70,41 @@ def test_real_failures_stay_visible(root_capture):
     assert "ERROR boom" in out and "validation errors for ClientRequest" in out
 
 
+def _sdk_request_dump(payload: dict) -> str:
+    types = pytest.importorskip("mcp.types")
+    try:
+        types.ClientRequest.model_validate(payload)
+    except Exception as exc:  # pydantic ValidationError, as the SDK logs it
+        return f"Failed to validate request: {exc}"
+    raise AssertionError("payload unexpectedly validated")
+
+
+def test_real_sdk_dumps_probe_collapses_but_payload_lookalike_stays(root_capture):
+    probe = _sdk_request_dump(
+        {"method": "server/discover", "params": {"_meta": {"io.modelcontextprotocol/protocolVersion": "2026-07-28"}}}
+    )
+    lookalike = _sdk_request_dump({"method": "tools/call", "params": {"name": "x", "arguments": "server/discover"}})
+    assert "server/discover" in lookalike  # the payload text is echoed in the dump
+    b12_log_noise.quiet_mcp_protocol_noise()
+    logging.warning(probe)
+    logging.warning(probe)
+    logging.warning(lookalike)
+    out = root_capture.getvalue()
+    assert out.count("server/discover request") == 1
+    assert "'arguments': 'server/discover'" in out, "a real tools/call failure must stay visible"
+
+
+def test_notification_match_requires_the_method(root_capture):
+    b12_log_noise.quiet_mcp_protocol_noise()
+    other = (
+        "Failed to validate notification: Received notification before initialization was complete. "
+        "Message was: method='notifications/progress' params={'note': 'notifications/roots/list_changed'} jsonrpc='2.0'"
+    )
+    logging.warning(ROOTS)
+    logging.warning(other)
+    assert "notifications/progress" in root_capture.getvalue()
+
+
 def test_sdk_request_info_lines_are_dropped(root_capture):
     b12_log_noise.quiet_mcp_protocol_noise()
     logging.getLogger(b12_log_noise._SDK_REQUEST_LOGGER).info("Processing request of type %s", "ListToolsRequest")
