@@ -69,10 +69,18 @@ def test_codex_skill_has_narrow_invocation_boundary():
 
 def test_codex_skill_is_limited_to_codex():
     # ChatGPT chat can read ~/.agents/skills too, but has no B12 MCP server.
+    # OpenAI documents the sidecar's products as CHAT and/or CODEX; Codex 0.163
+    # also accepts these uppercase spellings.
     yaml = CODEX_SKILL_YAML.read_text()
-    assert re.search(r"^policy:\n(?:[ \t]+.*\n)*?[ \t]+products:\n[ \t]+- codex\s*$", yaml, re.MULTILINE)
+    products = re.search(r"^[ \t]+products:\n((?:[ \t]+- .*\n?)+)", yaml, re.MULTILINE)
+    assert products, "policy.products must be set"
+    values = re.findall(r"- ([A-Za-z]+)", products.group(1))
+    assert values == ["CODEX"]
+    assert set(values) <= {"CHAT", "CODEX"}
     display = re.search(r'^\s+display_name:\s*"([^"]+)"', yaml, re.MULTILINE)
-    assert display and len(display.group(1)) <= 64
+    short = re.search(r'^\s+short_description:\s*"([^"]+)"', yaml, re.MULTILINE)
+    assert display and 0 < len(display.group(1)) <= 64
+    assert short and 25 <= len(short.group(1)) <= 64
 
 
 def test_codex_agents_makes_current_context_authoritative():
@@ -104,10 +112,12 @@ def test_installer_keeps_codex_and_claude_skill_sources_separate():
 
 
 def _run_install_codex_skill(home: Path) -> subprocess.CompletedProcess:
-    function = re.search(r"\ninstall_codex_skill\(\)\s*\{.*?\n\}\n", INSTALLER.read_text(), re.DOTALL).group(0)
+    source = INSTALLER.read_text()
+    helper = re.search(r"\nb12_skill_is_installer_owned\(\)\s*\{.*?\n\}\n", source, re.DOTALL).group(0)
+    function = re.search(r"\ninstall_codex_skill\(\)\s*\{.*?\n\}\n", source, re.DOTALL).group(0)
     script = (
         'info() { echo "INFO $*"; }; warn() { echo "WARN $*"; }\n'
-        f'SCRIPT_DIR="{ROOT}"\n' + function + "install_codex_skill\n"
+        f'SCRIPT_DIR="{ROOT}"\n' + helper + function + "install_codex_skill\n"
     )
     return subprocess.run(["bash", "-c", script], env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
                           capture_output=True, text=True, timeout=60)
@@ -143,6 +153,37 @@ def test_installer_keeps_a_user_authored_skill_with_the_same_name(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (mine / "SKILL.md").exists()
     assert "WARN" in result.stdout and "Inspect it manually" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_never_overwrites_a_user_skill_in_the_agents_root(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    mine = home / ".agents" / "skills" / "b12-memory"
+    (mine / "agents").mkdir(parents=True)
+    own_skill = "---\nname: b12-memory\ndescription: my own notes\n---\n\nPersonal.\n"
+    (mine / "SKILL.md").write_text(own_skill)
+    (mine / "agents" / "openai.yaml").write_text("interface:\n  display_name: Mine\n")
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert (mine / "SKILL.md").read_text() == own_skill
+    assert (mine / "agents" / "openai.yaml").read_text() == "interface:\n  display_name: Mine\n"
+    assert "not written by the B12 installer" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_replaces_its_own_older_skill_in_the_agents_root(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    dest = home / ".agents" / "skills" / "b12-memory"
+    dest.mkdir(parents=True)
+    shutil.copy(SHARED_SKILL, dest / "SKILL.md")  # moved there from ~/.codex/skills by hand
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert (dest / "SKILL.md").read_text() == CODEX_SKILL.read_text()
+    assert (dest / "agents" / "openai.yaml").read_text() == CODEX_SKILL_YAML.read_text()
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")

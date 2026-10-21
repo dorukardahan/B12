@@ -1299,6 +1299,19 @@ warn_live_codex_sessions() {
 # ─────────────────────────────────────────────
 # Codex CLI: install B12 skill
 # ─────────────────────────────────────────────
+
+# True when a SKILL.md was written by a B12 installer: byte-identical to the
+# shipped skill, or `name: b12-memory` plus a B12 header ("B12 Memory System"
+# from the shared skill, "B12 Memory for Codex" from the Codex one). Both
+# markers together are very unlikely in a user-authored skill (Codex review on
+# PR #18, rounds 2-3).
+b12_skill_is_installer_owned() {
+  local file="$1" shipped="$2"
+  cmp -s "$file" "$shipped" && return 0
+  grep -q '^name: b12-memory$' "$file" 2>/dev/null \
+    && grep -qE 'B12 Memory System|B12 Memory for Codex' "$file" 2>/dev/null
+}
+
 install_codex_skill() {
   local CODEX_DIR="$HOME/.codex"
   local SKILL_SRC="$SCRIPT_DIR/config/codex-skills/b12-memory"
@@ -1317,21 +1330,22 @@ install_codex_skill() {
     return
   fi
 
-  # Legacy cleanup: earlier installers wrote the B12 skill (`name: b12-memory`)
-  # to ~/.codex/skills/b12/ and later ~/.codex/skills/b12-memory/. Codex still
-  # reads that root, so a stale copy would load next to the new one.
-  #
-  # Two-tier fingerprint (Codex review on PR #18, rounds 2-3):
-  #   (a) byte-identical to the shipped Codex skill, or
-  #   (b) `name: b12-memory` plus a B12 installer header ("B12 Memory System"
-  #       from the shared skill, "B12 Memory for Codex" from this one)
-  # -> removed. A file that only declares `name: b12-memory` is left in place
-  # with a warning, since it may be user-authored.
+  # ~/.agents/skills is a shared user skill root: never overwrite a b12-memory
+  # skill there that a B12 installer did not write.
+  if [ -f "$SKILL_DEST/SKILL.md" ] && ! b12_skill_is_installer_owned "$SKILL_DEST/SKILL.md" "$SKILL_SRC/SKILL.md"; then
+    warn "A b12-memory skill at $SKILL_DEST was not written by the B12 installer;"
+    warn "leaving it unchanged. Move it aside and re-run to install the B12 Codex skill."
+    return
+  fi
+
+  # Legacy cleanup: earlier installers wrote the B12 skill to
+  # ~/.codex/skills/b12/ and later ~/.codex/skills/b12-memory/. Codex still
+  # reads that root, so a stale copy would load next to the new one. Copies a
+  # B12 installer wrote are removed; any other `name: b12-memory` file is left
+  # in place with a warning, since it may be user-authored.
   for legacy in "$CODEX_DIR/skills/b12" "$CODEX_DIR/skills/b12-memory"; do
     [ -f "$legacy/SKILL.md" ] || continue
-    if cmp -s "$legacy/SKILL.md" "$SKILL_SRC/SKILL.md" \
-       || { grep -q '^name: b12-memory$' "$legacy/SKILL.md" 2>/dev/null \
-            && grep -qE 'B12 Memory System|B12 Memory for Codex' "$legacy/SKILL.md" 2>/dev/null; }; then
+    if b12_skill_is_installer_owned "$legacy/SKILL.md" "$SKILL_SRC/SKILL.md"; then
       rm -f "$legacy/SKILL.md" "$legacy/agents/openai.yaml"
       rmdir "$legacy/agents" 2>/dev/null || true
       rmdir "$legacy" 2>/dev/null || true
