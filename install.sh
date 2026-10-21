@@ -466,8 +466,9 @@ copy_scripts() {
 
 # ─────────────────────────────────────────────
 # Step 3b: Update launchd plists (macOS only)
-# Migrates ~/.claude/hooks/ → ~/.B12/hooks/
-# and ~/.claude/memory-logs/ → ~/.B12/memory-logs/
+# Migrates ~/.claude/hooks/ → ~/.B12/hooks/,
+# ~/.claude/memory-logs/ → ~/.B12/memory-logs/,
+# and a legacy /usr/bin/python3 interpreter → the B12 venv
 # ─────────────────────────────────────────────
 update_launchd_plists() {
   [ "$(uname)" = "Darwin" ] || return 0
@@ -476,9 +477,21 @@ update_launchd_plists() {
   [ -d "$LAUNCH_DIR" ] || return 0
 
   local updated=0
-  for plist in "$LAUNCH_DIR"/com.b12.*.plist; do
+  # README/docs/setup.md install the templates under their own file names
+  # (launchd-*.plist), so scan those as well as com.b12.*.plist.
+  for plist in "$LAUNCH_DIR"/com.b12.*.plist "$LAUNCH_DIR"/launchd-*.plist; do
     [ -f "$plist" ] || continue
     local changed=false
+
+    # The job label lives inside the plist; the file name may differ. Only
+    # touch B12 jobs: launchd-*.plist can also belong to unrelated software.
+    local label
+    label=$(plutil -extract Label raw -o - "$plist" 2>/dev/null) \
+      || label=$(awk '/<key>Label<\/key>/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print; exit }' "$plist")
+    case "$label" in
+      com.b12.*) ;;
+      *) continue ;;
+    esac
 
     # Check for old ~/.claude/hooks/ paths
     if grep -q "$HOME/.claude/hooks/" "$plist" 2>/dev/null; then
@@ -492,16 +505,35 @@ update_launchd_plists() {
       changed=true
     fi
 
+    # Older installs ran B12 Python jobs with /usr/bin/python3 (3.9 on macOS),
+    # which cannot import the scripts (Python 3.11+ is required), so the job
+    # failed every run. Rewrite only an exact /usr/bin/python3 entry that runs a
+    # B12 hook script, and only when the venv interpreter exists; /bin/bash jobs
+    # are left alone.
+    if [ -x "$VENV_PYTHON" ] \
+      && grep -q "<string>/usr/bin/python3</string>" "$plist" 2>/dev/null \
+      && grep -q "<string>$HOME/.B12/hooks/[^<]*\.py</string>" "$plist" 2>/dev/null; then
+      sed "s|<string>/usr/bin/python3</string>|<string>$VENV_PYTHON</string>|" "$plist" > "$plist.b12tmp" \
+        && mv "$plist.b12tmp" "$plist"
+      changed=true
+    fi
+
     if $changed; then
-      # Reload the plist so launchd picks up new paths
-      launchctl unload "$plist" 2>/dev/null || true
-      launchctl load "$plist" 2>/dev/null || true
+      # Reload only jobs that were loaded before the rewrite so launchd picks
+      # up the new file. A job the user unloaded or disabled (for example a
+      # paused consolidation run) stays off.
+      # Exact label query, as in reload_daemon_if_running(): grepping the full
+      # listing would treat the dots in the label as regex wildcards.
+      if launchctl list "$label" >/dev/null 2>&1; then
+        launchctl unload "$plist" 2>/dev/null || true
+        launchctl load "$plist" 2>/dev/null || true
+      fi
       updated=$((updated + 1))
     fi
   done
 
   if [ "$updated" -gt 0 ]; then
-    info "Updated $updated launchd plist(s): ~/.claude/ → ~/.B12/ paths"
+    info "Updated $updated launchd plist(s) to current paths and interpreter"
   fi
 }
 

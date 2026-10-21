@@ -15,6 +15,18 @@ The script works directly with the SQLite database.
 """
 
 import sys
+
+# The consolidation engine needs Python 3.11+. Under an older interpreter (for
+# example /usr/bin/python3 on macOS) its import raises TypeError, which the
+# ImportError fallback below does not catch. Fail with a clear message instead.
+if sys.version_info < (3, 11):
+    sys.stderr.write(
+        "memory-consolidate.py requires Python 3.11+ (found %d.%d). "
+        "Run it with the B12 venv interpreter (~/.local/b12-venv/bin/python3).\n"
+        % tuple(sys.version_info[:2])
+    )
+    sys.exit(2)
+
 import os
 import json
 import sqlite3
