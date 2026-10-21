@@ -460,7 +460,7 @@ def _recall(model, data):
             'importance': round(float(importance or 0.5), 3),
             'project': project_tag,
             'source_session': (source_session or '')[:12],
-            'memory_type': memory_type or '',
+            'memory_type': memory_type or 'general',
             'preview': preview,
         })
 

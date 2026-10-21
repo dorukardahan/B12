@@ -58,6 +58,35 @@ def test_untyped_memory_gets_a_general_display(tmp_path, op):
     displays = {r["id"]: r["display"] for r in response["results"]}
     assert displays[1] == "[general] untyped memory text"
     assert displays[2] == "[decision] typed memory text"
+    if op is embed_daemon._recall:
+        # recall also sends the type on its own; hooks build "[type|src:...]" from it.
+        assert {r["id"]: r["memory_type"] for r in response["results"]} == {1: "general", 2: "decision"}
+
+
+def test_resurface_hits_carry_a_general_type(tmp_path):
+    import b12_long_session
+
+    db = tmp_path / "mem.db"
+    conn = sqlite3.connect(db)
+    conn.execute(
+        "CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT, content_hash TEXT, memory_type TEXT,"
+        " metadata TEXT, created_at REAL, deleted_at REAL, valid_until TEXT)"
+    )
+    meta = json.dumps({"source_session": "session-abcd", "importance_score": 0.9})
+    conn.execute("INSERT INTO memories (id, content, content_hash, memory_type, metadata) VALUES (1, 'x', 'h1', NULL, ?)", (meta,))
+    conn.commit()
+    conn.close()
+    hits = b12_long_session.pick_resurface_ids(str(db), "session-abcdef-0001")
+    assert [h["memory_type"] for h in hits] == ["general"]
+
+
+def test_surfacing_context_labels_untyped_memories():
+    import surfacing_engine
+
+    result = surfacing_engine.SurfacingResult(
+        memories=[{"id": 1, "content": "untyped", "memory_type": None, "score": 0.9}], surfaced=True
+    )
+    assert "  [general] untyped" in surfacing_engine.format_for_context(result).splitlines()
 
 
 def _sql_sources() -> list[Path]:
@@ -86,6 +115,13 @@ def test_no_unguarded_memory_type_concatenation_remains():
     # fallback is a logical OR, not SQL, and is allowed.
     concat = re.compile(r"\|\|\s*(?:\w+\.)?memory_type\b|\b(?:\w+\.)?memory_type\s*\|\|(?!\s*\")")
     assert not _offending_lines(concat)
+
+
+def test_python_displays_fall_back_for_untyped_rows():
+    # f"[{row['memory_type']}]" prints "None" for an untyped row, and
+    # `memory_type or ''` hands hooks an empty type they render as "[|src:...]".
+    bare = re.compile(r"""\[['"]memory_type['"]\]\}|['"]memory_type['"]\s*:\s*[^,\n]*\bor\s*(?:''|"")""")
+    assert not [hit for hit in _offending_lines(bare) if hit.split(":")[0].endswith(".py")]
 
 
 def test_type_exclusion_predicates_keep_untyped_rows():

@@ -2211,7 +2211,7 @@ async def memory_session_context(
                 ts = _short_iso(m["created_at"] if "created_at" in m.keys() else None,
                                 m["created_at_iso"] if "created_at_iso" in m.keys() else None)
                 ts_suffix = f"  _({ts})_" if ts else ""
-                sections.append(f"- [{m['memory_type']}] {_trim(m['content'])}{ts_suffix}")
+                sections.append(f"- [{m['memory_type'] or 'general'}] {_trim(m['content'])}{ts_suffix}")
                 boost_ids.append(m['id'])
             # Spaced repetition: boost retrieved memories
             if boost_ids:
@@ -2243,7 +2243,7 @@ async def memory_session_context(
                 ts = _short_iso(m["created_at"] if "created_at" in m.keys() else None,
                                 m["created_at_iso"] if "created_at_iso" in m.keys() else None)
                 ts_suffix = f"  _({ts})_" if ts else ""
-                sections.append(f"- [{m['memory_type']}] {_trim(m['content'])}{ts_suffix}")
+                sections.append(f"- [{m['memory_type'] or 'general'}] {_trim(m['content'])}{ts_suffix}")
 
         # 3. Last session summary for this project
         if project_name:
@@ -2447,7 +2447,7 @@ async def memory_refine(
     lines = [f"Refined {len(valid)} candidates \u2192 {len(refined)} unique memories:\n"]
     for r in refined:
         quality_bar = "\u2588" * int(r["quality_score"] * 10) + "\u2591" * (10 - int(r["quality_score"] * 10))
-        lines.append(f"[{quality_bar}] {r['quality_score']:.2f} | {r['memory_type']} | {r['content'][:120]}")
+        lines.append(f"[{quality_bar}] {r['quality_score']:.2f} | {r['memory_type'] or 'general'} | {r['content'][:120]}")
         if r["group_size"] > 1:
             lines.append(f"  \u21b3 merged {r['group_size']} near-duplicates")
 
@@ -2801,7 +2801,7 @@ async def resource_project_context(name: str) -> str:
         if proj_memories:
             sections.append(f"## Project Memories ({name})")
             for m in proj_memories:
-                sections.append(f"- [{m['memory_type']}] {m['content'][:300]}")
+                sections.append(f"- [{m['memory_type'] or 'general'}] {m['content'][:300]}")
 
         # Last session summary
         last_summary = db.execute("""
@@ -2876,7 +2876,7 @@ async def resource_stats() -> str:
         "## By Type",
     ]
     for r in type_rows:
-        lines.append(f"- {r['memory_type']}: {r['cnt']}")
+        lines.append(f"- {r['memory_type'] or 'none'}: {r['cnt']}")
     if edge_types:
         lines.append("")
         lines.append("## Edge Types")

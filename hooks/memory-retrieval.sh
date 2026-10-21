@@ -547,6 +547,8 @@ if [ "$_NEEDS_EMBED_DAEMON" = true ] && daemon_alive; then
             '.results[] | select(.id==$id) | "\(.memory_type)|\(.source_session)|\(.importance)|\(.project)|\(.preview)"' 2>/dev/null)
           if [ -n "$_META" ] && [ "$_META" != "||||" ]; then
             IFS='|' read -r _mt _ssid _imp _proj _prev <<< "$_META"
+            # A daemon started before this fix still sends '' for an untyped memory.
+            _mt="${_mt:-general}"
             _ssid_clean="${_ssid:-?}"
             _proj_clean="${_proj:-?}"
             _imp_clean="${_imp:-0.50}"
