@@ -174,7 +174,8 @@ def test_installer_never_overwrites_a_user_skill_in_the_agents_root(tmp_path):
     (home / ".codex").mkdir(parents=True)
     mine = home / ".agents" / "skills" / "b12-memory"
     (mine / "agents").mkdir(parents=True)
-    own_skill = "---\nname: b12-memory\ndescription: my own notes\n---\n\nPersonal.\n"
+    # Name and B12 header text alone do not prove that B12 wrote a file.
+    own_skill = "---\nname: b12-memory\ndescription: my own notes\n---\n\n# B12 Memory for Codex\n\nPersonal.\n"
     (mine / "SKILL.md").write_text(own_skill)
     (mine / "agents" / "openai.yaml").write_text("interface:\n  display_name: Mine\n")
 
@@ -203,22 +204,6 @@ def test_installer_replaces_its_own_older_skill_in_the_agents_root(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (dest / "SKILL.md").read_text() == CODEX_SKILL.read_text()
     assert (dest / "agents" / "openai.yaml").read_text() == CODEX_SKILL_YAML.read_text()
-
-
-@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
-def test_installer_keeps_a_user_skill_that_reuses_the_b12_header(tmp_path):
-    # Name and header text alone do not prove that B12 wrote a file.
-    home = tmp_path / "home"
-    (home / ".codex").mkdir(parents=True)
-    mine = home / ".agents" / "skills" / "b12-memory"
-    mine.mkdir(parents=True)
-    own_skill = "---\nname: b12-memory\ndescription: mine\n---\n\n# B12 Memory for Codex\n\nMy own version.\n"
-    (mine / "SKILL.md").write_text(own_skill)
-
-    result = _run_install_codex_skill(home)
-    assert result.returncode == 0, result.stderr
-    assert (mine / "SKILL.md").read_text() == own_skill
-    assert "not written by the B12 installer" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
@@ -296,6 +281,29 @@ def test_installer_keeps_a_marked_skill_swapped_for_another_b12_version(tmp_path
     assert result.returncode == 0, result.stderr
     assert skill.read_text() == SHARED_SKILL.read_text()
     assert "was edited since" in result.stdout
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+@pytest.mark.parametrize("copied", [("SKILL.md",), ("SKILL.md", "agents/openai.yaml")])
+def test_installer_finishes_an_upgrade_interrupted_before_the_marker(tmp_path, copied):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    dest = home / ".agents" / "skills" / "b12-memory"
+    (dest / "agents").mkdir(parents=True)
+    older = {"SKILL.md": "---\nname: b12-memory\ndescription: an older B12 release\n---\n",
+             "agents/openai.yaml": "interface: {}\n"}
+    for path, text in older.items():
+        (dest / path).write_text(text)
+    (dest / ".b12-installed").write_text("".join(f"{_sha256(t.encode())}  {p}\n" for p, t in older.items()))
+    for path in copied:  # the run stopped after these copies, before the marker
+        shutil.copy(CODEX_SKILL_DIR / path, dest / path)
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert (dest / "SKILL.md").read_text() == CODEX_SKILL.read_text()
+    assert (dest / "agents" / "openai.yaml").read_text() == CODEX_SKILL_YAML.read_text()
+    assert f"{_sha256(CODEX_SKILL.read_bytes())}  SKILL.md" in (dest / ".b12-installed").read_text()
+    assert not (dest / ".b12-installed.tmp").exists()
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")

@@ -1329,7 +1329,10 @@ b12_file_is_shipped() {
 # True only when B12 provably wrote the skill in DIR and nobody changed it
 # since. With the .b12-installed marker install_codex_skill writes, every file
 # it records must still match it, so any later edit, removal or swap for
-# another B12 version counts as the user's. Without a marker (installs that
+# another B12 version counts as the user's. A file that already equals this
+# checkout's copy is also accepted: an upgrade interrupted between the copies
+# and the marker leaves that state, and replacing such a file changes nothing.
+# Without a marker (installs that
 # predate it), SKILL.md and agents/openai.yaml must be versions B12 shipped; B12
 # installed the Codex skill with that sidecar, so only copies of the shared
 # skill, which never had one, may lack it.
@@ -1339,7 +1342,8 @@ b12_skill_is_installer_owned() {
   if [ -e "$dir/.b12-installed" ]; then
     grep -qE '^[0-9a-f]{64}  SKILL\.md$' "$dir/.b12-installed" 2>/dev/null || return 1
     while read -r hash path; do
-      [ -f "$dir/$path" ] && [ "$(b12_sha256 "$dir/$path")" = "$hash" ] || return 1
+      [ -f "$dir/$path" ] || return 1
+      [ "$(b12_sha256 "$dir/$path")" = "$hash" ] || cmp -s "$dir/$path" "$src/$path" || return 1
     done < "$dir/.b12-installed"
     return 0
   fi
@@ -1399,14 +1403,19 @@ install_codex_skill() {
     return
   fi
 
-  mkdir -p "$SKILL_DEST/agents"
-  cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
-  cp "$SKILL_SRC/agents/openai.yaml" "$SKILL_DEST/agents/openai.yaml"
   # Record what B12 wrote (sha256sum format), so the next install can tell its
-  # own copy (replace) from one the user has edited since (keep).
-  printf '%s  SKILL.md\n%s  agents/openai.yaml\n' \
-    "$(b12_sha256 "$SKILL_DEST/SKILL.md")" "$(b12_sha256 "$SKILL_DEST/agents/openai.yaml")" \
-    > "$SKILL_DEST/.b12-installed"
+  # own copy (replace) from one the user has edited since (keep). The marker is
+  # renamed into place, so an interrupted run never leaves a partial one.
+  if ! { mkdir -p "$SKILL_DEST/agents" \
+         && cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md" \
+         && cp "$SKILL_SRC/agents/openai.yaml" "$SKILL_DEST/agents/openai.yaml" \
+         && printf '%s  SKILL.md\n%s  agents/openai.yaml\n' \
+              "$(b12_sha256 "$SKILL_DEST/SKILL.md")" "$(b12_sha256 "$SKILL_DEST/agents/openai.yaml")" \
+              > "$SKILL_DEST/.b12-installed.tmp" \
+         && mv -f "$SKILL_DEST/.b12-installed.tmp" "$SKILL_DEST/.b12-installed"; }; then
+    warn "Could not finish installing the B12 skill to $SKILL_DEST; re-run ./install.sh --codex"
+    return
+  fi
   info "B12 skill installed to $SKILL_DEST"
 }
 
