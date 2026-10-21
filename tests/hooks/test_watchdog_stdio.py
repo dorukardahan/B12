@@ -66,7 +66,8 @@ def test_sync_watchdog_still_emits_fallback_when_cap_fires(tmp_path):
 
 
 
-# The guard below models one line of shell at a time: quoting, ( ) and { }
+# The guard below models one logical line of shell at a time (physical lines
+# joined after a trailing `\`, `|`, `&&` or `||`): quoting, ( ) and { }
 # groups, `$( )` and backtick substitutions, jobs, and-or lists, pipelines
 # and redirections applied in order, plus the fds a hook changes for itself
 # with `exec`. Every fd that still points at one of the hook's own output
@@ -239,19 +240,38 @@ def _leaks(line: str, fds: dict[int, str] | None = None) -> bool:
     return False
 
 
+def _continues(line: str) -> bool:
+    """True if the shell reads the next physical line as part of this command:
+    a trailing backslash, or a trailing `|`, `&&` or `||` outside quotes."""
+    if line.rstrip().endswith("\\"):
+        return True
+    tail = re.sub(r"\s#.*$", "", _top_level(line)[0]).rstrip()
+    return tail.endswith(("|", "&&"))
+
+
 def _shell_lines(path: Path):
-    """(lineno, line) for the shell code of a hook, skipping heredoc bodies
-    such as embedded Python, where `&` is not a shell operator."""
-    terminator = None
+    """(lineno, line) for each logical shell command of a hook, joining
+    continued physical lines and reporting the first one's number, and
+    skipping heredoc bodies such as embedded Python, where `&` is not a shell
+    operator."""
+    terminator, pending, start = None, "", 0
     for lineno, line in enumerate(path.read_text().splitlines(), 1):
         if terminator is not None:
             if line.strip() == terminator:
                 terminator = None
             continue
-        yield lineno, line
-        heredoc = _HEREDOC.search(line)
+        if not pending:
+            start = lineno
+        if _continues(line):
+            pending += line.rstrip().removesuffix("\\") + " "
+            continue
+        logical, pending = pending + line, ""
+        yield start, logical
+        heredoc = _HEREDOC.search(logical)
         if heredoc:
             terminator = heredoc.group(2)
+    if pending:
+        yield start, pending
 
 
 def _leaking_lines(path: Path) -> list[int]:
@@ -349,6 +369,17 @@ def test_exec_redirections_carry_down_the_file(tmp_path):
         "( work ) >/dev/null &\n"
     )
     assert _leaking_lines(hook) == [2]
+
+
+def test_continued_lines_are_joined(tmp_path):
+    hook = tmp_path / "hook.sh"
+    hook.write_text(
+        "sleep 30 |\n  cat >/dev/null 2>&1 &\n"
+        "a &&\n  b >/dev/null 2>&1 &\n"
+        "cmd --flag \\\n  >/dev/null 2>&1 &\n"
+        "x | \\\n  y >/dev/null 2>&1 &\n"
+    )
+    assert _leaking_lines(hook) == [1, 3, 7]
 
 
 def test_heredoc_bodies_are_not_scanned(tmp_path):
