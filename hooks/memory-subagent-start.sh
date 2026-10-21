@@ -90,10 +90,11 @@ if [ -z "$HITS" ] && [ -r "$DB_PATH" ] && command -v sqlite3 >/dev/null 2>&1; th
     # FTS5 OR-match — broad recall in cold path.
     FTS_QUERY=$(printf '%s' "$TOKENS" | awk '{for(i=1;i<=NF;i++)printf "\"%s\"%s",$i,(i<NF?" OR ":"")}')
     FTS_RES=$(sqlite3 "$DB_PATH" \
-      "SELECT '[' || m.memory_type || '] ' || substr(replace(m.content, char(10), ' '), 1, 200)
+      "SELECT '[' || COALESCE(m.memory_type, 'general') || '] ' || substr(replace(m.content, char(10), ' '), 1, 200)
        FROM memory_content_fts fts JOIN memories m ON m.id = fts.rowid
        WHERE fts.content MATCH '$FTS_QUERY' AND m.deleted_at IS NULL
-         AND m.memory_type NOT IN ('session_summary', 'progress')
+         AND ((m.memory_type IS NULL AND COALESCE(m.tags, '') NOT LIKE '%session-summary%')
+              OR m.memory_type NOT IN ('session_summary', 'progress'))
        ORDER BY rank LIMIT 4;" 2>/dev/null)
     if [ -n "$FTS_RES" ]; then
       HITS=$(printf '## B12 recall (subagent-scoped, cold-path FTS)\n%s' \

@@ -263,7 +263,7 @@ def _semantic_search(model, data):
             id_to_sim = {rid: sim for rid, sim in topk}
             ph = ",".join("?" for _ in id_to_sim)
             rows = conn.execute(
-                f"""SELECT m.id, '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
+                f"""SELECT m.id, '[' || COALESCE(m.memory_type, 'general') || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
                     FROM memories m WHERE m.id IN ({ph}) AND m.deleted_at IS NULL
                       AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
                       AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
@@ -294,7 +294,7 @@ def _semantic_search(model, data):
     # being routinely unavailable.
     rows = conn.execute("""
         SELECT m.id,
-               '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' '),
+               '[' || COALESCE(m.memory_type, 'general') || '] ' || replace(substr(m.content, 1, 300), char(10), ' '),
                e.content_embedding
         FROM memories m
         JOIN memory_embeddings e ON m.id = e.rowid
@@ -367,7 +367,7 @@ def _recall(model, data):
     # anchor — Q4 of the proactive-recall design notes.
     base_sql = """
         SELECT m.id,
-               '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') AS display,
+               '[' || COALESCE(m.memory_type, 'general') || '] ' || replace(substr(m.content, 1, 300), char(10), ' ') AS display,
                m.content_hash,
                COALESCE(json_extract(m.metadata, '$.importance_score'), 0.5) AS importance,
                COALESCE(json_extract(m.metadata, '$.project'), '') AS project,
@@ -460,7 +460,7 @@ def _recall(model, data):
             'importance': round(float(importance or 0.5), 3),
             'project': project_tag,
             'source_session': (source_session or '')[:12],
-            'memory_type': memory_type or '',
+            'memory_type': memory_type or 'general',
             'preview': preview,
         })
 

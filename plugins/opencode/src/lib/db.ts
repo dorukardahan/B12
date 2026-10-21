@@ -959,12 +959,12 @@ export class B12Database {
         .all(tagParam(`proj:${projectName}`)) as Array<{
         id: number;
         content: string;
-        memory_type: string;
+        memory_type: string | null;
       }>;
 
       result.projectMemories = projRows.map((m) => ({
         content: m.content.slice(0, 300),
-        memory_type: m.memory_type,
+        memory_type: m.memory_type || "general",
       }));
 
       if (projRows.length > 0) {
@@ -984,11 +984,11 @@ export class B12Database {
                   * COALESCE(strength, 1.0) DESC
          LIMIT 2`,
       )
-      .all() as Array<{ content: string; memory_type: string }>;
+      .all() as Array<{ content: string; memory_type: string | null }>;
 
     result.universalMemories = universalRows.map((m) => ({
       content: m.content.slice(0, 300),
-      memory_type: m.memory_type,
+      memory_type: m.memory_type || "general",
     }));
 
     if (projectName) {
@@ -1048,7 +1048,7 @@ export class B12Database {
     const rows = this.db
       .prepare(
         `SELECT DISTINCT m2.id,
-                '[' || m2.memory_type || '] ' || replace(substr(m2.content, 1, 200), char(10), ' ') as display,
+                '[' || COALESCE(m2.memory_type, 'general') || '] ' || replace(substr(m2.content, 1, 200), char(10), ' ') as display,
                 edges.similarity
          FROM (
            SELECT mg.target_hash AS neighbor_hash, mg.similarity
@@ -1068,6 +1068,8 @@ export class B12Database {
          JOIN memories m2 ON m2.content_hash = edges.neighbor_hash
          WHERE m2.id NOT IN (${allPlaceholders})
            AND m2.deleted_at IS NULL
+           AND (m2.memory_type IS NULL OR m2.memory_type NOT IN ('session_summary', 'progress'))
+           AND (m2.tags IS NULL OR m2.tags NOT LIKE '%session-summary%')
          ORDER BY edges.similarity DESC
          LIMIT ?`,
       )

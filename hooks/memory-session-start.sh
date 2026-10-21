@@ -406,11 +406,11 @@ if [ -f "$DB_PATH" ]; then
     fi
 
     PROJ_MEMS=$(sqlite3 "$DB_PATH" "
-      SELECT '[' || m.memory_type || '] ' || substr(m.content, 1, 200)
+      SELECT '[' || COALESCE(m.memory_type, 'general') || '] ' || substr(m.content, 1, 200)
       FROM memories m
       WHERE m.deleted_at IS NULL
         AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-        AND m.memory_type != 'session_summary'
+        AND (m.memory_type IS NULL OR m.memory_type != 'session_summary')
         AND m.tags NOT LIKE '%session-summary%'
         AND (
           ${TAG_COND}
@@ -432,7 +432,7 @@ if [ -f "$DB_PATH" ]; then
 
   # Universal knowledge (cross-project patterns, CLI tricks, lessons)
   UNIVERSAL_MEMS=$(sqlite3 "$DB_PATH" "
-    SELECT '[' || memory_type || '] ' || substr(content, 1, 200)
+    SELECT '[' || COALESCE(memory_type, 'general') || '] ' || substr(content, 1, 200)
     FROM memories
     WHERE tags LIKE '%user:universal%'
       AND deleted_at IS NULL

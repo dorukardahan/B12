@@ -57,7 +57,7 @@ export async function sessionStart(
 
   if (context.projectMemories.length > 0) {
     const lines = context.projectMemories
-      .map((m) => `[${m.memory_type}] ${m.content}`)
+      .map((m) => `[${m.memory_type || "general"}] ${m.content}`)
       .join("\n")
     if (totalChars + lines.length < CHAR_BUDGET) {
       sections.push(`## Project Memories (${project})\n${lines}`)
@@ -67,7 +67,7 @@ export async function sessionStart(
 
   if (context.universalMemories.length > 0) {
     const lines = context.universalMemories
-      .map((m) => `[${m.memory_type}] ${m.content}`)
+      .map((m) => `[${m.memory_type || "general"}] ${m.content}`)
       .join("\n")
     if (totalChars + lines.length < CHAR_BUDGET) {
       sections.push(`## Cross-Project Knowledge\n${lines}`)
