@@ -118,6 +118,18 @@ def test_b12_ignore_opts_out(tmp_path):
     assert not _is_setup(backup, tmp_path)
 
 
+def test_install_to_setup_honors_b12_ignore(tmp_path):
+    # The default ~/.claude and an explicit target call install_to_setup()
+    # directly, without the --all loop's detection.
+    setup = tmp_path / ".claude"
+    setup.mkdir()
+    (setup / "settings.json").write_text('{"keep": true}')
+    (setup / ".b12-ignore").write_text("")
+    result = _bash(f'install_to_setup "{setup}"\n', tmp_path)
+    assert result.returncode == 0, result.stderr
+    assert json.loads((setup / "settings.json").read_text()) == {"keep": True}
+
+
 def test_setup_dir_detection(tmp_path):
     plain = tmp_path / ".claude"
     plain.mkdir()

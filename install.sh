@@ -566,6 +566,12 @@ install_to_setup() {
     warn "Setup directory not found: $SETUP_DIR (skipping)"
     return
   fi
+  # Checked here, not only in the --all loop, so the default ~/.claude and an
+  # explicit target directory honor the opt-out too.
+  if [ -e "$SETUP_DIR/.b12-ignore" ]; then
+    info "Skipping $SETUP_DIR (.b12-ignore)"
+    return
+  fi
 
   # Create settings.json if it doesn't exist
   if [ ! -f "$SETTINGS_FILE" ]; then
