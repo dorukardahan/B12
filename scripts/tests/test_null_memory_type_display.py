@@ -96,10 +96,32 @@ def test_type_exclusion_predicates_keep_untyped_rows():
     assert not _offending_lines(sql_exclusion, guarded)
 
 
+def _hook_jq(hook: str, var: str) -> str | None:
+    match = re.search(var + r"=\$\(echo \"\$_RESP\" \| jq -[rc] '([^']+)'", hook)
+    return match.group(1) if match else None
+
+
+def _jq(flag: str, program: str, data: str) -> str:
+    return subprocess.run(["jq", flag, program], input=data, capture_output=True, text=True, check=True).stdout
+
+
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")
-def test_proactive_surface_never_prints_null_displays():
+def test_proactive_surface_counts_shows_and_records_only_displayed_results():
+    # Runs the hook's own jq programs in order: the response filter, then the
+    # hit count, the injected lines and the dedup-ledger ids.
     hook = (REPO_ROOT / "hooks" / "memory-proactive-surface.sh").read_text()
-    expr = re.search(r"_DISPLAY=\$\(echo \"\$_RESP\" \| jq -r '([^']+)'\)", hook).group(1)
-    payload = json.dumps({"results": [{"id": 1, "display": None}, {"id": 2, "display": "[decision] kept"}]})
-    out = subprocess.run(["jq", "-r", expr], input=payload, capture_output=True, text=True, check=True).stdout
-    assert out.splitlines() == ["[decision] kept"]
+    response_filter = _hook_jq(hook, "_RESP") or "."
+    mixed = json.dumps({"ok": True, "results": [
+        {"id": 1, "display": None}, {"id": 2}, {"id": 3, "display": ""}, {"id": 4, "display": "[decision] kept"},
+    ]})
+    filtered = _jq("-c", response_filter, mixed)
+    assert _jq("-r", _hook_jq(hook, "_HIT_COUNT"), filtered).strip() == "1"
+    assert _jq("-r", _hook_jq(hook, "_DISPLAY"), filtered).splitlines() == ["[decision] kept"]
+    assert _jq("-r", _hook_jq(hook, "_INJECTED_IDS"), filtered).splitlines() == ["4"]
+
+    all_null = json.dumps({"ok": True, "results": [{"id": 1, "display": None}]})
+    assert _jq("-r", _hook_jq(hook, "_HIT_COUNT"), _jq("-c", response_filter, all_null)).strip() == "0"
+
+    filter_at = hook.find("_RESP=$(echo")
+    for var in ("_HIT_COUNT", "_DISPLAY", "_INJECTED_IDS"):
+        assert hook.index(f"{var}=") > filter_at >= 0, f"{var} must be derived from the filtered response"
