@@ -523,6 +523,8 @@ B12 also works with OpenAI's Codex CLI. The same MCP server and SQLite database 
 
 1. Injects B12 MCP server config into `~/.codex/config.toml`
 2. Appends B12 memory instructions to `~/.codex/AGENTS.md` (between `<!-- B12-MEMORY-START -->` and `<!-- B12-MEMORY-END -->` markers)
+3. Registers the session and turn hooks in `~/.codex/hooks.json`
+4. Installs a Codex-specific B12 skill to `~/.agents/skills/b12-memory/`, the user skill root that Codex CLI and the ChatGPT desktop app both read (Codex 0.163 treats `~/.codex/skills` as a deprecated fallback, so the installer removes B12's old copy there). Its `agents/openai.yaml` limits the skill to Codex, because ChatGPT chat has no B12 MCP server
 
 ### Manual Codex Setup
 
@@ -560,12 +562,12 @@ Replace `/Users/yourname` with your actual home directory.
 | Feature | Claude Code | Codex CLI |
 |---------|-------------|-----------|
 | MCP tools (store/search/update/quality) | Automatic | Automatic |
-| Per-prompt memory retrieval | Automatic (hook) | Automatic (`UserPromptSubmit`) |
+| Per-prompt memory retrieval | Automatic (hook) | None at prompt time: `SessionStart` primes context, then targeted model recall |
 | Session summary extraction | Automatic (`SessionEnd`) | Automatic (detached `SessionEnd`) |
 | Tag auto-injection | Automatic (hook) | Automatic (`PreToolUse`) |
 | Working context tracking | Automatic (hook) | Automatic turn hooks |
 
-The MCP tools share one implementation. Claude Code and Codex also automate lifecycle work; `AGENTS.md` remains the model-facing fallback rather than the owner of summary extraction.
+The MCP tools share one implementation. Claude Code and Codex also automate lifecycle work, so Codex's `AGENTS.md` block and B12 skill keep the model out of that lifecycle: it does not call `memory_session_context` at startup or store a summary at the end, and it searches B12 only when the task needs cross-session history that is absent from the visible conversation and current files, or when the user explicitly asks to remember, correct, or forget something.
 
 ### Codex lifecycle migration: legacy `notify` → `SessionEnd`
 
@@ -641,7 +643,7 @@ Each platform-specific flag performs the same minimal contract:
 |---------|-------------|----------------|-------|-----------------|
 | Memory store (MCP tool) | Automatic | Automatic | Automatic | Automatic |
 | Memory search (MCP tool) | Automatic | Automatic | Automatic | Automatic |
-| Pre-prompt retrieval (hook) | ✓ silent | ✓ via `UserPromptSubmit` hook | ✓ via `userPromptSubmit` hook | Model follows instructions |
+| Pre-prompt retrieval (hook) | ✓ silent | ✗ (`UserPromptSubmit` only tracks `/goal`); `SessionStart` primes context, then targeted model recall | ✓ via `userPromptSubmit` hook | Model follows instructions |
 | Session-end summary extraction | ✓ silent | ✓ via detached `SessionEnd` hook | ✗ | ✗ |
 | Tag auto-injection on store | ✓ silent | ✓ via `PreToolUse` hook | ✓ | Model follows instructions |
 | Working-context tracking on tool use | ✓ silent | ✓ via `PostToolUse` hook | ✗ | ✗ |

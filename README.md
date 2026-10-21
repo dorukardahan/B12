@@ -338,7 +338,7 @@ B12 works with any MCP-compatible coding assistant. The same MCP server and SQLi
 
 Each flag configures the platform's MCP config and injects B12 memory instructions into the platform's instruction file. Restart the platform and check its MCP status to verify.
 
-**Codex CLI specifics:** Codex's `SessionEnd` event owns summary extraction after the rollout is flushed; the adapter detaches immediately to stay inside Codex's teardown timeout. The other six registered hooks split the remaining lifecycle: `SessionStart` injects context (spillover-safe), `UserPromptSubmit` tracks `/goal` state, `Stop` captures turn-scoped progress, and `PreToolUse`/`PostToolUse`/`PreCompact` mirror their Claude Code counterparts. Re-running `./install.sh --codex` removes B12's legacy notify adapter while preserving any other notify argv, then reports B12 hooks that Codex's `/hooks` trust screen has explicitly disabled.
+**Codex CLI specifics:** Codex's `SessionEnd` event owns summary extraction after the rollout is flushed; the adapter detaches immediately to stay inside Codex's teardown timeout. The other six registered hooks split the remaining lifecycle: `SessionStart` injects context (spillover-safe), `UserPromptSubmit` tracks `/goal` state, `Stop` captures turn-scoped progress, and `PreToolUse`/`PostToolUse`/`PreCompact` mirror their Claude Code counterparts. Re-running `./install.sh --codex` removes B12's legacy notify adapter while preserving any other notify argv, then reports B12 hooks that Codex's `/hooks` trust screen has explicitly disabled. Because the hooks own the session lifecycle, the B12 block in `~/.codex/AGENTS.md` and the Codex-specific B12 skill (installed to `~/.agents/skills/b12-memory`, the user skill root that both Codex CLI and the ChatGPT desktop app read) ask the model to search only for missing cross-session context or to handle an explicit remember, correct, or forget request, not for information already visible in the conversation.
 
 ### 4. Optional — Automated tasks
 
@@ -447,6 +447,7 @@ B12/
 │   ├── settings-template.json      #   Hook config for settings.json
 │   ├── codex-config-template.toml  #   MCP server config for Codex config.toml
 │   ├── codex-agents-template.md    #   B12 instructions for Codex AGENTS.md
+│   ├── codex-skills/b12-memory/    #   Codex-specific B12 skill (+ agents/openai.yaml)
 │   ├── gemini-*-template.*         #   Gemini CLI config + instructions
 │   ├── vscode-*-template.*         #   VS Code / Copilot config + instructions
 │   ├── cursor-*-template.*         #   Cursor config + rules

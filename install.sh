@@ -32,7 +32,7 @@
 #   1. Injects B12 MCP server into ~/.codex/config.toml
 #   2. Appends B12 memory instructions to ~/.codex/AGENTS.md
 #   3. Registers turn/session lifecycle hooks in ~/.codex/hooks.json
-#   4. Installs B12 skill to ~/.codex/skills/b12-memory/
+#   4. Installs the Codex B12 skill to ~/.agents/skills/b12-memory/ (Codex user skill root)
 #   (Requires venv — use with --full on first run)
 #
 # Standard install:
@@ -1301,61 +1301,51 @@ warn_live_codex_sessions() {
 # ─────────────────────────────────────────────
 install_codex_skill() {
   local CODEX_DIR="$HOME/.codex"
-  local SKILL_SRC="$SCRIPT_DIR/skills/b12-memory"
-  local SKILL_DEST="$CODEX_DIR/skills/b12-memory"
-  local LEGACY_DEST="$CODEX_DIR/skills/b12"
+  local SKILL_SRC="$SCRIPT_DIR/config/codex-skills/b12-memory"
+  # Codex 0.163+ (CLI and the ChatGPT desktop app, which runs the same codex
+  # binary) reads user skills from ~/.agents/skills. $CODEX_HOME/skills is a
+  # deprecated fallback, and a skill present in both roots is loaded twice.
+  local SKILL_DEST="$HOME/.agents/skills/b12-memory"
+  local legacy
 
   if [ ! -d "$CODEX_DIR" ]; then
     return
   fi
 
   if [ ! -f "$SKILL_SRC/SKILL.md" ]; then
-    warn "B12 skill template not found at $SKILL_SRC/SKILL.md"
+    warn "B12 Codex skill not found at $SKILL_SRC/SKILL.md"
     return
   fi
 
-  # Legacy cleanup: prior installer versions wrote the B12 skill (with
-  # `name: b12-memory`) to ~/.codex/skills/b12/. Without this cleanup,
-  # Codex sees two SKILL.md files declaring the same name and may
-  # silently pick the older one — defeating the collision fix.
+  # Legacy cleanup: earlier installers wrote the B12 skill (`name: b12-memory`)
+  # to ~/.codex/skills/b12/ and later ~/.codex/skills/b12-memory/. Codex still
+  # reads that root, so a stale copy would load next to the new one.
   #
-  # Two-tier fingerprint:
-  #   (a) BYTE-IDENTICAL to the current install source → safe to delete.
-  #       Covers users who installed the latest skill at the legacy
-  #       path manually or via a future re-run.
-  #   (b) Declares `name: b12-memory` AND contains the canonical B12
-  #       header "B12 Memory System" → installer-generated (matches
-  #       all prior installer revisions that shipped this skill).
-  #       Safe to delete even when content differs, because both
-  #       markers together are extremely unlikely in a user-authored
-  #       skill.
-  #
-  # Files that match (a) or (b) → removed. Files that declare only
-  # `name: b12-memory` (without the B12 header) → preserved with a
-  # warn() so the user inspects manually. Codex review on PR #18
-  # rounds 2-3 walked this tradeoff: byte-identical alone misses the
-  # upgrade case from prior installer revisions, name-only deletes
-  # user content.
-  if [ -f "$LEGACY_DEST/SKILL.md" ]; then
-    if cmp -s "$LEGACY_DEST/SKILL.md" "$SKILL_SRC/SKILL.md"; then
-      rm -f "$LEGACY_DEST/SKILL.md"
-      rmdir "$LEGACY_DEST" 2>/dev/null || true
-      info "Removed legacy skill at $LEGACY_DEST (byte-identical to current install)"
-    elif grep -q '^name: b12-memory$' "$LEGACY_DEST/SKILL.md" 2>/dev/null \
-         && grep -q 'B12 Memory System' "$LEGACY_DEST/SKILL.md" 2>/dev/null; then
-      rm -f "$LEGACY_DEST/SKILL.md"
-      rmdir "$LEGACY_DEST" 2>/dev/null || true
-      info "Removed legacy skill at $LEGACY_DEST (B12-installer fingerprint matched)"
-    elif grep -q '^name: b12-memory$' "$LEGACY_DEST/SKILL.md" 2>/dev/null; then
-      warn "Legacy skill at $LEGACY_DEST/SKILL.md has \`name: b12-memory\` but does"
-      warn "not match the B12 installer fingerprint. Inspect manually — if it's a"
-      warn "user-authored skill, rename its frontmatter; if it's stale installer"
-      warn "output, delete the file."
+  # Two-tier fingerprint (Codex review on PR #18, rounds 2-3):
+  #   (a) byte-identical to the shipped Codex skill, or
+  #   (b) `name: b12-memory` plus a B12 installer header ("B12 Memory System"
+  #       from the shared skill, "B12 Memory for Codex" from this one)
+  # -> removed. A file that only declares `name: b12-memory` is left in place
+  # with a warning, since it may be user-authored.
+  for legacy in "$CODEX_DIR/skills/b12" "$CODEX_DIR/skills/b12-memory"; do
+    [ -f "$legacy/SKILL.md" ] || continue
+    if cmp -s "$legacy/SKILL.md" "$SKILL_SRC/SKILL.md" \
+       || { grep -q '^name: b12-memory$' "$legacy/SKILL.md" 2>/dev/null \
+            && grep -qE 'B12 Memory System|B12 Memory for Codex' "$legacy/SKILL.md" 2>/dev/null; }; then
+      rm -f "$legacy/SKILL.md" "$legacy/agents/openai.yaml"
+      rmdir "$legacy/agents" 2>/dev/null || true
+      rmdir "$legacy" 2>/dev/null || true
+      info "Removed legacy B12 skill at $legacy (Codex now reads ~/.agents/skills)"
+    elif grep -q '^name: b12-memory$' "$legacy/SKILL.md" 2>/dev/null; then
+      warn "Skill at $legacy/SKILL.md has \`name: b12-memory\` but does not match"
+      warn "the B12 installer fingerprint. Inspect it manually: rename its"
+      warn "frontmatter if it is yours, or delete it if it is stale installer output."
     fi
-  fi
+  done
 
-  mkdir -p "$SKILL_DEST"
+  mkdir -p "$SKILL_DEST/agents"
   cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
+  cp "$SKILL_SRC/agents/openai.yaml" "$SKILL_DEST/agents/openai.yaml"
   info "B12 skill installed to $SKILL_DEST"
 }
 
@@ -1459,13 +1449,16 @@ PYEOF
     fi
   fi
 
-  # Check B12 skill installed (canonical path is skills/b12-memory/ since the
-  # b12-memory name-collision cleanup; older installs may still have
-  # ~/.codex/skills/b12/ on disk — harmless, will be ignored)
-  if [ -f "$HOME/.codex/skills/b12-memory/SKILL.md" ]; then
+  # Check B12 skill installed in Codex's user skill root, and that no stale
+  # copy is left in the deprecated ~/.codex/skills root (Codex would load both).
+  if [ -f "$HOME/.agents/skills/b12-memory/SKILL.md" ]; then
     info "Verify: B12 skill installed"
   else
-    warn "Verify: B12 skill NOT found"
+    warn "Verify: B12 skill NOT found at ~/.agents/skills/b12-memory"
+    errors=$((errors + 1))
+  fi
+  if [ -f "$HOME/.codex/skills/b12-memory/SKILL.md" ]; then
+    warn "Verify: a second b12-memory skill exists in ~/.codex/skills; Codex loads both"
     errors=$((errors + 1))
   fi
 
