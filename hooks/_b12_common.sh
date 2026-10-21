@@ -77,7 +77,13 @@ b12_sync_watchdog() {
       kill -TERM "$_p" 2>/dev/null
     done
     kill -USR1 "$_parent" 2>/dev/null
-  ) &
+  # Detach the watchdog from the hook's stdio. The EXIT trap below kills this
+  # subshell but not its `sleep` child, and an orphaned `sleep` holding the
+  # stdout pipe delays the host's EOF until the cap expires. Claude Code then
+  # refuses hook output that injects context. The `{}` fallback is written by
+  # _b12_sync_cap_handler in the parent, so nothing here needs stdout. Same
+  # reasoning as the watchdog note in memory-session-start.sh.
+  ) </dev/null >/dev/null 2>&1 &
   _B12_WD_PID=$!
   trap "_b12_sync_cap_handler '$_label' '$_t'" USR1
   trap "kill $_B12_WD_PID 2>/dev/null; wait $_B12_WD_PID 2>/dev/null" EXIT

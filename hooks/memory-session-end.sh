@@ -15,7 +15,7 @@ set -o pipefail 2>/dev/null || true
 
 # ── Self-timeout watchdog ─────────────────────────────────────
 # Kills this script if it exceeds max runtime. Prevents orphan processes.
-( sleep 30 && kill -TERM $$ 2>/dev/null ) &
+( sleep 30 && kill -TERM $$ 2>/dev/null ) </dev/null >/dev/null 2>&1 &
 _WATCHDOG=$!
 trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
 
@@ -1156,7 +1156,7 @@ if [ "${B12_LLM_PROVIDER:-none}" != "none" ] && [ -f "$TRANSCRIPT_PATH" ]; then
         --event session_end \
         >> "$LOG_DIR/llm-extraction.log" 2>&1 || true
       cleanup_antigravity_transcript
-    ) &
+    ) </dev/null >/dev/null 2>&1 &
     _llm_extraction_started=true
     disown 2>/dev/null
   fi
