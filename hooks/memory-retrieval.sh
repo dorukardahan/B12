@@ -363,12 +363,12 @@ RESULTS=$(sqlite3 "$DB_PATH" "
     WHERE f.memory_fts MATCH '${FTS_PARTS}'
       AND m.deleted_at IS NULL
       AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-      AND m.memory_type NOT IN ('session_summary', 'progress')
+      AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
       AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
   ),
   scored AS (
     SELECT id,
-           '[' || memory_type || '] ' || replace(substr(content, 1, 300), char(10), ' ') as display,
+           '[' || COALESCE(memory_type, 'general') || '] ' || replace(substr(content, 1, 300), char(10), ' ') as display,
            (
              0.25 * max(1.0 / (1.0 + age_days / (9.0 * COALESCE(strength, 1.0) * (1.0 + 4.0 * imp_norm))), 0.01)
              + 0.25 * imp_norm
@@ -639,7 +639,7 @@ try:
             JOIN memory_embeddings e ON m.id = e.rowid
             WHERE m.deleted_at IS NULL
               AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-              AND m.memory_type NOT IN ('session_summary', 'progress')
+              AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
               AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
         """).fetchall()
 
@@ -824,7 +824,7 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
     # verbatim, so an extra `id|` prefix would clutter the inject.
     GRAPH_EXPANDED=$(sqlite3 "$DB_PATH" "
       SELECT DISTINCT
-             '[' || m2.memory_type ||
+             '[' || COALESCE(m2.memory_type, 'general') ||
              '|src:' || COALESCE(SUBSTR(json_extract(m2.metadata, '\$.source_session'), 1, 12), '?') ||
              '|imp:' || COALESCE(
                CASE WHEN json_extract(m2.metadata, '\$.importance_score') IS NOT NULL

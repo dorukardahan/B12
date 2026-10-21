@@ -60,15 +60,26 @@ def test_untyped_memory_gets_a_general_display(tmp_path, op):
     assert displays[2] == "[decision] typed memory text"
 
 
-def test_no_unguarded_memory_type_concatenation_remains():
-    unguarded = re.compile(r"'\[' \|\| m\.memory_type \|\|")
-    offenders = [
+def _offending_lines(pattern: re.Pattern, allow: re.Pattern | None = None) -> list[str]:
+    return [
         f"{path.relative_to(REPO_ROOT)}:{n}"
         for path in [*REPO_ROOT.glob("hooks/*.sh"), *REPO_ROOT.glob("scripts/*.py")]
         for n, line in enumerate(path.read_text().splitlines(), 1)
-        if unguarded.search(line)
+        if pattern.search(line) and not (allow and allow.search(line))
     ]
-    assert not offenders, offenders
+
+
+def test_no_unguarded_memory_type_concatenation_remains():
+    # Qualified (m.memory_type) and unqualified (memory_type) column references.
+    assert not _offending_lines(re.compile(r"'\[' \|\| (?:\w+\.)?memory_type \|\|"))
+
+
+def test_type_exclusion_predicates_keep_untyped_rows():
+    # In SQL `NULL NOT IN (...)` and `NULL != 'x'` are NULL, which drops untyped
+    # memories; every SQL exclusion on memory_type needs an IS NULL branch.
+    sql_exclusion = re.compile(r"(?:\w+\.)?memory_type\s*(?:NOT IN\s*\(|!=\s*'|<>\s*')")
+    guarded = re.compile(r"(?:\w+\.)?memory_type IS NULL OR")
+    assert not _offending_lines(sql_exclusion, guarded)
 
 
 @pytest.mark.skipif(shutil.which("jq") is None, reason="jq not installed")

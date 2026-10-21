@@ -93,7 +93,7 @@ if [ -z "$HITS" ] && [ -r "$DB_PATH" ] && command -v sqlite3 >/dev/null 2>&1; th
       "SELECT '[' || COALESCE(m.memory_type, 'general') || '] ' || substr(replace(m.content, char(10), ' '), 1, 200)
        FROM memory_content_fts fts JOIN memories m ON m.id = fts.rowid
        WHERE fts.content MATCH '$FTS_QUERY' AND m.deleted_at IS NULL
-         AND m.memory_type NOT IN ('session_summary', 'progress')
+         AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
        ORDER BY rank LIMIT 4;" 2>/dev/null)
     if [ -n "$FTS_RES" ]; then
       HITS=$(printf '## B12 recall (subagent-scoped, cold-path FTS)\n%s' \
