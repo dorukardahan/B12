@@ -274,9 +274,28 @@ def test_installer_keeps_a_sidecar_the_user_edited(tmp_path):
 
 
 def test_shipped_skill_hashes_are_well_formed():
-    hashes = [line for line in SHIPPED_HASHES.read_text().splitlines() if line and not line.startswith("#")]
-    assert len(hashes) >= 6 and len(set(hashes)) == len(hashes)
-    assert all(re.fullmatch(r"[0-9a-f]{64}", h) for h in hashes)
+    entries = [line for line in SHIPPED_HASHES.read_text().splitlines() if line and not line.startswith("#")]
+    assert len(entries) >= 6 and len(set(entries)) == len(entries)
+    paths = {"skills/b12/SKILL.md", "skills/b12-memory/SKILL.md", "config/codex-skills/b12-memory/SKILL.md",
+             "config/codex-skills/b12-memory/agents/openai.yaml"}
+    for entry in entries:
+        match = re.fullmatch(r"([0-9a-f]{64})  (\S+)", entry)
+        assert match and match.group(2) in paths, entry
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_keeps_a_sidecar_the_user_removed(tmp_path):
+    # e.g. to lift the Codex-only product restriction
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    assert _run_install_codex_skill(home).returncode == 0
+    sidecar = home / ".agents" / "skills" / "b12-memory" / "agents" / "openai.yaml"
+    sidecar.unlink()
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert not sidecar.exists()
+    assert "was edited since" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")

@@ -1313,30 +1313,36 @@ b12_sha256() {
 
 # True when FILE holds content B12 wrote: its SHA-256 is recorded for LABEL in
 # MARKER (the .b12-installed file install_codex_skill writes), equals one of
-# the SHIPPED files in this checkout, or is a version B12 shipped before the
-# marker existed (config/codex-skills/shipped-skill-sha256.txt).
+# the SHIPPED files in this checkout, or is listed under a path matching
+# FROZEN_PATH in config/codex-skills/shipped-skill-sha256.txt, the versions
+# B12 shipped before the marker existed.
 b12_file_is_b12s() {
-  local file="$1" marker="$2" label="$3" hash shipped
-  shift 3
+  local file="$1" marker="$2" label="$3" frozen_path="$4" hash shipped
+  shift 4
   hash=$(b12_sha256 "$file" 2>/dev/null)
   [ -n "$hash" ] || return 1
   grep -qxF "$hash  $label" "$marker" 2>/dev/null && return 0
   for shipped in "$@"; do
     [ -f "$shipped" ] && [ "$(b12_sha256 "$shipped")" = "$hash" ] && return 0
   done
-  grep -qxF "$hash" "$SCRIPT_DIR/config/codex-skills/shipped-skill-sha256.txt" 2>/dev/null
+  grep -qxE "$hash  $frozen_path" "$SCRIPT_DIR/config/codex-skills/shipped-skill-sha256.txt" 2>/dev/null
 }
 
-# True only when B12 provably wrote the skill in DIR: its SKILL.md and, if
-# present, agents/openai.yaml. A B12 copy whose files were edited after
-# installation no longer matches and is treated as the user's.
+# True only when B12 provably wrote the skill in DIR and nobody changed it
+# since: SKILL.md and agents/openai.yaml both match what B12 shipped. B12
+# installs the Codex skill with that sidecar, so a missing one counts as the
+# user's change; only copies of the shared skill, which never had one, may
+# lack it.
 b12_skill_is_installer_owned() {
-  local dir="$1" src="$SCRIPT_DIR/config/codex-skills/b12-memory"
-  b12_file_is_b12s "$dir/SKILL.md" "$dir/.b12-installed" SKILL.md \
-    "$src/SKILL.md" "$SCRIPT_DIR/skills/b12-memory/SKILL.md" || return 1
-  [ ! -e "$dir/agents/openai.yaml" ] \
-    || b12_file_is_b12s "$dir/agents/openai.yaml" "$dir/.b12-installed" agents/openai.yaml \
-         "$src/agents/openai.yaml"
+  local dir="$1" src="$SCRIPT_DIR/config/codex-skills/b12-memory" shared="$SCRIPT_DIR/skills/b12-memory/SKILL.md"
+  b12_file_is_b12s "$dir/SKILL.md" "$dir/.b12-installed" SKILL.md '.*/SKILL\.md' "$src/SKILL.md" "$shared" \
+    || return 1
+  if [ -e "$dir/agents/openai.yaml" ]; then
+    b12_file_is_b12s "$dir/agents/openai.yaml" "$dir/.b12-installed" agents/openai.yaml \
+      '.*/agents/openai\.yaml' "$src/agents/openai.yaml"
+  else
+    b12_file_is_b12s "$dir/SKILL.md" /dev/null SKILL.md 'skills/.*' "$shared"
+  fi
 }
 
 install_codex_skill() {
