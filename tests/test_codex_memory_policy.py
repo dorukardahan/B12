@@ -117,7 +117,7 @@ def _run_codex_skill_functions(home: Path, call: str) -> subprocess.CompletedPro
     source = INSTALLER.read_text()
     functions = "".join(
         re.search(rf"\n{name}\(\)\s*\{{.*?\n\}}\n", source, re.DOTALL).group(0)
-        for name in ("b12_sha256", "b12_file_is_b12s", "b12_skill_is_installer_owned", "install_codex_skill",
+        for name in ("b12_sha256", "b12_file_is_shipped", "b12_skill_is_installer_owned", "install_codex_skill",
                      "b12_verify_codex_skill")
     )
     script = (
@@ -281,6 +281,21 @@ def test_shipped_skill_hashes_are_well_formed():
     for entry in entries:
         match = re.fullmatch(r"([0-9a-f]{64})  (\S+)", entry)
         assert match and match.group(2) in paths, entry
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_keeps_a_marked_skill_swapped_for_another_b12_version(tmp_path):
+    # Once a marker exists, only the marker proves ownership; older B12 hashes do not.
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    assert _run_install_codex_skill(home).returncode == 0
+    skill = home / ".agents" / "skills" / "b12-memory" / "SKILL.md"
+    shutil.copy(SHARED_SKILL, skill)
+
+    result = _run_install_codex_skill(home)
+    assert result.returncode == 0, result.stderr
+    assert skill.read_text() == SHARED_SKILL.read_text()
+    assert "was edited since" in result.stdout
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
