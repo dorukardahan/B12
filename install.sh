@@ -580,8 +580,8 @@ install_to_setup() {
   fi
 
   # Merge hooks using python3 (preserves existing settings)
-  if ! python3 - "$SETTINGS_FILE" "$SCRIPT_DIR/config/settings-template.json" << 'PYEOF'
-import sys, json, re
+  if ! python3 - "$SETTINGS_FILE" "$SCRIPT_DIR/config/settings-template.json" "$SCRIPT_DIR/hooks" << 'PYEOF'
+import sys, json, os, re
 
 settings_path = sys.argv[1]
 template_path = sys.argv[2]
@@ -594,13 +594,18 @@ with open(template_path, 'r') as f:
 
 # The template is the source of truth for B12's own hooks only. Replacing the
 # whole "hooks" block deleted every hook the user had added for other tools,
-# so drop just the B12 handlers (current ~/.B12/hooks/ paths and legacy
-# ~/.claude*/hooks/memory-* paths) and keep everything else.
-_LEGACY_B12 = re.compile(r"/\.claude[^/]*/hooks/memory-[A-Za-z0-9_-]+\.(?:sh|py)\b")
+# so drop just the B12 handlers (current ~/.B12/hooks/ paths, and legacy
+# ~/.claude*/hooks/ paths that name a hook B12 ships or once shipped) and keep
+# everything else, including another tool's own memory-*.sh hook.
+_LEGACY_B12 = re.compile(r"/\.claude[^/]*/hooks/(memory-[A-Za-z0-9_-]+\.(?:sh|py))\b")
+_B12_HOOK_NAMES = {name for name in os.listdir(sys.argv[3]) if name.startswith('memory-')}
+_B12_HOOK_NAMES |= {'memory-upgrade.sh'}  # shipped by B12, since removed
 
 def is_b12(handler):
     command = handler.get('command', '') if isinstance(handler, dict) else ''
-    return '/.B12/hooks/' in command or bool(_LEGACY_B12.search(command))
+    if '/.B12/hooks/' in command:
+        return True
+    return any(m.group(1) in _B12_HOOK_NAMES for m in _LEGACY_B12.finditer(command))
 
 if 'hooks' in template:
     user_hooks = {}

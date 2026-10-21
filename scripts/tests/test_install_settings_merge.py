@@ -80,6 +80,20 @@ def test_foreign_hooks_survive_and_b12_hooks_match_template(tmp_path):
     assert sorted(c for c in commands if "/.B12/hooks/" not in c) == sorted(["/opt/tools/approve", "~/bin/audit-bash.sh"])
 
 
+def test_only_known_b12_names_count_as_legacy_b12_hooks(tmp_path):
+    # A legacy ~/.claude*/hooks/ path is B12's only when it names a hook B12
+    # ships or once shipped; another tool's memory-*.sh must survive.
+    setup = tmp_path / ".claude-work"
+    setup.mkdir()
+    foreign = {"type": "command", "command": "~/.claude-work/hooks/memory-sync.sh"}
+    (setup / "settings.json").write_text(json.dumps({"hooks": {"Stop": [
+        {"hooks": [foreign, {"type": "command", "command": "~/.claude/hooks/memory-upgrade.sh"}]},
+    ]}}))
+    commands = _commands(_install(setup, tmp_path)["hooks"])
+    assert "~/.claude-work/hooks/memory-sync.sh" in commands
+    assert "~/.claude/hooks/memory-upgrade.sh" not in commands
+
+
 def test_merge_is_idempotent(tmp_path):
     setup = tmp_path / ".claude"
     setup.mkdir()
