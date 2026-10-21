@@ -78,6 +78,40 @@ _REDIRECT = re.compile(r"(?<!\S)(\d*|&)(>>?|<)(&?)\s*([^\s;&|<>]+)")
 _HEREDOC = re.compile(r"(?<!<)<<-?\s*(['\"]?)(\w+)\1(?!<)")
 
 
+def _quote_end(line: str, i: int) -> int:
+    """Index just past the quoted string that opens at line[i]. Backslash
+    escapes count inside double quotes and backticks, not single quotes."""
+    quote, j = line[i], i + 1
+    while j < len(line):
+        if line[j] == "\\" and quote != "'":
+            j += 2
+        elif line[j] == quote:
+            return j + 1
+        else:
+            j += 1
+    return len(line)
+
+
+def _group_end(line: str, i: int) -> int:
+    """Index just past the ( ) or { } group that opens at line[i], skipping
+    quoted and escaped delimiters."""
+    open_ch, close_ch = line[i], ")" if line[i] == "(" else "}"
+    depth, j = 0, i
+    while j < len(line):
+        ch = line[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch in "'\"`":
+            j = _quote_end(line, j)
+            continue
+        depth += (ch == open_ch) - (ch == close_ch)
+        j += 1
+        if depth == 0:
+            return j
+    return len(line)
+
+
 def _top_level(line: str) -> str:
     """The line with quoted text and nested ( ), $( ), { } and ${ } groups
     collapsed to `x`, so only the outer shell syntax is left."""
@@ -88,18 +122,11 @@ def _top_level(line: str) -> str:
             out.append("x")
             i += 2
         elif ch in "'\"`":
-            end = line.find(ch, i + 1)
             out.append(ch + "x" + ch)
-            i = len(line) if end < 0 else end + 1
+            i = _quote_end(line, i)
         elif ch in "({":
-            close, depth, j = (")" if ch == "(" else "}"), 0, i
-            while j < len(line):
-                depth += (line[j] == ch) - (line[j] == close)
-                if depth == 0:
-                    break
-                j += 1
             out.append("x")
-            i = j + 1
+            i = _group_end(line, i)
         else:
             out.append(ch)
             i += 1
@@ -201,10 +228,14 @@ def test_background_commands_follow_shell_structure():
         "foreground; bg >/dev/null 2>&1 &",
         "slow >/dev/null 2>&1 & echo started",
         "cmd &>/dev/null &",
+        '( sleep 30; echo ")" ) >/dev/null 2>&1 &',
+        'cmd "a \\" & b" >/dev/null 2>&1 &',
     ]
     leaking = [
         '( "$@" ) 2>>"$_log" < /dev/null &',
         "( cmd >/tmp/x 2>&1 ) &",
+        '( sleep 30; echo ")" >/dev/null 2>&1 ) &',
+        "( sleep 30; echo '}' \\) >/dev/null 2>&1 ) &",
         "{ cmd >/tmp/x 2>&1; } &",
         "producer >/tmp/x | sleep 30 &",
         "sleep 30 | cat >/dev/null 2>&1 &",
