@@ -243,7 +243,7 @@ def test_daemon_queue_wait_propagates_release_cancel_race():
     assert calls == [], "cancelled queue waiter started a daemon worker"
 
 
-def test_search_queue_timeout_bounds_external_daemon_backlog(tmp_path):
+def test_search_queue_timeout_bounds_external_daemon_backlog(short_tmp_path):
     """A separate MCP process can already occupy the serial embed daemon while
     this process's asyncio lock is free. The search budget must still bound the
     socket/backlog wait rather than inheriting the normal 20-second I/O timeout."""
@@ -253,7 +253,7 @@ def test_search_queue_timeout_bounds_external_daemon_backlog(tmp_path):
         print(f"SKIP test_search_queue_timeout_bounds_external_daemon_backlog ({e})")
         return
 
-    sock_path = str(tmp_path / "embed.sock")
+    sock_path = str(short_tmp_path / "embed.sock")
     ready = threading.Event()
     blocker_accepted = threading.Event()
     server_errors = []

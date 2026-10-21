@@ -3553,10 +3553,20 @@ install_mcp_daemon() {
     -e "s|B12_HOME_DATA_DIR|$DATA_DIR|g" \
     "$TEMPLATE" > "$PLIST_DEST"
 
+  # Carry custom runtime paths into the job, so the daemon binds the socket
+  # this function waits for below. Default installs need nothing here.
+  local _var _val
+  for _var in B12_MCP_DAEMON_SOCK B12_EMBED_RUNTIME_DIR; do
+    _val="${!_var:-}"
+    [ -n "$_val" ] || continue
+    /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:$_var string $_val" "$PLIST_DEST" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:$_var $_val" "$PLIST_DEST"
+  done
+
   launchctl load "$PLIST_DEST"
 
   # Brief wait for the socket to appear (cold start ~5-10s)
-  local SOCK="/tmp/b12-mcp-$(id -u).sock"
+  local SOCK="${B12_MCP_DAEMON_SOCK:-/tmp/b12-mcp-$(id -u).sock}"
   local i=0
   while [ $i -lt 20 ] && [ ! -S "$SOCK" ]; do
     sleep 0.5
@@ -3587,7 +3597,8 @@ uninstall_mcp_daemon() {
     info "MCP daemon was not installed; nothing to remove."
   fi
   # Best-effort socket cleanup (daemon should have done this on SIGTERM)
-  rm -f "/tmp/b12-mcp-$(id -u).sock" "/tmp/b12-mcp-$(id -u).pid" 2>/dev/null || true
+  local _sock="${B12_MCP_DAEMON_SOCK:-/tmp/b12-mcp-$(id -u).sock}"
+  rm -f "$_sock" "${_sock%.sock}.pid" 2>/dev/null || true
 }
 
 # Reload the long-lived launchd daemon IFF it is already running, so an upgrade
