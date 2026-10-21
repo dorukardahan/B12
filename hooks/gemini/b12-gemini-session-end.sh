@@ -161,7 +161,9 @@ CLAUDE_INPUT=$(jq -n \
   # Log completion
   echo "{\"event\":\"gemini_session_end\",\"session\":\"$SESSION_ID\",\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
     >> "$LOG_DIR/gemini-hooks.jsonl" 2>/dev/null
-) &
+# Detach from the adapter's stdio, including the fd 3 copy of stderr opened
+# above, so the background work never holds a pipe the host might read to EOF.
+) </dev/null >/dev/null 2>&1 3>&- &
 disown 2>/dev/null
 
 # Return immediately so Gemini CLI can exit

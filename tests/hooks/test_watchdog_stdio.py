@@ -63,3 +63,402 @@ def test_sync_watchdog_still_emits_fallback_when_cap_fires(tmp_path):
     assert exited < 2.0, f"cap did not fire: hook ran {exited:.2f}s"
     log = tmp_path / "memory-logs" / "sync-cap-hits.jsonl"
     assert log.exists() and '"label":"test"' in log.read_text()
+
+
+
+# The guard below models one logical line of shell at a time (physical lines
+# joined after a trailing `\`, `|`, `|&`, `&&` or `||`): quoting, ( ) and { }
+# groups, `$( )` and backtick substitutions, jobs, and-or lists, pipelines
+# and redirections applied in order, plus the fds a hook changes for itself
+# with `exec`. Every fd that still points at one of the hook's own output
+# pipes ("hook") when a job is put in the background is a leak; process
+# substitutions run asynchronously, so their bodies count as background work.
+# Not modelled: multi-line groups (only their closing line is checked).
+
+# Control operators that start a new job (`;` and a lone `&`, not `&&`, `>&`,
+# `&>` or `|&`), and those that chain an and-or list or a pipeline.
+_JOB_SEPARATOR = re.compile(r"(;|(?<![&>|<])&(?![&>]))")
+_AND_OR = re.compile(r"&&|\|\|")
+_PIPE = re.compile(r"(\|&?)")
+# One redirection: an fd (or `&` for both outputs), the operator, `&` when it
+# duplicates or closes, and the target (a file, an fd number or `-`).
+_REDIRECT = re.compile(r"(?<!\S)(\d*|&)(>>?|<)(&?)\s*([^\s;&|<>]+)")
+# A heredoc opener (`<<EOF`, `<<-'EOF'`), not a `<<<` here-string.
+_HEREDOC = re.compile(r"(?<!<)<<-?\s*(['\"]?)(\w+)\1(?!<)")
+# A line that only changes the hook's own fds, such as `exec 3>&2`.
+_EXEC_REDIRECT = re.compile(r"^exec((?:\s+(?:\d*|&)(?:>>?|<)&?\s*\S+)+)\s*$")
+# A group collapsed by _top_level, numbered in order of appearance.
+_GROUP = re.compile("\x00(\\d+)\x00")
+_HOOK_FDS = {1: "hook", 2: "hook"}
+
+
+def _quote_end(line: str, i: int) -> int:
+    """Index just past the quoted string that opens at line[i]. Backslash
+    escapes count inside double quotes and backticks, not single quotes."""
+    quote, j = line[i], i + 1
+    while j < len(line):
+        if line[j] == "\\" and quote != "'":
+            j += 2
+        elif line[j] == quote:
+            return j + 1
+        else:
+            j += 1
+    return len(line)
+
+
+def _group_end(line: str, i: int) -> int:
+    """Index just past the ( ) or { } group that opens at line[i], skipping
+    quoted and escaped delimiters."""
+    open_ch, close_ch = line[i], ")" if line[i] == "(" else "}"
+    depth, j = 0, i
+    while j < len(line):
+        ch = line[j]
+        if ch == "\\":
+            j += 2
+            continue
+        if ch in "'\"`":
+            j = _quote_end(line, j)
+            continue
+        depth += (ch == open_ch) - (ch == close_ch)
+        j += 1
+        if depth == 0:
+            return j
+    return len(line)
+
+
+def _backtick_end(line: str, i: int) -> int:
+    """Index just past the backtick substitution that opens at line[i]."""
+    return _quote_end(line, i)
+
+
+def _substitutions_in(text: str) -> list[str]:
+    """Bodies of the `$( )` and backtick substitutions in text, such as the
+    word of a `${v:-word}` parameter expansion. Single-quoted text and
+    arithmetic `$(( ))` are skipped."""
+    found, j = [], 0
+    while j < len(text):
+        if text[j] == "\\":
+            j += 2
+        elif text[j] == "'":
+            j = _quote_end(text, j)
+        elif text[j : j + 2] == "$(" and text[j + 2 : j + 3] != "(":
+            end = _group_end(text, j + 1)
+            found.append(text[j + 2 : end - 1])
+            j = end
+        elif text[j] == "`":
+            end = _backtick_end(text, j)
+            found.append(text[j + 1 : end - 1])
+            j = end
+        else:
+            j += 1
+    return found
+
+
+def _top_level(line: str) -> tuple[str, list[str], list[str], list[tuple[str, str]]]:
+    """The line with only its outer shell syntax left, plus what it runs
+    inside: each ( ) or { } group collapses to a numbered placeholder whose
+    body is returned, the bodies of `$( )` and backtick substitutions
+    (including those inside double quotes) are returned, and so are process
+    substitutions with their direction (`<` or `>`). Single quoted text,
+    `${ }` (after taking the substitutions in its word) and arithmetic `(( ))`
+    collapse to `x`."""
+    out, groups, substs, procs, i = [], [], [], [], 0
+    while i < len(line):
+        ch = line[i]
+        if ch == "\\":
+            out.append("x")
+            i += 2
+        elif ch == "'":
+            out.append("'x'")
+            i = _quote_end(line, i)
+        elif ch == "`":
+            end = _backtick_end(line, i)
+            substs.append(line[i + 1 : end - 1])
+            out.append("x")
+            i = end
+        elif ch == '"':
+            j = i + 1
+            while j < len(line) and line[j] != '"':
+                if line[j] == "\\":
+                    j += 2
+                elif line[j : j + 2] == "$(":
+                    end = _group_end(line, j + 1)
+                    substs.append(line[j + 2 : end - 1])
+                    j = end
+                elif line[j] == "`":
+                    end = _backtick_end(line, j)
+                    substs.append(line[j + 1 : end - 1])
+                    j = end
+                else:
+                    j += 1
+            out.append('"x"')
+            i = j + 1
+        elif ch in "({":
+            end = _group_end(line, i)
+            prev = line[i - 1] if i else ""
+            if ch == "(" and line[i + 1 : i + 2] == "(":  # arithmetic: `&` is bitwise,
+                substs += _substitutions_in(line[i + 2 : end - 2])  # but $( ) inside still runs
+                out.append("x")
+            elif ch == "(" and prev == "$":
+                substs.append(line[i + 1 : end - 1])
+                out.append("x")
+            elif ch == "(" and prev and prev in "<>":
+                out.pop()  # the `<` or `>` belongs to the substitution, not a redirection
+                procs.append((prev, line[i + 1 : end - 1]))
+                out.append("x")
+            elif prev == "$":  # ${ }: inert, but its word can run substitutions
+                substs += _substitutions_in(line[i + 1 : end - 1])
+                out.append("x")
+            else:
+                out.append(f"\x00{len(groups)}\x00")
+                groups.append(line[i + 1 : end - 1])
+            i = end
+        else:
+            out.append(ch)
+            i += 1
+    return "".join(out), groups, substs, procs
+
+
+def _apply_redirections(command: str, fds: dict[int, str]) -> dict[int, str]:
+    """The fds after the command's redirections, applied left to right as the
+    shell does: `2>&1 >/dev/null` leaves fd 2 on whatever fd 1 was."""
+    fds = dict(fds)
+    for fd, op, dup, target in _REDIRECT.findall(command):
+        if op == "<":
+            continue
+        if fd == "&":
+            fds[1] = fds[2] = "file"
+        elif not dup:
+            fds[int(fd or 1)] = "file"
+        elif target == "-":
+            fds.pop(int(fd or 1), None)
+        else:
+            fds[int(fd or 1)] = fds.get(int(target), "other") if target.isdigit() else "file"
+    return fds
+
+
+def _hook_fds_left(command: str, start: dict[int, str] | None = None) -> set[int]:
+    return {n for n, v in _apply_redirections(command, start or _HOOK_FDS).items() if v == "hook"}
+
+
+def _leaks(line: str, fds: dict[int, str] | None = None, async_body: bool = False) -> bool:
+    """True if the line puts work in the background with an fd still on the
+    hook's pipes. Every pipeline stage of every and-or element is checked with
+    the fds it starts with (a stage feeding a pipe has stdout, and for `|&`
+    stderr, on that pipe), and the body of a ( ) or { } group is checked with
+    the fds the group runs with, so `( sleep 30 & echo )` is caught too.
+    With async_body every job counts as backgrounded (a process substitution's
+    body, which the shell does not wait for)."""
+    fds = dict(fds or _HOOK_FDS)
+    line = line.strip()
+    if not line or line.startswith("#"):
+        return False
+    if line[0] in ")}":  # closes a multi-line group; what follows covers all of it
+        line = "x" + line[1:]
+    flat, groups, substs, procs = _top_level(line)
+    # A substitution's stdout is a pipe the hook waits on, so work left
+    # running there holds the hook up just as one on its own stdout would.
+    if any(_leaks(body, {**fds, 1: "hook"}) for body in substs):
+        return True
+    # `<( )` writes to a pipe the reader consumes; `>( )` keeps the shell's
+    # stdout. Either way the body runs unwaited, with the other fds inherited.
+    if any(_leaks(body, {**fds, 1: "pipe"} if kind == "<" else fds, async_body=True) for kind, body in procs):
+        return True
+    parts = _JOB_SEPARATOR.split(re.sub(r"\s#.*$", "", flat))
+    for k in range(0, len(parts), 2):
+        background = async_body or (k + 1 < len(parts) and parts[k + 1] == "&")
+        for element in _AND_OR.split(parts[k]):
+            stages = _PIPE.split(element)
+            for i in range(0, len(stages), 2):
+                into = stages[i + 1] if i + 1 < len(stages) else None
+                start = {**fds, **({1: "pipe"} if into else {}), **({2: "pipe"} if into == "|&" else {})}
+                after = _apply_redirections(stages[i], start)
+                if background and "hook" in after.values():
+                    return True
+                if any(_leaks(groups[int(n)], after) for n in _GROUP.findall(stages[i])):
+                    return True
+    return False
+
+
+def _continues(line: str) -> bool:
+    """True if the shell reads the next physical line as part of this command:
+    a trailing backslash, or a trailing `|`, `|&`, `&&` or `||` outside quotes."""
+    if line.rstrip().endswith("\\"):
+        return True
+    tail = re.sub(r"\s#.*$", "", _top_level(line)[0]).rstrip()
+    return tail.endswith(("|", "|&", "&&"))
+
+
+def _shell_lines(path: Path):
+    """(lineno, line) for each logical shell command of a hook, joining
+    continued physical lines and reporting the first one's number, and
+    skipping heredoc bodies such as embedded Python, where `&` is not a shell
+    operator."""
+    terminator, pending, start = None, "", 0
+    for lineno, line in enumerate(path.read_text().splitlines(), 1):
+        if terminator is not None:
+            if line.strip() == terminator:
+                terminator = None
+            continue
+        if not pending:
+            start = lineno
+        if _continues(line):
+            pending += line.rstrip().removesuffix("\\") + " "
+            continue
+        logical, pending = pending + line, ""
+        yield start, logical
+        heredoc = _HEREDOC.search(logical)
+        if heredoc:
+            terminator = heredoc.group(2)
+    if pending:
+        yield start, pending
+
+
+def _leaking_lines(path: Path) -> list[int]:
+    """Lines of a hook that background work with an fd on the hook's pipes,
+    following `exec` redirections such as `exec 3>&2` (a second handle on the
+    hook's stderr) down the file."""
+    fds, found = dict(_HOOK_FDS), []
+    for lineno, line in _shell_lines(path):
+        exec_line = _EXEC_REDIRECT.match(re.sub(r"\s#.*$", "", _top_level(line.strip())[0]))
+        if exec_line:
+            fds = _apply_redirections(exec_line.group(1), fds)
+        elif _leaks(line, fds):
+            found.append(lineno)
+    return found
+
+
+def test_redirections_apply_left_to_right():
+    assert _hook_fds_left(" </dev/null >/dev/null 2>&1 3>&- ") == set()
+    assert _hook_fds_left(' >> "$LOG" 2>&1 ') == set()
+    assert _hook_fds_left(" &>/dev/null ") == set()
+    assert _hook_fds_left(" >&- 2>&- ") == set()
+    assert _hook_fds_left(" 2>&1 >/dev/null ") == {2}
+    assert _hook_fds_left(" >/dev/null ") == {2}
+    assert _hook_fds_left(" 2>/dev/null ") == {1}
+    assert _hook_fds_left(" >&2 2>/dev/null ") == {1}
+    assert _hook_fds_left(" ") == {1, 2}
+    assert _hook_fds_left(" ", {1: "pipe", 2: "hook"}) == {2}
+    assert _hook_fds_left(" 2>/dev/null ", {1: "pipe", 2: "hook"}) == set()
+    assert _hook_fds_left(" ", {1: "pipe", 2: "pipe"}) == set()
+    assert _hook_fds_left(" >/dev/null 2>&1 ", {1: "hook", 2: "hook", 3: "hook"}) == {3}
+    assert _hook_fds_left(" >/dev/null 2>&1 3>&- ", {1: "hook", 2: "hook", 3: "hook"}) == set()
+
+
+def test_leaks_follow_shell_structure():
+    for line in ("cmd && other", "cmd 2>&1", "# sleep 1 &", "x=1", 'echo "a & b"', "( a; b )"):
+        assert not _leaks(line)
+    detached = [
+        ") </dev/null >/dev/null 2>&1 &",
+        "} >/dev/null 2>&1 &",
+        '( "$@" ) >>"$_log" 2>&1 < /dev/null &',
+        "( sleep 5 && kill -TERM $$ 2>/dev/null ) </dev/null >/dev/null 2>&1 &",
+        'cmd >"${LOG}" 2>&1 &',
+        '{ echo "$X" | bash "$B"; } >/dev/null 2>&1 &',
+        "sleep 30 2>/dev/null | cat >/dev/null 2>&1 &",
+        "a |& b >/dev/null 2>&1 &",
+        "find . \\( -name '*.js' \\) -print > \"$raw\" 2>/dev/null &",
+        "a >/dev/null 2>&1 && b >/dev/null 2>&1 &",
+        "foreground; bg >/dev/null 2>&1 &",
+        "slow >/dev/null 2>&1 & echo started",
+        "cmd &>/dev/null &",
+        '( sleep 30; echo ")" ) >/dev/null 2>&1 &',
+        'cmd "a \\" & b" >/dev/null 2>&1 &',
+        "( sleep 30 & echo done ) >/dev/null 2>&1",
+        "x='$(sleep 30 &)'",
+        'x="$(sleep 30 >/dev/null 2>&1 &)"',
+        'x="$(date)"',
+        'y=$(printf "%s" "$a" | jq -r . 2>/dev/null)',
+        """read -r x < <(printf '%s' "$I" 2>/dev/null | jq -r . 2>/dev/null)""",
+        "cat <(sleep 30 2>/dev/null) >/dev/null 2>&1 &",
+        "x=$(( a & b ))",
+        "AGE=$(( $(date +%s) - $(file_mtime \"$F\") ))",
+        "(( a & 1 ))",
+        "x=${v:-$(date)}",
+        "x=${v:-'$(sleep 30 &)'}",
+    ]
+    leaking = [
+        '( "$@" ) 2>>"$_log" < /dev/null &',
+        "( cmd >/tmp/x 2>&1 ) &",
+        '( sleep 30; echo ")" >/dev/null 2>&1 ) &',
+        "( sleep 30; echo '}' \\) >/dev/null 2>&1 ) &",
+        "{ cmd >/tmp/x 2>&1; } &",
+        "producer >/tmp/x | sleep 30 &",
+        "sleep 30 | cat >/dev/null 2>&1 &",
+        'echo "$X" | bash "$B" >/dev/null 2>&1 &',
+        "} | tee x &",
+        'cmd "$(date >/tmp/x)" &',
+        "a && b >/dev/null 2>&1 &",
+        "quiet >/dev/null 2>&1 & loud &",
+        "slow_command & echo done",
+        "cmd 2>&1 >/dev/null &",
+        "cmd >&2 &",
+        "( sleep 30 & echo done )",
+        "{ sleep 30 & }",
+        "if true; then ( sleep 30 & ); fi",
+        'x="$(sleep 30 &)"',
+        "x=$(sleep 30 &)",
+        "x=`sleep 30 &`",
+        'echo "a $(sleep 30 & echo) b"',
+        'x="$(sleep 30 >/dev/null &)"',
+        "cat <(sleep 30) >/dev/null 2>&1 &",
+        "read -r x < <(sleep 30 | jq .)",
+        """read -r x < <(printf '%s' "$I" | jq -r . 2>/dev/null)""",
+        "tee >(sleep 30 2>/dev/null) >/dev/null 2>&1",
+        "x=${v:-$(sleep 30 &)}",
+        "x=$(( $(sleep 30 &) + 1 ))",
+        "x=${v:-`sleep 30 &`}",
+    ]
+    assert [line for line in detached if _leaks(line)] == []
+    assert [line for line in leaking if not _leaks(line)] == []
+
+
+def test_exec_redirections_carry_down_the_file(tmp_path):
+    hook = tmp_path / "hook.sh"
+    hook.write_text(
+        "exec 3>&2\n"
+        "( work ) </dev/null >/dev/null 2>&1 &\n"
+        "( work ) </dev/null >/dev/null 2>&1 3>&- &\n"
+        "exec 2>>/tmp/err.log 3>&-\n"
+        "( work ) >/dev/null &\n"
+        "exec 3>&2\n"
+        "( work ) </dev/null >/dev/null 2>&1 &\n"
+    )
+    # After `exec 2>>log`, `exec 3>&2` copies the log, not the hook's stderr.
+    assert _leaking_lines(hook) == [2]
+    commented = tmp_path / "commented.sh"
+    commented.write_text("exec 3>&2 # keep a copy of stderr\n( work ) </dev/null >/dev/null 2>&1 &\n")
+    assert _leaking_lines(commented) == [2]
+
+
+def test_continued_lines_are_joined(tmp_path):
+    hook = tmp_path / "hook.sh"
+    hook.write_text(
+        "sleep 30 |\n  cat >/dev/null 2>&1 &\n"
+        "a &&\n  b >/dev/null 2>&1 &\n"
+        "cmd --flag \\\n  >/dev/null 2>&1 &\n"
+        "x | \\\n  y >/dev/null 2>&1 &\n"
+        "exec 3>&2\n"
+        "sleep 30 |&\n  cat >/dev/null 2>&1 3>&- &\n"
+    )
+    assert _leaking_lines(hook) == [1, 3, 7, 10]
+
+
+def test_heredoc_bodies_are_not_scanned(tmp_path):
+    hook = tmp_path / "hook.sh"
+    hook.write_text("python3 - <<'PYEOF'\nmask = flags & 0xFF\nPYEOF\nslow &\n")
+    assert _leaking_lines(hook) == [4]
+
+
+def test_every_backgrounded_job_detaches_stdout():
+    # Any backgrounded job in a hook (a multi-line block, a one-line group, a
+    # plain command, a pipeline or an and-or list, at the end of a line or not,
+    # or inside a foreground group) must not leave an fd on the hook's own
+    # pipes, including copies made with `exec`, or that command keeps the
+    # host's pipe open after the hook exits.
+    offenders = [
+        f"{path.relative_to(ROOT)}:{lineno}"
+        for path in sorted(HOOKS.rglob("*.sh"))
+        for lineno in _leaking_lines(path)
+    ]
+    assert not offenders, f"backgrounded job inherits the hook's output: {offenders}"

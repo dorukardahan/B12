@@ -35,7 +35,7 @@ INPUT=$(cat)
 # preserves every (possibly empty) field. SCALARS ONLY — the tool_input OBJECT
 # (below) and any multi-line tool_result keep their own jq.
 IFS=$'\x1f' read -r TOOL_NAME HOOK_EVENT SESSION_ID FILE_PATH \
-  < <(printf '%s' "$INPUT" | jq -r '[.tool_name // "", .hook_event_name // "", .session_id // "", (.tool_input.file_path // "")] | join("\u001f")' 2>/dev/null)
+  < <(printf '%s' "$INPUT" 2>/dev/null | jq -r '[.tool_name // "", .hook_event_name // "", .session_id // "", (.tool_input.file_path // "")] | join("\u001f")' 2>/dev/null)
 SESSION_ID12="${SESSION_ID:0:12}"
 TOOL_INPUT_JSON=$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null)
 
