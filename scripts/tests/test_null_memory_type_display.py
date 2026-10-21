@@ -146,6 +146,13 @@ def test_python_displays_fall_back_for_untyped_rows():
     assert not [hit for hit in _offending_lines(bare) if hit.split(":")[0].endswith(".py")]
 
 
+def test_typescript_displays_fall_back_for_untyped_rows():
+    # `${m.memory_type}` renders "null", and copying the raw column into a
+    # context row passes that null on to whatever renders it.
+    bare = re.compile(r"\$\{\s*(?:\w+\.)?memory_type\s*\}|memory_type:\s*\w+\.memory_type\s*[,}]")
+    assert not [hit for hit in _offending_lines(bare) if hit.split(":")[0].endswith(".ts")]
+
+
 def test_type_exclusion_predicates_keep_untyped_rows():
     # In SQL `NULL NOT IN (...)` and `NULL != 'x'` are NULL, which drops untyped
     # memories; every SQL exclusion on memory_type needs an IS NULL branch.

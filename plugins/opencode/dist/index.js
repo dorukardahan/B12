@@ -714,7 +714,7 @@ class B12Database {
            LIMIT 3`).all(tagParam(`proj:${projectName}`));
       result.projectMemories = projRows.map((m) => ({
         content: m.content.slice(0, 300),
-        memory_type: m.memory_type
+        memory_type: m.memory_type || "general"
       }));
       if (projRows.length > 0) {
         const boostIds = projRows.map((m) => m.id);
@@ -731,7 +731,7 @@ class B12Database {
          LIMIT 2`).all();
     result.universalMemories = universalRows.map((m) => ({
       content: m.content.slice(0, 300),
-      memory_type: m.memory_type
+      memory_type: m.memory_type || "general"
     }));
     if (projectName) {
       const summaryRow = this.db.prepare(`SELECT content FROM memories
@@ -1120,7 +1120,7 @@ ${clipped}`;
   }
   const context = db.getSessionContext(project);
   if (context.projectMemories.length > 0) {
-    const lines = context.projectMemories.map((m) => `[${m.memory_type}] ${m.content}`).join(`
+    const lines = context.projectMemories.map((m) => `[${m.memory_type || "general"}] ${m.content}`).join(`
 `);
     if (totalChars + lines.length < CHAR_BUDGET) {
       sections.push(`## Project Memories (${project})
@@ -1129,7 +1129,7 @@ ${lines}`);
     }
   }
   if (context.universalMemories.length > 0) {
-    const lines = context.universalMemories.map((m) => `[${m.memory_type}] ${m.content}`).join(`
+    const lines = context.universalMemories.map((m) => `[${m.memory_type || "general"}] ${m.content}`).join(`
 `);
     if (totalChars + lines.length < CHAR_BUDGET) {
       sections.push(`## Cross-Project Knowledge

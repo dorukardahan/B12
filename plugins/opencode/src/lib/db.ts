@@ -959,12 +959,12 @@ export class B12Database {
         .all(tagParam(`proj:${projectName}`)) as Array<{
         id: number;
         content: string;
-        memory_type: string;
+        memory_type: string | null;
       }>;
 
       result.projectMemories = projRows.map((m) => ({
         content: m.content.slice(0, 300),
-        memory_type: m.memory_type,
+        memory_type: m.memory_type || "general",
       }));
 
       if (projRows.length > 0) {
@@ -984,11 +984,11 @@ export class B12Database {
                   * COALESCE(strength, 1.0) DESC
          LIMIT 2`,
       )
-      .all() as Array<{ content: string; memory_type: string }>;
+      .all() as Array<{ content: string; memory_type: string | null }>;
 
     result.universalMemories = universalRows.map((m) => ({
       content: m.content.slice(0, 300),
-      memory_type: m.memory_type,
+      memory_type: m.memory_type || "general",
     }));
 
     if (projectName) {
