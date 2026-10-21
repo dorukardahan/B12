@@ -15,7 +15,8 @@ paths (DB_PATH, socket paths) already see the isolated values:
 - No-op `launchctl` and `crontab` stubs come first on PATH, so an installer run
   can never load, unload or schedule anything for the real account.
 - The Hugging Face cache keeps its real location so model files are not
-  downloaded again.
+  downloaded again, and B12_TEST_VENV_PYTHON points at the installed venv
+  interpreter for tests that only need to run it.
 """
 from __future__ import annotations
 
@@ -59,6 +60,7 @@ def pytest_configure(config):
         stub.write_text(body.format(log=log))
         stub.chmod(0o755)
 
+    real_venv_python = os.path.join(real_home, ".local", "b12-venv", "bin", "python3")
     hf_cache = os.path.join(real_home, ".cache", "huggingface")
     if "HF_HOME" not in os.environ and os.path.isdir(hf_cache):
         os.environ["HF_HOME"] = hf_cache
@@ -69,6 +71,9 @@ def pytest_configure(config):
     os.environ["B12_EMBED_RUNTIME_DIR"] = str(runtime)
     os.environ["B12_MCP_DAEMON_SOCK"] = str(runtime / "b12-mcp.sock")
     os.environ["B12_TEST_STUB_LOG"] = str(log)
+    # Tests that need the installed interpreter (not its data) can still find it.
+    if os.path.exists(real_venv_python):
+        os.environ["B12_TEST_VENV_PYTHON"] = real_venv_python
     os.environ["PATH"] = f"{stubs}{os.pathsep}{os.environ.get('PATH', '')}"
 
 
