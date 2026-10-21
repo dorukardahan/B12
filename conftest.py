@@ -68,6 +68,8 @@ def pytest_configure(config):
     for key in [k for k in os.environ if k.startswith("B12_")]:
         del os.environ[key]
     os.environ["HOME"] = str(home)
+    # On native Windows expanduser() reads USERPROFILE, not HOME.
+    os.environ["USERPROFILE"] = str(home)
     os.environ["B12_EMBED_RUNTIME_DIR"] = str(runtime)
     os.environ["B12_MCP_DAEMON_SOCK"] = str(runtime / "b12-mcp.sock")
     os.environ["B12_TEST_STUB_LOG"] = str(log)

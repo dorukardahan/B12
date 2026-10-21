@@ -23,6 +23,12 @@ def _login_home() -> str:
     return pwd.getpwuid(os.getuid()).pw_dir
 
 
+def test_expanduser_resolves_to_the_isolated_home():
+    # Platform-neutral: on Windows expanduser() follows USERPROFILE, not HOME.
+    isolated_home = Path(os.environ["B12_TEST_STUB_LOG"]).parent / "home"
+    assert Path(os.path.expanduser("~")).resolve() == isolated_home.resolve()
+
+
 def test_home_is_not_the_login_home():
     assert os.environ["HOME"] != _login_home()
 
