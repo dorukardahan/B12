@@ -141,6 +141,13 @@ def is_usable_session_id(value):
     )
 
 
+def _db_path(home: Path) -> Path:
+    # Same location as shared_patterns.get_db_path(); a Linux-only path made
+    # these tests check an unused file on macOS.
+    if sys.platform == "darwin":
+        return home / "Library" / "Application Support" / "mcp-memory" / "sqlite_vec.db"
+    return home / ".local" / "share" / "mcp-memory" / "sqlite_vec.db"
+
 def test_session_end_does_not_apply_unreviewed_summary_deletion(tmp_path: Path) -> None:
     """SessionEnd may store a summary but retention remains a reviewed, backup-gated operation."""
     home = tmp_path / "home"
@@ -151,7 +158,7 @@ def test_session_end_does_not_apply_unreviewed_summary_deletion(tmp_path: Path) 
         encoding="utf-8",
     )
 
-    db_path = home / ".local" / "share" / "mcp-memory" / "sqlite_vec.db"
+    db_path = _db_path(home)
     preexisting_ids = _make_db(db_path)
     hook_dir = tmp_path / "hook-runtime"
     _install_embed_stubs(hook_dir)
@@ -231,7 +238,7 @@ def test_session_end_skips_database_summary_without_usable_session_id(
         ("unknown", "gemini-unknown", "gemini-unkno", " ")
     ):
         home = tmp_path / f"home-{index}"
-        db_path = home / ".local" / "share" / "mcp-memory" / "sqlite_vec.db"
+        db_path = _db_path(home)
         _make_db(db_path)
         conn = sqlite3.connect(db_path)
         before = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]

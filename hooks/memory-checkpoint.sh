@@ -294,7 +294,7 @@ if not prefix_classified:
     # ── ML classify via daemon (LogReg head over embeddings) ─────
     import socket as _sock
     _uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-    _daemon_sock = f"/tmp/b12-embed-{_uid}.sock"
+    _daemon_sock = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_uid}.sock")
 
     def _daemon_classify(text):
         """Call daemon classify op. Returns type str or None."""

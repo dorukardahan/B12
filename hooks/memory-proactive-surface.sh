@@ -208,8 +208,8 @@ fi
 
 # ── Daemon helpers ──────────────────────────────────────────
 _UID=$(id -u 2>/dev/null || echo $$)
-EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
-EMBED_PID="/tmp/b12-embed-${_UID}.pid"
+EMBED_SOCK="${B12_EMBED_RUNTIME_DIR:-/tmp}/b12-embed-${_UID}.sock"
+EMBED_PID="${B12_EMBED_RUNTIME_DIR:-/tmp}/b12-embed-${_UID}.pid"
 
 daemon_alive() {
   [ -S "$EMBED_SOCK" ] && [ -f "$EMBED_PID" ] && \
