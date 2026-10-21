@@ -51,7 +51,7 @@ fi
 # Recall query: agent-type + first 200 chars of task (when present).
 QUERY=$(printf 'agent:%s %s' "$AGENT_TYPE" "${TASK:0:200}")
 _UID=$(id -u 2>/dev/null || echo $$)
-SOCK="/tmp/b12-embed-${_UID}.sock"
+SOCK="${B12_EMBED_RUNTIME_DIR:-/tmp}/b12-embed-${_UID}.sock"
 
 # Platform-aware DB path via shared resolver (Darwin / Linux / WSL /
 # Windows-bash). Codex review PR #44 P2 originated the inline switch

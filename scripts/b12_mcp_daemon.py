@@ -62,7 +62,7 @@ except Exception:  # pragma: no cover — never block daemon on import
 
 _UID = os.getuid() if hasattr(os, "getuid") else os.getpid()
 SOCK_PATH = os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock")
-PID_PATH = f"/tmp/b12-mcp-{_UID}.pid"
+PID_PATH = os.path.splitext(SOCK_PATH)[0] + ".pid"  # next to the socket; /tmp/b12-mcp-<UID>.pid by default
 
 _B12_DATA_DIR = os.environ.get("B12_DATA_DIR", os.path.expanduser("~/.B12"))
 LOG_DIR = os.path.join(_B12_DATA_DIR, "memory-logs")

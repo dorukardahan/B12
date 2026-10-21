@@ -94,6 +94,13 @@ echo "retrieval exit=$?"
 
 The CI workflow at `.github/workflows/ci.yml` runs the same checks on every PR.
 
+The pytest suite is safe to run on a machine where B12 is installed: the root
+`conftest.py` points `HOME`, `B12_EMBED_RUNTIME_DIR` and `B12_MCP_DAEMON_SOCK` at
+a private temp tree and puts no-op `launchctl` and `crontab` stubs first on
+`PATH` before any test module is imported. Keep new code on those knobs (never a
+hardcoded `/tmp/b12-*` path or a direct `launchctl` call outside `install.sh`),
+or a test run can reach the live daemons and database.
+
 ## PR conventions
 
 - **Title format**: `feat(scope): short summary` / `fix(scope): ...` / `docs(scope): ...` / `chore(scope): ...`.
