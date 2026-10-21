@@ -35,7 +35,7 @@ INPUT=$(cat)
 # preserves every (possibly empty) field. SCALARS ONLY — the tool_input OBJECT
 # (below) and any multi-line tool_result keep their own jq.
 IFS=$'\x1f' read -r TOOL_NAME HOOK_EVENT SESSION_ID FILE_PATH \
-  < <(printf '%s' "$INPUT" | jq -r '[.tool_name // "", .hook_event_name // "", .session_id // "", (.tool_input.file_path // "")] | join("\u001f")' 2>/dev/null)
+  < <(printf '%s' "$INPUT" 2>/dev/null | jq -r '[.tool_name // "", .hook_event_name // "", .session_id // "", (.tool_input.file_path // "")] | join("\u001f")' 2>/dev/null)
 SESSION_ID12="${SESSION_ID:0:12}"
 TOOL_INPUT_JSON=$(echo "$INPUT" | jq -c '.tool_input // {}' 2>/dev/null)
 
@@ -250,6 +250,10 @@ if ! echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
   exit 0
 fi
 
+# Keep only results that carry a display line, so the hit count, the injected
+# text and the dedup ledger all describe the same memories.
+_RESP=$(echo "$_RESP" | jq -c '.results |= map(select(.display | type == "string" and length > 0))' 2>/dev/null)
+
 _HIT_COUNT=$(echo "$_RESP" | jq -r '.results | length' 2>/dev/null)
 if [ -z "$_HIT_COUNT" ] || [ "$_HIT_COUNT" = "0" ]; then
   _reset_rate_limit_no_hit
@@ -258,7 +262,7 @@ if [ -z "$_HIT_COUNT" ] || [ "$_HIT_COUNT" = "0" ]; then
 fi
 
 # ── Format hits (basic format — Q4 4-field upgrade lives in P-RECALL) ───
-_DISPLAY=$(echo "$_RESP" | jq -r '.results | map(.display) | .[]')
+_DISPLAY=$(echo "$_RESP" | jq -r '.results[].display')
 
 _HEADER="Proactive surfacing (${TRIGGER_TYPE}: $(echo "$QUERY" | head -c 60)):"
 _CAND_CONTEXT=$(printf '%s\n%s\n' "$_HEADER" "$_DISPLAY")

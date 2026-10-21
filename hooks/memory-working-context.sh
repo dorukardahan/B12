@@ -21,7 +21,7 @@ INPUT=$(cat)
 # non-whitespace so read preserves every (possibly empty) field. Scalars only
 # (tool_name/session_id + the two tool_input scalars used below).
 IFS=$'\x1f' read -r TOOL_NAME SESSION_ID FILE_PATH PATTERN \
-  < <(printf '%s' "$INPUT" | jq -r '[.tool_name // "", .session_id // "", (.tool_input.file_path // ""), (.tool_input.pattern // "")] | join("\u001f")' 2>/dev/null)
+  < <(printf '%s' "$INPUT" 2>/dev/null | jq -r '[.tool_name // "", .session_id // "", (.tool_input.file_path // ""), (.tool_input.pattern // "")] | join("\u001f")' 2>/dev/null)
 
 B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 STAGING_DIR="$B12_BASE/memory-staging"

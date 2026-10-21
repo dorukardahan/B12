@@ -363,12 +363,12 @@ RESULTS=$(sqlite3 "$DB_PATH" "
     WHERE f.memory_fts MATCH '${FTS_PARTS}'
       AND m.deleted_at IS NULL
       AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-      AND m.memory_type NOT IN ('session_summary', 'progress')
+      AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
       AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
   ),
   scored AS (
     SELECT id,
-           '[' || memory_type || '] ' || replace(substr(content, 1, 300), char(10), ' ') as display,
+           '[' || COALESCE(memory_type, 'general') || '] ' || replace(substr(content, 1, 300), char(10), ' ') as display,
            (
              0.25 * max(1.0 / (1.0 + age_days / (9.0 * COALESCE(strength, 1.0) * (1.0 + 4.0 * imp_norm))), 0.01)
              + 0.25 * imp_norm
@@ -547,6 +547,8 @@ if [ "$_NEEDS_EMBED_DAEMON" = true ] && daemon_alive; then
             '.results[] | select(.id==$id) | "\(.memory_type)|\(.source_session)|\(.importance)|\(.project)|\(.preview)"' 2>/dev/null)
           if [ -n "$_META" ] && [ "$_META" != "||||" ]; then
             IFS='|' read -r _mt _ssid _imp _proj _prev <<< "$_META"
+            # A daemon started before this fix still sends '' for an untyped memory.
+            _mt="${_mt:-general}"
             _ssid_clean="${_ssid:-?}"
             _proj_clean="${_proj:-?}"
             _imp_clean="${_imp:-0.50}"
@@ -585,7 +587,7 @@ if [ "$_NEEDS_EMBED_DAEMON" = true ] && daemon_alive; then
       RERANK_IDS=$(echo "$_RESP" | jq -r '.ranked_ids | map(tostring) | join(",")')
       if [ -n "$RERANK_IDS" ]; then
         RESULT_DISPLAY=$(sqlite3 "$DB_PATH" "
-          SELECT '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
+          SELECT '[' || COALESCE(m.memory_type, 'general') || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
           FROM memories m
           WHERE m.id IN (${RERANK_IDS})
           ORDER BY CASE m.id
@@ -633,13 +635,13 @@ try:
         conn.enable_load_extension(False)
         rows = conn.execute("""
             SELECT m.id,
-                   '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' '),
+                   '[' || COALESCE(m.memory_type, 'general') || '] ' || replace(substr(m.content, 1, 300), char(10), ' '),
                    e.content_embedding
             FROM memories m
             JOIN memory_embeddings e ON m.id = e.rowid
             WHERE m.deleted_at IS NULL
               AND (m.valid_until IS NULL OR m.valid_until > datetime('now'))
-              AND m.memory_type NOT IN ('session_summary', 'progress')
+              AND (m.memory_type IS NULL OR m.memory_type NOT IN ('session_summary', 'progress'))
               AND (m.tags IS NULL OR m.tags NOT LIKE '%session-summary%')
         """).fetchall()
 
@@ -702,7 +704,7 @@ COLDEOF
         if [ -n "$_rerank_ids" ]; then
           RERANK_IDS=$(echo "$_rerank_ids" | sed 's/,$//')
           RESULT_DISPLAY=$(sqlite3 "$DB_PATH" "
-            SELECT '[' || m.memory_type || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
+            SELECT '[' || COALESCE(m.memory_type, 'general') || '] ' || replace(substr(m.content, 1, 300), char(10), ' ')
             FROM memories m
             WHERE m.id IN (${RERANK_IDS})
             ORDER BY CASE m.id
@@ -824,7 +826,7 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
     # verbatim, so an extra `id|` prefix would clutter the inject.
     GRAPH_EXPANDED=$(sqlite3 "$DB_PATH" "
       SELECT DISTINCT
-             '[' || m2.memory_type ||
+             '[' || COALESCE(m2.memory_type, 'general') ||
              '|src:' || COALESCE(SUBSTR(json_extract(m2.metadata, '\$.source_session'), 1, 12), '?') ||
              '|imp:' || COALESCE(
                CASE WHEN json_extract(m2.metadata, '\$.importance_score') IS NOT NULL
@@ -852,6 +854,8 @@ if [ "$RESULT_COUNT" -gt 0 ]; then
       JOIN memories m2 ON m2.content_hash = edges.neighbor_hash
       WHERE m2.id NOT IN (${ALL_IDS})
         AND m2.deleted_at IS NULL
+        AND (m2.memory_type IS NULL OR m2.memory_type NOT IN ('session_summary', 'progress'))
+        AND (m2.tags IS NULL OR m2.tags NOT LIKE '%session-summary%')
       ORDER BY edges.similarity DESC
       LIMIT 2
     " 2>/dev/null)
@@ -1098,7 +1102,7 @@ if [ -n "$_FINAL_IDS" ]; then
   # with CASE before printf so the COALESCE actually applies.
   _Q4_ROWS=$(sqlite3 "$DB_PATH" "
     SELECT m.id,
-           m.memory_type,
+           COALESCE(m.memory_type, 'general'),
            COALESCE(SUBSTR(json_extract(m.metadata, '\$.source_session'), 1, 12), '?'),
            COALESCE(
              CASE WHEN json_extract(m.metadata, '\$.importance_score') IS NOT NULL

@@ -714,7 +714,7 @@ class B12Database {
            LIMIT 3`).all(tagParam(`proj:${projectName}`));
       result.projectMemories = projRows.map((m) => ({
         content: m.content.slice(0, 300),
-        memory_type: m.memory_type
+        memory_type: m.memory_type || "general"
       }));
       if (projRows.length > 0) {
         const boostIds = projRows.map((m) => m.id);
@@ -731,7 +731,7 @@ class B12Database {
          LIMIT 2`).all();
     result.universalMemories = universalRows.map((m) => ({
       content: m.content.slice(0, 300),
-      memory_type: m.memory_type
+      memory_type: m.memory_type || "general"
     }));
     if (projectName) {
       const summaryRow = this.db.prepare(`SELECT content FROM memories
@@ -769,7 +769,7 @@ class B12Database {
     const topPlaceholders = topIds.map(() => "?").join(",");
     const allPlaceholders = allIds.map(() => "?").join(",");
     const rows = this.db.prepare(`SELECT DISTINCT m2.id,
-                '[' || m2.memory_type || '] ' || replace(substr(m2.content, 1, 200), char(10), ' ') as display,
+                '[' || COALESCE(m2.memory_type, 'general') || '] ' || replace(substr(m2.content, 1, 200), char(10), ' ') as display,
                 edges.similarity
          FROM (
            SELECT mg.target_hash AS neighbor_hash, mg.similarity
@@ -789,6 +789,8 @@ class B12Database {
          JOIN memories m2 ON m2.content_hash = edges.neighbor_hash
          WHERE m2.id NOT IN (${allPlaceholders})
            AND m2.deleted_at IS NULL
+           AND (m2.memory_type IS NULL OR m2.memory_type NOT IN ('session_summary', 'progress'))
+           AND (m2.tags IS NULL OR m2.tags NOT LIKE '%session-summary%')
          ORDER BY edges.similarity DESC
          LIMIT ?`).all(...topIds, ...topIds, ...allIds, limit);
     return rows.map((r) => ({
@@ -1120,7 +1122,7 @@ ${clipped}`;
   }
   const context = db.getSessionContext(project);
   if (context.projectMemories.length > 0) {
-    const lines = context.projectMemories.map((m) => `[${m.memory_type}] ${m.content}`).join(`
+    const lines = context.projectMemories.map((m) => `[${m.memory_type || "general"}] ${m.content}`).join(`
 `);
     if (totalChars + lines.length < CHAR_BUDGET) {
       sections.push(`## Project Memories (${project})
@@ -1129,7 +1131,7 @@ ${lines}`);
     }
   }
   if (context.universalMemories.length > 0) {
-    const lines = context.universalMemories.map((m) => `[${m.memory_type}] ${m.content}`).join(`
+    const lines = context.universalMemories.map((m) => `[${m.memory_type || "general"}] ${m.content}`).join(`
 `);
     if (totalChars + lines.length < CHAR_BUDGET) {
       sections.push(`## Cross-Project Knowledge
