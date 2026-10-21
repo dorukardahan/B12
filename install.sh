@@ -477,7 +477,9 @@ update_launchd_plists() {
   [ -d "$LAUNCH_DIR" ] || return 0
 
   local updated=0
-  for plist in "$LAUNCH_DIR"/com.b12.*.plist; do
+  # README/docs/setup.md install the templates under their own file names
+  # (launchd-*.plist), so scan those as well as com.b12.*.plist.
+  for plist in "$LAUNCH_DIR"/com.b12.*.plist "$LAUNCH_DIR"/launchd-*.plist; do
     [ -f "$plist" ] || continue
     local changed=false
 
@@ -511,7 +513,10 @@ update_launchd_plists() {
       # up the new file. A job the user unloaded or disabled (for example a
       # paused consolidation run) stays off.
       local label
-      label=$(basename "$plist" .plist)
+      # The job label lives inside the plist; the file name may differ.
+      label=$(plutil -extract Label raw -o - "$plist" 2>/dev/null) \
+        || label=$(awk '/<key>Label<\/key>/ { getline; gsub(/.*<string>|<\/string>.*/, ""); print; exit }' "$plist")
+      [ -n "$label" ] || label=$(basename "$plist" .plist)
       # Exact label query, as in reload_daemon_if_running(): grepping the full
       # listing would treat the dots in the label as regex wildcards.
       if launchctl list "$label" >/dev/null 2>&1; then

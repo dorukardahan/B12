@@ -33,11 +33,12 @@ def _function_body() -> str:
     return m.group(0)
 
 
-def _write_plist(path: Path, args: list[str]) -> None:
-    path.write_bytes(plistlib.dumps({"Label": path.stem, "ProgramArguments": args}))
+def _write_plist(path: Path, args: list[str], label: str | None = None) -> None:
+    path.write_bytes(plistlib.dumps({"Label": label or path.stem, "ProgramArguments": args}))
 
 
-def _setup(tmp_path: Path, *, loaded: list[str], venv: bool = True) -> dict[str, Path]:
+def _setup(tmp_path: Path, *, loaded: list[str], venv: bool = True,
+           consolidate_file: str = f"{LABEL}.plist", no_plutil: bool = False) -> dict[str, Path]:
     home = tmp_path / "home"
     agents = home / "Library" / "LaunchAgents"
     agents.mkdir(parents=True)
@@ -65,11 +66,14 @@ def _setup(tmp_path: Path, *, loaded: list[str], venv: bool = True) -> dict[str,
         "fi\n"
         "exit 0\n"
     )
+    if no_plutil:
+        # Simulate a host without plutil so the awk label fallback runs.
+        (stubs / "plutil").write_text("#!/bin/sh\nexit 127\n")
     for stub in stubs.iterdir():
         stub.chmod(0o755)
 
-    consolidate = agents / f"{LABEL}.plist"
-    _write_plist(consolidate, ["/usr/bin/python3", f"{home}/.B12/hooks/memory-consolidate.py", "--auto"])
+    consolidate = agents / consolidate_file
+    _write_plist(consolidate, ["/usr/bin/python3", f"{home}/.B12/hooks/memory-consolidate.py", "--auto"], LABEL)
     bash_job = agents / "com.b12.memory-backup.plist"
     _write_plist(bash_job, ["/bin/bash", f"{home}/.B12/hooks/memory-backup.sh"])
     return {
@@ -118,6 +122,18 @@ def test_loaded_job_is_reloaded_after_rewrite(tmp_path):
     _run(paths)
     assert _program(paths["consolidate"])[0] == str(paths["venv"])
     assert _reload_calls(paths) == [f'unload {paths["consolidate"]}', f'load {paths["consolidate"]}']
+
+
+@pytest.mark.parametrize("no_plutil", [False, True], ids=["plutil", "awk-fallback"])
+@pytest.mark.parametrize("loaded", [[], [LABEL]], ids=["unloaded", "loaded"])
+def test_docs_installed_plist_name_is_migrated_by_its_label(tmp_path, loaded, no_plutil):
+    # README/docs/setup.md copy the template as launchd-consolidate.plist; the
+    # job label inside it is still com.b12.memory-consolidate.
+    paths = _setup(tmp_path, loaded=loaded, consolidate_file="launchd-consolidate.plist", no_plutil=no_plutil)
+    _run(paths)
+    assert _program(paths["consolidate"])[0] == str(paths["venv"])
+    expected = [f'unload {paths["consolidate"]}', f'load {paths["consolidate"]}'] if loaded else []
+    assert _reload_calls(paths) == expected
 
 
 def test_look_alike_loaded_label_does_not_reload_unloaded_job(tmp_path):
