@@ -131,13 +131,37 @@ def _backtick_end(line: str, i: int) -> int:
     return _quote_end(line, i)
 
 
+def _substitutions_in(text: str) -> list[str]:
+    """Bodies of the `$( )` and backtick substitutions in text, such as the
+    word of a `${v:-word}` parameter expansion. Single-quoted text and
+    arithmetic `$(( ))` are skipped."""
+    found, j = [], 0
+    while j < len(text):
+        if text[j] == "\\":
+            j += 2
+        elif text[j] == "'":
+            j = _quote_end(text, j)
+        elif text[j : j + 2] == "$(" and text[j + 2 : j + 3] != "(":
+            end = _group_end(text, j + 1)
+            found.append(text[j + 2 : end - 1])
+            j = end
+        elif text[j] == "`":
+            end = _backtick_end(text, j)
+            found.append(text[j + 1 : end - 1])
+            j = end
+        else:
+            j += 1
+    return found
+
+
 def _top_level(line: str) -> tuple[str, list[str], list[str], list[tuple[str, str]]]:
     """The line with only its outer shell syntax left, plus what it runs
     inside: each ( ) or { } group collapses to a numbered placeholder whose
     body is returned, the bodies of `$( )` and backtick substitutions
     (including those inside double quotes) are returned, and so are process
     substitutions with their direction (`<` or `>`). Single quoted text,
-    `${ }` and arithmetic `(( ))` collapse to `x`."""
+    `${ }` (after taking the substitutions in its word) and arithmetic `(( ))`
+    collapse to `x`."""
     out, groups, substs, procs, i = [], [], [], [], 0
     while i < len(line):
         ch = line[i]
@@ -181,7 +205,8 @@ def _top_level(line: str) -> tuple[str, list[str], list[str], list[tuple[str, st
                 out.pop()  # the `<` or `>` belongs to the substitution, not a redirection
                 procs.append((prev, line[i + 1 : end - 1]))
                 out.append("x")
-            elif prev == "$":
+            elif prev == "$":  # ${ }: inert, but its word can run substitutions
+                substs += _substitutions_in(line[i + 1 : end - 1])
                 out.append("x")
             else:
                 out.append(f"\x00{len(groups)}\x00")
@@ -347,6 +372,8 @@ def test_leaks_follow_shell_structure():
         "cat <(sleep 30 2>/dev/null) >/dev/null 2>&1 &",
         "x=$(( a & b ))",
         "(( a & 1 ))",
+        "x=${v:-$(date)}",
+        "x=${v:-'$(sleep 30 &)'}",
     ]
     leaking = [
         '( "$@" ) 2>>"$_log" < /dev/null &',
@@ -376,6 +403,8 @@ def test_leaks_follow_shell_structure():
         "read -r x < <(sleep 30 | jq .)",
         """read -r x < <(printf '%s' "$I" | jq -r . 2>/dev/null)""",
         "tee >(sleep 30 2>/dev/null) >/dev/null 2>&1",
+        "x=${v:-$(sleep 30 &)}",
+        "x=${v:-`sleep 30 &`}",
     ]
     assert [line for line in detached if _leaks(line)] == []
     assert [line for line in leaking if not _leaks(line)] == []
