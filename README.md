@@ -401,6 +401,7 @@ B12/
 │       └── b12-gemini-tool-call.sh      # AfterTool adapter (memory retrieval)
 ├── scripts/                        # Support modules
 │   ├── b12_mcp_server.py           #   Custom FastMCP server (13 tools + 4 resources)
+│   ├── b12_log_noise.py            #   Collapses known MCP SDK protocol-probe warnings in server stderr
 │   ├── start-mcp.sh                #   MCP bootstrap (venv detection, used by plugin)
 │   ├── embed_daemon.py             #   Background embedding daemon (Unix socket)
 │   ├── write_time_merge.py         #   Semantic dedup at write time

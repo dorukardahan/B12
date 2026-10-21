@@ -22,7 +22,7 @@ _B12_HOOK_DIR="${B12_HOOK_DIR:-$HOME/.B12/hooks}"
 . "$_B12_HOOK_DIR/_b12_common.sh"
 
 # 3s watchdog — failure logging must never delay the next turn.
-( sleep 3 && kill -TERM $$ 2>/dev/null ) &
+( sleep 3 && kill -TERM $$ 2>/dev/null ) </dev/null >/dev/null 2>&1 &
 _WATCHDOG=$!
 trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
 

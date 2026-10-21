@@ -8,6 +8,8 @@
 
 ### Fixed
 
+- Hook watchdogs no longer hold the host's stdout pipe open after the hook exits. The orphaned watchdog `sleep` delayed EOF until the timer expired, and Claude Code then refused hook output that injected context, so proactively surfaced memories and tag corrections were dropped.
+- The MCP server and daemon no longer flood stderr with SDK validation dumps for newer-protocol client probes (`server/discover`, pre-initialization `roots/list_changed`) or with one INFO line per request. Each known probe is logged once as a single line; all other warnings are unchanged. In daemon mode this stderr is an unrotated launchd log that had grown by megabytes per day.
 - Installer now migrates launchd jobs that still run B12 Python scripts with `/usr/bin/python3` (Python 3.9 on macOS) to the B12 venv interpreter. Older consolidation jobs failed on every run because the scripts require Python 3.11+. Jobs that were unloaded or disabled stay off, and `/bin/bash` jobs are untouched.
 - `memory-consolidate.py` exits with a clear message under Python older than 3.11 instead of a traceback.
 

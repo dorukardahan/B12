@@ -73,6 +73,7 @@ py-modules = [
     "b12_llm_extractor",
     "b12_llm_prompts",
     "b12_llm_providers",
+    "b12_log_noise",
     "b12_long_session",
     "b12_mcp_daemon",
     "b12_mcp_server",
