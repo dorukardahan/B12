@@ -67,10 +67,12 @@ def test_sync_watchdog_still_emits_fallback_when_cap_fires(tmp_path):
 
 
 # The guard below models one line of shell at a time: quoting, ( ) and { }
-# groups, jobs, and-or lists, pipelines and redirections applied in order,
-# plus the fds a hook changes for itself with `exec`. Every fd that still
-# points at one of the hook's own output pipes ("hook") when a job is put in
-# the background is a leak.
+# groups, `$( )` and backtick substitutions, jobs, and-or lists, pipelines
+# and redirections applied in order, plus the fds a hook changes for itself
+# with `exec`. Every fd that still points at one of the hook's own output
+# pipes ("hook") when a job is put in the background is a leak. Not modelled:
+# multi-line groups (only their closing line is checked) and process
+# substitutions such as `< <(printf ... | jq ...)`.
 
 # Control operators that start a new job (`;` and a lone `&`, not `&&`, `>&`,
 # `&>` or `|&`), and those that chain an and-or list or a pipeline.
@@ -123,22 +125,54 @@ def _group_end(line: str, i: int) -> int:
     return len(line)
 
 
-def _top_level(line: str) -> tuple[str, list[str]]:
-    """The line with only its outer shell syntax left: quoted text, `$( )`,
-    `${ }` and process substitutions collapse to `x`, and each ( ) or { }
-    group collapses to a numbered placeholder whose body is returned."""
-    out, groups, i = [], [], 0
+def _backtick_end(line: str, i: int) -> int:
+    """Index just past the backtick substitution that opens at line[i]."""
+    return _quote_end(line, i)
+
+
+def _top_level(line: str) -> tuple[str, list[str], list[str]]:
+    """The line with only its outer shell syntax left, plus what it runs
+    inside: each ( ) or { } group collapses to a numbered placeholder whose
+    body is returned, and the bodies of `$( )` and backtick substitutions,
+    including those inside double quotes, are returned for checking. Single
+    quoted text, `${ }` and process substitutions collapse to `x`."""
+    out, groups, substs, i = [], [], [], 0
     while i < len(line):
         ch = line[i]
         if ch == "\\":
             out.append("x")
             i += 2
-        elif ch in "'\"`":
-            out.append(ch + "x" + ch)
+        elif ch == "'":
+            out.append("'x'")
             i = _quote_end(line, i)
+        elif ch == "`":
+            end = _backtick_end(line, i)
+            substs.append(line[i + 1 : end - 1])
+            out.append("x")
+            i = end
+        elif ch == '"':
+            j = i + 1
+            while j < len(line) and line[j] != '"':
+                if line[j] == "\\":
+                    j += 2
+                elif line[j : j + 2] == "$(":
+                    end = _group_end(line, j + 1)
+                    substs.append(line[j + 2 : end - 1])
+                    j = end
+                elif line[j] == "`":
+                    end = _backtick_end(line, j)
+                    substs.append(line[j + 1 : end - 1])
+                    j = end
+                else:
+                    j += 1
+            out.append('"x"')
+            i = j + 1
         elif ch in "({":
             end = _group_end(line, i)
-            if i and line[i - 1] in "$<>":
+            if i and line[i - 1] == "$" and ch == "(":
+                substs.append(line[i + 1 : end - 1])
+                out.append("x")
+            elif i and line[i - 1] in "$<>":
                 out.append("x")
             else:
                 out.append(f"\x00{len(groups)}\x00")
@@ -147,7 +181,7 @@ def _top_level(line: str) -> tuple[str, list[str]]:
         else:
             out.append(ch)
             i += 1
-    return "".join(out), groups
+    return "".join(out), groups, substs
 
 
 def _apply_redirections(command: str, fds: dict[int, str]) -> dict[int, str]:
@@ -184,7 +218,11 @@ def _leaks(line: str, fds: dict[int, str] | None = None) -> bool:
         return False
     if line[0] in ")}":  # closes a multi-line group; what follows covers all of it
         line = "x" + line[1:]
-    flat, groups = _top_level(line)
+    flat, groups, substs = _top_level(line)
+    # A substitution's stdout is a pipe the hook waits on, so work left
+    # running there holds the hook up just as one on its own stdout would.
+    if any(_leaks(body, {**fds, 1: "hook"}) for body in substs):
+        return True
     parts = _JOB_SEPARATOR.split(re.sub(r"\s#.*$", "", flat))
     for k in range(0, len(parts), 2):
         background = k + 1 < len(parts) and parts[k + 1] == "&"
@@ -267,7 +305,10 @@ def test_leaks_follow_shell_structure():
         '( sleep 30; echo ")" ) >/dev/null 2>&1 &',
         'cmd "a \\" & b" >/dev/null 2>&1 &',
         "( sleep 30 & echo done ) >/dev/null 2>&1",
-        'x="$(sleep 1 &)"',
+        "x='$(sleep 30 &)'",
+        'x="$(sleep 30 >/dev/null 2>&1 &)"',
+        'x="$(date)"',
+        'y=$(printf "%s" "$a" | jq -r . 2>/dev/null)',
     ]
     leaking = [
         '( "$@" ) 2>>"$_log" < /dev/null &',
@@ -288,6 +329,11 @@ def test_leaks_follow_shell_structure():
         "( sleep 30 & echo done )",
         "{ sleep 30 & }",
         "if true; then ( sleep 30 & ); fi",
+        'x="$(sleep 30 &)"',
+        "x=$(sleep 30 &)",
+        "x=`sleep 30 &`",
+        'echo "a $(sleep 30 & echo) b"',
+        'x="$(sleep 30 >/dev/null &)"',
     ]
     assert [line for line in detached if _leaks(line)] == []
     assert [line for line in leaking if not _leaks(line)] == []
