@@ -113,7 +113,7 @@ case "$CMD" in
 
     echo -e "${BOLD}By Type:${RESET}"
     sqlite3 "$DB_PATH" "
-      SELECT '  ' || memory_type || ': ' || COUNT(*)
+      SELECT '  ' || COALESCE(memory_type, 'none') || ': ' || COUNT(*)
       FROM memories WHERE deleted_at IS NULL
       GROUP BY memory_type ORDER BY COUNT(*) DESC
     "
@@ -189,7 +189,7 @@ case "$CMD" in
 
     # Show what will be deleted
     PREVIEW=$(sqlite3 "$DB_PATH" "
-      SELECT substr(content_hash, 1, 16) || ' [' || memory_type || '] ' ||
+      SELECT substr(content_hash, 1, 16) || ' [' || COALESCE(memory_type, 'general') || '] ' ||
              replace(replace(substr(content, 1, 80), char(10), ' '), char(13), '')
       FROM memories
       WHERE content_hash LIKE '${HASH_PREFIX}%' AND deleted_at IS NULL

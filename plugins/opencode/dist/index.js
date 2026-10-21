@@ -769,7 +769,7 @@ class B12Database {
     const topPlaceholders = topIds.map(() => "?").join(",");
     const allPlaceholders = allIds.map(() => "?").join(",");
     const rows = this.db.prepare(`SELECT DISTINCT m2.id,
-                '[' || m2.memory_type || '] ' || replace(substr(m2.content, 1, 200), char(10), ' ') as display,
+                '[' || COALESCE(m2.memory_type, 'general') || '] ' || replace(substr(m2.content, 1, 200), char(10), ' ') as display,
                 edges.similarity
          FROM (
            SELECT mg.target_hash AS neighbor_hash, mg.similarity

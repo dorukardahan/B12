@@ -60,18 +60,32 @@ def test_untyped_memory_gets_a_general_display(tmp_path, op):
     assert displays[2] == "[decision] typed memory text"
 
 
+def _sql_sources() -> list[Path]:
+    # Every file that can carry B12 SQL; tests are excluded because they quote
+    # the broken patterns on purpose.
+    sources = [
+        *REPO_ROOT.glob("hooks/**/*.sh"),
+        *REPO_ROOT.glob("scripts/**/*.py"),
+        *REPO_ROOT.glob("plugins/opencode/src/**/*.ts"),
+    ]
+    return [p for p in sources if "tests" not in p.relative_to(REPO_ROOT).parts]
+
+
 def _offending_lines(pattern: re.Pattern, allow: re.Pattern | None = None) -> list[str]:
     return [
         f"{path.relative_to(REPO_ROOT)}:{n}"
-        for path in [*REPO_ROOT.glob("hooks/*.sh"), *REPO_ROOT.glob("scripts/*.py")]
+        for path in _sql_sources()
         for n, line in enumerate(path.read_text().splitlines(), 1)
         if pattern.search(line) and not (allow and allow.search(line))
     ]
 
 
 def test_no_unguarded_memory_type_concatenation_remains():
-    # Qualified (m.memory_type) and unqualified (memory_type) column references.
-    assert not _offending_lines(re.compile(r"'\[' \|\| (?:\w+\.)?memory_type \|\|"))
+    # Any SQL concatenation touching the column, whatever text surrounds it and
+    # whether it is qualified (m.memory_type) or not. A JS `memory_type || "x"`
+    # fallback is a logical OR, not SQL, and is allowed.
+    concat = re.compile(r"\|\|\s*(?:\w+\.)?memory_type\b|\b(?:\w+\.)?memory_type\s*\|\|(?!\s*\")")
+    assert not _offending_lines(concat)
 
 
 def test_type_exclusion_predicates_keep_untyped_rows():
