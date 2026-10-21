@@ -6,6 +6,10 @@
 
 - Config / install help form now lists Google Antigravity alongside the other documented hosts.
 
+### Fixed
+
+- Hook watchdogs no longer hold the host's stdout pipe open after the hook exits. The orphaned watchdog `sleep` delayed EOF until the timer expired, and Claude Code then refused hook output that injected context, so proactively surfaced memories and tag corrections were dropped.
+
 ## [v11.83.0] — 2026-08-17
 
 ### Added

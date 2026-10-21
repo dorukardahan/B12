@@ -9,7 +9,7 @@
 set -o pipefail 2>/dev/null || true
 
 # ── Self-timeout watchdog ─────────────────────────────────────
-( sleep 5 && kill -TERM $$ 2>/dev/null ) &
+( sleep 5 && kill -TERM $$ 2>/dev/null ) </dev/null >/dev/null 2>&1 &
 _WATCHDOG=$!
 trap "kill $_WATCHDOG 2>/dev/null; wait $_WATCHDOG 2>/dev/null" EXIT
 
