@@ -57,7 +57,7 @@ REQUIRED_PYTHON_MODULES = [
 REQUIRED_TABLES = ["memories", "memory_embeddings", "memory_fts"]
 
 _UID = os.getuid() if hasattr(os, "getuid") else os.getpid()
-SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
+SOCK_PATH = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_UID}.sock")
 
 CLAUDE_JSON_PATH = _HOME / ".claude.json"
 
@@ -294,8 +294,8 @@ def _daemon_pids() -> set[int]:
     """Discover live MCP/embed daemons from PID files plus process scan."""
     pids: set[int] = set()
     for path in (
-        Path(f"/tmp/b12-mcp-{_UID}.pid"),
-        Path(f"/tmp/b12-embed-{_UID}.pid"),
+        Path(os.path.splitext(os.environ.get("B12_MCP_DAEMON_SOCK", f"/tmp/b12-mcp-{_UID}.sock"))[0] + ".pid"),
+        Path(os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_UID}.pid")),
     ):
         try:
             pids.add(int(path.read_text(encoding="utf-8").strip()))

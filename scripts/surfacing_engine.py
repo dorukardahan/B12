@@ -276,7 +276,7 @@ def _daemon_search(query: str, db_path: str, limit: int = 20) -> list[dict]:
     """
     uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
     # Hardcode /tmp/ — macOS TMPDIR varies per session, causing socket mismatch
-    sock_path = f"/tmp/b12-embed-{uid}.sock"
+    sock_path = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{uid}.sock")
 
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)

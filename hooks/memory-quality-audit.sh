@@ -76,8 +76,8 @@ if fix_mode:
 # ── Daemon helper for orphan embedding regeneration ──────────
 _uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
 # Hardcode /tmp/ — macOS TMPDIR varies per session
-_DAEMON_SOCK = f"/tmp/b12-embed-{_uid}.sock"
-_DAEMON_PID = f"/tmp/b12-embed-{_uid}.pid"
+_DAEMON_SOCK = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_uid}.sock")
+_DAEMON_PID = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_uid}.pid")
 
 def daemon_alive():
     if not os.path.exists(_DAEMON_SOCK) or not os.path.exists(_DAEMON_PID):

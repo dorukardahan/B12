@@ -50,8 +50,8 @@ except ImportError:
 LOG_DIR = os.path.join(os.environ.get('B12_DATA_DIR', os.path.expanduser('~/.B12')), 'memory-logs')
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
 # Hardcode /tmp/ — macOS TMPDIR varies per session
-DAEMON_SOCK = f"/tmp/b12-embed-{_UID}.sock"
-DAEMON_PID = f"/tmp/b12-embed-{_UID}.pid"
+DAEMON_SOCK = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_UID}.sock")
+DAEMON_PID = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_UID}.pid")
 
 MAX_MEMORIES_PER_RUN = 50
 NEIGHBOR_K = 5

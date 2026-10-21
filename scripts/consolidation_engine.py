@@ -84,8 +84,8 @@ MIN_CONTENT_LEN = 30         # Skip very short memories for NLI
 STRENGTH_CAP = 5.0
 
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-DAEMON_SOCK = f"/tmp/b12-embed-{_UID}.sock"
-DAEMON_PID = f"/tmp/b12-embed-{_UID}.pid"
+DAEMON_SOCK = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_UID}.sock")
+DAEMON_PID = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_UID}.pid")
 
 
 # ── Result dataclass ─────────────────────────────────────────────
