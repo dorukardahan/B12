@@ -540,6 +540,17 @@ update_launchd_plists() {
 # ─────────────────────────────────────────────
 # Step 4: Merge hook config into settings.json
 # ─────────────────────────────────────────────
+
+# ~/.claude is always a setup. Other ~/.claude-* directories count only when
+# they look like a Claude Code config dir; archives or folders that merely
+# share the prefix must not get a settings.json or skill written into them.
+is_claude_setup_dir() {
+  local dir="$1"
+  [ -d "$dir" ] || return 1
+  [ "$(basename "$dir")" = ".claude" ] && return 0
+  [ -f "$dir/settings.json" ] || [ -f "$dir/.claude.json" ] || [ -d "$dir/projects" ]
+}
+
 install_to_setup() {
   local SETUP_DIR="$1"
   local SETTINGS_FILE="$SETUP_DIR/settings.json"
@@ -557,7 +568,7 @@ install_to_setup() {
 
   # Merge hooks using python3 (preserves existing settings)
   if ! python3 - "$SETTINGS_FILE" "$SCRIPT_DIR/config/settings-template.json" << 'PYEOF'
-import sys, json
+import sys, json, re
 
 settings_path = sys.argv[1]
 template_path = sys.argv[2]
@@ -568,9 +579,32 @@ with open(settings_path, 'r') as f:
 with open(template_path, 'r') as f:
     template = json.load(f)
 
-# Merge hooks (replace entirely — template is source of truth)
+# The template is the source of truth for B12's own hooks only. Replacing the
+# whole "hooks" block deleted every hook the user had added for other tools,
+# so drop just the B12 handlers (current ~/.B12/hooks/ paths and legacy
+# ~/.claude*/hooks/memory-* paths) and keep everything else.
+_LEGACY_B12 = re.compile(r"/\.claude[^/]*/hooks/memory-[A-Za-z0-9_-]+\.(?:sh|py)\b")
+
+def is_b12(handler):
+    command = handler.get('command', '') if isinstance(handler, dict) else ''
+    return '/.B12/hooks/' in command or bool(_LEGACY_B12.search(command))
+
 if 'hooks' in template:
-    settings['hooks'] = template['hooks']
+    user_hooks = {}
+    for event, groups in (settings.get('hooks') or {}).items():
+        kept = []
+        for group in groups if isinstance(groups, list) else []:
+            if not isinstance(group, dict):
+                continue
+            handlers = [h for h in group.get('hooks', []) if not is_b12(h)]
+            if handlers:
+                kept.append(dict(group, hooks=handlers))
+        if kept:
+            user_hooks[event] = kept
+    merged = {event: list(groups) for event, groups in template['hooks'].items()}
+    for event, groups in user_hooks.items():
+        merged.setdefault(event, []).extend(groups)
+    settings['hooks'] = merged
 
 with open(settings_path, 'w') as f:
     json.dump(settings, f, indent=2)
@@ -3644,7 +3678,7 @@ update_launchd_plists
 install_claude_skill() {
   local SKILL_SRC="$SCRIPT_DIR/skills/b12-memory"
   for dir in "$HOME"/.claude*; do
-    [ -d "$dir" ] || continue
+    is_claude_setup_dir "$dir" || continue
     local SKILL_DEST="$dir/skills/b12-memory"
     mkdir -p "$SKILL_DEST"
     cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
@@ -3693,7 +3727,7 @@ fi
 # Install hooks to Claude Code setups
 if $INSTALL_ALL; then
   for dir in "$HOME"/.claude*; do
-    [ -d "$dir" ] || continue
+    is_claude_setup_dir "$dir" || continue
     base=$(basename "$dir")
     case "$base" in
       .claude|.claude-*) install_to_setup "$dir" ;;

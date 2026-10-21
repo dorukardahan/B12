@@ -213,7 +213,7 @@ Enable reported entries in `/hooks`, then restart Codex.
 
 ### Step 6: Configure hooks (usually automatic)
 
-The installer merges hook configuration from `config/settings-template.json` into your `settings.json`. To verify hooks are active, start a Claude Code session and run `/hooks` — you should see `[User]` tagged hooks.
+The installer merges hook configuration from `config/settings-template.json` into your `settings.json`: B12's own hooks (anything under `~/.B12/hooks/`) are replaced by the template, and hooks you added for other tools are kept. With `--all`, `~/.claude` and every `~/.claude-*` directory that contains `settings.json`, `.claude.json` or `projects/` is treated as a setup; other folders with that prefix are skipped. To verify hooks are active, start a Claude Code session and run `/hooks` — you should see `[User]` tagged hooks.
 
 #### Manual hook configuration
 
