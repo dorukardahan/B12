@@ -63,6 +63,19 @@ def test_untyped_memory_gets_a_general_display(tmp_path, op):
         assert {r["id"]: r["memory_type"] for r in response["results"]} == {1: "general", 2: "decision"}
 
 
+def test_retrieval_q4_reformat_keeps_general_for_untyped_rows(tmp_path):
+    # The retrieval hook rebuilds every final line as "[type|src:...]" from a
+    # last query; run that query as written in the hook.
+    hook = (REPO_ROOT / "hooks" / "memory-retrieval.sh").read_text()
+    sql = re.search(r'_Q4_ROWS=\$\(sqlite3 "\$DB_PATH" "(.*?)" 2>/dev/null\)', hook, re.S).group(1)
+    sql = sql.replace("\\$", "$").replace("${_FINAL_IDS}", "1").replace("${_Q4_ORDER}", " WHEN 1 THEN 0")
+    conn = sqlite3.connect(tmp_path / "mem.db")
+    conn.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, content TEXT, memory_type TEXT, metadata TEXT)")
+    conn.execute("INSERT INTO memories VALUES (1, 'untyped note', NULL, '{}')")
+    assert conn.execute(sql).fetchone()[1] == "general"
+    conn.close()
+
+
 def test_resurface_hits_carry_a_general_type(tmp_path):
     import b12_long_session
 

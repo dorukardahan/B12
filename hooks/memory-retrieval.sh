@@ -1100,7 +1100,7 @@ if [ -n "$_FINAL_IDS" ]; then
   # with CASE before printf so the COALESCE actually applies.
   _Q4_ROWS=$(sqlite3 "$DB_PATH" "
     SELECT m.id,
-           m.memory_type,
+           COALESCE(m.memory_type, 'general'),
            COALESCE(SUBSTR(json_extract(m.metadata, '\$.source_session'), 1, 12), '?'),
            COALESCE(
              CASE WHEN json_extract(m.metadata, '\$.importance_score') IS NOT NULL
