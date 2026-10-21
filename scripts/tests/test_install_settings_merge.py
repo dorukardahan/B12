@@ -15,6 +15,8 @@ import re
 import subprocess
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 INSTALL = REPO_ROOT / "install.sh"
 TEMPLATE_HOOKS = json.loads((REPO_ROOT / "config" / "settings-template.json").read_text())["hooks"]
@@ -95,6 +97,25 @@ def test_missing_settings_file_gets_the_template(tmp_path):
 
 def _is_setup(path: Path, home: Path) -> bool:
     return _bash(f'is_claude_setup_dir "{path}"\n', home).returncode == 0
+
+
+@pytest.mark.parametrize("marker", ["CLAUDE.md", "skills/", "commands/", ".credentials.json", "history.jsonl", "settings.local.json"])
+def test_alternate_setup_without_settings_is_recognized(tmp_path, marker):
+    setup = tmp_path / ".claude-work"
+    setup.mkdir()
+    if marker.endswith("/"):
+        (setup / marker.rstrip("/")).mkdir()
+    else:
+        (setup / marker).write_text("")
+    assert _is_setup(setup, tmp_path)
+
+
+def test_b12_ignore_opts_out(tmp_path):
+    backup = tmp_path / ".claude-backup"
+    backup.mkdir()
+    (backup / "settings.json").write_text("{}")
+    (backup / ".b12-ignore").write_text("")
+    assert not _is_setup(backup, tmp_path)
 
 
 def test_setup_dir_detection(tmp_path):

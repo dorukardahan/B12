@@ -542,13 +542,20 @@ update_launchd_plists() {
 # ─────────────────────────────────────────────
 
 # ~/.claude is always a setup. Other ~/.claude-* directories count only when
-# they look like a Claude Code config dir; archives or folders that merely
-# share the prefix must not get a settings.json or skill written into them.
+# they contain something Claude Code creates in a config dir; archives or
+# folders that merely share the prefix must not get a settings.json or skill
+# written into them. A `.b12-ignore` file opts any directory out explicitly
+# (for example a backup copy of a real setup).
 is_claude_setup_dir() {
-  local dir="$1"
+  local dir="$1" marker
   [ -d "$dir" ] || return 1
+  [ -e "$dir/.b12-ignore" ] && return 1
   [ "$(basename "$dir")" = ".claude" ] && return 0
-  [ -f "$dir/settings.json" ] || [ -f "$dir/.claude.json" ] || [ -d "$dir/projects" ]
+  for marker in settings.json settings.local.json .claude.json .credentials.json CLAUDE.md history.jsonl \
+                projects skills commands agents plugins todos statsig shell-snapshots; do
+    [ -e "$dir/$marker" ] && return 0
+  done
+  return 1
 }
 
 install_to_setup() {
