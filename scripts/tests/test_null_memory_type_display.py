@@ -117,6 +117,28 @@ def test_no_unguarded_memory_type_concatenation_remains():
     assert not _offending_lines(concat)
 
 
+def test_refine_turns_an_explicit_null_type_into_general():
+    import asyncio
+
+    import b12_mcp_server as mcp
+
+    if mcp._refine_candidates is None:
+        pytest.skip("memory_refine unavailable")
+    seen = {}
+
+    def fake_refine(valid, threshold):
+        seen["valid"] = valid
+        return [{**c, "quality_score": 0.9, "group_size": 1} for c in valid]
+
+    orig, mcp._refine_candidates = mcp._refine_candidates, fake_refine
+    try:
+        out = asyncio.run(mcp.memory_refine(candidates='[{"content": "a fact", "memory_type": null, "tags": null}]'))
+    finally:
+        mcp._refine_candidates = orig
+    assert seen["valid"] == [{"content": "a fact", "memory_type": "general", "tags": ""}]
+    assert "| general | a fact" in out and "None" not in out
+
+
 def test_python_displays_fall_back_for_untyped_rows():
     # f"[{row['memory_type']}]" prints "None" for an untyped row, and
     # `memory_type or ''` hands hooks an empty type they render as "[|src:...]".

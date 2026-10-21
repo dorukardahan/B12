@@ -190,7 +190,7 @@ def _scrub_tags(value) -> str:
 def _sanitize_candidate(candidate: dict) -> dict:
     safe = dict(candidate)
     safe["content"] = scrub_pii(str(candidate.get("content", "")))
-    safe["memory_type"] = scrub_pii(str(candidate.get("memory_type", "general")))
+    safe["memory_type"] = scrub_pii(str(candidate.get("memory_type") or "general"))
     safe["tags"] = _scrub_tags(candidate.get("tags", ""))
     return safe
 

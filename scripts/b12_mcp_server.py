@@ -2429,8 +2429,9 @@ async def memory_refine(
         if isinstance(c, dict) and c.get("content"):
             valid.append({
                 "content": str(c["content"]),
-                "memory_type": str(c.get("memory_type", "general")),
-                "tags": str(c.get("tags", "")),
+                # `or`, not a .get() default: an explicit JSON null must not become "None".
+                "memory_type": str(c.get("memory_type") or "general"),
+                "tags": str(c.get("tags") or ""),
             })
 
     if not valid:
