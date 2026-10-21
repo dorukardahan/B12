@@ -294,7 +294,7 @@ def _leaking_lines(path: Path) -> list[int]:
     hook's stderr) down the file."""
     fds, found = dict(_HOOK_FDS), []
     for lineno, line in _shell_lines(path):
-        exec_line = _EXEC_REDIRECT.match(_top_level(line.strip())[0])
+        exec_line = _EXEC_REDIRECT.match(re.sub(r"\s#.*$", "", _top_level(line.strip())[0]))
         if exec_line:
             fds = _apply_redirections(exec_line.group(1), fds)
         elif _leaks(line, fds):
@@ -389,8 +389,14 @@ def test_exec_redirections_carry_down_the_file(tmp_path):
         "( work ) </dev/null >/dev/null 2>&1 3>&- &\n"
         "exec 2>>/tmp/err.log 3>&-\n"
         "( work ) >/dev/null &\n"
+        "exec 3>&2\n"
+        "( work ) </dev/null >/dev/null 2>&1 &\n"
     )
+    # After `exec 2>>log`, `exec 3>&2` copies the log, not the hook's stderr.
     assert _leaking_lines(hook) == [2]
+    commented = tmp_path / "commented.sh"
+    commented.write_text("exec 3>&2 # keep a copy of stderr\n( work ) </dev/null >/dev/null 2>&1 &\n")
+    assert _leaking_lines(commented) == [2]
 
 
 def test_continued_lines_are_joined(tmp_path):
