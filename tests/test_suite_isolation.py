@@ -26,7 +26,9 @@ def test_db_path_resolves_under_the_isolated_home():
     import shared_patterns
 
     login_home = pwd.getpwuid(os.getuid()).pw_dir
-    assert shared_patterns.DB_PATH.startswith(os.environ["HOME"])
+    assert shared_patterns.get_db_path().startswith(os.environ["HOME"])
+    # DB_PATH is frozen at first import, possibly under another test's
+    # monkeypatched HOME; it just must never be the live database.
     assert not shared_patterns.DB_PATH.startswith(login_home + os.sep), "tests must never open the live memory DB"
 
 

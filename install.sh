@@ -3512,6 +3512,16 @@ install_mcp_daemon() {
     -e "s|B12_HOME_DATA_DIR|$DATA_DIR|g" \
     "$TEMPLATE" > "$PLIST_DEST"
 
+  # Carry custom runtime paths into the job, so the daemon binds the socket
+  # this function waits for below. Default installs need nothing here.
+  local _var _val
+  for _var in B12_MCP_DAEMON_SOCK B12_EMBED_RUNTIME_DIR; do
+    _val="${!_var:-}"
+    [ -n "$_val" ] || continue
+    /usr/libexec/PlistBuddy -c "Add :EnvironmentVariables:$_var string $_val" "$PLIST_DEST" 2>/dev/null \
+      || /usr/libexec/PlistBuddy -c "Set :EnvironmentVariables:$_var $_val" "$PLIST_DEST"
+  done
+
   launchctl load "$PLIST_DEST"
 
   # Brief wait for the socket to appear (cold start ~5-10s)
