@@ -1311,21 +1311,32 @@ b12_sha256() {
   fi
 }
 
-# True only when B12 provably wrote this SKILL.md: its SHA-256 matches the
-# .b12-installed marker that install_codex_skill writes next to its copy, a
-# skill in this checkout, or a version B12 shipped before the marker existed
-# (config/codex-skills/shipped-skill-sha256.txt). A B12 copy edited after
-# installation no longer matches and is treated as the user's.
-b12_skill_is_installer_owned() {
-  local file="$1" marker shipped hash
-  marker="$(dirname "$file")/.b12-installed"
+# True when FILE holds content B12 wrote: its SHA-256 is recorded for LABEL in
+# MARKER (the .b12-installed file install_codex_skill writes), equals one of
+# the SHIPPED files in this checkout, or is a version B12 shipped before the
+# marker existed (config/codex-skills/shipped-skill-sha256.txt).
+b12_file_is_b12s() {
+  local file="$1" marker="$2" label="$3" hash shipped
+  shift 3
   hash=$(b12_sha256 "$file" 2>/dev/null)
   [ -n "$hash" ] || return 1
-  [ -f "$marker" ] && [ "$(cat "$marker")" = "$hash" ] && return 0
-  for shipped in "$SCRIPT_DIR/config/codex-skills/b12-memory/SKILL.md" "$SCRIPT_DIR/skills/b12-memory/SKILL.md"; do
+  grep -qxF "$hash  $label" "$marker" 2>/dev/null && return 0
+  for shipped in "$@"; do
     [ -f "$shipped" ] && [ "$(b12_sha256 "$shipped")" = "$hash" ] && return 0
   done
   grep -qxF "$hash" "$SCRIPT_DIR/config/codex-skills/shipped-skill-sha256.txt" 2>/dev/null
+}
+
+# True only when B12 provably wrote the skill in DIR: its SKILL.md and, if
+# present, agents/openai.yaml. A B12 copy whose files were edited after
+# installation no longer matches and is treated as the user's.
+b12_skill_is_installer_owned() {
+  local dir="$1" src="$SCRIPT_DIR/config/codex-skills/b12-memory"
+  b12_file_is_b12s "$dir/SKILL.md" "$dir/.b12-installed" SKILL.md \
+    "$src/SKILL.md" "$SCRIPT_DIR/skills/b12-memory/SKILL.md" || return 1
+  [ ! -e "$dir/agents/openai.yaml" ] \
+    || b12_file_is_b12s "$dir/agents/openai.yaml" "$dir/.b12-installed" agents/openai.yaml \
+         "$src/agents/openai.yaml"
 }
 
 install_codex_skill() {
@@ -1353,7 +1364,7 @@ install_codex_skill() {
   # in place with a warning, since it may be user-authored.
   for legacy in "$CODEX_DIR/skills/b12" "$CODEX_DIR/skills/b12-memory"; do
     [ -f "$legacy/SKILL.md" ] || continue
-    if b12_skill_is_installer_owned "$legacy/SKILL.md"; then
+    if b12_skill_is_installer_owned "$legacy"; then
       rm -f "$legacy/SKILL.md" "$legacy/agents/openai.yaml"
       rmdir "$legacy/agents" 2>/dev/null || true
       rmdir "$legacy" 2>/dev/null || true
@@ -1368,7 +1379,8 @@ install_codex_skill() {
   # ~/.agents/skills is a shared user skill root: never overwrite a b12-memory
   # skill there that a B12 installer did not write. Checked after the legacy
   # cleanup so a stale B12 copy in ~/.codex/skills is still removed.
-  if [ -f "$SKILL_DEST/SKILL.md" ] && ! b12_skill_is_installer_owned "$SKILL_DEST/SKILL.md"; then
+  if { [ -e "$SKILL_DEST/SKILL.md" ] || [ -e "$SKILL_DEST/agents/openai.yaml" ]; } \
+     && ! b12_skill_is_installer_owned "$SKILL_DEST"; then
     warn "A b12-memory skill at $SKILL_DEST was not written by the B12 installer"
     warn "or was edited since; leaving it unchanged. Move it aside and re-run to"
     warn "install the B12 Codex skill."
@@ -1378,9 +1390,11 @@ install_codex_skill() {
   mkdir -p "$SKILL_DEST/agents"
   cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"
   cp "$SKILL_SRC/agents/openai.yaml" "$SKILL_DEST/agents/openai.yaml"
-  # Record what B12 wrote, so the next install can tell its own copy (replace)
-  # from one the user has edited since (keep).
-  b12_sha256 "$SKILL_DEST/SKILL.md" > "$SKILL_DEST/.b12-installed"
+  # Record what B12 wrote (sha256sum format), so the next install can tell its
+  # own copy (replace) from one the user has edited since (keep).
+  printf '%s  SKILL.md\n%s  agents/openai.yaml\n' \
+    "$(b12_sha256 "$SKILL_DEST/SKILL.md")" "$(b12_sha256 "$SKILL_DEST/agents/openai.yaml")" \
+    > "$SKILL_DEST/.b12-installed"
   info "B12 skill installed to $SKILL_DEST"
 }
 
@@ -1497,7 +1511,8 @@ b12_verify_codex_skill() {
   if [ ! -f "$skill" ]; then
     warn "Verify: B12 skill NOT found at ~/.agents/skills/b12-memory"
     problems=$((problems + 1))
-  elif ! cmp -s "$skill" "$SCRIPT_DIR/config/codex-skills/b12-memory/SKILL.md"; then
+  elif ! cmp -s "$skill" "$SCRIPT_DIR/config/codex-skills/b12-memory/SKILL.md" \
+       || ! cmp -s "$(dirname "$skill")/agents/openai.yaml" "$SCRIPT_DIR/config/codex-skills/b12-memory/agents/openai.yaml"; then
     warn "Verify: ~/.agents/skills/b12-memory holds another skill; the B12 Codex skill is NOT installed"
     problems=$((problems + 1))
   else

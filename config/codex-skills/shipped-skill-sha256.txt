@@ -1,8 +1,9 @@
-# SHA-256 of every b12-memory SKILL.md that B12 shipped before install.sh began
-# writing a .b12-installed marker next to the Codex skill. install_codex_skill
-# replaces or removes a copy only when it matches one of these, the marker, or
-# a skill in the current checkout. The list is frozen: later installs are
-# recognised by their marker, so do not add new hashes here.
+# SHA-256 of every b12-memory SKILL.md and agents/openai.yaml that B12 shipped
+# before install.sh began writing a .b12-installed marker next to the Codex
+# skill. install_codex_skill replaces or removes a copy only when its files
+# match one of these, the marker, or a skill in the current checkout. The list
+# is frozen: later installs are recognised by their marker, so do not add new
+# hashes here.
 #
 # skills/b12/SKILL.md, 2026-02-25
 25314abc929ce42972897281bc0aa0f373cfb2f4d55577167f9a379c2b29accc
@@ -14,3 +15,5 @@ e079910f6e5d876ac4891a99c16b0cf51729b6b04f3dc26011ae343d04f4bf36
 83bbd18a20c99a78e8b494f9d2fab765b2ad84b61ecd5983346768e838fd5ca3
 # config/codex-skills/b12-memory/SKILL.md, 2026-10-22
 bc73492d35373ba20d0d6bf2a926c7283b109f475f70e7cd0472f3a0e766af93
+# config/codex-skills/b12-memory/agents/openai.yaml, 2026-10-22
+4cb451f123f17ea67fffeedf5df4610e9b6215d55b37758b10454234e5753e11

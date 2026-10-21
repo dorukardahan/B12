@@ -117,7 +117,8 @@ def _run_codex_skill_functions(home: Path, call: str) -> subprocess.CompletedPro
     source = INSTALLER.read_text()
     functions = "".join(
         re.search(rf"\n{name}\(\)\s*\{{.*?\n\}}\n", source, re.DOTALL).group(0)
-        for name in ("b12_sha256", "b12_skill_is_installer_owned", "install_codex_skill", "b12_verify_codex_skill")
+        for name in ("b12_sha256", "b12_file_is_b12s", "b12_skill_is_installer_owned", "install_codex_skill",
+                     "b12_verify_codex_skill")
     )
     script = (
         'info() { echo "INFO $*"; }; warn() { echo "WARN $*"; }\n'
@@ -125,6 +126,10 @@ def _run_codex_skill_functions(home: Path, call: str) -> subprocess.CompletedPro
     )
     return subprocess.run(["bash", "-c", script], env={"HOME": str(home), "PATH": "/usr/bin:/bin"},
                           capture_output=True, text=True, timeout=60)
+
+
+def _sha256(data: bytes) -> str:
+    return hashlib.sha256(data).hexdigest()
 
 
 def _run_install_codex_skill(home: Path) -> subprocess.CompletedProcess:
@@ -237,20 +242,40 @@ def test_installer_replaces_an_older_copy_it_marked(tmp_path):
     (home / ".codex").mkdir(parents=True)
     dest = home / ".agents" / "skills" / "b12-memory"
     dest.mkdir(parents=True)
-    older = "---\nname: b12-memory\ndescription: an older B12 release\n---\n"
+    (dest / "agents").mkdir(parents=True)
+    older, older_yaml = "---\nname: b12-memory\ndescription: an older B12 release\n---\n", "interface: {}\n"
     (dest / "SKILL.md").write_text(older)
-    (dest / ".b12-installed").write_text(hashlib.sha256(older.encode()).hexdigest() + "\n")
+    (dest / "agents" / "openai.yaml").write_text(older_yaml)
+    (dest / ".b12-installed").write_text(
+        f"{_sha256(older.encode())}  SKILL.md\n{_sha256(older_yaml.encode())}  agents/openai.yaml\n")
 
     result = _run_install_codex_skill(home)
     assert result.returncode == 0, result.stderr
     assert (dest / "SKILL.md").read_text() == CODEX_SKILL.read_text()
-    marker = (dest / ".b12-installed").read_text().strip()
-    assert marker == hashlib.sha256(CODEX_SKILL.read_bytes()).hexdigest()
+    assert (dest / "agents" / "openai.yaml").read_text() == CODEX_SKILL_YAML.read_text()
+    assert (dest / ".b12-installed").read_text() == (
+        f"{_sha256(CODEX_SKILL.read_bytes())}  SKILL.md\n{_sha256(CODEX_SKILL_YAML.read_bytes())}  agents/openai.yaml\n")
+
+
+@pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
+def test_installer_keeps_a_sidecar_the_user_edited(tmp_path):
+    home = tmp_path / "home"
+    (home / ".codex").mkdir(parents=True)
+    assert _run_install_codex_skill(home).returncode == 0
+    sidecar = home / ".agents" / "skills" / "b12-memory" / "agents" / "openai.yaml"
+    edited = sidecar.read_text().replace('"B12 Memory"', '"My B12"')
+    sidecar.write_text(edited)
+
+    result = _run_codex_skill_functions(home, 'install_codex_skill; b12_verify_codex_skill; echo "problems=$?"')
+    assert result.returncode == 0, result.stderr
+    assert sidecar.read_text() == edited
+    assert "was edited since" in result.stdout
+    assert "problems=1" in result.stdout
 
 
 def test_shipped_skill_hashes_are_well_formed():
     hashes = [line for line in SHIPPED_HASHES.read_text().splitlines() if line and not line.startswith("#")]
-    assert len(hashes) >= 5 and len(set(hashes)) == len(hashes)
+    assert len(hashes) >= 6 and len(set(hashes)) == len(hashes)
     assert all(re.fullmatch(r"[0-9a-f]{64}", h) for h in hashes)
 
 
