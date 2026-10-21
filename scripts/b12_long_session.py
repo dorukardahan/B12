@@ -204,7 +204,7 @@ def pick_resurface_ids(
             'importance': float(row[2] or 0.5),
             'project': row[3] or '',
             'source_session': row[4] or '',
-            'memory_type': row[5] or '',
+            'memory_type': row[5] or 'general',
             'preview': row[6] or '',
         })
         if len(out) >= max(1, int(limit)):
@@ -355,7 +355,7 @@ def pick_topic_shift_ids(
             'importance': float(row[2] or 0.5),
             'project': row[3] or '',
             'source_session': row[4] or '',
-            'memory_type': row[5] or '',
+            'memory_type': row[5] or 'general',
             'preview': row[6] or '',
         })
         if len(out) >= max(1, int(limit)):
@@ -514,7 +514,7 @@ def pick_cross_session_ids(
             'importance': float(row[2] or 0.5),
             'project': row[3] or '',
             'source_session': row[4] or '',
-            'memory_type': row[5] or '',
+            'memory_type': row[5] or 'general',
             'preview': row[6] or '',
         })
         if len(out) >= max(1, int(limit)):

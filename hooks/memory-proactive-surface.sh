@@ -208,8 +208,8 @@ fi
 
 # ── Daemon helpers ──────────────────────────────────────────
 _UID=$(id -u 2>/dev/null || echo $$)
-EMBED_SOCK="/tmp/b12-embed-${_UID}.sock"
-EMBED_PID="/tmp/b12-embed-${_UID}.pid"
+EMBED_SOCK="${B12_EMBED_RUNTIME_DIR:-/tmp}/b12-embed-${_UID}.sock"
+EMBED_PID="${B12_EMBED_RUNTIME_DIR:-/tmp}/b12-embed-${_UID}.pid"
 
 daemon_alive() {
   [ -S "$EMBED_SOCK" ] && [ -f "$EMBED_PID" ] && \
@@ -250,6 +250,10 @@ if ! echo "$_RESP" | jq -e '.ok == true' >/dev/null 2>&1; then
   exit 0
 fi
 
+# Keep only results that carry a display line, so the hit count, the injected
+# text and the dedup ledger all describe the same memories.
+_RESP=$(echo "$_RESP" | jq -c '.results |= map(select(.display | type == "string" and length > 0))' 2>/dev/null)
+
 _HIT_COUNT=$(echo "$_RESP" | jq -r '.results | length' 2>/dev/null)
 if [ -z "$_HIT_COUNT" ] || [ "$_HIT_COUNT" = "0" ]; then
   _reset_rate_limit_no_hit
@@ -258,7 +262,7 @@ if [ -z "$_HIT_COUNT" ] || [ "$_HIT_COUNT" = "0" ]; then
 fi
 
 # ── Format hits (basic format — Q4 4-field upgrade lives in P-RECALL) ───
-_DISPLAY=$(echo "$_RESP" | jq -r '.results | map(.display) | .[]')
+_DISPLAY=$(echo "$_RESP" | jq -r '.results[].display')
 
 _HEADER="Proactive surfacing (${TRIGGER_TYPE}: $(echo "$QUERY" | head -c 60)):"
 _CAND_CONTEXT=$(printf '%s\n%s\n' "$_HEADER" "$_DISPLAY")

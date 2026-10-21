@@ -491,7 +491,7 @@ Environment variables:
 
 ### Hooks (Claude Code `settings.json`)
 
-All 11 lifecycle hook events plus 2 telemetry/observability hooks (InstructionsLoaded, FileChanged) are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically. See `docs/setup.md` for manual configuration.
+All 11 lifecycle hook events plus 2 telemetry/observability hooks (InstructionsLoaded, FileChanged) are configured via `config/settings-template.json`. The installer merges this into your `settings.json` automatically: it replaces only B12's own hook entries and keeps hooks that other tools added. See `docs/setup.md` for manual configuration.
 
 ### Multi-setup
 
@@ -501,7 +501,8 @@ If you run multiple Claude Code setups (e.g., personal + work):
 - **Database** is shared — memories from any project are available everywhere
 - **Session summaries** are per-project, so they don't overwrite each other
 - **Hook config** needs to be in each setup's `settings.json`
-- **Install**: `./install.sh --all` handles all setups
+- **Install**: `./install.sh --all` handles all setups. It skips `~/.claude-*` folders that hold nothing Claude Code creates (for example a transcript archive).
+- **Opt out**: an empty `.b12-ignore` file in a setup directory makes every install mode skip it, including the default `~/.claude` and an explicit target directory
 - **Drift auto-fix**: `./install.sh --all --fix-drift` auto-registers B12 on any detected non-Claude platform (Codex/Gemini/Kimi/Cursor/Windsurf/OpenCode/Grok) whose MCP config is missing a B12 entry. Default behavior remains warn-only — `--fix-drift` is opt-in.
 
 ### Environment variables
@@ -516,7 +517,7 @@ If you run multiple Claude Code setups (e.g., personal + work):
 | `B12_MCP_IDLE_TIMEOUT` | MCP daemon: cancel a client connection idle longer than this (seconds). **Disabled by default (`0`)** — reaping a live-but-idle session is NOT client-invisible: the stdio proxy exits and Claude Code does not auto-respawn it, so B12 showed "disconnected" mid-session until a manual `/mcp`. Closed/killed proxies already self-clean via socket EOF, so the reaper is unnecessary. Set `>0` to re-enable (not recommended for Claude Code). | `0` (disabled) | `1800` |
 | `B12_MCP_MAX_CONN` | MCP daemon: max concurrent client connections; evicts the most-idle one when exceeded. Emergency backstop only — eviction uses the same client-visible cancel path, so keep it well above realistic concurrency. `0` disables the cap. | `256` | `512` |
 | `B12_MCP_PROXY_RECONNECT` | Stdio proxy: when the daemon socket drops mid-session (daemon restart/redeploy, RSS-guard `os._exit`, `MAX_CONN` eviction, crash) while the host is still alive, transparently re-dial the daemon and replay the cached `initialize` handshake so the host never sees a disconnect. `0` reverts to legacy exit-on-EOF. | `1` (enabled) | `0` |
-| `B12_MCP_RECONNECT_BUDGET` | Stdio proxy: total seconds to keep retrying (capped backoff) before giving up a reconnect and exiting. Default ≈ one launchd respawn window. | `30` | `60` |
+| `B12_MCP_RECONNECT_BUDGET` | Stdio proxy: total seconds to keep retrying (capped backoff) before giving up a reconnect and exiting. Default outlasts one throttled launchd respawn (30s `ThrottleInterval`) plus a cold start. | `45` | `60` |
 | `B12_INTERPRETER_CHECK_INTERVAL` | Long-lived MCP/embed daemons: seconds between checks that `sys.executable` still exists. If a Homebrew Python upgrade removes the running Cellar interpreter, daemons finish in-flight work and exit cleanly; launchd respawns MCP, while the next embedding need respawns embed. | `5` | `10` |
 | `B12_MCP_WAL_CHECKPOINT_INTERVAL` | MCP daemon: seconds between `PRAGMA wal_checkpoint(TRUNCATE)` runs (keeps the WAL from growing unbounded on an idle daemon). `0` disables. | `300` (5min) | `600` |
 | `B12_MCP_READ_POOL` | MCP server: number of worker threads (and thread-owned SQLite read connections) that serve reads off the event loop, so a slow query on one tab never blocks the others (WAL → concurrent readers). Writes always go through a single serialized writer thread (no knob). `0`/unset auto-sizes to `max(4, min(8, cpu_count))`. | `0` (auto) | `4` / `16` |

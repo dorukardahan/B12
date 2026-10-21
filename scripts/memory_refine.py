@@ -15,7 +15,7 @@ except Exception:  # pragma: no cover
 
 # Daemon socket path (same as b12_mcp_server.py)
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
-SOCK_PATH = f"/tmp/b12-embed-{_UID}.sock"
+SOCK_PATH = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{_UID}.sock")
 
 
 def daemon_request(op: str, **kwargs) -> dict | None:
@@ -190,7 +190,7 @@ def _scrub_tags(value) -> str:
 def _sanitize_candidate(candidate: dict) -> dict:
     safe = dict(candidate)
     safe["content"] = scrub_pii(str(candidate.get("content", "")))
-    safe["memory_type"] = scrub_pii(str(candidate.get("memory_type", "general")))
+    safe["memory_type"] = scrub_pii(str(candidate.get("memory_type") or "general"))
     safe["tags"] = _scrub_tags(candidate.get("tags", ""))
     return safe
 

@@ -244,7 +244,7 @@ def main(argv=None) -> int:
     if result["gap_samples"]:
         print("  Gap samples (scrubbed):")
         for s in result["gap_samples"]:
-            print(f"    [{s['memory_type']} stored={s['stored']} heuristic={s['heuristic_band']}] {s['snippet']}")
+            print(f"    [{s['memory_type'] or 'none'} stored={s['stored']} heuristic={s['heuristic_band']}] {s['snippet']}")
     print("────────────────────────────────────────────────────────────")
     print("  " + _recommendation(result["gap_pct_of_eligible"], result["eligible"],
                                   result["typed_gap"], result["untyped_gap"],

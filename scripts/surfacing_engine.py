@@ -156,12 +156,12 @@ def format_for_context(result: SurfacingResult) -> str:
     chars = len(lines[0])
 
     for mem in result.memories:
-        mem_line = f"  [{mem['memory_type']}] {mem['content']}"
+        mem_line = f"  [{mem['memory_type'] or 'general'}] {mem['content']}"
         if chars + len(mem_line) + 1 > MAX_CONTEXT_CHARS:
             # Truncate this memory to fit
             remaining = MAX_CONTEXT_CHARS - chars - 10
             if remaining > 50:
-                lines.append(f"  [{mem['memory_type']}] {mem['content'][:remaining]}...")
+                lines.append(f"  [{mem['memory_type'] or 'general'}] {mem['content'][:remaining]}...")
             break
         lines.append(mem_line)
         chars += len(mem_line) + 1
@@ -276,7 +276,7 @@ def _daemon_search(query: str, db_path: str, limit: int = 20) -> list[dict]:
     """
     uid = os.getuid() if hasattr(os, 'getuid') else os.getpid()
     # Hardcode /tmp/ — macOS TMPDIR varies per session, causing socket mismatch
-    sock_path = f"/tmp/b12-embed-{uid}.sock"
+    sock_path = os.path.join(os.environ.get("B12_EMBED_RUNTIME_DIR", "/tmp"), f"b12-embed-{uid}.sock")
 
     try:
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
