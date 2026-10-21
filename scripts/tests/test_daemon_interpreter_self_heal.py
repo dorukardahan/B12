@@ -218,7 +218,7 @@ def test_mcp_boundary_client_is_closed_without_entering_server_during_drain(
     async def fake_run(*args, **kwargs) -> None:
         called["run"] = True
 
-    mcp_server = b12_mcp_daemon.srv.server._mcp_server
+    mcp_server = b12_mcp_daemon._mcp_low_level_server()
     monkeypatch.setattr(mcp_server, "create_initialization_options", lambda: object())
     monkeypatch.setattr(mcp_server, "run", fake_run)
     monkeypatch.setattr(b12_mcp_daemon, "_draining_for_stale_interpreter", True)
@@ -352,11 +352,14 @@ def test_mcp_daemon_deleted_executable_drains_inflight_request_before_exit(tmp_p
                             await anyio.sleep(0.8)
                             from mcp import types
                             from mcp.shared.message import SessionMessage
-                            response = types.JSONRPCMessage(
-                                root=types.JSONRPCResponse(
-                                    jsonrpc="2.0", id=_message.message.root.id, result={{}}
-                                )
+                            request = getattr(_message.message, "root", _message.message)
+                            response = types.JSONRPCResponse(
+                                jsonrpc="2.0", id=request.id, result={{}}
                             )
+                            try:
+                                response = types.JSONRPCMessage(root=response)
+                            except TypeError:
+                                pass
                             await write_stream.send(SessionMessage(message=response))
 
             fake = types.ModuleType("b12_mcp_server")
