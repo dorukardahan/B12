@@ -70,7 +70,7 @@ def test_sync_watchdog_still_emits_fallback_when_cap_fires(tmp_path):
 # `&>` or `|&`), and those that chain an and-or list or a pipeline.
 _JOB_SEPARATOR = re.compile(r"(;|(?<![&>|<])&(?![&>]))")
 _AND_OR = re.compile(r"&&|\|\|")
-_PIPE = re.compile(r"\|&?")
+_PIPE = re.compile(r"(\|&?)")
 # One redirection: an fd (or `&` for both outputs), the operator, `&` when it
 # duplicates or closes, and the target (a file, an fd number or `-`).
 _REDIRECT = re.compile(r"(?<!\S)(\d*|&)(>>?|<)(&?)\s*([^\s;&|<>]+)")
@@ -106,11 +106,12 @@ def _top_level(line: str) -> str:
     return "".join(out)
 
 
-def _background_commands(line: str) -> list[str] | None:
-    """For a line that backgrounds work, the commands whose output could still
-    be the hook's: the last pipeline stage of every and-or element of every job
-    followed by `&`, wherever it sits on the line. None if nothing is
-    backgrounded."""
+def _background_commands(line: str) -> list[tuple[str, dict[int, str]]] | None:
+    """For a line that backgrounds work, every pipeline stage of every and-or
+    element of every job followed by `&` (wherever it sits on the line), with
+    the fds it starts with: a stage that feeds a pipe has its stdout (and, for
+    `|&`, its stderr) on that pipe; everything else starts on the hook's own
+    pipes. None if nothing is backgrounded."""
     line = line.strip()
     if not line or line.startswith("#"):
         return None
@@ -119,16 +120,22 @@ def _background_commands(line: str) -> list[str] | None:
     parts = _JOB_SEPARATOR.split(re.sub(r"\s#.*$", "", _top_level(line)))
     commands = []
     for k in range(0, len(parts) - 1, 2):
-        if parts[k + 1] == "&":
-            commands += [_PIPE.split(element)[-1] for element in _AND_OR.split(parts[k])]
+        if parts[k + 1] != "&":
+            continue
+        for element in _AND_OR.split(parts[k]):
+            stages = _PIPE.split(element)
+            for i in range(0, len(stages), 2):
+                into = stages[i + 1] if i + 1 < len(stages) else None
+                fds = {1: "pipe" if into else "hook", 2: "pipe" if into == "|&" else "hook"}
+                commands.append((stages[i], fds))
     return commands or None
 
 
-def _hook_fds_left(command: str) -> set[int]:
+def _hook_fds_left(command: str, start: dict[int, str] | None = None) -> set[int]:
     """Apply the command's redirections left to right, as the shell does, and
     return which of fd 1 and fd 2 still point at one of the hook's own output
     pipes. `2>&1 >/dev/null` leaves fd 2 on the hook's stdout."""
-    fds = {1: "hook", 2: "hook"}
+    fds = dict(start or {1: "hook", 2: "hook"})
     for fd, op, dup, target in _REDIRECT.findall(command):
         if op == "<":
             continue
@@ -144,7 +151,7 @@ def _hook_fds_left(command: str) -> set[int]:
 
 
 def _leaks(line: str) -> bool:
-    return any(_hook_fds_left(c) for c in _background_commands(line) or [])
+    return any(_hook_fds_left(c, fds) for c, fds in _background_commands(line) or [])
 
 
 def _shell_lines(path: Path):
@@ -172,6 +179,9 @@ def test_redirections_apply_left_to_right():
     assert _hook_fds_left(" 2>/dev/null ") == {1}
     assert _hook_fds_left(" >&2 2>/dev/null ") == {1}
     assert _hook_fds_left(" ") == {1, 2}
+    assert _hook_fds_left(" ", {1: "pipe", 2: "hook"}) == {2}
+    assert _hook_fds_left(" 2>/dev/null ", {1: "pipe", 2: "hook"}) == set()
+    assert _hook_fds_left(" ", {1: "pipe", 2: "pipe"}) == set()
 
 
 def test_background_commands_follow_shell_structure():
@@ -183,7 +193,9 @@ def test_background_commands_follow_shell_structure():
         '( "$@" ) >>"$_log" 2>&1 < /dev/null &',
         "( sleep 5 && kill -TERM $$ 2>/dev/null ) </dev/null >/dev/null 2>&1 &",
         'cmd >"${LOG}" 2>&1 &',
-        'echo "$X" | bash "$B" >/dev/null 2>&1 &',
+        '{ echo "$X" | bash "$B"; } >/dev/null 2>&1 &',
+        "sleep 30 2>/dev/null | cat >/dev/null 2>&1 &",
+        "a |& b >/dev/null 2>&1 &",
         "find . \\( -name '*.js' \\) -print > \"$raw\" 2>/dev/null &",
         "a >/dev/null 2>&1 && b >/dev/null 2>&1 &",
         "foreground; bg >/dev/null 2>&1 &",
@@ -195,6 +207,8 @@ def test_background_commands_follow_shell_structure():
         "( cmd >/tmp/x 2>&1 ) &",
         "{ cmd >/tmp/x 2>&1; } &",
         "producer >/tmp/x | sleep 30 &",
+        "sleep 30 | cat >/dev/null 2>&1 &",
+        'echo "$X" | bash "$B" >/dev/null 2>&1 &',
         "} | tee x &",
         'cmd "$(date >/tmp/x)" &',
         "a && b >/dev/null 2>&1 &",

@@ -118,7 +118,8 @@ if [ -f "$B12_CHECKPOINT" ]; then
     --arg sid "$(echo "$INPUT" | jq -r '.session_id // "gemini"')" \
     --arg result "$(echo "$INPUT" | jq -r '.tool_response // .tool_result // "" | tostring' 2>/dev/null | head -c 3000)" \
     '{ "tool_name": $tool, "session_id": $sid, "tool_result": $result }')
-  echo "$CHECKPOINT_INPUT" | bash "$B12_CHECKPOINT" >/dev/null 2>&1 &
+  # Group redirect: the echo stage must not keep the hook's stderr either.
+  { echo "$CHECKPOINT_INPUT" | bash "$B12_CHECKPOINT"; } >/dev/null 2>&1 &
 fi
 
 echo '{}'
