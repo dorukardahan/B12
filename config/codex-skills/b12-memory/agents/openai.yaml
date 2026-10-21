@@ -1,0 +1,9 @@
+interface:
+  display_name: "B12 Memory"
+  short_description: "Recall missing context from earlier sessions, or remember, correct, and forget on request"
+
+policy:
+  # The B12 MCP server is configured for Codex (~/.codex/config.toml), not for
+  # ChatGPT chat, which can also read ~/.agents/skills.
+  products:
+    - codex

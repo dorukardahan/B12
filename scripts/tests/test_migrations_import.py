@@ -1005,14 +1005,16 @@ def test_mcp_manual_session_summary_gets_explicit_unbound_identity(monkeypatch):
     conn.close()
 
 
-def test_codex_manual_summary_template_declares_unbound_identity():
+def test_codex_template_leaves_session_summaries_to_the_hooks():
+    # The Codex template used to ask the model for a manual summary at the end
+    # of each session, which then had to declare unbound identity. Codex's
+    # SessionEnd hook owns the summary now, so the template must not ask for one.
     template = (
         Path(__file__).resolve().parents[2] / "config" / "codex-agents-template.md"
     ).read_text(encoding="utf-8")
-    mandatory_summary = template.split("- **AFTER last response**", 1)[1].split("```", 2)[1]
-    assert '"session_identity": "unbound"' in mandatory_summary
-    assert '"producer": "codex_agent_template"' in mandatory_summary
-    assert '"platform": "codex"' in mandatory_summary
+    flat = " ".join(template.lower().split())
+    assert "do not manually store a session summary at the end" in flat
+    assert "after last response" not in flat
 
 
 def test_mcp_session_tracker_contexts_are_isolated(monkeypatch):
