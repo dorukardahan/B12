@@ -1,12 +1,13 @@
 """memory-browse.sh must show and delete memories that have no memory_type.
 
 `' [' || memory_type || '] '` is NULL for an untyped row, so the delete preview
-came back empty and the command reported "No active memory found", and the
-stats line for the untyped group printed blank.
+came back empty and the command reported "No active memory found", the stats
+line for the untyped group printed blank, and the other commands showed `[]`.
 """
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import sqlite3
 import subprocess
@@ -42,12 +43,22 @@ def test_untyped_memory_is_previewed_deleted_and_counted(tmp_path):
         " memory_type TEXT, metadata TEXT, created_at REAL, updated_at REAL, created_at_iso TEXT,"
         " updated_at_iso TEXT, deleted_at REAL)"
     )
-    conn.execute("INSERT INTO memories (id, content, content_hash, memory_type) VALUES (1, 'untyped note', 'abcdef0123456789', NULL)")
+    conn.execute("CREATE VIRTUAL TABLE memory_fts USING fts5(content)")
+    conn.execute(
+        "INSERT INTO memories (id, content, content_hash, tags, memory_type, metadata, created_at)"
+        " VALUES (1, 'untyped note', 'abcdef0123456789', 'proj:demo', NULL, '{}', 1700000000)"
+    )
+    conn.execute("INSERT INTO memory_fts (rowid, content) VALUES (1, 'untyped note')")
     conn.commit()
     conn.close()
 
     stats = _run(home, "stats")
     assert "  none: 1" in stats.stdout
+    plain = lambda r: re.sub(r"\x1b\[[0-9;]*m", "", r.stdout)  # noqa: E731
+    for args in (("list",), ("search", "untyped"), ("project", "demo")):
+        assert "abcdef01 [general]" in plain(_run(home, *args)), args
+    assert "general" in plain(_run(home, "show", "abcdef01"))
+    assert "none (1)" in plain(_run(home, "types"))
 
     preview = _run(home, "delete", "abcdef01", stdin="y\n")
     assert preview.returncode == 0, preview.stdout + preview.stderr

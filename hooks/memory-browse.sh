@@ -49,7 +49,7 @@ case "$CMD" in
   list)
     echo -e "${BOLD}Memory List${RESET} (active, newest first)\n"
     sqlite3 -separator '|' "$DB_PATH" "
-      SELECT substr(content_hash, 1, 8), memory_type,
+      SELECT substr(content_hash, 1, 8), COALESCE(memory_type, 'general'),
              datetime(created_at, 'unixepoch', 'localtime'),
              replace(replace(substr(content, 1, 80), char(10), ' '), char(13), ''),
              tags
@@ -76,7 +76,7 @@ case "$CMD" in
 
     echo -e "${BOLD}Search: ${QUERY}${RESET} (FTS5: ${FTS_QUERY})\n"
     sqlite3 -separator '|' "$DB_PATH" "
-      SELECT substr(m.content_hash, 1, 8), m.memory_type,
+      SELECT substr(m.content_hash, 1, 8), COALESCE(m.memory_type, 'general'),
              datetime(m.created_at, 'unixepoch', 'localtime'),
              replace(replace(substr(m.content, 1, 120), char(10), ' '), char(13), ''),
              printf('%.2f', f.rank)
@@ -148,7 +148,7 @@ case "$CMD" in
 
     # Use separate queries to avoid multiline pipe parsing issues
     HEADER=$(sqlite3 -separator '|' "$DB_PATH" "
-      SELECT content_hash, memory_type, tags, metadata,
+      SELECT content_hash, COALESCE(memory_type, 'general'), tags, metadata,
              datetime(created_at, 'unixepoch', 'localtime')
       FROM memories
       WHERE content_hash LIKE '${HASH_PREFIX}%'
@@ -220,7 +220,7 @@ case "$CMD" in
   types)
     echo -e "${BOLD}Memories by Type${RESET}\n"
     sqlite3 -separator '|' "$DB_PATH" "
-      SELECT memory_type, COUNT(*), GROUP_CONCAT(substr(content_hash, 1, 8), ', ')
+      SELECT COALESCE(memory_type, 'none'), COUNT(*), GROUP_CONCAT(substr(content_hash, 1, 8), ', ')
       FROM memories WHERE deleted_at IS NULL
       GROUP BY memory_type ORDER BY COUNT(*) DESC
     " | while IFS='|' read -r type count hashes; do
@@ -250,7 +250,7 @@ case "$CMD" in
 
     echo -e "${BOLD}Memories for project: ${PROJ}${RESET}\n"
     sqlite3 -separator '|' "$DB_PATH" "
-      SELECT substr(content_hash, 1, 8), memory_type,
+      SELECT substr(content_hash, 1, 8), COALESCE(memory_type, 'general'),
              datetime(created_at, 'unixepoch', 'localtime'),
              replace(replace(substr(content, 1, 100), char(10), ' '), char(13), '')
       FROM memories
