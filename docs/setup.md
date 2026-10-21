@@ -524,7 +524,7 @@ B12 also works with OpenAI's Codex CLI. The same MCP server and SQLite database 
 1. Injects B12 MCP server config into `~/.codex/config.toml`
 2. Appends B12 memory instructions to `~/.codex/AGENTS.md` (between `<!-- B12-MEMORY-START -->` and `<!-- B12-MEMORY-END -->` markers)
 3. Registers the session and turn hooks in `~/.codex/hooks.json`
-4. Installs a Codex-specific B12 skill to `~/.agents/skills/b12-memory/`, the user skill root that Codex CLI and the ChatGPT desktop app both read (Codex 0.163 treats `~/.codex/skills` as a deprecated fallback, so the installer removes B12's old copy there). Its `agents/openai.yaml` limits the skill to Codex, because ChatGPT chat has no B12 MCP server
+4. Installs a Codex-specific B12 skill to `~/.agents/skills/b12-memory/`, the user skill root that Codex CLI and the ChatGPT desktop app both read (Codex 0.163 treats `~/.codex/skills` as a deprecated fallback, so the installer removes B12's old copy there). Its `agents/openai.yaml` limits the skill to Codex, because ChatGPT chat has no B12 MCP server. If `~/.agents/skills/b12-memory` already holds a skill that B12 did not write, the installer leaves it unchanged and warns; move that skill aside and re-run `./install.sh --codex` to install B12's
 
 ### Manual Codex Setup
 

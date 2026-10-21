@@ -1330,14 +1330,6 @@ install_codex_skill() {
     return
   fi
 
-  # ~/.agents/skills is a shared user skill root: never overwrite a b12-memory
-  # skill there that a B12 installer did not write.
-  if [ -f "$SKILL_DEST/SKILL.md" ] && ! b12_skill_is_installer_owned "$SKILL_DEST/SKILL.md" "$SKILL_SRC/SKILL.md"; then
-    warn "A b12-memory skill at $SKILL_DEST was not written by the B12 installer;"
-    warn "leaving it unchanged. Move it aside and re-run to install the B12 Codex skill."
-    return
-  fi
-
   # Legacy cleanup: earlier installers wrote the B12 skill to
   # ~/.codex/skills/b12/ and later ~/.codex/skills/b12-memory/. Codex still
   # reads that root, so a stale copy would load next to the new one. Copies a
@@ -1356,6 +1348,15 @@ install_codex_skill() {
       warn "frontmatter if it is yours, or delete it if it is stale installer output."
     fi
   done
+
+  # ~/.agents/skills is a shared user skill root: never overwrite a b12-memory
+  # skill there that a B12 installer did not write. Checked after the legacy
+  # cleanup so a stale B12 copy in ~/.codex/skills is still removed.
+  if [ -f "$SKILL_DEST/SKILL.md" ] && ! b12_skill_is_installer_owned "$SKILL_DEST/SKILL.md" "$SKILL_SRC/SKILL.md"; then
+    warn "A b12-memory skill at $SKILL_DEST was not written by the B12 installer;"
+    warn "leaving it unchanged. Move it aside and re-run to install the B12 Codex skill."
+    return
+  fi
 
   mkdir -p "$SKILL_DEST/agents"
   cp "$SKILL_SRC/SKILL.md" "$SKILL_DEST/SKILL.md"

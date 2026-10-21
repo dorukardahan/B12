@@ -165,11 +165,17 @@ def test_installer_never_overwrites_a_user_skill_in_the_agents_root(tmp_path):
     (mine / "SKILL.md").write_text(own_skill)
     (mine / "agents" / "openai.yaml").write_text("interface:\n  display_name: Mine\n")
 
+    stale = home / ".codex" / "skills" / "b12-memory"
+    stale.mkdir(parents=True)
+    shutil.copy(SHARED_SKILL, stale / "SKILL.md")  # left by an earlier installer
+
     result = _run_install_codex_skill(home)
     assert result.returncode == 0, result.stderr
     assert (mine / "SKILL.md").read_text() == own_skill
     assert (mine / "agents" / "openai.yaml").read_text() == "interface:\n  display_name: Mine\n"
     assert "not written by the B12 installer" in result.stdout
+    # The stale B12 copy is still removed, or Codex would list two b12-memory skills.
+    assert not stale.exists()
 
 
 @pytest.mark.skipif(shutil.which("bash") is None, reason="bash not available")
@@ -201,6 +207,8 @@ def test_docs_describe_codex_hook_lifecycle_and_targeted_recall():
     assert "codex-specific b12 skill" in readme
     assert "missing cross-session context" in readme
     assert "~/.agents/skills/b12-memory" in setup
+    assert "leaves it unchanged and warns" in setup
+    assert "left unchanged with a warning" in readme
     assert "targeted model recall" in setup
     # The Codex UserPromptSubmit hook only tracks /goal; it never injects context.
     assert "automatic (`userpromptsubmit`)" not in setup
