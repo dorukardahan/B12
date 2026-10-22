@@ -601,6 +601,14 @@ Dependency update PRs are review-gated too: Dependabot can suggest updates, but 
 
 ## Changelog (recent)
 
+### v11.84.0 (2026-10-22)
+
+- Codex searches B12 only for missing cross-session history or an explicit memory request; the hooks own session start and end.
+- Codex has its own `b12-memory` skill in `~/.agents/skills`, limited to Codex.
+- The installer leaves a `b12-memory` skill that B12 did not write, or one you changed, untouched.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full notes.
+
 ### v11.83.1 (2026-10-21)
 
 - Hook output reaches Claude Code again: watchdogs and background workers no longer hold the host's pipes open.
