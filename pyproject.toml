@@ -32,7 +32,7 @@ dependencies = [
     # as PyTorch weights via sentence-transformers. The first SessionStart
     # downloads ~2.2GB once; opt into a smaller GGUF Q8_0/Q4_K_M via
     # B12_EMBED_BACKEND=gguf + the gguf extra below.
-    "sentence-transformers>=2.2,<6",
+    "sentence-transformers>=2.2,<7",
     "sqlite-vec>=0.1,<0.2",
     "fsrs>=6,<7",
 ]
