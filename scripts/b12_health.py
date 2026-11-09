@@ -566,6 +566,15 @@ def check_launchd_jobs() -> CheckResult:
     return CheckResult(Status.OK, label, detail)
 
 
+def _is_b12_hook_command(cmd: str) -> bool:
+    """A hook command is B12's if it points into a .B12 directory or runs a
+    script whose name B12 deploys to ~/.B12/hooks/."""
+    if ".B12/" in cmd:
+        return True
+    names = {p.name for p in _HOOK_DIR.iterdir() if p.is_file()} if _HOOK_DIR.is_dir() else set()
+    return any(tok.strip("'\"").rsplit("/", 1)[-1] in names for tok in cmd.split())
+
+
 def check_claude_setups() -> CheckResult:
     """Check all ~/.claude* setup directories have consistent hook paths."""
     setup_dirs = []
@@ -610,8 +619,11 @@ def check_claude_setups() -> CheckResult:
                     if cmd:
                         commands.append(cmd)
 
+        # Only B12's own hooks must live in ~/.B12/hooks/. Other tools' hooks in the
+        # same settings.json are kept by install.sh and are not B12's to judge.
+        commands = [c for c in commands if _is_b12_hook_command(c)]
         if not commands:
-            inconsistent.append(f"{sd.name}: no hook commands found")
+            inconsistent.append(f"{sd.name}: no B12 hook commands found")
             continue
 
         # Check all commands reference ~/.B12/hooks/
@@ -851,25 +863,35 @@ def _antigravity_plugin_loadable() -> tuple[bool, str]:
     agy = shutil.which("agy")
     if agy is None:
         return False, "agy command not found on PATH"
-    try:
-        result = subprocess.run(
-            [agy, "plugin", "list"],
-            capture_output=True,
-            text=True,
-            timeout=5,
-            check=False,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        return False, f"agy plugin list failed: {exc}"
-    if result.returncode != 0:
-        return False, f"agy plugin list exited {result.returncode}"
-    try:
-        payload = json.loads(result.stdout)
-    except json.JSONDecodeError as exc:
-        return False, f"agy plugin list returned invalid JSON: {exc}"
-    imports = payload.get("imports", []) if isinstance(payload, dict) else []
-    if not any(isinstance(item, dict) and item.get("name") == "b12" for item in imports):
+    # agy 1.5 prints text unless given --json, and its JSON is a list of plugins;
+    # older releases printed {"imports": [...]} by default.
+    payload, error = None, ""
+    for args in (["--json"], []):
+        try:
+            result = subprocess.run([agy, "plugin", "list", *args], capture_output=True,
+                                    text=True, timeout=5, check=False)
+        except (OSError, subprocess.TimeoutExpired) as exc:
+            return False, f"agy plugin list failed: {exc}"
+        if result.returncode != 0:
+            error = f"agy plugin list exited {result.returncode}"
+            continue
+        try:
+            payload = json.loads(result.stdout)
+            break
+        except json.JSONDecodeError as exc:
+            error = f"agy plugin list returned invalid JSON: {exc}"
+    if payload is None:
+        return False, error
+    items = payload if isinstance(payload, list) else (
+        payload.get("imports", []) if isinstance(payload, dict) else [])
+    items = [item for item in items if isinstance(item, dict)]
+    if not any(item.get("name") == "b12" for item in items):
         return False, "B12 Antigravity plugin is not listed as installed"
+    extra = [item.get("name") for item in items if item.get("name") != "b12"
+             and item.get("enabled", True) and "B12" in (item.get("mcpServers") or [])]
+    if extra:
+        return False, (f"B12 is also enabled as {', '.join(map(str, extra))}, so its hooks and MCP "
+                       f"server load twice; remove the extra directory from ~/.gemini/config/plugins/")
     return True, f"plugin installed: {stage_dir}"
 
 
