@@ -342,6 +342,10 @@ Hooks that interpolate user input into SQLite queries apply character-level sani
 - **Batch optimization**: Single DB connection for all candidate lookups (N+1 → 1 query)
 - **State**: `~/.B12/surfacing-state.json` tracks surfaced IDs, cooldowns, tool call counts
 
+## Search result collapsing
+
+`memory_search` ranks FTS and semantic hits, then reads the vectors of the top `3 × limit` hits and walks them in rank order. A hit whose cosine to an already kept hit of the same `memory_type` and the same `proj:` tags is ≥ 0.95 is folded into it, and the kept hit lists the folded ids. Hits without a vector are always kept. Storage is unchanged; near-identical rows remain separate rows (write-time merge is opt-in), and this keeps them from crowding distinct memories out of the results. `B12_SEARCH_COLLAPSE=0` disables it.
+
 ## Consolidation engine
 
 `scripts/consolidation_engine.py` — scheduled analysis that identifies duplicate groups, merge candidates, and contradictions across all memories.
