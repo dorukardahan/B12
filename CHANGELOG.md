@@ -6,6 +6,7 @@ All notable changes to B12 are documented in this file.
 
 ### Added
 - `memory_search` folds near-identical hits. A hit whose vector has cosine ≥ 0.95 to a higher-ranked hit of the same type and project is shown as `(+N near-identical: #id, ...)` under that hit, so one fact stored several times no longer fills the top results. Nothing is deleted. Hits without a vector are always kept. Set `B12_SEARCH_COLLAPSE=0` to turn this off.
+- SessionStart shows open health issues. A detached run of `b12_health.py --snapshot` writes `~/.B12/health-snapshot.json` at most once an hour; the next session start adds one `[B12 HEALTH]` line with up to three issues (low vector coverage, a failing or unloaded B12 launchd job), or says that the last snapshot run wrote nothing.
 
 ### Fixed
 - Write-time semantic merge is off by default. It appended a new memory to its nearest same-type neighbour as an undated bullet whenever cosine passed 0.85, with no project boundary: on one install 54% of same-type pairs above that threshold crossed projects, and re-embedding the grown row pulled in more appends until some rows held ten or more facts. Similar memories are now stored as separate rows (graph-enrich links them); exact duplicates still collapse by content hash. Set `B12_WRITE_TIME_MERGE=1` to restore the old behaviour.

@@ -422,7 +422,7 @@ B12/
 │   ├── dashboard_server.py         #   Flask web dashboard backend
 │   ├── export_import.py            #   Memory export/import (.b12 format)
 │   ├── b12_health_report.py        #   Comprehensive health report generator
-│   ├── b12_health.py               #   CLI health check (vector coverage, launchd job status, config)
+│   ├── b12_health.py               #   CLI health check (vector coverage, launchd job status, config); hourly snapshot for SessionStart
 │   ├── release.sh                  #   Release helper (--check + cut: sync version touchpoints, CHANGELOG, tag, GitHub release)
 │   ├── check_package_versions.py   #   CI guard for synchronized package metadata and latest CHANGELOG release
 │   ├── check_readme_platforms.py   #   CI guard for README platform badge/list count drift

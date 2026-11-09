@@ -22,6 +22,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 try:
     import tomllib
@@ -1048,6 +1049,36 @@ def _apply_fixes() -> list[str]:
 
 # ── Main runner ──────────────────────────────────────────────────────
 
+def write_snapshot(path: Path, min_interval: int = 0) -> bool:
+    """Write the checks that catch silent failures to a small JSON file that
+    SessionStart reads, so problems show up without anyone running this tool.
+    Skipped while the snapshot is younger than `min_interval` seconds."""
+    try:
+        if min_interval and time.time() - path.stat().st_mtime < min_interval:
+            return False
+    except OSError:
+        pass
+    issues = []
+    for check in (check_vector_coverage, check_launchd_jobs):
+        try:
+            r = check()
+        except Exception as e:  # a crashing check is itself an issue
+            r = CheckResult(Status.WARN, f"{check.__name__} crashed", str(e))
+        if r.status != Status.OK:
+            issues.append(r.label + (f": {r.detail}" if r.detail else ""))
+    path.parent.mkdir(parents=True, exist_ok=True)
+    # A private temp file per writer: two sessions can start writers at once.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump({"ts": int(time.time()), "issues": issues}, f)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+    return True
+
+
 def run_health_check(fix: bool = False) -> list[CheckResult]:
     """Run all health checks and return results."""
     fix_actions = []
@@ -1087,7 +1118,15 @@ def main():
         action="store_true",
         help="Attempt auto-fixes for common issues (e.g., create missing dirs)",
     )
+    parser.add_argument("--snapshot", metavar="PATH",
+                        help="Write the silent-failure checks to PATH as JSON (for SessionStart)")
+    parser.add_argument("--if-due", type=int, default=0, metavar="SECONDS",
+                        help="With --snapshot: skip if PATH is younger than SECONDS")
     args = parser.parse_args()
+
+    if args.snapshot:
+        write_snapshot(Path(args.snapshot).expanduser(), args.if_due)
+        return
 
     results, fix_actions = run_health_check(fix=args.fix)
 
