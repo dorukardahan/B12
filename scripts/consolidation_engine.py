@@ -699,27 +699,12 @@ def consolidate(
             actions, report = _analyze_cluster(active_mems, use_nli=nli_up)
             result.dry_run_report.extend(report)
 
-            if dry_run:
-                for entry in report:
-                    if entry['type'] == 'dedup':
-                        result.memories_deduplicated += 1
-                    elif entry['type'] == 'merge_unverified':
-                        result.merge_candidates += 1
-                    elif entry['type'] == 'merge':
-                        if merging:
-                            result.memories_merged += 1
-                        else:
-                            result.merge_candidates += 1
-                    elif entry['type'] == 'contradiction':
-                        result.contradictions_flagged += 1
-                    else:
-                        result.kept_separate += 1
-                continue
-
             # Two-pass: dedups first (consume losers), then merges from survivors.
             # This prevents a memory consumed by dedup from lingering in a merge group.
 
-            # Pass 1: Deduplications
+            # Pass 1: Deduplications. A dry run walks the same pairs, limit and
+            # deferrals without writing, so it reports what a real run would remove
+            # (rows, not pairs: a pair with an already removed row is skipped).
             for a, b, action_type in actions:
                 if action_type != 'dedup':
                     continue
@@ -733,9 +718,26 @@ def consolidate(
                     deferred_ids.add(max(a.id, b.id))
                     result.dedup_deferred += 1
                     continue
-                kept_id = _apply_dedup(conn, a, b)
+                kept_id = min(a.id, b.id) if dry_run else _apply_dedup(conn, a, b)
                 consumed_ids.add(a.id if kept_id != a.id else b.id)
                 result.memories_deduplicated += 1
+
+            if dry_run:
+                for entry in report:
+                    if entry['type'] == 'dedup':
+                        continue  # counted in pass 1
+                    elif entry['type'] == 'merge_unverified':
+                        result.merge_candidates += 1
+                    elif entry['type'] == 'merge':
+                        if merging:
+                            result.memories_merged += 1
+                        else:
+                            result.merge_candidates += 1
+                    elif entry['type'] == 'contradiction':
+                        result.contradictions_flagged += 1
+                    else:
+                        result.kept_separate += 1
+                continue
 
             # Pass 2: Contradictions (before merges — contradicting pairs must not merge)
             for a, b, action_type in actions:
@@ -772,17 +774,17 @@ def consolidate(
                         consumed_ids.add(m.id)
                 result.memories_merged += len(merge_group) - 1
 
-        if not dry_run:
-            candidates = result.memories_deduplicated + result.dedup_deferred
-            if candidates > DEDUP_ANOMALY:
-                # Far more duplicates than the store plausibly holds means a rule or
-                # data problem; deleting them unattended would be the larger harm.
-                conn.rollback()
-                result.aborted = (f"{candidates} dedup candidates exceed the anomaly limit "
-                                  f"of {DEDUP_ANOMALY}; nothing was changed")
-                result.memories_deduplicated = 0
-            else:
-                conn.commit()
+        candidates = result.memories_deduplicated + result.dedup_deferred
+        if candidates > DEDUP_ANOMALY:
+            # Far more duplicates than the store plausibly holds means a rule or
+            # data problem; deleting them unattended would be the larger harm.
+            conn.rollback()
+            result.aborted = (f"{candidates} dedup candidates exceed the anomaly limit "
+                              f"of {DEDUP_ANOMALY}; " + ("a real run would change nothing" if dry_run
+                                                         else "nothing was changed"))
+            result.memories_deduplicated = 0
+        elif not dry_run:
+            conn.commit()
 
     finally:
         conn.close()
