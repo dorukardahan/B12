@@ -277,7 +277,7 @@ Start a new Claude Code session. Run `/mcp` — you should see `B12 · connected
 - `memory_forget` — privacy-focused forget (privatize / forget_session / hard_delete)
 - `memory_quality` — rate, get, or analyze memory quality
 - `memory_session_context` — get session start context (project memories, last summary, instructions)
-- `memory_consolidate` — merge near-duplicate memories via semantic similarity
+- `memory_consolidate` — find near-duplicate memories (dry run by default); applies strict dedup only, merging is opt-in
 - `memory_refine` — surface refine candidates (low-quality or stale)
 - `memory_surface` — pull related memories from the graph
 - `memory_export` — export memories to JSONL/Markdown
@@ -579,7 +579,7 @@ SessionStart injects behavioral instructions + variable data (profile, session s
 
 **Session end** — the SessionEnd hook parses the full transcript, extracts decisions/errors/learnings/preferences using regex patterns (English + Turkish), generates embeddings in the background, and stores micro-memories with write-time dedup.
 
-**Between sessions** — scheduled tasks run daily backup, consolidation (Jaccard dedup), and weekly quality audits. Unused memories decay in strength (-0.05/week), while frequently accessed ones strengthen (+0.2 per retrieval).
+**Between sessions** — scheduled tasks run daily backup, consolidation (strict near-duplicate dedup, at most 100 per run), and weekly quality audits. Unused memories decay in strength (-0.05/week), while frequently accessed ones strengthen (+0.2 per retrieval).
 
 ## Memory Layers
 
