@@ -375,6 +375,13 @@ Hooks that interpolate user input into SQLite queries apply character-level sani
 - **Output**: Markdown or JSON to `~/.B12/memory-logs/health-report-YYYY-MM-DD.{md|json}`
 - **CLI**: `python3 scripts/b12_health_report.py --db-path DB --format md|json`
 
+## Health checks
+
+`scripts/b12_health.py` (`./install.sh --health`, `--json` for machine output) checks the installation itself. Two checks cover failures that are recorded but otherwise silent:
+
+- **Vector coverage**: active memories with no row in `memory_embeddings`. Such a memory is found by keyword search only. The check warns below 98% coverage, or when more than 50 rows still lack a vector an hour after they were written. `embedding_backfill.py` fills the gap; SessionStart runs it hourly as a safety net.
+- **launchd jobs** (macOS): every installed `com.b12.*` LaunchAgent. A KeepAlive job must be running (an old kill that it recovered from is ignored); a scheduled job's last run must have exited cleanly (no non-zero exit code, terminating signal or exit reason such as a launch-constraint kill); every job must be loaded. Jobs disabled with `launchctl disable` are listed with the command that re-enables them, not flagged.
+
 ## Antigravity and Gemini CLI integrations
 
 `plugins/antigravity/b12/` is the native Antigravity package template. `install.sh --antigravity` stages it to `~/.B12/antigravity-plugin/b12/` with runtime absolute paths, installs that bundle through `agy plugin install`, and registers B12's stdio MCP server in Antigravity's global `~/.gemini/config/mcp_config.json` shape:
