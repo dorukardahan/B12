@@ -134,6 +134,11 @@ On `compact`:
 
 **Performance**: Uses `jq` for JSON (no Python startup), `printf '%b'` for POSIX portability, direct SQLite queries for pre-fetch (no embedding model needed).
 
+**Vector safety net**: a memory without a vector is found by keyword search only. That happens when a writer stores it while the embed daemon is down, or on a path that cannot embed: the checkpoint hook's `python3` has no sqlite-vec, so its flush hands the rows it inserted to the venv (`embedding_backfill.py --hashes`). SessionStart also starts `embedding_backfill.py --if-due 3600 --limit 200 --wait-daemon 120 --quiet` detached, with all stdio closed and in its own session. The run:
+- skips if `$B12_DATA_DIR/.embedding-backfill.last` is less than an hour old, and never runs twice at once (non-blocking `flock` on `.embedding-backfill.last.lock`)
+- waits up to 120 s for the daemon to answer a `health` request (a leftover socket file is not enough), and does not touch the stamp if it never does
+- embeds at most 200 rows in at most 60 s, ten per daemon call, and stores a vector only if the row still has the content that was embedded
+
 ### UserPromptSubmit hook (v2)
 
 **Purpose**: Proactively retrieve relevant memories before Claude processes each user message.

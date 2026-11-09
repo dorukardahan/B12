@@ -356,6 +356,7 @@ if not os.path.exists(DB_PATH):
 # DB error retains the buffer for retry instead of silently dropping captures
 # (2026-06-27 audit M2).
 _q5_flush_ok = False
+_inserted_hashes = []
 
 try:
     conn = sqlite3.connect(DB_PATH, timeout=5)
@@ -397,6 +398,7 @@ try:
     import datetime as _dt
     now_iso = _dt.datetime.fromtimestamp(now, _dt.timezone.utc).isoformat()
     inserted = 0
+    _inserted_hashes = []
     dropped_dedup = 0
     dropped_constraint = 0
     _q5_constraint_err = None
@@ -454,6 +456,7 @@ try:
             )
             if cur.rowcount > 0:
                 inserted += 1
+                _inserted_hashes.append(item["hash"])
             else:
                 # rowcount 0 == content_hash already present == genuine dedup.
                 dropped_dedup += 1
@@ -520,6 +523,26 @@ if _q5_flush_ok:
             pass
     with open(last_flush_file, "w") as f:
         f.write(str(now))
+
+# Embed the rows this flush inserted. Without a vector a memory is reachable by
+# FTS only, never by semantic search; this path skipped vectors entirely and
+# left thousands of checkpoint rows FTS-only. Storing a vector needs sqlite-vec,
+# which this python3 does not have, so the B12 venv does it. Best effort and
+# outside the buffer lock: a miss (daemon down, timeout) is filled by the
+# SessionStart safety net.
+_venv_python = os.path.expanduser("~/.local/b12-venv/bin/python3")
+if _inserted_hashes and os.access(_venv_python, os.X_OK):
+    try:
+        _b12_fcntl.flock(_b12_lock_fh.fileno(), _b12_fcntl.LOCK_UN)
+    except (OSError, NameError):
+        pass
+    try:
+        import subprocess as _sp
+        _sp.run([_venv_python, os.path.join(scripts_dir, "embedding_backfill.py"),
+                 "--hashes", ",".join(_inserted_hashes), "--quiet"],
+                stdin=_sp.DEVNULL, stdout=_sp.DEVNULL, stderr=_sp.DEVNULL, timeout=90)
+    except Exception:
+        pass
 
 PYEOF
 } >/dev/null 2>&1 &

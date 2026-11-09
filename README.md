@@ -200,6 +200,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Effective-stability decay** — important and frequently accessed memories strengthen and age slowly; unused trivia fades (floor at 0.01, never disappear)
 - **Write-time dedup** — exact duplicates collapse at storage time; similar memories are stored separately and linked by graph-enrich (the old cosine > 0.85 append-merge is opt-in via `B12_WRITE_TIME_MERGE=1`)
 - **Contradiction detection** — ONNX NLI model flags conflicting memories
+- **Vector safety net** — every memory should be semantically searchable; SessionStart backfills up to 200 rows that have no vector (hourly, detached, waits for the embed daemon), and the checkpoint hook embeds what it stores
 - **PII / secret scrubber** — regex sweep on **every write path** (MCP `memory_store`, SessionEnd, PreCompact, checkpoint, write-time merge, Codex) redacts `sk-ant-`, `sk-proj-`, `ghp_`, `xoxb-`, AWS keys, Bearer/JWT, Google `AIza…`, Stripe `sk_live_…`, PEM private-key blocks, credential-bearing DB URIs, and `api_key=…` / `parola=…` (EN + TR) before content hits SQLite or the embedding daemon. Escape hatch: `B12_DISABLE_PII_SCRUB=1`. See [SECURITY.md](SECURITY.md).
 - **Write-time fragment gate** — short / incomplete utterances (`ok.`, `evet.`, lowercase one-liners, unbalanced quotes) are rejected at `memory_store` and `merge_or_insert` before they pollute the corpus. Turkish-aware (casefold + `İŞÇÖÜĞ`). Escape hatch: `B12_DISABLE_FRAGMENT_FILTER=1`.
 - **Memory graph** — related/follows/contradicts edges between memories
@@ -431,7 +432,7 @@ B12/
 │   ├── hook_adapter.py             #   Codex CLI hook adapter (translates Codex events to B12)
 │   ├── antigravity_hook_adapter.py #   Antigravity hook adapter (PreInvocation/PostToolUse/Stop)
 │   ├── antigravity_install.py      #   Antigravity plugin staging/config helpers
-│   ├── embedding_backfill.py       #   Backfills embeddings for memories without vectors
+│   ├── embedding_backfill.py       #   Backfills missing vectors (also an hourly SessionStart safety net)
 │   ├── heal_embedding_model.py     #   Self-heals MCP_EMBEDDING_MODEL drift across deployed configs (DB-dim driven)
 │   ├── query_aliases.json          #   Search query alias mappings
 │   ├── migrate_ebbinghaus.py       #   Migration: add strength fields
