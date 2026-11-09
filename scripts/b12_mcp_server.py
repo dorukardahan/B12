@@ -1103,6 +1103,7 @@ def _unified_score(row, relevance: float) -> float:
 
 
 SEARCH_COLLAPSE_COSINE = 0.95
+SEARCH_REFILL_POOL_MAX = 300  # deepest candidate pool for the refill pass
 
 
 def _unit_vector(blob):
@@ -1538,10 +1539,12 @@ async def memory_search(
                 except Exception:
                     continue  # FTS match syntax error, try next
 
-    await _read(_exact_fts_reads)
-
     # ── Semantic search via daemon (off the writer — daemon call is slow) ──
-    if mode in ("semantic", "hybrid") and query:
+    _daemon_down = []  # set when the daemon gave no answer; the refill pass skips it
+
+    async def _semantic_reads():
+        if mode not in ("semantic", "hybrid") or not query or _daemon_down:
+            return
         resp = await daemon_request_async(
             "semantic_search",
             queue_timeout=_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT,
@@ -1549,6 +1552,8 @@ async def memory_search(
             db_path=DB_PATH,
             limit=pool * 2,
         )
+        if resp is None:
+            _daemon_down.append(True)
         if resp and resp.get("results"):
             def _semantic_merge(db):
                 for hit in resp["results"]:
@@ -1581,12 +1586,13 @@ async def memory_search(
             for r in rows:
                 results[r["content_hash"]] = (r, 0.5)
 
-    await _read(_fallback_reads)
+    async def _gather():
+        results.clear()
+        await _read(_exact_fts_reads)
+        await _semantic_reads()
+        await _read(_fallback_reads)
 
-    # ── Sort, collapse near-duplicates, format ───────────────
-    ranked = sorted(results.values(), key=lambda x: x[1], reverse=True)
-    folded: dict = {}
-    if _collapse_on:
+    async def _collapse(ranked):
         def _vectors(db):
             out = {}
             for row, _sc in ranked[:pool * 2]:
@@ -1602,7 +1608,22 @@ async def memory_search(
             vectors = await _read(_vectors)
         except Exception:
             vectors = {}
-        sorted_results, folded = _collapse_ranked(ranked, vectors, limit)
+        return _collapse_ranked(ranked, vectors, limit)
+
+    # ── Sort, collapse near-duplicates, format ───────────────
+    await _gather()
+    ranked = sorted(results.values(), key=lambda x: x[1], reverse=True)
+    folded: dict = {}
+    if _collapse_on:
+        sorted_results, folded = await _collapse(ranked)
+        # Near-duplicates can fill the whole pool, leaving fewer than `limit` hits
+        # after folding. Fetch once more from a deeper pool so the freed slots go to
+        # distinct memories. A pool that was not filled has nothing more to give.
+        if len(sorted_results) < limit and len(ranked) >= pool and pool < SEARCH_REFILL_POOL_MAX:
+            pool = min(limit * 10, SEARCH_REFILL_POOL_MAX)
+            await _gather()
+            ranked = sorted(results.values(), key=lambda x: x[1], reverse=True)
+            sorted_results, folded = await _collapse(ranked)
     else:
         sorted_results = ranked[:limit]
 

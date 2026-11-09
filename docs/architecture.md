@@ -344,7 +344,7 @@ Hooks that interpolate user input into SQLite queries apply character-level sani
 
 ## Search result collapsing
 
-`memory_search` ranks FTS and semantic hits, then reads the vectors of the top `3 × limit` hits and walks them in rank order. A hit whose cosine to an already kept hit of the same `memory_type` and the same `proj:` tags is ≥ 0.95 is folded into it, and the kept hit lists the folded ids. Hits without a vector are always kept. Storage is unchanged; near-identical rows remain separate rows (write-time merge is opt-in), and this keeps them from crowding distinct memories out of the results. `B12_SEARCH_COLLAPSE=0` disables it.
+`memory_search` draws a candidate pool of `3 × limit` from each source (exact or FTS, and twice that from semantic search), ranks the hits, then reads the vectors of the top `6 × limit` and walks them in rank order. A hit whose cosine to an already kept hit of the same `memory_type` and the same `proj:` tags is ≥ 0.95 is folded into it, and the kept hit lists the folded ids. Hits without a vector are always kept. Storage is unchanged; near-identical rows remain separate rows (write-time merge is opt-in), and this keeps them from crowding distinct memories out of the results. If folding leaves fewer than `limit` hits and the pool was full, the search runs once more with a pool of `10 × limit` (at most 300), so the freed slots go to distinct memories. This happens when near-identical rows fill the whole pool: for example, templated session summaries matched by FTS while the embed daemon is still starting and semantic search returns nothing. If the daemon did not answer the first pass, the second pass does not wait for it again. `B12_SEARCH_COLLAPSE=0` disables it.
 
 ## Consolidation engine
 

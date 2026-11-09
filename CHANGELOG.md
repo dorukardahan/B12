@@ -5,7 +5,7 @@ All notable changes to B12 are documented in this file.
 ## [Unreleased]
 
 ### Added
-- `memory_search` folds near-identical hits. A hit whose vector has cosine ≥ 0.95 to a higher-ranked hit of the same type and project is shown as `(+N near-identical: #id, ...)` under that hit, so one fact stored several times no longer fills the top results. Nothing is deleted. Hits without a vector are always kept. Set `B12_SEARCH_COLLAPSE=0` to turn this off.
+- `memory_search` folds near-identical hits. A hit whose vector has cosine ≥ 0.95 to a higher-ranked hit of the same type and project is shown as `(+N near-identical: #id, ...)` under that hit, so one fact stored several times no longer fills the top results. When folding leaves fewer hits than the limit, the search fetches once more from a deeper pool. Nothing is deleted. Hits without a vector are always kept. Set `B12_SEARCH_COLLAPSE=0` to turn this off.
 - SessionStart shows open health issues. A detached run of `b12_health.py --snapshot` writes `~/.B12/health-snapshot.json` at most once an hour; the next session start adds one `[B12 HEALTH]` line with up to three issues (low vector coverage, a failing or unloaded B12 launchd job), or says that the last snapshot run wrote nothing.
 
 ### Fixed
