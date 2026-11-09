@@ -117,6 +117,24 @@ B12_BASE="${B12_DATA_DIR:-$HOME/.B12}"
 # mtime; the all-digits guard is belt-and-suspenders. (audit #8; matches _b12_common.sh)
 file_mtime() { local m; m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/dev/null); case "$m" in ''|*[!0-9]*) echo "0" ;; *) echo "$m" ;; esac; }
 
+# Health snapshot: vector coverage and launchd job status, refreshed at most hourly
+# by a detached run, so silent failures show up without anyone running
+# b12_health.py. The snapshot only refreshes when a session starts, so its age
+# says nothing by itself; a writer that was started over 10 minutes ago and left
+# no newer snapshot is the failure worth reporting.
+_HS="$B12_BASE/health-snapshot.json"
+_HS_SPAWNED="$B12_BASE/.health-snapshot.spawned"
+HEALTH_WRITER_FAILED=0
+if [ -x "$VENV_PYTHON" ] && [ -f "$B12_SCRIPTS/b12_health.py" ]; then
+  _hs_now=$(date +%s); _hs_m=$(file_mtime "$_HS"); _hs_sp=$(file_mtime "$_HS_SPAWNED")
+  if [ $(( _hs_now - _hs_m )) -ge 3600 ]; then
+    if [ "$_hs_sp" -gt "$_hs_m" ] && [ $(( _hs_now - _hs_sp )) -gt 600 ]; then HEALTH_WRITER_FAILED=1; fi
+    mkdir -p "$B12_BASE" 2>/dev/null && touch "$_HS_SPAWNED" 2>/dev/null
+    nice -n 10 "$VENV_PYTHON" "$B12_SCRIPTS/b12_health.py" --snapshot "$_HS" </dev/null >/dev/null 2>&1 &
+    disown 2>/dev/null
+  fi
+fi
+
 # Configured per-phase pagerank budget (seconds): env, sanitized to a
 # non-negative int, clamped <15s watchdog. 0 = documented opt-out (no
 # pagerank-level wall-clock kill; still bounded by the hook watchdog trap).
@@ -532,6 +550,24 @@ if [ "$SOURCE" = "startup" ] || [ "$SOURCE" = "resume" ]; then
   # Add content guardrails (Tier 0 — never trimmed, v12 F9)
   if [ -n "$CONTENT_GUARDRAILS" ]; then
     CONTEXT="${CONTEXT}\n\n--- CONTENT GUARDRAILS ---\n${CONTENT_GUARDRAILS}\n--- END GUARDRAILS ---"
+  fi
+
+  # Health line: up to three open issues from the last snapshot, or a writer that
+  # failed. No snapshot yet (first session) adds nothing.
+  HEALTH_WARN=""
+  _HEALTH_CMD="~/.local/b12-venv/bin/python3 ~/.B12/hooks/scripts/b12_health.py"
+  if [ "$HEALTH_WRITER_FAILED" = 1 ]; then
+    HEALTH_WARN="[B12 HEALTH] The health snapshot was not written after its last run, so health problems are not being reported. Run: ${_HEALTH_CMD}"
+  elif [ -f "$_HS" ]; then
+    _hs_issues=$(jq -r '.issues[]?' "$_HS" 2>/dev/null | head -3 | cut -c1-220 | paste -sd ';' -)
+    _hs_ts=$(jq -r '.ts // 0' "$_HS" 2>/dev/null)
+    case "$_hs_ts" in ''|*[!0-9]*) _hs_ts=0 ;; esac
+    _hs_age=$(( $(date +%s) - _hs_ts ))
+    _hs_when=""; [ "$_hs_age" -gt 7200 ] && _hs_when=" (checked $(( _hs_age / 3600 ))h ago)"
+    [ -n "$_hs_issues" ] && HEALTH_WARN="[B12 HEALTH]${_hs_when} ${_hs_issues} (details: ${_HEALTH_CMD})"
+  fi
+  if [ -n "$HEALTH_WARN" ]; then
+    CONTEXT="${CONTEXT}\n${HEALTH_WARN}"
   fi
 
   # Add compat warning (v12 F8)
