@@ -33,7 +33,17 @@
             B12_HOME_PYTHON and B12_HOME_DAEMON are substituted by install.sh
             during the install.sh daemon setup so this plist works regardless of
             where the user cloned B12 or where their venv lives.
+
+            launchd starts /bin/sh, which execs the venv Python in the same
+            process (same PID, signals and KeepAlive), so the program identity
+            launchd records is /bin/sh. When it started Python directly, it
+            recorded the Homebrew interpreter, which every Python upgrade
+            replaces, and the first spawn after an upgrade was killed with
+            "Launch Constraint Violation".
         -->
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>exec "$0" "$@"</string>
         <string>B12_HOME_PYTHON</string>
         <string>B12_HOME_DAEMON</string>
     </array>

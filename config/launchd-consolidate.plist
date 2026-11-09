@@ -15,6 +15,10 @@
     <string>com.b12.memory-consolidate</string>
     <key>ProgramArguments</key>
     <array>
+        <!-- /bin/sh execs Python; see com.b12.mcp.daemon.plist for why. -->
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>exec "$0" "$@"</string>
         <string>/path/to/home/.local/b12-venv/bin/python3</string>
         <string>/path/to/home/.B12/hooks/memory-consolidate.py</string>
         <string>--auto</string>
