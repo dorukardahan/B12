@@ -119,11 +119,15 @@ def test_backfill_scoped_to_hashes_skips_other_gaps(tmp_path, monkeypatch):
 
     stored = []
     monkeypatch.setattr(BF, "daemon_request", lambda texts: ["b64-" + str(i) for i in range(len(texts))])
-    monkeypatch.setattr(BF, "store_embedding", lambda dbp, mid, emb: stored.append(mid) or True)
+    expected = []
+    monkeypatch.setattr(BF, "store_embedding",
+                        lambda dbp, mid, emb, expected_hash=None: expected.append(expected_hash) or stored.append(mid) or True)
 
     success, failed = BF.backfill(db, content_hashes={"h1", "h2"})
     assert (success, failed) == (2, 0), (success, failed)
     assert sorted(stored) == [1, 2], f"backfill embedded rows outside the imported set: {stored}"
+    # The vector is stored only for the content that was embedded (no stale vectors).
+    assert sorted(expected) == ["h1", "h2"], expected
 
 
 def test_backfill_orchestrates_encode_and_store(tmp_path, monkeypatch):

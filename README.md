@@ -431,7 +431,7 @@ B12/
 │   ├── hook_adapter.py             #   Codex CLI hook adapter (translates Codex events to B12)
 │   ├── antigravity_hook_adapter.py #   Antigravity hook adapter (PreInvocation/PostToolUse/Stop)
 │   ├── antigravity_install.py      #   Antigravity plugin staging/config helpers
-│   ├── embedding_backfill.py       #   Backfills embeddings for memories without vectors
+│   ├── embedding_backfill.py       #   Backfills missing vectors (also an hourly SessionStart safety net)
 │   ├── heal_embedding_model.py     #   Self-heals MCP_EMBEDDING_MODEL drift across deployed configs (DB-dim driven)
 │   ├── query_aliases.json          #   Search query alias mappings
 │   ├── migrate_ebbinghaus.py       #   Migration: add strength fields

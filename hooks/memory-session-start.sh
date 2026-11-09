@@ -64,6 +64,16 @@ if $_DAEMON_NEEDED && [ -x "$VENV_PYTHON" ] && [ -f "$DAEMON_SCRIPT" ]; then
   disown 2>/dev/null
 fi
 
+# Vector safety net: a memory stored while the daemon was down, or by a path that
+# skips vectors, is reachable by FTS only. Fill up to 200 such rows, at most once
+# an hour, never twice at once. Detached with all stdio closed so it neither
+# delays this hook nor holds its output pipe; it waits for the daemon itself.
+if [ -x "$VENV_PYTHON" ] && [ -f "$B12_SCRIPTS/embedding_backfill.py" ]; then
+  nice -n 10 "$VENV_PYTHON" "$B12_SCRIPTS/embedding_backfill.py" \
+    --if-due 3600 --limit 200 --wait-daemon 120 --quiet </dev/null >/dev/null 2>&1 &
+  disown 2>/dev/null
+fi
+
 # ── Self-timeout watchdog ─────────────────────────────────────
 # Kills this script if it exceeds max runtime. Prevents orphan processes.
 # Redirect the watchdog's stdio to /dev/null: otherwise its `sleep` child
