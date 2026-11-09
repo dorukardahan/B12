@@ -15,12 +15,14 @@ import argparse
 import json
 import os
 import plistlib
+import re
 import shlex
 import shutil
 import socket
 import sqlite3
 import subprocess
 import sys
+import time
 try:
     import tomllib
 except ImportError:  # pragma: no cover - Python < 3.11
@@ -225,6 +227,50 @@ def check_sqlite_database() -> CheckResult:
         Status.FAIL,
         "SQLite schema missing all required tables",
         f"Missing: {', '.join(missing)}",
+    )
+
+
+VECTOR_COVERAGE_MIN = 0.98
+VECTOR_STALE_MAX = 50  # rows still without a vector an hour after they were written
+
+
+def check_vector_coverage() -> CheckResult:
+    """Warn when active memories lack a vector (reachable by FTS only).
+
+    Every writer is supposed to store a vector, but a write during a daemon
+    outage, or a path that never embedded, leaves the row out of semantic search
+    without any error. This went unnoticed for months, so measure it directly."""
+    if not DB_PATH.is_file():
+        return CheckResult(Status.WARN, "Vector coverage: database not found")
+    try:
+        conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True, timeout=5)
+        try:
+            active = conn.execute(
+                "SELECT COUNT(*) FROM memories WHERE deleted_at IS NULL"
+            ).fetchone()[0]
+            missing_sql = ("FROM memories WHERE deleted_at IS NULL "
+                           "AND id NOT IN (SELECT rowid FROM memory_embeddings_rowids)")
+            missing = conn.execute(f"SELECT COUNT(*) {missing_sql}").fetchone()[0]
+            stale = conn.execute(
+                f"SELECT COUNT(*) {missing_sql} AND created_at < ?", (time.time() - 3600,)
+            ).fetchone()[0]
+        finally:
+            conn.close()
+    except sqlite3.Error as e:
+        return CheckResult(Status.WARN, "Vector coverage: could not measure", str(e))
+    if not active:
+        return CheckResult(Status.OK, "Vector coverage (no memories yet)")
+    coverage = 1 - missing / active
+    label = f"Vector coverage {coverage:.1%} ({active - missing}/{active}), {stale} waiting over 1h"
+    # A percentage alone hides hundreds of rows in a large store, so the count of
+    # rows the safety net should already have filled is checked too.
+    if coverage >= VECTOR_COVERAGE_MIN and stale <= VECTOR_STALE_MAX:
+        return CheckResult(Status.OK, label)
+    return CheckResult(
+        Status.WARN,
+        label,
+        f"{missing} active memories have no vector and are invisible to semantic search. "
+        "Fill them with: ~/.local/b12-venv/bin/python3 ~/.B12/hooks/scripts/embedding_backfill.py",
     )
 
 
@@ -453,6 +499,70 @@ def check_launchd_plists() -> CheckResult:
         f"Launchd plist issues ({valid_count}/{total} OK)",
         "; ".join(issues),
     )
+
+
+def _launchctl(*args: str) -> str:
+    try:
+        result = subprocess.run(["launchctl", *args], capture_output=True, text=True,
+                                timeout=5, check=False)
+    except (OSError, subprocess.SubprocessError):
+        return ""
+    return result.stdout if result.returncode == 0 else ""
+
+
+def check_launchd_jobs() -> CheckResult:
+    """Report B12 launchd jobs that are not loaded or whose last run failed (macOS only).
+
+    A wrong interpreter made the consolidation job fail every night for months,
+    and a Homebrew Python upgrade got jobs killed by a launch constraint; launchd
+    recorded both, but nothing read it. A KeepAlive job only needs to be running;
+    a scheduled job needs a clean last exit. Jobs disabled with `launchctl
+    disable` are listed, not flagged."""
+    if sys.platform != "darwin":
+        return CheckResult(Status.OK, "Launchd job check skipped (not macOS)")
+    # README/docs/setup.md install the scheduled templates under their own file
+    # names (launchd-*.plist); the label inside says whether a job is B12's.
+    agents = _HOME / "Library" / "LaunchAgents"
+    plists = sorted(set(agents.glob("com.b12.*.plist")) | set(agents.glob("launchd-*.plist")))
+    disabled_out = _launchctl("print-disabled", f"gui/{_UID}")
+    problems, disabled, healthy = [], [], 0
+    for pf in plists:
+        try:
+            with open(pf, "rb") as f:
+                spec = plistlib.load(f)
+        except Exception as e:
+            problems.append(f"{pf.name}: parse error ({e})")
+            continue
+        label = spec.get("Label") or pf.stem
+        if not str(label).startswith("com.b12."):
+            continue  # a launchd-*.plist from other software
+        if re.search(rf'"{re.escape(label)}"\s*=>\s*(disabled|true)', disabled_out):
+            disabled.append(label)
+            continue
+        out = _launchctl("print", f"gui/{_UID}/{label}")
+        if not out:
+            problems.append(f"{label}: not loaded")
+            continue
+        if spec.get("KeepAlive"):
+            if not re.search(r"^\s*state = running", out, re.MULTILINE):
+                problems.append(f"{label}: not running")
+                continue
+        else:
+            reason = re.search(r"last exit reason = ([^\n]+)", out)
+            code = re.search(r"last exit code = (-?\d+)", out)
+            signal = re.search(r"last terminating signal = ([^\n]+)", out)
+            if reason or signal or (code and code.group(1) != "0"):
+                why = (reason or signal).group(1).strip() if (reason or signal) else f"exit code {code.group(1)}"
+                problems.append(f"{label}: last run failed ({why})")
+                continue
+        healthy += 1
+    if not (healthy or problems or disabled):
+        return CheckResult(Status.OK, "No B12 launchd jobs installed")
+    label = f"B12 launchd jobs: {healthy} healthy" + (f", {len(disabled)} disabled" if disabled else "")
+    detail = "; ".join(problems + [f"{d}: disabled (launchctl enable gui/{_UID}/{d})" for d in disabled])
+    if problems:
+        return CheckResult(Status.WARN, label + f", {len(problems)} failing", detail)
+    return CheckResult(Status.OK, label, detail)
 
 
 def check_claude_setups() -> CheckResult:
@@ -949,9 +1059,11 @@ def run_health_check(fix: bool = False) -> list[CheckResult]:
         check_hook_files(),
         check_python_modules(),
         check_sqlite_database(),
+        check_vector_coverage(),
         check_embed_daemon(),
         check_daemon_interpreters(),
         check_launchd_plists(),
+        check_launchd_jobs(),
         check_claude_setups(),
         check_mcp_config(),
         check_mcp_hosts(),
