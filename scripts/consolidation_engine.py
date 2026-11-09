@@ -77,7 +77,17 @@ except ImportError:
 # 1024 for BGE-M3 (default since v11.34 / P-FOUNDATION); override via
 # B12_EMBED_DIM to stay compatible with pre-migration 384-dim DBs.
 EMBEDDING_DIM = int(os.environ.get("B12_EMBED_DIM", "1024"))
-DEDUP_THRESHOLD = 0.95       # cosine >= this AND same tags → deduplicate
+DEDUP_THRESHOLD = 0.97       # cosine >= this AND _is_near_duplicate → deduplicate
+# Dedup is limited to types whose rows state a fact rather than an event:
+# two near-identical decision / progress / session_summary rows are usually
+# distinct events on different days. An allowlist, so a new type opts in
+# explicitly instead of silently.
+DEDUP_TYPES = frozenset({"learning", "knowledge", "gotcha", "error_fix"})
+DEDUP_MIN_JACCARD = 0.7      # token overlap: same embedding neighbourhood is not enough
+DEDUP_MIN_LENGTH_RATIO = 0.5
+MAX_DEDUP_PER_RUN = 100      # a run applies at most this many dedups; the rest wait for the next run
+DEDUP_ANOMALY = 1000         # circuit breaker: more candidates than this means a rule or data
+                             # problem, and the run changes nothing
 MERGE_THRESHOLD = 0.80       # cosine >= this (within cluster) → merge
 NLI_CONTRADICTION_THRESHOLD = 0.90  # NLI contradiction score → flag
 MIN_CONTENT_LEN = 30         # Skip very short memories for NLI
@@ -99,6 +109,9 @@ class ConsolidationResult:
     memories_merged: int = 0
     contradictions_flagged: int = 0
     kept_separate: int = 0
+    merge_candidates: int = 0   # similar pairs that were reported, not merged
+    dedup_deferred: int = 0     # dedups left for the next run (per-run limit)
+    aborted: str = ""           # set when the circuit breaker discarded the run
     dry_run_report: List[Dict[str, Any]] = field(default_factory=list)
 
 
@@ -283,6 +296,25 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
 
 # ── Pairwise analysis within a cluster ───────────────────────────
 
+def _tokens(text: str) -> set:
+    return {t for t in "".join(c.lower() if c.isalnum() else " " for c in text).split() if len(t) > 1}
+
+
+def _is_near_duplicate(a: "MemoryRecord", b: "MemoryRecord") -> bool:
+    """Same fact, not just the same topic: same allowed type, same project,
+    similar length and high token overlap (cosine is checked by the caller)."""
+    if a.memory_type != b.memory_type or a.memory_type not in DEDUP_TYPES:
+        return False
+    pa, pb = a.project_tag(), b.project_tag()
+    if not pa or pa != pb:
+        return False
+    la, lb = len(a.content), len(b.content)
+    if not la or not lb or min(la, lb) / max(la, lb) < DEDUP_MIN_LENGTH_RATIO:
+        return False
+    ta, tb = _tokens(a.content), _tokens(b.content)
+    return bool(ta and tb) and len(ta & tb) / len(ta | tb) >= DEDUP_MIN_JACCARD
+
+
 def _analyze_cluster(
     cluster: List[MemoryRecord],
     use_nli: bool = True,
@@ -303,7 +335,7 @@ def _analyze_cluster(
             b = cluster[j]
             sim = _cosine_similarity(a.embedding, b.embedding)
 
-            if sim >= DEDUP_THRESHOLD and a.tag_set == b.tag_set:
+            if sim >= DEDUP_THRESHOLD and _is_near_duplicate(a, b):
                 actions.append((a, b, 'dedup'))
                 report.append({
                     'type': 'dedup',
@@ -318,9 +350,10 @@ def _analyze_cluster(
                         and len(b.content) >= MIN_CONTENT_LEN):
                     nli_pairs.append((i, j, [a.content[:512], b.content[:512]]))
                 else:
-                    actions.append((a, b, 'merge'))
+                    # No NLI verdict for this pair: report it, never merge it.
+                    actions.append((a, b, 'merge_unverified'))
                     report.append({
-                        'type': 'merge',
+                        'type': 'merge_unverified',
                         'ids': [a.id, b.id],
                         'similarity': round(sim, 4),
                         'snippets': [a.content[:80], b.content[:80]],
@@ -341,7 +374,16 @@ def _analyze_cluster(
             if nli_result:
                 c_score = nli_result.get('scores', {}).get('contradiction', 0.0)
 
-            if c_score >= NLI_CONTRADICTION_THRESHOLD:
+            if nli_result is None:
+                # Request failed or the daemon truncated the batch: unchecked.
+                actions.append((a, b, 'merge_unverified'))
+                report.append({
+                    'type': 'merge_unverified',
+                    'ids': [a.id, b.id],
+                    'similarity': round(sim, 4),
+                    'snippets': [a.content[:80], b.content[:80]],
+                })
+            elif c_score >= NLI_CONTRADICTION_THRESHOLD:
                 actions.append((a, b, 'contradiction'))
                 report.append({
                     'type': 'contradiction',
@@ -365,30 +407,35 @@ def _analyze_cluster(
 # ── Apply actions to DB ──────────────────────────────────────────
 
 def _apply_dedup(conn: sqlite3.Connection, a: MemoryRecord, b: MemoryRecord) -> int:
-    """Deduplicate: keep highest-strength memory, soft-delete the other.
+    """Deduplicate: keep the older memory (its id and timestamps are the
+    original record), soft-delete the newer one with a pointer to the kept row.
     Returns the kept memory's ID."""
     now = datetime.now(timezone.utc)
     now_ts = now.timestamp()
 
-    if a.strength >= b.strength:
-        keep, remove = a, b
-    else:
-        keep, remove = b, a
+    keep, remove = (a, b) if a.id < b.id else (b, a)
 
     # Increment access_count on kept memory
     meta = keep.metadata
     meta['access_count'] = meta.get('access_count', 0) + 1
     meta_json = json.dumps(meta, ensure_ascii=False)
 
+    # Carry the removed row's tags over, so a tag-filtered search that found it
+    # still finds the kept row.
+    tags = list(dict.fromkeys(t.strip() for t in f"{keep.tags or ''},{remove.tags or ''}".split(",") if t.strip()))
+    keep.tags = ",".join(tags)
+
     conn.execute(
-        "UPDATE memories SET metadata = ?, updated_at = ?, updated_at_iso = ? WHERE id = ?",
-        (meta_json, now_ts, now.isoformat(), keep.id),
+        "UPDATE memories SET metadata = ?, tags = ?, updated_at = ?, updated_at_iso = ? WHERE id = ?",
+        (meta_json, keep.tags, now_ts, now.isoformat(), keep.id),
     )
 
-    # Soft-delete the duplicate
+    # Soft-delete the duplicate, recording which row it duplicated
+    removed_meta = remove.metadata
+    removed_meta["duplicate_of"] = keep.id
     conn.execute(
-        "UPDATE memories SET deleted_at = ? WHERE id = ?",
-        (now_ts, remove.id),
+        "UPDATE memories SET deleted_at = ?, metadata = ? WHERE id = ?",
+        (now_ts, json.dumps(removed_meta, ensure_ascii=False), remove.id),
     )
 
     # Rewrite graph edges from removed → kept
@@ -593,6 +640,7 @@ def consolidate(
     project: Optional[str] = None,
     dry_run: bool = False,
     min_cluster_size: int = 3,
+    allow_merge: bool = False,
 ) -> ConsolidationResult:
     """Run smart consolidation on the B12 memory database.
 
@@ -631,10 +679,16 @@ def consolidate(
         # Step 1: Cluster
         clusters = _cluster_memories(memories, min_cluster_size=min_cluster_size)
         result.clusters_found = len(clusters)
+        # Merging concatenates distinct memories and loses their timeline, so it
+        # runs only when asked for and only with NLI available to keep
+        # contradicting pairs apart. Otherwise similar pairs are only reported.
+        nli_up = _daemon_alive()
+        merging = allow_merge and nli_up
 
         # Step 2: Analyze each cluster
         # Track which memory IDs have been consumed (deduped/merged away)
         consumed_ids: set = set()
+        deferred_ids: set = set()  # would-be-removed ids past the per-run limit
 
         for label, cluster_mems in sorted(clusters.items()):
             # Filter out already-consumed memories
@@ -642,15 +696,20 @@ def consolidate(
             if len(active_mems) < 2:
                 continue
 
-            actions, report = _analyze_cluster(active_mems, use_nli=_daemon_alive())
+            actions, report = _analyze_cluster(active_mems, use_nli=nli_up)
             result.dry_run_report.extend(report)
 
             if dry_run:
                 for entry in report:
                     if entry['type'] == 'dedup':
                         result.memories_deduplicated += 1
+                    elif entry['type'] == 'merge_unverified':
+                        result.merge_candidates += 1
                     elif entry['type'] == 'merge':
-                        result.memories_merged += 1
+                        if merging:
+                            result.memories_merged += 1
+                        else:
+                            result.merge_candidates += 1
                     elif entry['type'] == 'contradiction':
                         result.contradictions_flagged += 1
                     else:
@@ -665,6 +724,14 @@ def consolidate(
                 if action_type != 'dedup':
                     continue
                 if a.id in consumed_ids or b.id in consumed_ids:
+                    continue
+                if result.memories_deduplicated >= MAX_DEDUP_PER_RUN:
+                    # Count each memory that would be removed once, not every
+                    # pair, or a large duplicate cluster looks like an anomaly.
+                    if a.id in deferred_ids or b.id in deferred_ids:
+                        continue
+                    deferred_ids.add(max(a.id, b.id))
+                    result.dedup_deferred += 1
                     continue
                 kept_id = _apply_dedup(conn, a, b)
                 consumed_ids.add(a.id if kept_id != a.id else b.id)
@@ -695,7 +762,10 @@ def consolidate(
                     merge_ids.add(b.id)
 
             # Apply merge group if we collected any
-            if len(merge_group) >= 2:
+            result.merge_candidates += sum(1 for *_, t in actions if t == 'merge_unverified')
+            if not merging:
+                result.merge_candidates += sum(1 for *_, t in actions if t == 'merge')
+            elif len(merge_group) >= 2:
                 kept_id = _apply_merge(conn, merge_group)
                 for m in merge_group:
                     if m.id != kept_id:
@@ -703,7 +773,16 @@ def consolidate(
                 result.memories_merged += len(merge_group) - 1
 
         if not dry_run:
-            conn.commit()
+            candidates = result.memories_deduplicated + result.dedup_deferred
+            if candidates > DEDUP_ANOMALY:
+                # Far more duplicates than the store plausibly holds means a rule or
+                # data problem; deleting them unattended would be the larger harm.
+                conn.rollback()
+                result.aborted = (f"{candidates} dedup candidates exceed the anomaly limit "
+                                  f"of {DEDUP_ANOMALY}; nothing was changed")
+                result.memories_deduplicated = 0
+            else:
+                conn.commit()
 
     finally:
         conn.close()

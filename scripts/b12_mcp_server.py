@@ -2368,6 +2368,9 @@ async def memory_consolidate(
     lines.append(f"  Clusters found:        {result.clusters_found}")
     lines.append(f"  Deduplicated:          {result.memories_deduplicated}")
     lines.append(f"  Merged:                {result.memories_merged}")
+    lines.append(f"  Merge candidates:      {getattr(result, 'merge_candidates', 0)} (reported, not merged)")
+    if getattr(result, "aborted", ""):
+        lines.append(f"  ABORTED: {result.aborted}")
     lines.append(f"  Contradictions flagged: {result.contradictions_flagged}")
 
     if dry_run and result.dry_run_report:

@@ -228,6 +228,11 @@ def main():
         print(f"  Deduplicated:          {result.memories_deduplicated}")
         print(f"  Merged:                {result.memories_merged}")
         print(f"  Contradictions flagged: {result.contradictions_flagged}")
+        print(f"  Merge candidates:      {result.merge_candidates} (reported, not merged)")
+        if result.dedup_deferred:
+            print(f"  Dedups deferred:       {result.dedup_deferred} (per-run limit; next run continues)")
+        if result.aborted:
+            print(f"  ABORTED: {result.aborted}")
         print()
 
         if result.dry_run_report:
@@ -247,11 +252,15 @@ def main():
         print("=" * 60)
         if dry_run and (result.memories_deduplicated or result.memories_merged):
             print("  Run with --auto to apply these changes")
+        elif result.aborted:
+            print("  Nothing was changed (circuit breaker).")
         elif not dry_run and (result.memories_deduplicated or result.memories_merged):
             print("  Changes applied to database.")
         else:
             print("  Database looks clean!")
         print("=" * 60)
+        if result.aborted:
+            sys.exit(1)  # a failed run must show up in launchd and b12_health
     else:
         print("Error: consolidation_engine not available.")
         print("Ensure scripts/consolidation_engine.py is deployed to ~/.B12/hooks/scripts/")
