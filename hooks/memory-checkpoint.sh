@@ -88,15 +88,14 @@ fi
 echo "0" > "$COUNTER_FILE"
 
 # ── Extract scannable text ───────────────────────────────────
-# Combine tool_input and tool_result for pattern scanning
-# Truncate to 4000 chars to stay within budget
+# Written file content and the tool result, truncated to 4000 chars. The shell
+# command, search pattern and file path are left out: they are never sentences,
+# and the prose patterns cut pieces such as `since 2026-07-16 --full 2>&1 | tail -8`
+# out of them (`--since`) and stored those as memories.
 SCAN_TEXT=$(echo "$INPUT" | jq -r '
   [
     (.tool_input | if type == "object" then
-      (.content // ""),
-      (.command // ""),
-      (.file_path // ""),
-      (.pattern // "")
+      (.content // "")
     else . end),
     (.tool_result // "" | if length > 3000 then .[:3000] else . end)
   ] | map(select(. != null and . != "")) | join("\n")
@@ -218,7 +217,7 @@ try:
         TOOL_PREF_RE, ARCH_RE, WORKFLOW_RE, CORRECTION_RE,
         IMPLICIT_DECISION_RE, REASON_RE, BLOCKER_RE,
         DB_PATH, content_hash, validate_metadata,
-        summary_filter, classify_by_prefix,
+        summary_filter, classify_by_prefix, looks_like_code,
     )
 except ImportError:
     # shared_patterns not available — skip silently
@@ -275,7 +274,7 @@ if not prefix_classified:
     for regex, category, base_score in PATTERNS:
         for m in regex.finditer(scan_text):
             text = m.group(0).strip()
-            if len(text) < 15 or len(text) > 500:
+            if len(text) < 15 or len(text) > 500 or looks_like_code(text):
                 continue
             h = content_hash(text)
             if h in seen_hashes:

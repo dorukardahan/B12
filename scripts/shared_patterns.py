@@ -611,7 +611,8 @@ IMPLICIT_DECISION_RE = re.compile(
 )
 
 REASON_RE = re.compile(
-    r'(?i)(?:'
+    # Not inside a word or a CLI flag: `--since 2026-07-16` is not a reason.
+    r'(?i)(?<![\w-])(?:'
     # English reasoning
     r'(?:because\s+.{10,200})'
     r'|(?:since\s+.{10,200})'
@@ -624,6 +625,33 @@ REASON_RE = re.compile(
     r'|(?:(?:bunun\s+nedeni|bunun\s+sebebi)\s+.{10,200})'
     r')'
 )
+
+# Each kind counts once: shell chaining, escaped newlines, a dangling quote or
+# paren, a run of quotes, pipes or braces, an object literal, banners or tags;
+# two CLI flags add one, four add two.
+_CODE_MARKS = [re.compile(p) for p in (
+    r"\$\(|\s&&\s|\s\|\|\s",
+    r"\\n",
+    r";\s*$|^\s*[)'\"|`]|[|'\"`)]\s*$",
+    r"[|'\"`(){}]{3,}",
+    r"\{\s*[\"'\w]+\s*[:=]",
+    r"#{3,}|={3,}|</?[a-z]+>",
+)]
+_CLI_FLAG_RE = re.compile(r"(?:^|\s)--?[a-zA-Z][\w-]*")
+_SHELL_PIPE_RE = re.compile(r"2>&1|\|\s*(?:head|tail|grep|jq|sed|awk|wc|sort|uniq|xargs|cut|tee)\b")
+
+
+def looks_like_code(text):
+    """True for a regex match that is a shell command or code fragment, not a
+    sentence. Pattern matches over tool output kept pieces such as
+    `since 2026-07-16 --full 2>&1 | tail -8` as memories."""
+    t = text.strip()
+    if len(re.findall(r"[^\W\d_]{2,}", t)) < 4 or _SHELL_PIPE_RE.search(t):
+        return True
+    flags = len(_CLI_FLAG_RE.findall(t))
+    hits = sum(1 for m in _CODE_MARKS if m.search(t)) + (flags >= 2) + (flags >= 4)
+    return hits >= 2
+
 
 BLOCKER_RE = re.compile(
     r'(?i)(?:'
