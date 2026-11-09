@@ -130,6 +130,14 @@ if [[ "$PROMPT" =~ ^/[a-zA-Z][a-zA-Z0-9_-]*($|[[:space:]]) ]]; then
   exit 0
 fi
 
+# Skip host notifications such as Claude Code's <task-notification>, sent as a
+# prompt when a background task finishes. They are not the user's words; a search
+# on their task ids and file paths injected unrelated memories (on one install,
+# 18% of all retrievals) and spent the session's token budget.
+case "$PROMPT" in
+  "<task-notification>"*) exit 0 ;;
+esac
+
 # ── Recall-verb detection (v8 — forensic-driven, EN+TR) ───────
 # When the user uses an explicit recall verb, the retrieval path
 # widens (limit 8 not 5), forces hybrid rerank (no skip), and the
