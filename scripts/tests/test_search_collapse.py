@@ -74,12 +74,12 @@ def test_candidate_pool_is_deeper_than_the_limit_when_collapsing():
     assert "+ [limit]" not in src
 
 
-def test_folding_a_full_pool_refills_from_a_deeper_one(tmp_path):
-    # 40 near-identical rows outrank 10 distinct ones. The first pool (3 x limit)
-    # holds only the copies, so folding alone would return a single hit.
+
+def _refill_search(tmp_path, daemon, **kw):
+    """Real memory_search on a temp DB: 40 near-identical rows (ids 1-40) outrank
+    10 distinct ones (ids 100-109). The first pool (3 x limit) holds only copies."""
     import asyncio
     import hashlib
-    import re
     import sqlite3
 
     if not M._HAS_VEC:
@@ -108,25 +108,37 @@ def test_folding_a_full_pool_refills_from_a_deeper_one(tmp_path):
     conn.commit()
     conn.close()
 
-    calls = []
     orig = (M.DB_PATH, M.daemon_request, M._daemon_lock, M._db_init_lock)
-    M.DB_PATH, M.daemon_request = db, (lambda *a, **k: calls.append(a) or None)  # daemon not answering
+    M.DB_PATH, M.daemon_request = db, daemon
     M._daemon_lock, M._db_init_lock = asyncio.Lock(), asyncio.Lock()
 
     async def body():
         await M._init_db()
         fn = M.memory_search.fn if hasattr(M.memory_search, "fn") else M.memory_search
-        return await fn(query="alpha", mode="hybrid", limit=10)
+        return await fn(query="alpha", limit=10, **kw)
 
     try:
-        out = asyncio.run(body())
+        return asyncio.run(body())
     finally:
         try:
             asyncio.run(M._shutdown_db())
         except Exception:
             pass
         (M.DB_PATH, M.daemon_request, M._daemon_lock, M._db_init_lock) = orig
+
+
+def test_folding_a_full_pool_refills_from_a_deeper_one(tmp_path):
+    import re
+    calls = []
+    out = _refill_search(tmp_path, lambda *a, **k: calls.append(a) or None, mode="hybrid")  # daemon silent
     assert out.startswith("Found 10 memories")
     assert out.count("distinct subject") == 9
     assert re.search(r"\(\+\d+ near-identical: #", out)
     assert len(calls) == 1  # the refill pass does not wait for a daemon that did not answer
+
+
+def test_refill_keeps_first_pass_hits_when_its_semantic_call_fails(tmp_path):
+    answers = [{"results": [{"id": i, "score": 0.9} for i in range(1, 41)]}, None]
+    out = _refill_search(tmp_path, lambda *a, **k: answers.pop(0) if answers else None, mode="semantic")
+    assert out.startswith("Found 1 memories")
+    assert "(+39 near-identical: #" in out

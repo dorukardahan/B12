@@ -1621,7 +1621,13 @@ async def memory_search(
         # distinct memories. A pool that was not filled has nothing more to give.
         if len(sorted_results) < limit and len(ranked) >= pool and pool < SEARCH_REFILL_POOL_MAX:
             pool = min(limit * 10, SEARCH_REFILL_POOL_MAX)
+            first = dict(results)
             await _gather()
+            # Keep first-pass hits the refill did not find again (its semantic call
+            # can fail), at their first-pass score when that is higher.
+            for h, (row, sc) in first.items():
+                if h not in results or results[h][1] < sc:
+                    results[h] = (row, sc)
             ranked = sorted(results.values(), key=lambda x: x[1], reverse=True)
             sorted_results, folded = await _collapse(ranked)
     else:
