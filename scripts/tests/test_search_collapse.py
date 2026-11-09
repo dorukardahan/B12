@@ -72,3 +72,73 @@ def test_candidate_pool_is_deeper_than_the_limit_when_collapsing():
                    "limit=pool * 2,", "params + [pool],"):
         assert needle in src, needle
     assert "+ [limit]" not in src
+
+
+
+def _refill_search(tmp_path, daemon, **kw):
+    """Real memory_search on a temp DB: 40 near-identical rows (ids 1-40) outrank
+    10 distinct ones (ids 100-109). The first pool (3 x limit) holds only copies."""
+    import asyncio
+    import hashlib
+    import sqlite3
+
+    if not M._HAS_VEC:
+        pytest.skip("sqlite-vec not installed")
+    db = str(tmp_path / "refill.db")
+    conn = sqlite3.connect(db)
+    conn.enable_load_extension(True)
+    M.sqlite_vec.load(conn)
+    M._ensure_schema(conn)
+
+    def add(i, content, strength, axis):
+        ch = hashlib.sha256(content.encode()).hexdigest()
+        conn.execute("INSERT INTO memories (id, content, content_hash, tags, memory_type, metadata, created_at,"
+                     " created_at_iso, updated_at, updated_at_iso, strength) VALUES (?, ?, ?, 'proj:b12', 'learning',"
+                     " '{}', 1.7e9, '', 1.7e9, '', ?)", (i, content, ch, strength))
+        v = [0.0] * 1024
+        v[axis] = 1.0
+        v[1023] = i * 1e-4  # copies differ slightly but stay far above 0.95
+        conn.execute("INSERT INTO memory_embeddings (rowid, content_embedding) VALUES (?, ?)",
+                     (i, array.array("f", v).tobytes()))
+
+    for i in range(1, 41):
+        add(i, f"alpha alpha alpha copy {i}", 5.0, 0)
+    for k in range(10):
+        add(100 + k, f"alpha distinct subject number {k} with several other words", 1.0, k + 1)
+    conn.commit()
+    conn.close()
+
+    orig = (M.DB_PATH, M.daemon_request, M._daemon_lock, M._db_init_lock)
+    M.DB_PATH, M.daemon_request = db, daemon
+    M._daemon_lock, M._db_init_lock = asyncio.Lock(), asyncio.Lock()
+
+    async def body():
+        await M._init_db()
+        fn = M.memory_search.fn if hasattr(M.memory_search, "fn") else M.memory_search
+        return await fn(query="alpha", limit=10, **kw)
+
+    try:
+        return asyncio.run(body())
+    finally:
+        try:
+            asyncio.run(M._shutdown_db())
+        except Exception:
+            pass
+        (M.DB_PATH, M.daemon_request, M._daemon_lock, M._db_init_lock) = orig
+
+
+def test_folding_a_full_pool_refills_from_a_deeper_one(tmp_path):
+    import re
+    calls = []
+    out = _refill_search(tmp_path, lambda *a, **k: calls.append(a) or None, mode="hybrid")  # daemon silent
+    assert out.startswith("Found 10 memories")
+    assert out.count("distinct subject") == 9
+    assert re.search(r"\(\+\d+ near-identical: #", out)
+    assert len(calls) == 1  # the refill pass does not wait for a daemon that did not answer
+
+
+def test_refill_keeps_first_pass_hits_when_its_semantic_call_fails(tmp_path):
+    answers = [{"results": [{"id": i, "score": 0.9} for i in range(1, 41)]}, None]
+    out = _refill_search(tmp_path, lambda *a, **k: answers.pop(0) if answers else None, mode="semantic")
+    assert out.startswith("Found 1 memories")
+    assert "(+39 near-identical: #" in out
