@@ -144,7 +144,7 @@ On `compact`:
 **Purpose**: Proactively retrieve relevant memories before Claude processes each user message.
 
 Process:
-1. Skip slash commands (pattern: `/word`)
+1. Skip slash commands (pattern: `/word`) and host notifications (a prompt that starts with `<task-notification>`, which Claude Code sends when a background task finishes; it is not the user's words)
 2. Extract keywords from user prompt (stop-word removal, 12-word limit)
 3. Build FTS5 query with OR operators
 4. Run hybrid scoring: `0.25×decay + 0.25×importance + 0.40×relevance + 0.10×strength_score`
