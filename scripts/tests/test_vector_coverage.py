@@ -34,6 +34,9 @@ def runtime(tmp_path, monkeypatch):
     calls = []
     monkeypatch.setattr(embedding_backfill, "backfill",
                         lambda path, limit=None, **kw: calls.append((path, limit)) or (limit, 0))
+    sock = embedding_backfill._sock_path()
+    # The tests stand in for a live daemon with the socket file; the real probe is tested below.
+    monkeypatch.setattr(embedding_backfill, "_daemon_ready", lambda: Path(sock).exists())
     return {"state": tmp_path / "state", "sock": embedding_backfill._sock_path(), "db": str(db), "calls": calls}
 
 
@@ -121,3 +124,11 @@ def test_session_start_runs_detached_safety_net():
     line = m.group(1)
     for flag in ("--if-due", "--limit", "--wait-daemon", "--quiet", "</dev/null", ">/dev/null", "2>&1", "&"):
         assert flag in line, f"safety net is missing {flag}"
+
+
+def test_stale_socket_is_not_a_ready_daemon(tmp_path, monkeypatch):
+    # A daemon killed without cleanup leaves its socket file behind; that must not
+    # count as ready, or the hourly slot is spent on a dead daemon.
+    monkeypatch.setenv("B12_EMBED_RUNTIME_DIR", str(tmp_path))
+    Path(embedding_backfill._sock_path()).touch()
+    assert embedding_backfill._daemon_ready() is False

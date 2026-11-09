@@ -247,6 +247,21 @@ def backfill(db_path, limit=None, missing=None, content_hashes=None, deadline=No
     return (success, failed)
 
 
+def _daemon_ready():
+    """The daemon answers a health request. A socket file alone is not enough:
+    a daemon killed without cleanup leaves it behind, refusing connections."""
+    try:
+        sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        sock.connect(_sock_path())
+        sock.sendall(b'{"op": "health"}\n')
+        reply = sock.recv(4096)
+        sock.close()
+        return json.loads(reply.split(b"\n")[0]).get("ok") is True
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
 def scheduled_backfill(db_path, limit=200, min_interval=3600, wait_daemon=0, state_dir=None,
                        max_seconds=60):
     """Bounded safety-net run, meant to be started detached from a hook.
@@ -272,9 +287,9 @@ def scheduled_backfill(db_path, limit=200, min_interval=3600, wait_daemon=0, sta
         except OSError:
             return None  # another run holds the lock
     deadline = time.time() + max(0, wait_daemon)
-    while not os.path.exists(_sock_path()) and time.time() < deadline:
+    while not _daemon_ready() and time.time() < deadline:
         time.sleep(2)
-    if not os.path.exists(_sock_path()) or not os.path.exists(db_path):
+    if not _daemon_ready() or not os.path.exists(db_path):
         return None
     with open(stamp, "a"):
         pass
