@@ -350,9 +350,10 @@ def _analyze_cluster(
                         and len(b.content) >= MIN_CONTENT_LEN):
                     nli_pairs.append((i, j, [a.content[:512], b.content[:512]]))
                 else:
-                    actions.append((a, b, 'merge'))
+                    # No NLI verdict for this pair: report it, never merge it.
+                    actions.append((a, b, 'merge_unverified'))
                     report.append({
-                        'type': 'merge',
+                        'type': 'merge_unverified',
                         'ids': [a.id, b.id],
                         'similarity': round(sim, 4),
                         'snippets': [a.content[:80], b.content[:80]],
@@ -373,7 +374,16 @@ def _analyze_cluster(
             if nli_result:
                 c_score = nli_result.get('scores', {}).get('contradiction', 0.0)
 
-            if c_score >= NLI_CONTRADICTION_THRESHOLD:
+            if nli_result is None:
+                # Request failed or the daemon truncated the batch: unchecked.
+                actions.append((a, b, 'merge_unverified'))
+                report.append({
+                    'type': 'merge_unverified',
+                    'ids': [a.id, b.id],
+                    'similarity': round(sim, 4),
+                    'snippets': [a.content[:80], b.content[:80]],
+                })
+            elif c_score >= NLI_CONTRADICTION_THRESHOLD:
                 actions.append((a, b, 'contradiction'))
                 report.append({
                     'type': 'contradiction',
@@ -673,6 +683,7 @@ def consolidate(
         # Step 2: Analyze each cluster
         # Track which memory IDs have been consumed (deduped/merged away)
         consumed_ids: set = set()
+        deferred_ids: set = set()  # would-be-removed ids past the per-run limit
 
         for label, cluster_mems in sorted(clusters.items()):
             # Filter out already-consumed memories
@@ -687,6 +698,8 @@ def consolidate(
                 for entry in report:
                     if entry['type'] == 'dedup':
                         result.memories_deduplicated += 1
+                    elif entry['type'] == 'merge_unverified':
+                        result.merge_candidates += 1
                     elif entry['type'] == 'merge':
                         if merging:
                             result.memories_merged += 1
@@ -708,6 +721,11 @@ def consolidate(
                 if a.id in consumed_ids or b.id in consumed_ids:
                     continue
                 if result.memories_deduplicated >= MAX_DEDUP_PER_RUN:
+                    # Count each memory that would be removed once, not every
+                    # pair, or a large duplicate cluster looks like an anomaly.
+                    if a.id in deferred_ids or b.id in deferred_ids:
+                        continue
+                    deferred_ids.add(max(a.id, b.id))
                     result.dedup_deferred += 1
                     continue
                 kept_id = _apply_dedup(conn, a, b)
@@ -739,6 +757,7 @@ def consolidate(
                     merge_ids.add(b.id)
 
             # Apply merge group if we collected any
+            result.merge_candidates += sum(1 for *_, t in actions if t == 'merge_unverified')
             if not merging:
                 result.merge_candidates += sum(1 for *_, t in actions if t == 'merge')
             elif len(merge_group) >= 2:

@@ -40,14 +40,14 @@ def test_near_duplicate_rules(b, expected):
     assert ce._is_near_duplicate(a, b) is expected
 
 
-def _run(monkeypatch, clusters, **kw):
+def _run(monkeypatch, clusters, nli=False, **kw):
     applied = {"dedup": 0, "merge": 0}
     conn = sqlite3.connect(":memory:")
     monkeypatch.setattr(ce, "_open_db", lambda path: conn)
     monkeypatch.setattr(ce.os.path, "exists", lambda path: True)
     monkeypatch.setattr(ce, "_load_memories", lambda c, project=None: [m for cl in clusters for m in cl])
     monkeypatch.setattr(ce, "_cluster_memories", lambda mems, min_cluster_size=3: dict(enumerate(clusters)))
-    monkeypatch.setattr(ce, "_daemon_alive", lambda: False)
+    monkeypatch.setattr(ce, "_daemon_alive", lambda: nli)
 
     def dedup(c, a, b):
         applied["dedup"] += 1
@@ -100,3 +100,28 @@ def test_anomalous_candidate_count_changes_nothing(monkeypatch):
 def test_nightly_script_fails_when_aborted():
     src = (Path(__file__).resolve().parents[2] / "hooks" / "memory-consolidate.py").read_text()
     assert "if result.aborted:\n            sys.exit(1)" in src
+
+
+def test_large_duplicate_cluster_defers_per_row_not_per_pair(monkeypatch):
+    # 10 identical rows need 9 deletions. Counting every remaining pair as deferred
+    # made this look like an anomaly and rolled back every night (Codex review P2).
+    monkeypatch.setattr(ce, "MAX_DEDUP_PER_RUN", 3)
+    monkeypatch.setattr(ce, "DEDUP_ANOMALY", 20)
+    result, applied = _run(monkeypatch, [[_mem(i) for i in range(1, 11)]])
+    assert not result.aborted
+    assert applied["dedup"] == 3 and result.dedup_deferred == 6
+
+
+def test_merge_only_for_pairs_with_an_nli_verdict(monkeypatch):
+    # The daemon caps NLI batches at 20 pairs; a pair without a verdict must not merge.
+    e1 = np.zeros(8, dtype=np.float32); e1[0] = 1
+    e2 = np.zeros(8, dtype=np.float32); e2[0] = 0.9; e2[1] = 0.43
+    cluster = [_mem(1, content="the staging deploy uses blue green rollout", emb=e1),
+               _mem(2, content="the staging deploy uses canary rollout steps", emb=e2),
+               _mem(3, content="the staging deploy uses rolling update batches", emb=e2)]
+    verdicts = [{"scores": {"contradiction": 0.01}}]  # only the first pair was checked
+    monkeypatch.setattr(ce, "_nli_check_pairs", lambda pairs: verdicts)
+    result, applied = _run(monkeypatch, [cluster], nli=True, allow_merge=True)
+    assert applied["merge"] == 1                # one group, from the verified pair only
+    assert result.memories_merged == 1
+    assert result.merge_candidates == 2         # the two unchecked pairs are only reported
