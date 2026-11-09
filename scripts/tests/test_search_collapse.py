@@ -60,3 +60,15 @@ def test_unit_vector_normalizes_and_rejects_empty():
     assert v == pytest.approx([0.6, 0.8])
     assert M._unit_vector(b"") is None
     assert M._unit_vector(array.array("f", [0.0, 0.0]).tobytes()) is None
+
+
+def test_candidate_pool_is_deeper_than_the_limit_when_collapsing():
+    # Folded hits must be replaced by distinct ones, so every candidate query
+    # (exact, FTS, semantic, fallback) fetches from `pool`, not `limit` (Codex review P2).
+    import inspect
+    src = inspect.getsource(M.memory_search.fn if hasattr(M.memory_search, "fn") else M.memory_search)
+    assert "pool = limit * 3 if _collapse_on else limit" in src
+    for needle in ('[f"%{query}%"] + params + [pool]', "[fts_query] + params + [pool]",
+                   "limit=pool * 2,", "params + [pool],"):
+        assert needle in src, needle
+    assert "+ [limit]" not in src

@@ -1473,6 +1473,10 @@ async def memory_search(
             pass
 
     where_sql = " AND ".join(wheres)
+    # Collapsing folds near-identical hits, so fetch a deeper candidate pool:
+    # otherwise folded slots would stay empty instead of going to distinct hits.
+    _collapse_on = _HAS_VEC and os.environ.get("B12_SEARCH_COLLAPSE", "1") != "0"
+    pool = limit * 3 if _collapse_on else limit
 
     # Exact + FTS reads run off the loop on a read-pool connection. The closure
     # mutates `results` (loop-local) on the read thread; the `await` is a
@@ -1484,7 +1488,7 @@ async def memory_search(
                 f"""SELECT * FROM memories m
                     WHERE m.content LIKE ? AND {where_sql}
                     ORDER BY m.created_at DESC LIMIT ?""",
-                [f"%{query}%"] + params + [limit],
+                [f"%{query}%"] + params + [pool],
             ).fetchall()
             for r in exact_rows:
                 results[r["content_hash"]] = (r, _unified_score(r, 0.9))
@@ -1520,7 +1524,7 @@ async def memory_search(
                             JOIN memories m ON m.id = {_fts_join_col}
                             WHERE fts.content MATCH ? AND {where_sql}
                             ORDER BY rank LIMIT ?""",
-                        [fts_query] + params + [limit],
+                        [fts_query] + params + [pool],
                     ).fetchall()
                     for r in fts_rows:
                         h = r["content_hash"]
@@ -1543,7 +1547,7 @@ async def memory_search(
             queue_timeout=_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT,
             query=query,
             db_path=DB_PATH,
-            limit=limit * 2,
+            limit=pool * 2,
         )
         if resp and resp.get("results"):
             def _semantic_merge(db):
@@ -1572,7 +1576,7 @@ async def memory_search(
                 f"""SELECT * FROM memories m
                     WHERE {where_sql}
                     ORDER BY m.created_at DESC LIMIT ?""",
-                params + [limit],
+                params + [pool],
             ).fetchall()
             for r in rows:
                 results[r["content_hash"]] = (r, 0.5)
@@ -1582,10 +1586,10 @@ async def memory_search(
     # ── Sort, collapse near-duplicates, format ───────────────
     ranked = sorted(results.values(), key=lambda x: x[1], reverse=True)
     folded: dict = {}
-    if _HAS_VEC and os.environ.get("B12_SEARCH_COLLAPSE", "1") != "0":
+    if _collapse_on:
         def _vectors(db):
             out = {}
-            for row, _sc in ranked[:limit * 3]:
+            for row, _sc in ranked[:pool * 2]:
                 try:
                     hit = db.execute("SELECT content_embedding FROM memory_embeddings WHERE rowid = ?",
                                      (row["id"],)).fetchone()
