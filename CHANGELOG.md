@@ -4,6 +4,9 @@ All notable changes to B12 are documented in this file.
 
 ## [Unreleased]
 
+### Added
+- `memory_search` folds near-identical hits. A hit whose vector has cosine ≥ 0.95 to a higher-ranked hit of the same type and project is shown as `(+N near-identical: #id, ...)` under that hit, so one fact stored several times no longer fills the top results. Nothing is deleted. Hits without a vector are always kept. Set `B12_SEARCH_COLLAPSE=0` to turn this off.
+
 ### Fixed
 - Write-time semantic merge is off by default. It appended a new memory to its nearest same-type neighbour as an undated bullet whenever cosine passed 0.85, with no project boundary: on one install 54% of same-type pairs above that threshold crossed projects, and re-embedding the grown row pulled in more appends until some rows held ten or more facts. Similar memories are now stored as separate rows (graph-enrich links them); exact duplicates still collapse by content hash. Set `B12_WRITE_TIME_MERGE=1` to restore the old behaviour.
 - Memories saved by the mid-session checkpoint hook never got a vector, so they could be found by keyword search only, never by semantic search; other writers skip the vector while the embed daemon is down. On one install 56% of active memories had no vector. The checkpoint flush now embeds the rows it inserts, and SessionStart starts a detached backfill of up to 200 missing vectors at most once an hour. To fill an existing gap at once, run `~/.local/b12-venv/bin/python3 ~/.B12/hooks/scripts/embedding_backfill.py`.

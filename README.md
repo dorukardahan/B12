@@ -201,6 +201,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Write-time dedup** — exact duplicates collapse at storage time; similar memories are stored separately and linked by graph-enrich (the old cosine > 0.85 append-merge is opt-in via `B12_WRITE_TIME_MERGE=1`)
 - **Contradiction detection** — ONNX NLI model flags conflicting memories
 - **Vector safety net** — every memory should be semantically searchable; SessionStart backfills up to 200 rows that have no vector (hourly, detached, waits for the embed daemon), and the checkpoint hook embeds what it stores
+- **Near-duplicate folding in search** — near-identical hits (cosine ≥ 0.95, same type and project) are folded under the best-ranked one with their ids, instead of filling the result list
 - **PII / secret scrubber** — regex sweep on **every write path** (MCP `memory_store`, SessionEnd, PreCompact, checkpoint, write-time merge, Codex) redacts `sk-ant-`, `sk-proj-`, `ghp_`, `xoxb-`, AWS keys, Bearer/JWT, Google `AIza…`, Stripe `sk_live_…`, PEM private-key blocks, credential-bearing DB URIs, and `api_key=…` / `parola=…` (EN + TR) before content hits SQLite or the embedding daemon. Escape hatch: `B12_DISABLE_PII_SCRUB=1`. See [SECURITY.md](SECURITY.md).
 - **Write-time fragment gate** — short / incomplete utterances (`ok.`, `evet.`, lowercase one-liners, unbalanced quotes) are rejected at `memory_store` and `merge_or_insert` before they pollute the corpus. Turkish-aware (casefold + `İŞÇÖÜĞ`). Escape hatch: `B12_DISABLE_FRAGMENT_FILTER=1`.
 - **Memory graph** — related/follows/contradicts edges between memories
@@ -524,6 +525,8 @@ If you run multiple Claude Code setups (e.g., personal + work):
 | `B12_MCP_WAL_CHECKPOINT_INTERVAL` | MCP daemon: seconds between `PRAGMA wal_checkpoint(TRUNCATE)` runs (keeps the WAL from growing unbounded on an idle daemon). `0` disables. | `300` (5min) | `600` |
 | `B12_MCP_READ_POOL` | MCP server: number of worker threads (and thread-owned SQLite read connections) that serve reads off the event loop, so a slow query on one tab never blocks the others (WAL → concurrent readers). Writes always go through a single serialized writer thread (no knob). `0`/unset auto-sizes to `max(4, min(8, cpu_count))`. | `0` (auto) | `4` / `16` |
 | `B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT` | MCP `memory_search`: seconds to wait for the single embed-daemon queue before returning existing FTS results (hybrid) or a fail-soft empty result (semantic-only). This does not shorten an in-flight daemon request or affect store/embed operations. | `2` | `1` / `5` |
+| `B12_SEARCH_COLLAPSE` | MCP `memory_search`: fold near-identical hits (cosine ≥ 0.95, same type and `proj:` tags) under the best-ranked one and list their ids, instead of showing each. `0` shows every hit separately. | `1` (enabled) | `0` |
+| `B12_WRITE_TIME_MERGE` | Write-time semantic merge: append a new memory to its nearest same-type neighbour (cosine > 0.85) as a `• ...` line instead of storing it as its own row. Off by default because the rule ignored projects and lost each fact's date; exact duplicates still collapse by content hash. | unset (off) | `1` |
 
 #### Memory-safety guards
 
