@@ -5,6 +5,7 @@ All notable changes to B12 are documented in this file.
 ## [Unreleased]
 
 ### Fixed
+- Write-time semantic merge is off by default. It appended a new memory to its nearest same-type neighbour as an undated bullet whenever cosine passed 0.85, with no project boundary: on one install 54% of same-type pairs above that threshold crossed projects, and re-embedding the grown row pulled in more appends until some rows held ten or more facts. Similar memories are now stored as separate rows (graph-enrich links them); exact duplicates still collapse by content hash. Set `B12_WRITE_TIME_MERGE=1` to restore the old behaviour.
 - On macOS, the first launch of a B12 Python job after a Homebrew Python upgrade was killed with "Launch Constraint Violation" (`OS_REASON_CODESIGNING`): launchd had recorded the identity of the old interpreter. The MCP daemon restarted on its own, but the nightly graph-enrich run was lost. The daemon, graph-enrich and consolidation templates now start `/bin/sh`, which execs the venv Python in the same process. On the next `./install.sh --all`, a running daemon is re-rendered from the template, and the other installed B12 jobs that start the venv Python directly are moved to the same form; jobs that were loaded are reloaded. macOS may show a background-item notification for the changed jobs, and Login Items lists them as `sh`.
 
 ## [v11.84.0] — 2026-10-22

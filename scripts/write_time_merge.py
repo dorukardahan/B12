@@ -737,6 +737,19 @@ def check_contradictions(
     return contradictions
 
 
+def _semantic_merge_enabled() -> bool:
+    """Semantic append-merge is off unless B12_WRITE_TIME_MERGE=1.
+
+    The merge appended a new memory to its nearest same-type neighbour as an
+    undated "• ..." line whenever cosine exceeded SIMILARITY_THRESHOLD. Cosine
+    does not show that two memories state the same fact, the merge had no
+    project boundary (on one install 54% of same-type pairs above 0.85 crossed
+    projects), and re-embedding the grown row pulled in further appends; some
+    rows absorbed ten or more facts. Exact duplicates are still collapsed by
+    content_hash, and nightly graph-enrich links related memories instead."""
+    return os.environ.get("B12_WRITE_TIME_MERGE", "").strip().lower() in ("1", "true", "yes")
+
+
 def merge_or_insert(
     conn: sqlite3.Connection,
     content: str,
@@ -921,7 +934,8 @@ def merge_or_insert(
         except Exception:
             pass  # Never block store on contradiction check failure
 
-    if best is not None and best_similarity is not None and best_similarity > SIMILARITY_THRESHOLD:
+    if (_semantic_merge_enabled() and best is not None and best_similarity is not None
+            and best_similarity > SIMILARITY_THRESHOLD):
         merged_content = f"{best_content.rstrip()}\n• {content.strip()}"
         new_hash = _sha256_hex(merged_content)
 
@@ -1169,18 +1183,27 @@ def _self_test() -> None:
             assert r2.action == "inserted"
             assert r2.memory_id == 2
 
-            # 3) Merge a high-similarity memory (same embedding as mem #1).
+            # 3) Merge a high-similarity memory (same embedding as mem #1). The
+            #    semantic merge is opt-in, so enable it for this step only.
             t3 = t2 + 10
-            r3 = merge_or_insert(
-                conn,
-                content="Alpha memory extra detail",
-                content_hash=None,
-                tags="t3",
-                memory_type="test",
-                metadata={"importance_score": 1.0},
-                embedding_bytes=emb_ones,
-                now=t3,
-            )
+            _prior_merge = os.environ.get("B12_WRITE_TIME_MERGE")
+            os.environ["B12_WRITE_TIME_MERGE"] = "1"
+            try:
+                r3 = merge_or_insert(
+                    conn,
+                    content="Alpha memory extra detail",
+                    content_hash=None,
+                    tags="t3",
+                    memory_type="test",
+                    metadata={"importance_score": 1.0},
+                    embedding_bytes=emb_ones,
+                    now=t3,
+                )
+            finally:
+                if _prior_merge is None:
+                    os.environ.pop("B12_WRITE_TIME_MERGE", None)
+                else:
+                    os.environ["B12_WRITE_TIME_MERGE"] = _prior_merge
             assert r3.action == "merged"
             assert r3.memory_id == 1
             assert r3.similarity is not None and r3.similarity > SIMILARITY_THRESHOLD
