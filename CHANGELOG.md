@@ -2,6 +2,11 @@
 
 All notable changes to B12 are documented in this file.
 
+## [Unreleased]
+
+### Fixed
+- On macOS, the first launch of a B12 Python job after a Homebrew Python upgrade was killed with "Launch Constraint Violation" (`OS_REASON_CODESIGNING`): launchd had recorded the identity of the old interpreter. The MCP daemon restarted on its own, but the nightly graph-enrich run was lost. The daemon, graph-enrich and consolidation templates now start `/bin/sh`, which execs the venv Python in the same process. On the next `./install.sh --all`, a running daemon is re-rendered from the template, and the other installed B12 jobs that start the venv Python directly are moved to the same form; jobs that were loaded are reloaded. macOS may show a background-item notification for the changed jobs, and Login Items lists them as `sh`.
+
 ## [v11.84.0] — 2026-10-22
 
 A targeted memory policy and a Codex-only B12 skill for Codex CLI and the ChatGPT desktop app.

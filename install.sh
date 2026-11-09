@@ -468,7 +468,8 @@ copy_scripts() {
 # Step 3b: Update launchd plists (macOS only)
 # Migrates ~/.claude/hooks/ → ~/.B12/hooks/,
 # ~/.claude/memory-logs/ → ~/.B12/memory-logs/,
-# and a legacy /usr/bin/python3 interpreter → the B12 venv
+# and a legacy /usr/bin/python3 interpreter → the B12 venv,
+# and starts venv-Python jobs through /bin/sh
 # ─────────────────────────────────────────────
 update_launchd_plists() {
   [ "$(uname)" = "Darwin" ] || return 0
@@ -515,6 +516,35 @@ update_launchd_plists() {
       && grep -q "<string>$HOME/.B12/hooks/[^<]*\.py</string>" "$plist" 2>/dev/null; then
       sed "s|<string>/usr/bin/python3</string>|<string>$VENV_PYTHON</string>|" "$plist" > "$plist.b12tmp" \
         && mv "$plist.b12tmp" "$plist"
+      changed=true
+    fi
+
+    # A job that starts the venv Python directly is killed once ("Launch
+    # Constraint Violation") on its first spawn after each Homebrew Python
+    # upgrade, because launchd recorded the old interpreter's identity. Start
+    # it through /bin/sh, which execs Python in the same process, as the
+    # templates do. The daemon plist is skipped: install_mcp_daemon renders it
+    # from the template.
+    if [ "$label" != "com.b12.mcp.daemon" ] && [ -n "$VENV_PYTHON" ] \
+      && python3 - "$plist" "$VENV_PYTHON" << 'PYEOF'
+import os, plistlib, sys
+path, venv = sys.argv[1], sys.argv[2]
+try:
+    with open(path, 'rb') as f:
+        data = plistlib.load(f)
+except Exception:
+    sys.exit(1)
+if not isinstance(data, dict):
+    sys.exit(1)
+args = data.get('ProgramArguments')
+if not isinstance(args, list) or not args or args[0] != venv:
+    sys.exit(1)
+data['ProgramArguments'] = ['/bin/sh', '-c', 'exec "$0" "$@"'] + args
+with open(path + '.b12tmp', 'wb') as f:
+    plistlib.dump(data, f)
+os.replace(path + '.b12tmp', path)
+PYEOF
+    then
       changed=true
     fi
 
