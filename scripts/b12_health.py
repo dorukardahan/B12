@@ -520,9 +520,10 @@ def check_launchd_jobs() -> CheckResult:
     disable` are listed, not flagged."""
     if sys.platform != "darwin":
         return CheckResult(Status.OK, "Launchd job check skipped (not macOS)")
-    plists = sorted((_HOME / "Library" / "LaunchAgents").glob("com.b12.*.plist"))
-    if not plists:
-        return CheckResult(Status.OK, "No B12 launchd jobs installed")
+    # README/docs/setup.md install the scheduled templates under their own file
+    # names (launchd-*.plist); the label inside says whether a job is B12's.
+    agents = _HOME / "Library" / "LaunchAgents"
+    plists = sorted(set(agents.glob("com.b12.*.plist")) | set(agents.glob("launchd-*.plist")))
     disabled_out = _launchctl("print-disabled", f"gui/{_UID}")
     problems, disabled, healthy = [], [], 0
     for pf in plists:
@@ -533,6 +534,8 @@ def check_launchd_jobs() -> CheckResult:
             problems.append(f"{pf.name}: parse error ({e})")
             continue
         label = spec.get("Label") or pf.stem
+        if not str(label).startswith("com.b12."):
+            continue  # a launchd-*.plist from other software
         if re.search(rf'"{re.escape(label)}"\s*=>\s*(disabled|true)', disabled_out):
             disabled.append(label)
             continue
@@ -553,6 +556,8 @@ def check_launchd_jobs() -> CheckResult:
                 problems.append(f"{label}: last run failed ({why})")
                 continue
         healthy += 1
+    if not (healthy or problems or disabled):
+        return CheckResult(Status.OK, "No B12 launchd jobs installed")
     label = f"B12 launchd jobs: {healthy} healthy" + (f", {len(disabled)} disabled" if disabled else "")
     detail = "; ".join(problems + [f"{d}: disabled (launchctl enable gui/{_UID}/{d})" for d in disabled])
     if problems:

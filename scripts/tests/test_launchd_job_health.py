@@ -84,3 +84,16 @@ def test_unloaded_job_warns(jobs):
 def test_skipped_off_macos(monkeypatch):
     monkeypatch.setattr(b12_health.sys, "platform", "linux")
     assert b12_health.check_launchd_jobs().status == "OK"
+
+
+def test_docs_named_plists_are_checked_by_label(jobs, tmp_path):
+    # docs/setup.md installs scheduled templates as launchd-*.plist; their labels are com.b12.*.
+    agents = tmp_path / "Library" / "LaunchAgents"
+    (agents / "launchd-backup.plist").write_bytes(
+        plistlib.dumps({"Label": "com.b12.memory-backup", "ProgramArguments": ["/bin/bash"]}))
+    (agents / "launchd-tool.plist").write_bytes(
+        plistlib.dumps({"Label": "org.example.tool", "ProgramArguments": ["/bin/true"]}))
+    jobs["com.b12.memory-backup"] = "\tstate = not running\n\tlast exit code = 2\n"
+    r = b12_health.check_launchd_jobs()
+    assert r.status == "WARN" and "com.b12.memory-backup: last run failed" in r.detail
+    assert "org.example.tool" not in r.detail
