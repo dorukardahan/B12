@@ -40,7 +40,7 @@ def test_near_duplicate_rules(b, expected):
     assert ce._is_near_duplicate(a, b) is expected
 
 
-def _run(monkeypatch, clusters, nli=False, **kw):
+def _run(monkeypatch, clusters, nli=False, dry_run=False, **kw):
     applied = {"dedup": 0, "merge": 0}
     conn = sqlite3.connect(":memory:")
     monkeypatch.setattr(ce, "_open_db", lambda path: conn)
@@ -59,7 +59,7 @@ def _run(monkeypatch, clusters, nli=False, **kw):
 
     monkeypatch.setattr(ce, "_apply_dedup", dedup)
     monkeypatch.setattr(ce, "_apply_merge", merge)
-    return ce.consolidate(db_path="x.db", dry_run=False, min_cluster_size=2, **kw), applied
+    return ce.consolidate(db_path="x.db", dry_run=dry_run, min_cluster_size=2, **kw), applied
 
 
 def _similar_pair(base, i):
@@ -143,3 +143,24 @@ def test_dedup_keeps_the_older_row_with_both_rows_tags(monkeypatch):
     assert tags == "proj:b12,sqlite,production"
     deleted_at, meta = db.execute("SELECT deleted_at, metadata FROM memories WHERE id = 2").fetchone()
     assert deleted_at is not None and json.loads(meta)["duplicate_of"] == 1
+
+
+@pytest.mark.parametrize("limit,anomaly,removed,deferred,aborted", [
+    (100, 1000, 9, 0, False),   # 10 identical rows: 45 pairs, 9 rows to remove
+    (3, 1000, 3, 6, False),     # per-run limit
+    (3, 4, 0, 6, True),         # anomaly breaker
+])
+def test_dry_run_reports_what_a_real_run_would_do(monkeypatch, limit, anomaly, removed, deferred, aborted):
+    # A dry run once reported 160 dedup "pairs" where a real run removes fewer
+    # rows, ignoring the per-run limit and the breaker.
+    monkeypatch.setattr(ce, "MAX_DEDUP_PER_RUN", limit)
+    monkeypatch.setattr(ce, "DEDUP_ANOMALY", anomaly)
+    cluster = [_mem(i) for i in range(1, 11)]
+    real, _ = _run(monkeypatch, [cluster])
+    dry, applied = _run(monkeypatch, [cluster], dry_run=True)
+    assert applied["dedup"] == 0
+    for r in (real, dry):
+        assert (r.memories_deduplicated, r.dedup_deferred, bool(r.aborted)) == (removed, deferred, aborted)
+    assert len([e for e in dry.dry_run_report if e["type"] == "dedup"]) == 45  # every pair is still listed
+    if aborted:
+        assert "a real run would change nothing" in dry.aborted

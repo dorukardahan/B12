@@ -2467,6 +2467,8 @@ async def memory_consolidate(
     lines.append(f"  Memories processed:    {result.memories_processed}")
     lines.append(f"  Clusters found:        {result.clusters_found}")
     lines.append(f"  Deduplicated:          {result.memories_deduplicated}")
+    if getattr(result, "dedup_deferred", 0):
+        lines.append(f"  Dedups deferred:       {result.dedup_deferred} (per-run limit; next run continues)")
     lines.append(f"  Merged:                {result.memories_merged}")
     lines.append(f"  Merge candidates:      {getattr(result, 'merge_candidates', 0)} (reported, not merged)")
     if getattr(result, "aborted", ""):
