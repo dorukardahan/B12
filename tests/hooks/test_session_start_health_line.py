@@ -97,9 +97,27 @@ def test_old_snapshot_after_a_quiet_day_is_not_an_alarm(tmp_path):
     assert "(checked 48h ago) Vector coverage 90.0%" in _health_line(ctx)
 
 
-def test_writer_that_left_no_snapshot_is_reported(tmp_path):
-    ctx, _ = _run(tmp_path, {"issues": []}, snapshot_age=3 * HOUR, spawned_age=2 * HOUR, writer=True)
+def _marker_age(tmp_path: Path) -> float:
+    return time.time() - (tmp_path / "home" / ".B12" / ".health-snapshot.spawned").stat().st_mtime
+
+
+def test_writer_that_left_no_snapshot_is_reported_and_retried(tmp_path):
+    ctx, calls = _run(tmp_path, {"issues": []}, snapshot_age=3 * HOUR, spawned_age=2 * HOUR, writer=True)
     assert "snapshot was not written after its last run" in _health_line(ctx)
+    deadline = time.time() + 10
+    while not calls.exists() and time.time() < deadline:
+        time.sleep(0.1)
+    assert calls.exists()  # retried
+    assert _marker_age(tmp_path) > HOUR  # the retry keeps the first attempt's time
+
+
+def test_attempt_in_progress_is_not_restarted_or_reset(tmp_path):
+    # Sessions minutes apart must not push the failure timer forward.
+    ctx, calls = _run(tmp_path, {"issues": []}, snapshot_age=2 * HOUR, spawned_age=300, writer=True)
+    assert _health_line(ctx) is None
+    time.sleep(0.5)
+    assert not calls.exists()
+    assert _marker_age(tmp_path) > 290
 
 
 def test_due_snapshot_starts_the_writer_and_marks_it(tmp_path):

@@ -45,3 +45,22 @@ def test_fresh_snapshot_is_not_rewritten(tmp_path, monkeypatch):
     old = time.time() - 7200
     os.utime(path, (old, old))
     assert b12_health.write_snapshot(path, min_interval=3600) is True
+
+
+def test_overlapping_writers_leave_valid_json(tmp_path, monkeypatch):
+    # A second writer runs while the first is between its write and its replace.
+    _patch(monkeypatch, lambda: b12_health.CheckResult("WARN", "low"), lambda: b12_health.CheckResult("OK", "b"))
+    path = tmp_path / "health-snapshot.json"
+    real_replace = os.replace
+    nested = []
+
+    def replace(src, dst):
+        if not nested:
+            nested.append(True)
+            b12_health.write_snapshot(path)
+        real_replace(src, dst)
+
+    monkeypatch.setattr(b12_health.os, "replace", replace)
+    b12_health.write_snapshot(path)
+    assert json.loads(path.read_text())["issues"] == ["low"]
+    assert [p.name for p in tmp_path.iterdir()] == ["health-snapshot.json"]

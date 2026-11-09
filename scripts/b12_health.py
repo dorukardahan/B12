@@ -22,6 +22,7 @@ import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 try:
     import tomllib
@@ -1066,9 +1067,15 @@ def write_snapshot(path: Path, min_interval: int = 0) -> bool:
         if r.status != Status.OK:
             issues.append(r.label + (f": {r.detail}" if r.detail else ""))
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_name(path.name + ".tmp")
-    tmp.write_text(json.dumps({"ts": int(time.time()), "issues": issues}))
-    os.replace(tmp, path)
+    # A private temp file per writer: two sessions can start writers at once.
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump({"ts": int(time.time()), "issues": issues}, f)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
     return True
 
 

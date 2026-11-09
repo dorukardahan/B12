@@ -120,16 +120,25 @@ file_mtime() { local m; m=$(stat -c %Y "$1" 2>/dev/null || stat -f %m "$1" 2>/de
 # Health snapshot: vector coverage and launchd job status, refreshed at most hourly
 # by a detached run, so silent failures show up without anyone running
 # b12_health.py. The snapshot only refreshes when a session starts, so its age
-# says nothing by itself; a writer that was started over 10 minutes ago and left
-# no newer snapshot is the failure worth reporting.
+# says nothing by itself. The marker records when the outstanding attempt began
+# and is not reset by retries, so a writer that keeps failing is reported once
+# its first attempt is 10 minutes old, however often sessions start.
 _HS="$B12_BASE/health-snapshot.json"
 _HS_SPAWNED="$B12_BASE/.health-snapshot.spawned"
 HEALTH_WRITER_FAILED=0
 if [ -x "$VENV_PYTHON" ] && [ -f "$B12_SCRIPTS/b12_health.py" ]; then
   _hs_now=$(date +%s); _hs_m=$(file_mtime "$_HS"); _hs_sp=$(file_mtime "$_HS_SPAWNED")
+  _hs_spawn=0
   if [ $(( _hs_now - _hs_m )) -ge 3600 ]; then
-    if [ "$_hs_sp" -gt "$_hs_m" ] && [ $(( _hs_now - _hs_sp )) -gt 600 ]; then HEALTH_WRITER_FAILED=1; fi
-    mkdir -p "$B12_BASE" 2>/dev/null && touch "$_HS_SPAWNED" 2>/dev/null
+    if [ "$_hs_sp" -le "$_hs_m" ]; then  # no outstanding attempt: start one
+      mkdir -p "$B12_BASE" 2>/dev/null && touch "$_HS_SPAWNED" 2>/dev/null
+      _hs_spawn=1
+    elif [ $(( _hs_now - _hs_sp )) -gt 600 ]; then  # it wrote nothing: report, retry
+      HEALTH_WRITER_FAILED=1
+      _hs_spawn=1
+    fi  # else the outstanding writer may still be running
+  fi
+  if [ "$_hs_spawn" = 1 ]; then
     nice -n 10 "$VENV_PYTHON" "$B12_SCRIPTS/b12_health.py" --snapshot "$_HS" </dev/null >/dev/null 2>&1 &
     disown 2>/dev/null
   fi
