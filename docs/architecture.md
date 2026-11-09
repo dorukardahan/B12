@@ -257,6 +257,8 @@ split by `memory_type`, and excludes secret-suppressed rows; full design in
 
 **Feedback hook** (v3): Logs every memory store/search/update/quality call to `feedback.jsonl`. Tracks: action, query text, result count, session sequence number, scope compliance. Used by the weekly feedback digest.
 
+**Checkpoint hook**: every 15 tool calls or 10 minutes, scans the written file content and the tool result (first 3,000 characters) with the shared prose patterns and stores the matches. The shell command, search pattern and file path are not scanned, and a match that `shared_patterns.looks_like_code()` flags (shell plumbing such as `2>&1 | tail`, several CLI flags, brace or quote runs, fewer than four words) is dropped. The reasoning pattern does not match inside a word or a flag, so `--since 2026-07-16` is not a reason. Before this, command pieces such as `since 2026-07-16 --full 2>&1 | tail -8` made up 11% of the active memories on one install.
+
 **Working Context hook** (v1): Fires on Read/Edit/Write/Glob/Grep. Extracts the file path or search pattern. Persists to `working-memory.json` with atomic writes (tmp + rename). Tracks session ID to reset on session change.
 
 ## Decay model (FSRS effective stability)
