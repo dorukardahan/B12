@@ -18,7 +18,7 @@
 - **Local by default at runtime** — memory data and BGE-M3 inference stay on-device with SQLite + sqlite-vec. With the default `B12_LLM_PROVIDER=none`, there are no cloud API calls, API keys, or telemetry after setup. Opt-in remote LLM extraction sends selected transcript content to the configured provider. Installing dependencies and acquiring model artifacts still use the network (see the first-run note below)
 - **Hybrid retrieval** — FTS5 BM25 + 1024-dim BGE-M3 vector + importance- and reinforcement-weighted FSRS decay (important & frequently re-accessed memories rise, stale trivia fades)
 - **Automatic importance scoring** — at write time, content is scored into importance bands with no manual tagging via a language-agnostic signal taxonomy (save-cues, commitments, deadlines, people, numeric values, identifiers) plus native remember/decision/trivial lexicons in **11 languages** (en, tr, zh, hi, es, fr, ar, ru, pt, id, de) with script-aware matching. Credential-bearing content is held at baseline so secrets are never amplified
-- **Write-time merge + NLI contradiction detection** — duplicates collapse at storage time; conflicting memories flag for review
+- **Exact-duplicate collapse + NLI contradiction detection** — identical memories collapse at storage time; conflicting memories flag for review
 - **Hook automation** — session-end micro-extraction, sprint handoffs, working-memory restore through compaction, classifier-driven tagging
 - **Comparison vs alternatives** — full matrix vs Mem0 / Letta / Cursor memory / Claude Projects / ChatGPT memory in [`docs/comparison.md`](docs/comparison.md)
 
@@ -103,7 +103,7 @@ B12 MCP Server (b12_mcp_server.py)
     ├── Embed daemon (sentence-transformers, Unix socket IPC)
     ├── FTS5 hybrid search (BM25 keyword + vector cosine + porter stemming)
     ├── Effective-stability decay (importance + reinforcement slow aging)
-    ├── Write-time semantic merge (cosine > 0.85 = merge, not duplicate)
+    ├── Exact-duplicate collapse (semantic merge opt-in: B12_WRITE_TIME_MERGE=1)
     └── Auto-backup (daily, 7-day rotation) + operator summary dedupe (dry-run; `--execute` applies)
 ```
 
@@ -198,7 +198,7 @@ That's it. The `--full` flag creates the Python venv, installs all dependencies,
 - **Cross-session memory** — automatically captures decisions, errors, learnings, preferences at session end
 - **Semantic + full-text search** — hybrid FTS5/vector retrieval finds memories by meaning or keywords
 - **Effective-stability decay** — important and frequently accessed memories strengthen and age slowly; unused trivia fades (floor at 0.01, never disappear)
-- **Write-time merge** — deduplicates at storage time (cosine > 0.85 triggers merge, not insert)
+- **Write-time dedup** — exact duplicates collapse at storage time; similar memories are stored separately and linked by graph-enrich (the old cosine > 0.85 append-merge is opt-in via `B12_WRITE_TIME_MERGE=1`)
 - **Contradiction detection** — ONNX NLI model flags conflicting memories
 - **PII / secret scrubber** — regex sweep on **every write path** (MCP `memory_store`, SessionEnd, PreCompact, checkpoint, write-time merge, Codex) redacts `sk-ant-`, `sk-proj-`, `ghp_`, `xoxb-`, AWS keys, Bearer/JWT, Google `AIza…`, Stripe `sk_live_…`, PEM private-key blocks, credential-bearing DB URIs, and `api_key=…` / `parola=…` (EN + TR) before content hits SQLite or the embedding daemon. Escape hatch: `B12_DISABLE_PII_SCRUB=1`. See [SECURITY.md](SECURITY.md).
 - **Write-time fragment gate** — short / incomplete utterances (`ok.`, `evet.`, lowercase one-liners, unbalanced quotes) are rejected at `memory_store` and `merge_or_insert` before they pollute the corpus. Turkish-aware (casefold + `İŞÇÖÜĞ`). Escape hatch: `B12_DISABLE_FRAGMENT_FILTER=1`.

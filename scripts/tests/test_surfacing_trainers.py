@@ -486,6 +486,7 @@ def test_merge_reconciles_importance_through_finalize(monkeypatch):
     monkeypatch.setattr(write_time_merge, "_best_match",
                         lambda *a, **k: (1, existing_content, existing_hash, 1.0, 0.99))
     monkeypatch.setenv("B12_DISABLE_FRAGMENT_FILTER", "1")
+    monkeypatch.setenv("B12_WRITE_TIME_MERGE", "1")  # semantic merge is opt-in
 
     result = write_time_merge.merge_or_insert(
         conn, content="remember this important thing", content_hash=None,

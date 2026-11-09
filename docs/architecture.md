@@ -33,7 +33,7 @@ Custom FastMCP server providing 13 memory tools and 4 MCP resources. Replaces th
 - **Search**: FTS5 hybrid — BM25 keyword + vector cosine + optional porter stemming. `memory_search` bounds only its wait for the serialized embed-daemon queue (`B12_MEMORY_SEARCH_DAEMON_QUEUE_TIMEOUT`, default 2s); on queue timeout hybrid mode immediately keeps its FTS results, while semantic-only mode fails soft. Store/embed operations retain the full queue wait and in-flight socket budget.
 - **FTS5 tables**: `memory_fts` (unicode61, exact match), `memory_fts_stemmed` (porter unicode61, morphological), `memory_content_fts` (trigram, legacy)
 - **Scoring**: Effective-stability decay-aware — combines retention, importance, relevance, and strength; importance and reinforcement flatten the aging curve
-- **Dedup**: Write-time semantic merge (cosine > 0.85 = merge, not INSERT)
+- **Dedup**: exact duplicates collapse by content_hash; semantic append-merge (cosine > 0.85) is opt-in via `B12_WRITE_TIME_MERGE=1`
 - **Graph**: Association-based memory connections
 - **Backup**: Daily WAL-safe backups with 7-day rotation
 - **Location**: Database at `~/Library/Application Support/mcp-memory/sqlite_vec.db` (macOS)
