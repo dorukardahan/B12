@@ -346,7 +346,7 @@ Hooks that interpolate user input into SQLite queries apply character-level sani
 
 `scripts/consolidation_engine.py` — scheduled analysis that identifies duplicate groups, merge candidates, and contradictions across all memories.
 
-- **Dedup only by default**: a pair is deduplicated only if both rows have the same allowed type (`learning`, `knowledge`, `gotcha`, `error_fix`), the same `proj:` tag, cosine ≥ 0.97, a length ratio ≥ 0.5 and token Jaccard ≥ 0.7. The older row is kept; the newer one is soft-deleted with `metadata.duplicate_of` and its graph edges move to the kept row.
+- **Dedup only by default**: a pair is deduplicated only if both rows have the same allowed type (`learning`, `knowledge`, `gotcha`, `error_fix`), the same `proj:` tag, cosine ≥ 0.97, a length ratio ≥ 0.5 and token Jaccard ≥ 0.7. The older row is kept and takes over the newer row's tags; the newer one is soft-deleted with `metadata.duplicate_of` and its graph edges move to the kept row.
 - **Limits**: a run applies at most 100 dedups and leaves the rest for the next run. If more than 1,000 candidates turn up, it changes nothing and the nightly script exits 1, so the failure shows in launchd and `b12_health.py`.
 - **Merging is opt-in** (`consolidate(allow_merge=True)`) and applies only to pairs that NLI actually checked (no verdict, e.g. short text or past the daemon's 20-pair batch cap, means report only). Otherwise similar pairs (cosine 0.80-0.97) are only counted as merge candidates. Merging concatenated distinct memories and lost their timeline; one dry run proposed 10,200 merges.
 - **Contradiction detection**: ONNX NLI model via embed daemon (`nli_check` op)

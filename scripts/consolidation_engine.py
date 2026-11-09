@@ -420,9 +420,14 @@ def _apply_dedup(conn: sqlite3.Connection, a: MemoryRecord, b: MemoryRecord) -> 
     meta['access_count'] = meta.get('access_count', 0) + 1
     meta_json = json.dumps(meta, ensure_ascii=False)
 
+    # Carry the removed row's tags over, so a tag-filtered search that found it
+    # still finds the kept row.
+    tags = list(dict.fromkeys(t.strip() for t in f"{keep.tags or ''},{remove.tags or ''}".split(",") if t.strip()))
+    keep.tags = ",".join(tags)
+
     conn.execute(
-        "UPDATE memories SET metadata = ?, updated_at = ?, updated_at_iso = ? WHERE id = ?",
-        (meta_json, now_ts, now.isoformat(), keep.id),
+        "UPDATE memories SET metadata = ?, tags = ?, updated_at = ?, updated_at_iso = ? WHERE id = ?",
+        (meta_json, keep.tags, now_ts, now.isoformat(), keep.id),
     )
 
     # Soft-delete the duplicate, recording which row it duplicated

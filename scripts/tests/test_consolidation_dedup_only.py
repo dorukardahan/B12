@@ -125,3 +125,21 @@ def test_merge_only_for_pairs_with_an_nli_verdict(monkeypatch):
     assert applied["merge"] == 1                # one group, from the verified pair only
     assert result.memories_merged == 1
     assert result.merge_candidates == 2         # the two unchecked pairs are only reported
+
+
+def test_dedup_keeps_the_older_row_with_both_rows_tags(monkeypatch):
+    # The removed row's tags move to the kept row, or a tag-filtered search that
+    # found it would find nothing afterwards (Codex review P2).
+    import json
+    db = sqlite3.connect(":memory:")
+    db.execute("CREATE TABLE memories (id INTEGER PRIMARY KEY, metadata TEXT, tags TEXT, "
+               "updated_at REAL, updated_at_iso TEXT, deleted_at REAL)")
+    db.execute("INSERT INTO memories (id, metadata, tags) VALUES (1, '{}', 'proj:b12,sqlite')")
+    db.execute("INSERT INTO memories (id, metadata, tags) VALUES (2, '{}', 'proj:b12,sqlite,production')")
+    monkeypatch.setattr(ce, "_rewrite_graph_edges", lambda *a: None)
+    old, new = _mem(1, tags="proj:b12,sqlite"), _mem(2, tags="proj:b12,sqlite,production")
+    assert ce._apply_dedup(db, new, old) == 1
+    tags, = db.execute("SELECT tags FROM memories WHERE id = 1").fetchone()
+    assert tags == "proj:b12,sqlite,production"
+    deleted_at, meta = db.execute("SELECT deleted_at, metadata FROM memories WHERE id = 2").fetchone()
+    assert deleted_at is not None and json.loads(meta)["duplicate_of"] == 1
