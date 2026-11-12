@@ -31,7 +31,7 @@ import os
 import json
 import sqlite3
 from datetime import datetime, timezone
-from collections import defaultdict
+from collections import Counter, defaultdict
 
 # Configuration
 STALE_DAYS = 90              # Memories older than this with no updates are flagged
@@ -183,6 +183,50 @@ def print_stats(memories):
         print(f"Oldest: {oldest[:10]} | Newest: {newest[:10]}")
 
 
+def format_pair_details(report, dry_run):
+    """Lines for the per-pair part of the report.
+
+    A dry run is read by a person, so it lists every pair with the first 80
+    characters of both memories. The nightly --auto run writes to a launchd log
+    that grows every night and is never read line by line; there each pair's
+    memory text was ~6 MB a night. That run gets counts by pair type and the
+    ids of the dedup pairs only, and no memory text.
+    """
+    if not report:
+        return []
+    if dry_run:
+        lines = ["  Cluster details:"]
+        for entry in report:
+            action = entry['type'].upper()
+            ids = entry['ids']
+            sim = entry.get('similarity', 0)
+            nli = entry.get('nli_score', '')
+            nli_str = f" NLI:{nli}" if nli else ''
+            lines.append(f"    [{action}] #{ids[0]} <-> #{ids[1]}  "
+                         f"(cosine: {sim:.3f}{nli_str})")
+            for snippet in entry.get('snippets', []):
+                lines.append(f"      {snippet}")
+        lines.append("")
+        return lines
+
+    counts = Counter(entry['type'] for entry in report)
+    lines = ["  Pairs by type: " + ", ".join(
+        f"{kind}={n}" for kind, n in sorted(counts.items()))]
+    dedups = [entry for entry in report if entry['type'] == 'dedup']
+    if dedups:
+        lines.append("  Dedup pairs (ids, cosine):")
+        for entry in dedups:
+            ids = entry['ids']
+            lines.append(f"    #{ids[0]} <-> #{ids[1]}  "
+                         f"({entry.get('similarity', 0):.3f})")
+    unverified = counts.get('merge_unverified', 0)
+    if unverified:
+        lines.append(f"  No NLI verdict for {unverified} pairs (NLI daemon "
+                     "down or text too short); none of them were merged.")
+    lines.append("")
+    return lines
+
+
 def main():
     if not os.path.exists(DB_PATH):
         print(f"Database not found: {DB_PATH}")
@@ -222,6 +266,7 @@ def main():
             print("  (DRY RUN — no changes made)")
         print("=" * 60)
         print()
+        print(f"  Run at:                {datetime.now(timezone.utc).isoformat(timespec='seconds')}")
         print(f"  Total active memories: {len(memories)}")
         print(f"  Memories processed:    {result.memories_processed}")
         print(f"  Clusters found:        {result.clusters_found}")
@@ -235,19 +280,8 @@ def main():
             print(f"  ABORTED: {result.aborted}")
         print()
 
-        if result.dry_run_report:
-            print("  Cluster details:")
-            for entry in result.dry_run_report:
-                action = entry['type'].upper()
-                ids = entry['ids']
-                sim = entry.get('similarity', 0)
-                nli = entry.get('nli_score', '')
-                nli_str = f" NLI:{nli}" if nli else ''
-                print(f"    [{action}] #{ids[0]} <-> #{ids[1]}  "
-                      f"(cosine: {sim:.3f}{nli_str})")
-                for snippet in entry.get('snippets', []):
-                    print(f"      {snippet}")
-            print()
+        for line in format_pair_details(result.dry_run_report, dry_run):
+            print(line)
 
         print("=" * 60)
         if dry_run and (result.memories_deduplicated or result.memories_merged):
