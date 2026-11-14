@@ -221,8 +221,16 @@ def format_pair_details(report, dry_run):
                          f"({entry.get('similarity', 0):.3f})")
     unverified = counts.get('merge_unverified', 0)
     if unverified:
-        lines.append(f"  No NLI verdict for {unverified} pairs (NLI daemon "
-                     "down or text too short); none of them were merged.")
+        reasons = Counter(entry.get('reason', 'unknown') for entry in report
+                          if entry['type'] == 'merge_unverified')
+        labels = {'nli_skipped': 'NLI skipped because merging is off',
+                  'nli_unavailable': 'NLI daemon not running',
+                  'short_text': 'text under 30 characters',
+                  'nli_failed': 'NLI request failed',
+                  'unknown': 'reason not recorded'}
+        why = ", ".join(f"{n} {labels.get(r, r)}" for r, n in reasons.most_common())
+        lines.append(f"  No NLI verdict for {unverified} pairs ({why}); "
+                     "none of them were merged.")
     lines.append("")
     return lines
 
@@ -255,7 +263,9 @@ def main():
     if _HAS_ENGINE:
         dry_run = not auto_mode
         try:
-            result = consolidate(db_path=DB_PATH, dry_run=dry_run)
+            # The nightly run does not merge, so NLI would only add contradiction
+            # flags (most of them false) for ~20 minutes of CPU. Skip it.
+            result = consolidate(db_path=DB_PATH, dry_run=dry_run, use_nli=False)
         except Exception as e:
             print(f"Consolidation engine error: {e}")
             sys.exit(1)
