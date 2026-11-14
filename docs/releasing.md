@@ -44,7 +44,9 @@ understand each step, to do a release by hand, or if the script is unavailable.
 
 ### 1. Decide the next version
 
-Follow semver against the previous tag (`git describe --tags --abbrev=0`):
+Follow semver against the nearest reachable strict release tag (`vX.Y.Z`).
+Maintenance, milestone, prerelease, and other non-release tags do not redefine
+the release baseline used by `scripts/release.sh`:
 
 | Change category | Bump |
 |---|---|
@@ -111,9 +113,9 @@ user-facing — group by what someone using B12 will see, not by commit:
 - (Optional) refactors / test additions / CI changes
 ```
 
-Skim `git log $(git describe --tags --abbrev=0)..HEAD --oneline` for the
-commit range to summarize; ignore `chore(deps)` / Dependabot noise
-unless it's user-facing.
+Skim the commit range printed by `scripts/release.sh --check`; it starts at the
+nearest reachable strict `vX.Y.Z` release tag. Ignore `chore(deps)` / Dependabot
+noise unless it's user-facing.
 
 ### 4. Commit + tag + push
 

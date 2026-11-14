@@ -21,7 +21,21 @@
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
 
-LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+_latest_release_tag() {
+  # `git describe --tags` accepts any tag name. Limit its candidate set to the
+  # repository's strict release convention so maintenance/milestone tags never
+  # redefine the release range. The filtered names are safe literal --match
+  # patterns because they contain only `v`, digits, and dots.
+  local tag
+  local -a matches=()
+  while IFS= read -r tag; do
+    [ -n "$tag" ] && matches+=(--match "$tag")
+  done < <(git tag --merged HEAD --list | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' || true)
+  [ "${#matches[@]}" -gt 0 ] || return 1
+  git describe --tags --abbrev=0 "${matches[@]}" 2>/dev/null
+}
+
+LAST_TAG="$(_latest_release_tag || echo '')"
 
 _suggest_bump() {
   # MINOR if any feat(...) lands; else PATCH. MAJOR is never auto-suggested
@@ -58,7 +72,7 @@ if [ "${1:-}" = "--check" ]; then
   if [ -z "$LAST_TAG" ]; then
     # Shallow/tagless checkout — try to pull tags so the range is meaningful.
     git fetch --tags --quiet 2>/dev/null || true
-    LAST_TAG="$(git describe --tags --abbrev=0 2>/dev/null || echo '')"
+    LAST_TAG="$(_latest_release_tag || echo '')"
   fi
   if [ -z "$LAST_TAG" ]; then
     CUR="$(_current_version)"
