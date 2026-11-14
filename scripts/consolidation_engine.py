@@ -91,6 +91,9 @@ DEDUP_ANOMALY = 1000         # circuit breaker: more candidates than this means 
 MERGE_THRESHOLD = 0.80       # cosine >= this (within cluster) → merge
 NLI_CONTRADICTION_THRESHOLD = 0.90  # NLI contradiction score → flag
 MIN_CONTENT_LEN = 30         # Skip very short memories for NLI
+# embed_daemon's NLI_MAX_PAIRS: a longer nli_check request is silently cut to its
+# first 20 pairs, so every request from here stays within this size.
+NLI_BATCH = 20
 STRENGTH_CAP = 5.0
 
 _UID = os.getuid() if hasattr(os, 'getuid') else os.getpid()
@@ -181,14 +184,26 @@ def _daemon_request(payload: dict, timeout: float = 30) -> Optional[dict]:
         return None
 
 
-def _nli_check_pairs(pairs: List[List[str]]) -> Optional[List[dict]]:
-    """Run NLI check via daemon. Returns list of {label, scores} or None."""
+def _nli_check_pairs(pairs: List[List[str]]) -> Optional[List[Optional[dict]]]:
+    """Run NLI via the daemon in requests of at most NLI_BATCH pairs.
+
+    Returns one entry per input pair: the daemon's {label, scores} or None when
+    that pair's request failed or came back short. Returns None when the daemon
+    is not running. The daemon truncates longer requests without saying so,
+    which once left 24,597 of 28,291 nightly pairs without a verdict.
+    """
     if not pairs or not _daemon_alive():
         return None
-    resp = _daemon_request({'op': 'nli_check', 'pairs': pairs}, timeout=60)
-    if resp and resp.get('ok'):
-        return resp.get('results', [])
-    return None
+    results: List[Optional[dict]] = []
+    for start in range(0, len(pairs), NLI_BATCH):
+        chunk = pairs[start:start + NLI_BATCH]
+        resp = _daemon_request({'op': 'nli_check', 'pairs': chunk}, timeout=60)
+        got = resp.get('results') if resp and resp.get('ok') else None
+        if isinstance(got, list) and len(got) == len(chunk):
+            results.extend(got)
+        else:
+            results.extend([None] * len(chunk))
+    return results
 
 
 # ── Database helpers ─────────────────────────────────────────────
@@ -318,6 +333,7 @@ def _is_near_duplicate(a: "MemoryRecord", b: "MemoryRecord") -> bool:
 def _analyze_cluster(
     cluster: List[MemoryRecord],
     use_nli: bool = True,
+    off_reason: str = 'nli_unavailable',
 ) -> Tuple[List[Tuple[MemoryRecord, MemoryRecord, str]], List[Dict]]:
     """Analyze a single cluster. Returns (actions, report_entries).
 
@@ -328,6 +344,7 @@ def _analyze_cluster(
     report: List[Dict] = []
     nli_pairs: List[Tuple[int, int, List[str]]] = []  # (idx_a, idx_b, [text_a, text_b])
 
+    nli_ready = use_nli and _daemon_alive()
     n = len(cluster)
     for i in range(n):
         for j in range(i + 1, n):
@@ -345,15 +362,16 @@ def _analyze_cluster(
                 })
             elif sim >= MERGE_THRESHOLD:
                 # Potential merge — but check NLI first for contradictions
-                if (use_nli and _daemon_alive()
-                        and len(a.content) >= MIN_CONTENT_LEN
-                        and len(b.content) >= MIN_CONTENT_LEN):
+                short = len(a.content) < MIN_CONTENT_LEN or len(b.content) < MIN_CONTENT_LEN
+                if nli_ready and not short:
                     nli_pairs.append((i, j, [a.content[:512], b.content[:512]]))
                 else:
                     # No NLI verdict for this pair: report it, never merge it.
                     actions.append((a, b, 'merge_unverified'))
                     report.append({
                         'type': 'merge_unverified',
+                        'reason': ('short_text' if nli_ready
+                                   else off_reason if not use_nli else 'nli_unavailable'),
                         'ids': [a.id, b.id],
                         'similarity': round(sim, 4),
                         'snippets': [a.content[:80], b.content[:80]],
@@ -375,10 +393,11 @@ def _analyze_cluster(
                 c_score = nli_result.get('scores', {}).get('contradiction', 0.0)
 
             if nli_result is None:
-                # Request failed or the daemon truncated the batch: unchecked.
+                # The request for this pair failed or came back short: unchecked.
                 actions.append((a, b, 'merge_unverified'))
                 report.append({
                     'type': 'merge_unverified',
+                    'reason': 'nli_failed',
                     'ids': [a.id, b.id],
                     'similarity': round(sim, 4),
                     'snippets': [a.content[:80], b.content[:80]],
@@ -641,6 +660,7 @@ def consolidate(
     dry_run: bool = False,
     min_cluster_size: int = 3,
     allow_merge: bool = False,
+    use_nli: bool = True,
 ) -> ConsolidationResult:
     """Run smart consolidation on the B12 memory database.
 
@@ -682,7 +702,9 @@ def consolidate(
         # Merging concatenates distinct memories and loses their timeline, so it
         # runs only when asked for and only with NLI available to keep
         # contradicting pairs apart. Otherwise similar pairs are only reported.
-        nli_up = _daemon_alive()
+        # use_nli=False skips the NLI pass: without merging it only produced
+        # contradiction flags, ~60% of all pairs on one install in ~20 minutes.
+        nli_up = use_nli and _daemon_alive()
         merging = allow_merge and nli_up
 
         # Step 2: Analyze each cluster
@@ -696,7 +718,9 @@ def consolidate(
             if len(active_mems) < 2:
                 continue
 
-            actions, report = _analyze_cluster(active_mems, use_nli=nli_up)
+            actions, report = _analyze_cluster(
+                active_mems, use_nli=nli_up,
+                off_reason='nli_unavailable' if use_nli else 'nli_skipped')
             result.dry_run_report.extend(report)
 
             # Two-pass: dedups first (consume losers), then merges from survivors.

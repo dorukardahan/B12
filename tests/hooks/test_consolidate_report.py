@@ -58,6 +58,21 @@ def test_empty_report_prints_nothing():
     assert mod.format_pair_details([], dry_run=True) == []
 
 
+def test_auto_run_names_why_pairs_had_no_verdict():
+    report = [
+        {"type": "merge_unverified", "reason": "nli_unavailable", "ids": [1, 2], "similarity": 0.9},
+        {"type": "merge_unverified", "reason": "nli_unavailable", "ids": [3, 4], "similarity": 0.9},
+        {"type": "merge_unverified", "reason": "short_text", "ids": [5, 6], "similarity": 0.9},
+    ]
+    out = "\n".join(_load().format_pair_details(report, dry_run=False))
+    assert "No NLI verdict for 3 pairs (2 NLI daemon not running, 1 text under 30 characters)" in out
+
+
 def test_auto_run_without_unverified_pairs_has_no_nli_line():
     out = "\n".join(_load().format_pair_details(REPORT[:1], dry_run=False))
     assert "NLI" not in out
+
+
+def test_nightly_run_skips_nli():
+    src = HOOK.read_text()
+    assert "use_nli=False" in src
